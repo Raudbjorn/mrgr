@@ -1,0 +1,42 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The carried tests spawn real git and build real repositories in
+      # mkdtemp. They are integration tests, not mocks, so the git version is
+      # part of the contract: core enforces >= 2.38.0 and fails loud below it.
+      - name: Record git version
+        run: git --version
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm -r typecheck
+      - run: pnpm -r test
+      - run: pnpm -r build
+
+      # The M0 gate: packages/core is an extraction, not a rewrite. If any
+      # carried file differs from its recorded digest, the extraction failed
+      # and the green test run above does not mean what it appears to mean.
+      - name: Verify carried modules are unmodified
+        run: ./scripts/verify-carried.sh
+
+      # A gate never observed to fail is a gate whose passing means nothing.
+      # This drifts the carried set both ways and requires rejection each time.
+      - name: Carried-file gate rejects drift
+        run: ./scripts/verify-carried-selftest.sh
