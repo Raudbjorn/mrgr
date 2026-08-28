@@ -48,6 +48,8 @@ Errors are a single JSON `ToolError` on stderr; exit 0 on success, 1 otherwise (
 
 `mrgr-db` is the workspace store; JSONL (corpus, sidecar evidence, and `mrgr-db export`'s output) is the transport format. Committed evidence in this repository stays exported JSONL rather than a binary `.db` file — that is what gets reviewed and diffed. `tursodb` may inspect the database file read-only for ad-hoc queries while no writer has it open; querying it while `mrgr-db` is running is not something this package tests or supports. Node ≥ 22.5 is required — `node:sqlite`, which the store is built on, does not exist before that.
 
+`mrgr-db` exits `0` on success, `2` for a usage error (an unknown or missing flag, an unknown subcommand), and `1` for an operational failure (the database is missing, an integrity check failed, a blob's digest does not match its content). This differs from `mrgr-wp0` and `mrgr-evidence`, which exit `1` for both classes — the split is deliberate for `mrgr-db`, not an oversight.
+
 ## Library
 
 ```ts
