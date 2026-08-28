@@ -30,8 +30,7 @@ CREATE TABLE baseline (
   algorithm              TEXT NOT NULL,
   strategy               TEXT NOT NULL,
   environment_policy     TEXT NOT NULL,
-  normalization_version  TEXT NOT NULL,
-  replay_command         TEXT NOT NULL
+  normalization_version  TEXT NOT NULL
 ) STRICT;
 
 CREATE TABLE corpus_record (

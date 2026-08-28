@@ -179,6 +179,59 @@ describe("CorpusStore", () => {
 		if (got.ok) expect(got.value).toEqual(record);
 	});
 
+	it("two records sharing a baselineId succeed despite differing parentAttributes", () => {
+		// parentAttributes is per-record provenance (the ours/theirs attribute
+		// OIDs differ on essentially every merge), not part of baselineInput's
+		// hash. A shared baselineId with differing parentAttributes must not
+		// be treated as conflicting baseline content.
+		const base = conflictedRecord();
+		const first: CorpusRecordV2 = { ...base, merge: { ...base.merge, sha: "1".repeat(40) } };
+		const second: CorpusRecordV2 = {
+			...base,
+			merge: { ...base.merge, sha: "2".repeat(40) },
+			replayProvenance: {
+				...base.replayProvenance,
+				parentAttributes: { ours: OID_B, theirs: OID_C },
+			},
+		};
+		expect(store.append(first).ok).toBe(true);
+		expect(store.append(second).ok).toBe(true);
+
+		const gotFirst = store.get(first.repository.id, first.merge.sha, first.baselineId);
+		expect(gotFirst.ok).toBe(true);
+		if (gotFirst.ok) expect(gotFirst.value).toEqual(first);
+
+		const gotSecond = store.get(second.repository.id, second.merge.sha, second.baselineId);
+		expect(gotSecond.ok).toBe(true);
+		if (gotSecond.ok) expect(gotSecond.value).toEqual(second);
+	});
+
+	it("two records sharing a baselineId succeed despite differing repoMergeConfigHash", () => {
+		// repoMergeConfigHash is per-repository configuration, not part of
+		// baselineInput's hash, so it must not gate baseline content equality
+		// either.
+		const base = conflictedRecord();
+		const first: CorpusRecordV2 = { ...base, merge: { ...base.merge, sha: "3".repeat(40) } };
+		const second: CorpusRecordV2 = {
+			...base,
+			merge: { ...base.merge, sha: "4".repeat(40) },
+			replayProvenance: {
+				...base.replayProvenance,
+				repoMergeConfigHash: "deadbeef",
+			},
+		};
+		expect(store.append(first).ok).toBe(true);
+		expect(store.append(second).ok).toBe(true);
+
+		const gotFirst = store.get(first.repository.id, first.merge.sha, first.baselineId);
+		expect(gotFirst.ok).toBe(true);
+		if (gotFirst.ok) expect(gotFirst.value).toEqual(first);
+
+		const gotSecond = store.get(second.repository.id, second.merge.sha, second.baselineId);
+		expect(gotSecond.ok).toBe(true);
+		if (gotSecond.ok) expect(gotSecond.value).toEqual(second);
+	});
+
 	it("rejects a repository row that violates the remote/local column pairing instead of silently dropping it", () => {
 		// Bypasses RepositoryRef's discriminated union on purpose: this proves
 		// the SQL layer's CHECK constraint rejects a malformed row rather than

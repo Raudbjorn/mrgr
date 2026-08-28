@@ -15,10 +15,20 @@ const SQLITE_CONSTRAINT_PRIMARYKEY = 1555;
 /**
  * Corpus persistence over mrgr-db/1.
  *
- * baseline.replay_command: CorpusRecordV2 does not carry the literal replay
- * command string that baselineId was derived from (that lives inside the
- * carried git.ts). The faithful, deterministic stand-in is the canonical JSON
- * of the full provenance envelope, which is exactly what baselineId binds.
+ * The baseline table has no replay_command column. baselineId (carried
+ * git.ts) hashes exactly schemaVersion, gitVersion, environmentPolicy,
+ * replayCommand, and normalizationVersion -- and CorpusRecordV2 does not
+ * carry the literal replayCommand string that went into that hash (it
+ * depends on a conflict-style parameter that isn't stored on the record).
+ * Storing a stand-in (e.g. canonicalJson of the full replayProvenance
+ * envelope) would silently mix in parentAttributes and repoMergeConfigHash,
+ * which are per-record/per-repository fields that legitimately vary across
+ * corpus records sharing one baselineId -- corrupting the PK-conflict
+ * content check below into rejecting every second record. Every other
+ * baseline-invariant field already has its own column (git_version,
+ * algorithm, strategy, environment_policy, normalization_version); a column
+ * that cannot be populated faithfully without that contamination is worse
+ * than no column.
  */
 export class CorpusStore {
 	constructor(private readonly handle: DbHandle) {}
@@ -184,13 +194,12 @@ export class CorpusStore {
 	 */
 	private insertBaseline(record: CorpusRecordV2): void {
 		const db = this.handle.db;
-		const replayCommand = canonicalJson(record.replayProvenance);
 		try {
 			db.prepare(
 				`INSERT INTO baseline
 				 (baseline_id, git_version, algorithm, strategy, environment_policy,
-				  normalization_version, replay_command)
-				 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+				  normalization_version)
+				 VALUES (?, ?, ?, ?, ?, ?)`,
 			).run(
 				record.baselineId,
 				record.replayProvenance.gitVersion,
@@ -198,7 +207,6 @@ export class CorpusStore {
 				record.replayProvenance.strategy,
 				record.replayProvenance.environmentPolicy,
 				record.replayProvenance.normalizationVersion,
-				replayCommand,
 			);
 		} catch (cause) {
 			if ((cause as { errcode?: number }).errcode !== SQLITE_CONSTRAINT_PRIMARYKEY) {
@@ -207,7 +215,7 @@ export class CorpusStore {
 			const existing = db
 				.prepare(
 					`SELECT git_version, algorithm, strategy, environment_policy,
-					        normalization_version, replay_command
+					        normalization_version
 					 FROM baseline WHERE baseline_id = ?`,
 				)
 				.get(record.baselineId) as
@@ -217,7 +225,6 @@ export class CorpusStore {
 						strategy: string;
 						environment_policy: string;
 						normalization_version: string;
-						replay_command: string;
 				  }
 				| undefined;
 			const identical =
@@ -226,8 +233,7 @@ export class CorpusStore {
 				existing.algorithm === record.replayProvenance.algorithm &&
 				existing.strategy === record.replayProvenance.strategy &&
 				existing.environment_policy === record.replayProvenance.environmentPolicy &&
-				existing.normalization_version === record.replayProvenance.normalizationVersion &&
-				existing.replay_command === replayCommand;
+				existing.normalization_version === record.replayProvenance.normalizationVersion;
 			if (!identical) {
 				throw new Error(`baseline ${record.baselineId} already exists with different content`);
 			}
