@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 
 import { getBlob } from "./blob.js";
 import { exportDb } from "./export.js";
+import { importCorpusJsonl, importEvidenceJsonl } from "./import.js";
 import { closeDb, openDb, type DbHandle } from "./open.js";
 import { dbErr, dbOk, type DbResult, type DbToolError } from "./result.js";
 
@@ -102,47 +103,6 @@ function noPositionals(operation: string, positionals: readonly string[]): DbRes
 	return dbOk(undefined);
 }
 
-interface ImportCounts {
-	imported: number;
-	skippedDuplicate: number;
-	failed: number;
-	firstFailure?: DbToolError;
-}
-
-interface ImportModule {
-	importCorpusJsonl(handle: DbHandle, path: string): Promise<DbResult<ImportCounts>>;
-	importEvidenceJsonl(handle: DbHandle, path: string): Promise<DbResult<ImportCounts>>;
-}
-
-// Indirected through a variable rather than a string literal in the
-// import() call: with a literal, tsc resolves the module for typechecking
-// and fails the whole build the moment the file is absent. src/db/import.ts
-// lands in a concurrently-developed task and may not exist yet; the
-// indirection defers "does this exist" to runtime, where it is handled below
-// as a typed error instead of a build break.
-const IMPORT_MODULE_SPECIFIER = "./import.js";
-
-async function loadImportModule(): Promise<DbResult<ImportModule>> {
-	let mod: Partial<ImportModule>;
-	try {
-		mod = (await import(IMPORT_MODULE_SPECIFIER)) as Partial<ImportModule>;
-	} catch {
-		return dbErr(
-			"unsupported",
-			"mrgr-db import",
-			"Import is not available: src/db/import.ts has not landed yet",
-		);
-	}
-	if (typeof mod.importCorpusJsonl !== "function" || typeof mod.importEvidenceJsonl !== "function") {
-		return dbErr(
-			"unsupported",
-			"mrgr-db import",
-			"src/db/import.ts is present but does not export importCorpusJsonl/importEvidenceJsonl",
-		);
-	}
-	return dbOk(mod as ImportModule);
-}
-
 async function runInit(argv: readonly string[]): Promise<DbResult<string>> {
 	const operation = "mrgr-db init";
 	const parsed = parseCommandArgs(operation, argv, { db: { type: "string" } });
@@ -180,28 +140,35 @@ async function runImport(argv: readonly string[]): Promise<DbResult<string>> {
 		return usageError(operation, "Exactly one of --corpus or --evidence is required");
 	}
 
-	const importModule = await loadImportModule();
-	if (!importModule.ok) return importModule;
-
 	const opened = openDb(db.value, { create: true });
 	if (!opened.ok) return opened;
 
 	const imported = hasCorpus
-		? await importModule.value.importCorpusJsonl(opened.value, corpus as string)
-		: await importModule.value.importEvidenceJsonl(opened.value, evidence as string);
+		? await importCorpusJsonl(opened.value, corpus as string)
+		: await importEvidenceJsonl(opened.value, evidence as string);
 
 	const closed = closeDb(opened.value);
 	if (!imported.ok) return imported;
 	if (!closed.ok) return closed;
 
 	const counts = imported.value;
-	const firstFailure =
-		counts.failed > 0 && counts.firstFailure !== undefined
-			? ` firstFailure=${JSON.stringify(counts.firstFailure)}`
-			: "";
-	return dbOk(
-		`import: imported=${counts.imported} skippedDuplicate=${counts.skippedDuplicate} failed=${counts.failed}${firstFailure}\n`,
-	);
+	const summary = `imported=${counts.imported} skippedDuplicate=${counts.skippedDuplicate} failed=${counts.failed}`;
+
+	// A record that failed to land is an operational failure, not a partial
+	// success: a caller scripting this needs a non-zero exit even when some
+	// records did import. The counts stay in the message either way — this
+	// is a failure *report*, not a bare "something went wrong".
+	if (counts.failed > 0) {
+		return dbErr("db", operation, `import completed with failures: ${summary}`, {
+			imported: counts.imported,
+			skippedDuplicate: counts.skippedDuplicate,
+			failed: counts.failed,
+			...(counts.firstFailure === undefined
+				? {}
+				: { firstFailure: JSON.stringify(counts.firstFailure) }),
+		});
+	}
+	return dbOk(`import: ${summary}\n`);
 }
 
 async function runExport(argv: readonly string[]): Promise<DbResult<string>> {

@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -172,6 +172,59 @@ describe("mrgr-db import", () => {
 		};
 		expect(manifest.tables.corpus_record.rows).toBe(2);
 		expect(manifest.tables.evidence_bundle.rows).toBe(2);
+	});
+
+	it("exits 1 when every record fails (evidence imported before its corpus)", async () => {
+		const dir = temporaryDirectory();
+		const dbPath = join(dir, "mrgr.db");
+		expect(await main(["init", "--db", dbPath], captureIo().io)).toBe(0);
+
+		const capture = captureIo();
+		expect(await main(["import", "--db", dbPath, "--evidence", LEGACY_EVIDENCE], capture.io)).toBe(
+			1,
+		);
+		expect(capture.stdout).toEqual([]);
+		expect(capture.stderr).toHaveLength(1);
+		const parsed = JSON.parse(capture.stderr[0] as string) as {
+			kind: string;
+			message: string;
+			details: { imported: number; failed: number };
+		};
+		expect(parsed.kind).toBe("db");
+		expect(parsed.message).toContain("failed=2");
+		expect(parsed.details.imported).toBe(0);
+		expect(parsed.details.failed).toBe(2);
+	});
+
+	it("exits 1 when some records succeed and some fail", async () => {
+		const dir = temporaryDirectory();
+		const dbPath = join(dir, "mrgr.db");
+		expect(await main(["init", "--db", dbPath], captureIo().io)).toBe(0);
+		expect(
+			await main(["import", "--db", dbPath, "--corpus", LEGACY_CORPUS], captureIo().io),
+		).toBe(0);
+
+		// One record whose corpus region exists (succeeds) and one whose
+		// merge_sha names the fixture's *clean* corpus record, which has no
+		// conflict_region row at all (fails the region-existence check).
+		const okLine = JSON.parse(
+			readFileSync(LEGACY_EVIDENCE, "utf8").trimEnd().split("\n")[0] as string,
+		) as Record<string, unknown>;
+		const failingLine = { ...okLine, merge_sha: "f".repeat(40) };
+		const mixedPath = join(dir, "mixed-evidence.jsonl");
+		writeFileSync(mixedPath, `${JSON.stringify(okLine)}\n${JSON.stringify(failingLine)}\n`);
+
+		const capture = captureIo();
+		expect(await main(["import", "--db", dbPath, "--evidence", mixedPath], capture.io)).toBe(1);
+		expect(capture.stdout).toEqual([]);
+		expect(capture.stderr).toHaveLength(1);
+		const parsed = JSON.parse(capture.stderr[0] as string) as {
+			kind: string;
+			details: { imported: number; skippedDuplicate: number; failed: number };
+		};
+		expect(parsed.kind).toBe("db");
+		expect(parsed.details.imported).toBe(1);
+		expect(parsed.details.failed).toBe(1);
 	});
 });
 
