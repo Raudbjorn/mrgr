@@ -37,7 +37,7 @@ evidence, not scheduled.
 | Component | State |
 |---|---|
 | `@mrgr/core` — replay, localization, classification, corpus, materialize | **works**: 12 modules carried verbatim from the WP0 instrument, 120 tests, dependency-free |
-| `@mrgr/core` — M1a evidence-bundle extraction (`src/m1a/`) | **partial**: extracts and validates a bundle, 4 tests. Bundles are *not* parsed back at the `parseCorpusRecord` trust boundary, so a written bundle is dropped on read. Open blockers below. |
+| `@mrgr/core` — M1a evidence bundles (`src/m1a/`) | **P0 complete**: one bundle per conflict region keyed `path` + `ordinal`, uncapped preimages with byte-accurate sizes, null for an absent side, append-only sidecar with fail-closed reads and per-region resume. 24 tests. P1/P2 open — see below. |
 | survey / merge-base census (M1a) | next |
 | `@mrgr/mechanisms` — `git_text` \| `gnu_diff3` \| `mergiraf` | gated |
 | `@mrgr/ledger` — decision \| halt \| debt \| resurrection | gated |
@@ -64,16 +64,41 @@ adapter.** The raw inputs, arm outputs and the scripts that produced them are
 all under [`evidence/h0/`](evidence/h0/) so the invalidation is checkable rather
 than merely asserted.
 
-### Open M1a blockers
+### M1a: what P0 fixed, and what is still open
 
-Recorded so they are not rediscovered: stable region identity (`path + ordinal`
-vs. one bundle per file); keep `dependency_graph` path-only; truncation is
-1,200 UTF-16 code units via JavaScript `string.length`, not 1,200 bytes, and
-any byte count must come from original bytes; preserve absent-path-as-null
-separately from Git failures; parse and retain `evidenceBundles` at the
-`parseCorpusRecord` boundary; preserve extraction failures instead of dropping
-them; add tests for multi-path/multi-region, add/add, delete/modify, extraction
-failure, and write/read round trips.
+Evidence bundles are persisted to a **sidecar** (`corpus.evidence.jsonl`), not
+inline on `CorpusRecordV2`. That keeps schema v2 immutable and the carried set
+byte-identical at 24 files, and lets evidence be regenerated or discarded
+without touching a corpus.
+
+Fixed, each with a test that fails without the fix:
+
+- **Region identity.** One bundle per conflict region, keyed `conflict_path` +
+  `conflict_ordinal` — the same key `ConflictRegionRecord` already uses, so a
+  bundle joins 1:1 to a region. A file with three conflicts yields three
+  bundles.
+- **Real preimages.** Uncapped by default. The previous `CAP = 1200` was applied
+  with `String.slice`, i.e. UTF-16 code units, so a field documented in bytes
+  reported something else. Sizes now come from `Buffer.byteLength` of the
+  *original*, and truncation is opt-in, flagged, and never splits a character.
+- **`dependency_graph` is path-only.** Extra conflict regions used to be
+  serialized into it as `` `+ours|base|theirs` ``. The schema now rejects any
+  entry that is not a side-tagged path, and `dependency_graph_status`
+  distinguishes "derived and empty" from "could not be derived".
+- **Absent path is `null`, not failure.** A missing revision stays a typed
+  error; a path simply not present in a parent is evidence.
+- **Failures are recorded.** A failed extraction writes `status: "failed"` with
+  its error. Absence of a row now means "not attempted"; it no longer doubles
+  as "attempted and failed".
+- **See [`docs/findings/F2`](docs/findings/F2-add-add-conflicts-unparseable.md)** —
+  add/add conflicts were silently unparseable, because Git emits an *empty*
+  base section and the section regex required a newline that an empty section
+  does not have.
+
+Still open (P1/P2): materialization propagation, focused schema snapshots, and
+a runnable smoke over the committed H0 triples. The sidecar is not claimed to
+be the final persistence design; moving bundles inline later is a schema
+decision with a version bump.
 
 ## Try the evidence layer
 

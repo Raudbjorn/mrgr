@@ -12,6 +12,12 @@ npm install @mrgr/core
 
 Requires Node ≥ 20 and **Git ≥ 2.38.0** (enforced, not assumed).
 
+> The Node ≥ 20 floor is the package's declared `engines` value and is
+> **not currently verified**: the dev toolchain (pnpm 11.3.0) requires Node
+> ≥ 22.13, so CI builds and tests on Node 22. Nothing in the carried modules
+> is known to need more than Node 20, but that is an expectation, not a
+> measurement — a Node 20 job would need a pnpm old enough to run there.
+
 The carried WP0 evaluation modules (`src/evaluation/`) have **zero runtime
 dependencies** and shell out only to `git`. The M1a evidence-bundle modules
 (`src/m1a/`) add one: `zod`, for schema validation. M1a is partial — see the

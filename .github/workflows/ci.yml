@@ -5,6 +5,11 @@ on:
     branches: [main]
   pull_request:
 
+# Least privilege: CI only reads the repository. No job here writes to it, so
+# nothing needs the default token's broader scopes.
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -17,12 +22,16 @@ jobs:
       - name: Record git version
         run: git --version
 
+      # No `version:` here on purpose. action-setup errors out when pnpm is
+      # specified both here and in package.json's `packageManager`, and taking
+      # it from `packageManager` pins the exact 11.3.0 rather than "some 11".
       - uses: pnpm/action-setup@v4
-        with:
-          version: 11
+      # Node 22, not the declared minimum of 20: pnpm 11.3.0 itself requires
+      # >= 22.13 and crashes on Node 20 loading node:sqlite. This is the
+      # toolchain's floor, not the package's. See the engines note below.
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
