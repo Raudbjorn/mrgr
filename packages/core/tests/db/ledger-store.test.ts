@@ -90,4 +90,45 @@ describe("LedgerStore", () => {
 		const listed = store.list();
 		if (listed.ok) expect(listed.value).toHaveLength(2);
 	});
+
+	it("rejects a non-canonical createdAt and writes nothing", () => {
+		const store = new LedgerStore(handle);
+		const result = store.append(decisionInput(1), "not-a-date");
+		expect(result.ok).toBe(false);
+		if (!result.ok) {
+			expect(result.error.kind).toBe("db");
+			expect(result.error.details).toMatchObject({ createdAt: "not-a-date" });
+		}
+		const n = handle.db.prepare("SELECT count(*) AS n FROM ledger").get() as { n: number };
+		expect(n.n).toBe(0);
+	});
+
+	it("rejects a parseable but non-round-tripping createdAt (missing milliseconds)", () => {
+		const store = new LedgerStore(handle);
+		const result = store.append(decisionInput(1), "2024-01-01T00:00:00Z");
+		expect(result.ok).toBe(false);
+		const n = handle.db.prepare("SELECT count(*) AS n FROM ledger").get() as { n: number };
+		expect(n.n).toBe(0);
+	});
+
+	it("accepts a valid injected createdAt for deterministic exports", () => {
+		const store = new LedgerStore(handle);
+		const injected = "2024-01-01T00:00:00.000Z";
+		const result = store.append(decisionInput(1), injected);
+		expect(result.ok).toBe(true);
+		if (result.ok) expect(result.value.createdAt).toBe(injected);
+	});
+
+	it("defaults createdAt to now when omitted", () => {
+		const store = new LedgerStore(handle);
+		const before = Date.now();
+		const result = store.append(decisionInput(1));
+		const after = Date.now();
+		expect(result.ok).toBe(true);
+		if (result.ok) {
+			const createdAtMs = new Date(result.value.createdAt).getTime();
+			expect(createdAtMs).toBeGreaterThanOrEqual(before);
+			expect(createdAtMs).toBeLessThanOrEqual(after);
+		}
+	});
 });

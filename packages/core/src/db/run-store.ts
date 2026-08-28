@@ -197,7 +197,12 @@ export class RunStore {
 		}
 	}
 
-	/** All results for a run, in insertion-stable order. */
+	/**
+	 * All results for a run, ordered deterministically by (triple_id,
+	 * run_index) — not insertion order. This is reproducible across runs and
+	 * matches the table's primary key (run_id, triple_id, run_index), which
+	 * matters more here than the order results happened to be written in.
+	 */
 	listResults(runId: string): DbResult<RunResultRecord[]> {
 		try {
 			const rows = this.handle.db

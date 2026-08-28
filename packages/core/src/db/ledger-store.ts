@@ -43,10 +43,33 @@ export interface LedgerRecord extends LedgerInput {
  * exists to make impossible: two concurrent readers of MAX(seq) that agree
  * with each other and collide on insert).
  */
+/**
+ * True only when `value` is a canonical ISO-8601 UTC timestamp: it must
+ * round-trip through `Date#toISOString()` unchanged, not merely be
+ * parseable. A value that parses but does not round-trip (missing
+ * milliseconds, a non-"Z" offset, etc.) would still compare and sort
+ * differently than the caller expects, which defeats the point of storing
+ * it as a sortable audit-trail column.
+ */
+function isCanonicalIsoUtc(value: string): boolean {
+	const parsed = new Date(value);
+	if (Number.isNaN(parsed.getTime())) return false;
+	return parsed.toISOString() === value;
+}
+
 export class LedgerStore {
 	constructor(private readonly handle: DbHandle) {}
 
 	append(input: LedgerInput, createdAt: string = new Date().toISOString()): DbResult<LedgerRecord> {
+		if (!isCanonicalIsoUtc(createdAt)) {
+			return dbErr(
+				"db",
+				"append ledger record",
+				"createdAt is not a canonical ISO-8601 UTC timestamp",
+				{ createdAt },
+			);
+		}
+
 		const db = this.handle.db;
 
 		// Explicitly projected, not `canonicalJson(input)` directly: LedgerRecord

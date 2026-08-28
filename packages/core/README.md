@@ -10,13 +10,13 @@ This package collects, replays, localizes and classifies. **It does not adjudica
 npm install @mrgr/core
 ```
 
-Requires Node ≥ 20 and **Git ≥ 2.38.0** (enforced, not assumed).
+Requires Node ≥ 22.5.0 and **Git ≥ 2.38.0** (enforced, not assumed).
 
-> The Node ≥ 20 floor is the package's declared `engines` value and is
-> **not currently verified**: the dev toolchain (pnpm 11.3.0) requires Node
-> ≥ 22.13, so CI builds and tests on Node 22. Nothing in the carried modules
-> is known to need more than Node 20, but that is an expectation, not a
-> measurement — a Node 20 job would need a pnpm old enough to run there.
+> The Node ≥ 22.5.0 floor is the package's declared `engines` value, and it
+> is a real requirement, not a conservative guess: `mrgr-db` is built on
+> `node:sqlite`, which does not exist before Node 22.5. The carried WP0
+> evaluation modules (`src/evaluation/`) have no such dependency and would
+> run on an older Node, but the package as a whole does not.
 
 The carried WP0 evaluation modules (`src/evaluation/`) have **zero runtime
 dependencies** and shell out only to `git`. The M1a evidence-bundle modules

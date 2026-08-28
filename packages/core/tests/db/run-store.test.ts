@@ -119,6 +119,23 @@ describe("RunStore result round trip", () => {
 		expect(stillOriginal.ok).toBe(true);
 		if (stillOriginal.ok) expect(stillOriginal.value).toEqual([result]);
 	});
+
+	it("listResults orders by (triple_id, run_index), not insertion order", () => {
+		const created = store.createRun(baseConfig);
+		if (!created.ok) throw new Error(created.error.message);
+		const runId = created.value;
+
+		// Insert triple-b before triple-a: if order were insertion-stable,
+		// triple-b would come first. The contract is sorted order instead.
+		const tripleB = baseResult({ tripleId: "triple-b" }, runId);
+		const tripleA = baseResult({ tripleId: "triple-a" }, runId);
+		expect(store.appendResult(tripleB).ok).toBe(true);
+		expect(store.appendResult(tripleA).ok).toBe(true);
+
+		const listed = store.listResults(runId);
+		expect(listed.ok).toBe(true);
+		if (listed.ok) expect(listed.value.map((r) => r.tripleId)).toEqual(["triple-a", "triple-b"]);
+	});
 });
 
 describe("RunStore CHECK constraint", () => {
