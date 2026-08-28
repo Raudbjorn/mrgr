@@ -145,13 +145,46 @@ export class EvidenceStore {
 
 	/**
 	 * Fail closed if this region's `dependency_graph` disagrees with whatever
-	 * is already stored for its file. No existing rows means no sibling has
-	 * been appended yet (or the empty table cannot yet distinguish that from
-	 * a sibling whose own graph was empty), so an unopposed write proceeds.
+	 * is already stored for its file.
+	 *
+	 * Existence is decided by whether a prior `status: "ok"` `evidence_bundle`
+	 * row exists for this file — NOT by whether `evidence_dep` has any rows.
+	 * Those disagree exactly when a file's first ok region has a legitimately
+	 * empty `dependency_graph`: it writes zero `evidence_dep` rows, but its
+	 * empty graph is still authoritative for the file, and a later sibling
+	 * with a non-empty graph must be rejected, not accepted as "nothing
+	 * stored yet". A `status: "failed"` row (including one at
+	 * `PATH_LEVEL_ORDINAL`) carries no dependency graph and does not count.
 	 */
 	private checkDependencyGraphAgreement(
 		record: Extract<EvidenceRecord, { status: "ok" }>,
 	): DbResult<void> {
+		let hasPriorOkRegion: boolean;
+		try {
+			const row = this.handle.db
+				.prepare(
+					`SELECT 1 FROM evidence_bundle
+					 WHERE repository_id = ? AND merge_sha = ? AND baseline_id = ? AND path = ? AND status = 'ok'
+					 LIMIT 1`,
+				)
+				.get(
+					record.repository_id,
+					record.merge_sha,
+					record.baseline_id,
+					record.conflict_path,
+				);
+			hasPriorOkRegion = row !== undefined;
+		} catch (cause) {
+			return dbErr("db", "append evidence", "Dependency graph check failed", {
+				...keyDetails(record),
+				cause: String(cause),
+			});
+		}
+		// No prior ok region for this file: this is the file's first ok
+		// bundle, so there is nothing to agree with yet — insert as-is,
+		// including the zero-entry case.
+		if (!hasPriorOkRegion) return dbOk(undefined);
+
 		let existingDeps: { side: string; dep_path: string }[];
 		try {
 			existingDeps = this.handle.db
@@ -171,7 +204,6 @@ export class EvidenceStore {
 				cause: String(cause),
 			});
 		}
-		if (existingDeps.length === 0) return dbOk(undefined);
 
 		const existingSet = new Set(existingDeps.map((d) => `${d.side}:${d.dep_path}`));
 		const incomingSet = new Set(record.bundle.dependency_graph);

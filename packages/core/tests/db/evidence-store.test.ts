@@ -140,6 +140,15 @@ function okRecordOrdinal2(): OkEvidenceRecord {
 	};
 }
 
+/** Same as okRecord()/okRecordOrdinal2() but with a legitimately empty dependency_graph. */
+function okRecordEmptyGraph(ordinal: 1 | 2): OkEvidenceRecord {
+	const base = ordinal === 1 ? okRecord() : okRecordOrdinal2();
+	return {
+		...base,
+		bundle: { ...base.bundle, dependency_graph: [] },
+	};
+}
+
 function failedPathLevelRecord(): EvidenceRecord {
 	return {
 		schemaVersion: 1,
@@ -348,6 +357,102 @@ describe("EvidenceStore", () => {
 		);
 		expect(got1.ok).toBe(true);
 		if (got1.ok) expect(got1.value).toEqual(region1);
+	});
+
+	it("two regions of the same file agreeing on an EMPTY dependency_graph both succeed", () => {
+		const region1 = okRecordEmptyGraph(1);
+		const region2 = okRecordEmptyGraph(2);
+		expect(evidenceStore.append(region1).ok).toBe(true);
+		expect(evidenceStore.append(region2).ok).toBe(true);
+
+		const depRows = handle.db
+			.prepare("SELECT side, dep_path FROM evidence_dep WHERE path = 'src/a.ts'")
+			.all();
+		expect(depRows).toEqual([]);
+
+		const got1 = evidenceStore.get(
+			region1.repository_id,
+			region1.merge_sha,
+			region1.baseline_id,
+			region1.conflict_path,
+			region1.conflict_ordinal,
+		);
+		expect(got1.ok).toBe(true);
+		if (got1.ok) expect(got1.value).toEqual(region1);
+
+		const got2 = evidenceStore.get(
+			region2.repository_id,
+			region2.merge_sha,
+			region2.baseline_id,
+			region2.conflict_path,
+			region2.conflict_ordinal,
+		);
+		expect(got2.ok).toBe(true);
+		if (got2.ok) expect(got2.value).toEqual(region2);
+	});
+
+	it("rejects a non-empty dependency_graph sibling when the file's first ok region had an empty graph", () => {
+		const region1 = okRecordEmptyGraph(1);
+		expect(evidenceStore.append(region1).ok).toBe(true);
+
+		const region2 = okRecordOrdinal2(); // non-empty dependency_graph
+		const result = evidenceStore.append(region2);
+		expect(result.ok).toBe(false);
+		if (!result.ok) {
+			expect(result.error.kind).toBe("db");
+			expect(result.error.details?.reason).toBe("dependency-graph-conflict");
+		}
+
+		// Nothing was written for the rejected region, and region1's (empty)
+		// evidence_dep rows are unaffected.
+		const got2 = evidenceStore.get(
+			region2.repository_id,
+			region2.merge_sha,
+			region2.baseline_id,
+			region2.conflict_path,
+			region2.conflict_ordinal,
+		);
+		expect(got2.ok).toBe(true);
+		if (got2.ok) expect(got2.value).toBeNull();
+
+		const depRows = handle.db
+			.prepare("SELECT side, dep_path FROM evidence_dep WHERE path = 'src/a.ts'")
+			.all();
+		expect(depRows).toEqual([]);
+	});
+
+	it("rejects an empty dependency_graph sibling when the file's first ok region had a non-empty graph", () => {
+		const region1 = okRecord(); // non-empty dependency_graph
+		expect(evidenceStore.append(region1).ok).toBe(true);
+
+		const region2 = okRecordEmptyGraph(2);
+		const result = evidenceStore.append(region2);
+		expect(result.ok).toBe(false);
+		if (!result.ok) {
+			expect(result.error.kind).toBe("db");
+			expect(result.error.details?.reason).toBe("dependency-graph-conflict");
+		}
+
+		const got2 = evidenceStore.get(
+			region2.repository_id,
+			region2.merge_sha,
+			region2.baseline_id,
+			region2.conflict_path,
+			region2.conflict_ordinal,
+		);
+		expect(got2.ok).toBe(true);
+		if (got2.ok) expect(got2.value).toBeNull();
+
+		// Region 1's rows are unaffected by the rejected append.
+		const depRows = handle.db
+			.prepare(
+				"SELECT side, dep_path FROM evidence_dep WHERE path = 'src/a.ts' ORDER BY side, dep_path",
+			)
+			.all() as { side: string; dep_path: string }[];
+		expect(depRows).toEqual([
+			{ side: "ours", dep_path: "src/a.ts" },
+			{ side: "theirs", dep_path: "src/b.ts" },
+		]);
 	});
 
 	it("is idempotent for an identical duplicate, errors on a different one", () => {
