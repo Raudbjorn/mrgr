@@ -15,7 +15,11 @@ const REPO_ID = "local:/tmp/repo";
 const ABS_PATH = "/tmp/repo";
 const OID_PARENT1 = "1".repeat(40);
 const OID_PARENT2 = "2".repeat(40);
-const OID_BASE = "3".repeat(40);
+// Deliberately lexicographically reversed relative to recorded order below,
+// so a test that sorted by base_sha instead of base_index would disagree
+// with one that sorts by base_index.
+const OID_BASE_Z = "z".repeat(40);
+const OID_BASE_A = "a".repeat(40);
 const DIGEST = "9".repeat(64);
 
 const TABLE_NAMES = [
@@ -34,7 +38,42 @@ const TABLE_NAMES = [
 	"run_result",
 ] as const;
 
-/** A minimal but complete corpus record; only mergeSha varies across calls. */
+function region(path: string, base: string): CorpusRecordV2["conflictRegions"][number] {
+	return {
+		path,
+		ordinal: 1,
+		category: "other",
+		conflictKind: "content",
+		stageOids: { base, ours: OID_PARENT1, theirs: OID_PARENT2 },
+		localizationStatus: "exact",
+		automaticRanges: {
+			base: { startLine: 1, endLineExclusive: 2 },
+			ours: { startLine: 1, endLineExclusive: 3 },
+			theirs: { startLine: 1, endLineExclusive: 4 },
+		},
+		resolutionRange: { startLine: 1, endLineExclusive: 3 },
+		rawDigests: { base: DIGEST, ours: DIGEST, theirs: DIGEST, resolution: DIGEST },
+		normalizedDigests: { base: DIGEST, ours: DIGEST, theirs: DIGEST, resolution: DIGEST },
+		rawCounts: {
+			base: { lines: 1, bytes: 5 },
+			ours: { lines: 2, bytes: 10 },
+			theirs: { lines: 3, bytes: 15 },
+			resolution: { lines: 2, bytes: 10 },
+		},
+		resolutionClass: "ours",
+		novelAfterNormalization: false,
+		tripleKey: DIGEST,
+	};
+}
+
+/**
+ * A corpus record whose recorded array order for conflictPaths,
+ * conflictRegions and mergeBases deliberately disagrees with sorting by
+ * their natural key (path / (path, ordinal) / base_sha). This is the exact
+ * shape that motivated adding path_index/array_index/base_index: a test
+ * built from single-element arrays can't tell an index-column sort from a
+ * natural-key sort, since both agree trivially.
+ */
 function corpusRecord(mergeSha: string): CorpusRecordV2 {
 	return {
 		schemaVersion: 2,
@@ -56,42 +95,19 @@ function corpusRecord(mergeSha: string): CorpusRecordV2 {
 			parentAttributes: { ours: null, theirs: null },
 			repoMergeConfigHash: null,
 		},
-		mergeBases: [OID_BASE],
-		baseTopology: "single",
+		// Recorded order z, a; base_sha sorts a, z — index and natural-key order disagree.
+		mergeBases: [OID_BASE_Z, OID_BASE_A],
+		baseTopology: "multiple",
 		baseReachabilityCounts: [
-			{ baseSha: OID_BASE, oursExclusiveCommits: 1, theirsExclusiveCommits: 2 },
+			{ baseSha: OID_BASE_Z, oursExclusiveCommits: 1, theirsExclusiveCommits: 2 },
+			{ baseSha: OID_BASE_A, oursExclusiveCommits: 3, theirsExclusiveCommits: 4 },
 		],
-		changedPathIntersection: ["src/a.ts"],
+		changedPathIntersection: null,
 		replayStatus: "conflicted",
 		automaticTreeOid: mergeSha,
-		conflictPaths: ["src/a.ts"],
-		conflictRegions: [
-			{
-				path: "src/a.ts",
-				ordinal: 1,
-				category: "other",
-				conflictKind: "content",
-				stageOids: { base: OID_BASE, ours: OID_PARENT1, theirs: OID_PARENT2 },
-				localizationStatus: "exact",
-				automaticRanges: {
-					base: { startLine: 1, endLineExclusive: 2 },
-					ours: { startLine: 1, endLineExclusive: 3 },
-					theirs: { startLine: 1, endLineExclusive: 4 },
-				},
-				resolutionRange: { startLine: 1, endLineExclusive: 3 },
-				rawDigests: { base: DIGEST, ours: DIGEST, theirs: DIGEST, resolution: DIGEST },
-				normalizedDigests: { base: DIGEST, ours: DIGEST, theirs: DIGEST, resolution: DIGEST },
-				rawCounts: {
-					base: { lines: 1, bytes: 5 },
-					ours: { lines: 2, bytes: 10 },
-					theirs: { lines: 3, bytes: 15 },
-					resolution: { lines: 2, bytes: 10 },
-				},
-				resolutionClass: "ours",
-				novelAfterNormalization: false,
-				tripleKey: DIGEST,
-			},
-		],
+		// Recorded order z, a; path sorts a, z — index and natural-key order disagree.
+		conflictPaths: ["src/z.ts", "src/a.ts"],
+		conflictRegions: [region("src/z.ts", OID_BASE_Z), region("src/a.ts", OID_BASE_A)],
 	};
 }
 
@@ -118,6 +134,15 @@ const FIXED_CREATED_AT = "2026-01-01T00:00:00.000Z";
 function countRows(buf: Buffer): number {
 	if (buf.length === 0) return 0;
 	return buf.toString("utf8").split("\n").filter((l) => l.length > 0).length;
+}
+
+function readJsonl(path: string): Record<string, unknown>[] {
+	const buf = readFileSync(path, "utf8");
+	if (buf.length === 0) return [];
+	return buf
+		.split("\n")
+		.filter((l) => l.length > 0)
+		.map((l) => JSON.parse(l) as Record<string, unknown>);
 }
 
 let dir: string;
@@ -266,6 +291,29 @@ describe("exportDb", () => {
 			.map((l) => JSON.parse(l) as Record<string, unknown>);
 		expect(lines).toHaveLength(2);
 		for (const line of lines) expect(Object.keys(line).sort()).toEqual(["byte_len", "sha256"]);
+	});
+
+	it("orders conflict_path, conflict_region and merge_base by their position column, not the natural key", () => {
+		new CorpusStore(handle).append(corpusRecord(OID_PARENT1));
+		const outDir = join(dir, "export");
+		const result = exportDb(handle, outDir);
+		expect(result.ok).toBe(true);
+		if (!result.ok) return;
+
+		const paths = readJsonl(join(outDir, "conflict_path.jsonl"));
+		expect(paths.map((r) => r.path_index)).toEqual([0, 1]);
+		// Recorded order was z, a — a natural-key (path) sort would have produced a, z.
+		expect(paths.map((r) => r.path)).toEqual(["src/z.ts", "src/a.ts"]);
+
+		const regions = readJsonl(join(outDir, "conflict_region.jsonl"));
+		expect(regions.map((r) => r.array_index)).toEqual([0, 1]);
+		// Recorded order was z, a — a natural-key (path, ordinal) sort would have produced a, z.
+		expect(regions.map((r) => r.path)).toEqual(["src/z.ts", "src/a.ts"]);
+
+		const bases = readJsonl(join(outDir, "merge_base.jsonl"));
+		expect(bases.map((r) => r.base_index)).toEqual([0, 1]);
+		// Recorded order was z, a — a natural-key (base_sha) sort would have produced a, z.
+		expect(bases.map((r) => r.base_sha)).toEqual([OID_BASE_Z, OID_BASE_A]);
 	});
 
 	it("without withBlobs, no blobs directory is created", () => {
