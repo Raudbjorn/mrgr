@@ -30,9 +30,23 @@ mrgr-wp0 scan <owner/repo...> --out FILE [--host github.com] [--cache DIR] [--si
 mrgr-wp0 scan-local <path...> --out FILE [--since ISO] [--rev RANGE] [--jobs 4]
 mrgr-wp0 report FILE [--baseline ID]
 mrgr-wp0 materialize FILE --out FILE [--baseline ID] [--cache DIR]
+mrgr-db init   --db PATH
+mrgr-db import --db PATH (--corpus FILE | --evidence FILE)
+mrgr-db export --db PATH --out DIR [--with-blobs]
+mrgr-db verify --db PATH
 ```
 
-Errors are a single JSON `ToolError` on stderr; exit 0 on success, 1 otherwise. The corpus is append-only JSONL, resumable by `(repoId, mergeSha, baselineId)`, and fails closed on a malformed record rather than skipping it.
+Errors are a single JSON `ToolError` on stderr; exit 0 on success, 1 otherwise (`mrgr-db` also uses 2 for a usage mistake — an unknown or missing flag — distinct from 1 for a failure while doing the work asked). The corpus is append-only JSONL, resumable by `(repoId, mergeSha, baselineId)`, and fails closed on a malformed record rather than skipping it.
+
+## Status
+
+| Component | State |
+|---|---|
+| `mrgr-db` — workspace SQLite store (mrgr-db/1) | works: corpus + evidence + ledger + runs; canonical export; JSONL import |
+
+## Persistence
+
+`mrgr-db` is the workspace store; JSONL (corpus, sidecar evidence, and `mrgr-db export`'s output) is the transport format. Committed evidence in this repository stays exported JSONL rather than a binary `.db` file — that is what gets reviewed and diffed. `tursodb` may inspect the database file read-only for ad-hoc queries while no writer has it open; querying it while `mrgr-db` is running is not something this package tests or supports. Node ≥ 22.5 is required — `node:sqlite`, which the store is built on, does not exist before that.
 
 ## Library
 
