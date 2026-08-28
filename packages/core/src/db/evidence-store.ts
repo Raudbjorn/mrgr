@@ -6,6 +6,9 @@ import type { ToolError } from "../evaluation/result.js";
 import { evidenceKey, parseEvidenceRecord, type EvidenceRecord } from "../m1a/sidecar.js";
 import type { EvidenceBundle } from "../m1a/evidence.js";
 
+/** SQLite result code for a PRIMARY KEY (or other UNIQUE) constraint violation. */
+const SQLITE_CONSTRAINT_PRIMARYKEY = 1555;
+
 type EvidenceKeyFields = Pick<
 	EvidenceRecord,
 	"repository_id" | "merge_sha" | "baseline_id" | "conflict_path" | "conflict_ordinal"
@@ -49,37 +52,59 @@ export class EvidenceStore {
 		if (!validated.ok) return validated;
 		const value = validated.value;
 
-		const existing = this.get(
-			value.repository_id,
-			value.merge_sha,
-			value.baseline_id,
-			value.conflict_path,
-			value.conflict_ordinal,
-		);
-		if (!existing.ok) return existing;
-		if (existing.value !== null) {
-			try {
-				if (canonicalJson(existing.value) === canonicalJson(value)) {
-					return dbOk(undefined); // idempotent re-append
-				}
-			} catch (cause) {
-				return dbErr("db", "append evidence", "Could not compare existing record", {
-					...keyDetails(value),
-					cause: String(cause),
-				});
-			}
-			return dbErr(
-				"db",
-				"append evidence",
-				"Duplicate key with different content",
-				keyDetails(value),
-			);
-		}
+		const db = this.handle.db;
+		try {
+			// BEGIN IMMEDIATE takes the write lock up front, before the
+			// idempotency check, the region-existence check, and the
+			// dependency-graph agreement check below run. Those three all
+			// read-then-decide; running them before the lock was taken meant
+			// two concurrent connections appending different regions of the
+			// same file could each read "no conflicting sibling yet" against
+			// stale state and both proceed to insert — the exact
+			// time-of-check/time-of-use race LedgerStore's in-transaction seq
+			// computation exists to close, here defeating the
+			// dependency-graph invariant instead of colliding a sequence
+			// number. A second connection now blocks here (up to
+			// busy_timeout) rather than racing through a stale read.
+			db.exec("BEGIN IMMEDIATE");
 
-		if (value.status === "ok") {
-			let region: unknown;
-			try {
-				region = this.handle.db
+			const existing = this.get(
+				value.repository_id,
+				value.merge_sha,
+				value.baseline_id,
+				value.conflict_path,
+				value.conflict_ordinal,
+			);
+			if (!existing.ok) {
+				db.exec("ROLLBACK");
+				return existing;
+			}
+			if (existing.value !== null) {
+				let same: boolean;
+				try {
+					same = canonicalJson(existing.value) === canonicalJson(value);
+				} catch (cause) {
+					db.exec("ROLLBACK");
+					return dbErr("db", "append evidence", "Could not compare existing record", {
+						...keyDetails(value),
+						cause: String(cause),
+					});
+				}
+				if (same) {
+					db.exec("COMMIT"); // idempotent re-append
+					return dbOk(undefined);
+				}
+				db.exec("ROLLBACK");
+				return dbErr(
+					"db",
+					"append evidence",
+					"Duplicate key with different content",
+					keyDetails(value),
+				);
+			}
+
+			if (value.status === "ok") {
+				const region = db
 					.prepare(
 						`SELECT 1 FROM conflict_region
 						 WHERE repository_id = ? AND merge_sha = ? AND baseline_id = ? AND path = ? AND ordinal = ?`,
@@ -91,27 +116,20 @@ export class EvidenceStore {
 						value.conflict_path,
 						value.conflict_ordinal,
 					);
-			} catch (cause) {
-				return dbErr("db", "append evidence", "Region check failed", {
-					...keyDetails(value),
-					cause: String(cause),
-				});
-			}
-			if (region === undefined) {
-				return dbErr("db", "append evidence", "No conflict_region row for this bundle", {
-					reason: "missing-region",
-					...keyDetails(value),
-				});
-			}
+				if (region === undefined) {
+					db.exec("ROLLBACK");
+					return dbErr("db", "append evidence", "No conflict_region row for this bundle", {
+						reason: "missing-region",
+						...keyDetails(value),
+					});
+				}
 
-			const conflict = this.checkDependencyGraphAgreement(value);
-			if (!conflict.ok) return conflict;
-		}
+				const conflict = this.checkDependencyGraphAgreement(value);
+				if (!conflict.ok) {
+					db.exec("ROLLBACK");
+					return conflict;
+				}
 
-		const db = this.handle.db;
-		try {
-			db.exec("BEGIN IMMEDIATE");
-			if (value.status === "ok") {
 				this.insertOkBundle(value.bundle, value);
 			} else {
 				const errorJson = canonicalJson(value.error);
@@ -159,51 +177,33 @@ export class EvidenceStore {
 	private checkDependencyGraphAgreement(
 		record: Extract<EvidenceRecord, { status: "ok" }>,
 	): DbResult<void> {
-		let hasPriorOkRegion: boolean;
-		try {
-			const row = this.handle.db
-				.prepare(
-					`SELECT 1 FROM evidence_bundle
-					 WHERE repository_id = ? AND merge_sha = ? AND baseline_id = ? AND path = ? AND status = 'ok'
-					 LIMIT 1`,
-				)
-				.get(
-					record.repository_id,
-					record.merge_sha,
-					record.baseline_id,
-					record.conflict_path,
-				);
-			hasPriorOkRegion = row !== undefined;
-		} catch (cause) {
-			return dbErr("db", "append evidence", "Dependency graph check failed", {
-				...keyDetails(record),
-				cause: String(cause),
-			});
-		}
+		// Called only from inside append()'s BEGIN IMMEDIATE transaction, so
+		// any DB exception here propagates to that method's own catch/
+		// ROLLBACK rather than needing its own try/catch.
+		const db = this.handle.db;
+		const priorOkRow = db
+			.prepare(
+				`SELECT 1 FROM evidence_bundle
+				 WHERE repository_id = ? AND merge_sha = ? AND baseline_id = ? AND path = ? AND status = 'ok'
+				 LIMIT 1`,
+			)
+			.get(record.repository_id, record.merge_sha, record.baseline_id, record.conflict_path);
 		// No prior ok region for this file: this is the file's first ok
 		// bundle, so there is nothing to agree with yet — insert as-is,
 		// including the zero-entry case.
-		if (!hasPriorOkRegion) return dbOk(undefined);
+		if (priorOkRow === undefined) return dbOk(undefined);
 
-		let existingDeps: { side: string; dep_path: string }[];
-		try {
-			existingDeps = this.handle.db
-				.prepare(
-					`SELECT side, dep_path FROM evidence_dep
-					 WHERE repository_id = ? AND merge_sha = ? AND baseline_id = ? AND path = ?`,
-				)
-				.all(
-					record.repository_id,
-					record.merge_sha,
-					record.baseline_id,
-					record.conflict_path,
-				) as { side: string; dep_path: string }[];
-		} catch (cause) {
-			return dbErr("db", "append evidence", "Dependency graph check failed", {
-				...keyDetails(record),
-				cause: String(cause),
-			});
-		}
+		const existingDeps = db
+			.prepare(
+				`SELECT side, dep_path FROM evidence_dep
+				 WHERE repository_id = ? AND merge_sha = ? AND baseline_id = ? AND path = ?`,
+			)
+			.all(
+				record.repository_id,
+				record.merge_sha,
+				record.baseline_id,
+				record.conflict_path,
+			) as { side: string; dep_path: string }[];
 
 		const existingSet = new Set(existingDeps.map((d) => `${d.side}:${d.dep_path}`));
 		const incomingSet = new Set(record.bundle.dependency_graph);
@@ -265,9 +265,17 @@ export class EvidenceStore {
 			);
 
 		// Per-file, not per-region: two regions of the same file share these
-		// rows, so INSERT OR IGNORE dedups across the regions of that file.
+		// rows. A plain INSERT (not OR IGNORE) is used deliberately, mirroring
+		// insertRepository/insertBaseline in corpus-store.ts: INSERT OR IGNORE
+		// swallows a CHECK-constraint violation exactly like it swallows a
+		// uniqueness conflict, so a future producer bug that emitted a bad
+		// `side` value would vanish silently instead of being rejected —
+		// exactly the silent-omission failure this store exists to prevent.
+		// Catching only the PK-conflict code and re-throwing everything else
+		// keeps the legitimate cross-region dedup working while still letting
+		// a genuine CHECK violation surface as a real, typed error.
 		const insertDep = this.handle.db.prepare(
-			`INSERT OR IGNORE INTO evidence_dep
+			`INSERT INTO evidence_dep
 			 (repository_id, merge_sha, baseline_id, path, side, dep_path)
 			 VALUES (?, ?, ?, ?, ?, ?)`,
 		);
@@ -277,27 +285,26 @@ export class EvidenceStore {
 			const sep = entry.indexOf(":");
 			const side = entry.slice(0, sep);
 			const depPath = entry.slice(sep + 1);
-			// Defense in depth: DependencyGraphSchema's regex already rejects
-			// any entry that doesn't start with "ours:"/"theirs:" before
-			// append() gets this far, but evidence_dep's CHECK (side IN
-			// ('ours','theirs')) would otherwise be silently swallowed by
-			// INSERT OR IGNORE rather than rejecting a bad value on a future
-			// producer bug — exactly the silent-omission failure this store
-			// exists to prevent. Throwing here still surfaces as a typed
-			// dbErr via append()'s catch.
-			if (side !== "ours" && side !== "theirs") {
-				throw new Error(
-					`Invalid dependency_graph side ${JSON.stringify(side)} in entry ${JSON.stringify(entry)}`,
+			try {
+				insertDep.run(
+					key.repository_id,
+					key.merge_sha,
+					key.baseline_id,
+					key.conflict_path,
+					side,
+					depPath,
 				);
+			} catch (cause) {
+				if ((cause as { errcode?: number }).errcode !== SQLITE_CONSTRAINT_PRIMARYKEY) {
+					throw cause;
+				}
+				// evidence_dep's PRIMARY KEY (repository_id, merge_sha,
+				// baseline_id, path, side, dep_path) covers every column the
+				// table has — unlike repository/baseline, there is no
+				// non-key content left that could disagree, so a PK conflict
+				// here is always a byte-identical duplicate. No content
+				// verification needed.
 			}
-			insertDep.run(
-				key.repository_id,
-				key.merge_sha,
-				key.baseline_id,
-				key.conflict_path,
-				side,
-				depPath,
-			);
 		}
 	}
 

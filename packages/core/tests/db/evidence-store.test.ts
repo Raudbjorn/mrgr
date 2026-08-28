@@ -1,5 +1,7 @@
+import { execFile } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
@@ -8,6 +10,55 @@ import { EvidenceStore } from "../../src/db/evidence-store.js";
 import { closeDb, openDb, type DbHandle } from "../../src/db/open.js";
 import { PATH_LEVEL_ORDINAL, evidenceKey, type EvidenceRecord } from "../../src/m1a/sidecar.js";
 import type { CorpusRecordV2 } from "../../src/evaluation/types.js";
+
+// Package root: `tests/db/` is two levels below it. Spawned as an explicit
+// cwd so the concurrency worker does not depend on the caller's cwd — mirrors
+// tests/db/concurrency.test.ts.
+const PACKAGE_ROOT = fileURLToPath(new URL("../..", import.meta.url));
+const EVIDENCE_STORE_WORKER = fileURLToPath(
+	new URL("./helpers/evidence-store-worker.ts", import.meta.url),
+);
+
+type WorkerAppendResult =
+	| { ok: true }
+	| { ok: false; error: { kind: string; details?: Record<string, unknown> } };
+
+function runEvidenceStoreWorker(
+	ordinal: number,
+	dependencyGraph: string[],
+	barrierAtEpochMs: number,
+): Promise<WorkerAppendResult> {
+	return new Promise((resolve, reject) => {
+		execFile(
+			"pnpm",
+			[
+				"exec",
+				"tsx",
+				EVIDENCE_STORE_WORKER,
+				join(dir, "mrgr.db"),
+				String(ordinal),
+				JSON.stringify(dependencyGraph),
+				String(barrierAtEpochMs),
+			],
+			{ cwd: PACKAGE_ROOT },
+			(error, stdout, stderr) => {
+				if (error) {
+					reject(new Error(`${error.message}\nstderr: ${stderr}`));
+					return;
+				}
+				try {
+					resolve(JSON.parse(stdout) as WorkerAppendResult);
+				} catch (cause) {
+					reject(
+						new Error(
+							`worker did not print valid JSON: ${String(cause)}\nstdout: ${stdout}\nstderr: ${stderr}`,
+						),
+					);
+				}
+			},
+		);
+	});
+}
 
 const OID_A = "a".repeat(40);
 const OID_B = "b".repeat(40);
@@ -275,8 +326,13 @@ describe("EvidenceStore", () => {
 		expect(evidenceStore.append(region1).ok).toBe(true);
 		expect(evidenceStore.append(region2).ok).toBe(true);
 
-		// One row per (side, dep_path) pair, not per region: 2 entries shared
-		// across both regions means 2 rows, not 4.
+		// evidence_dep's PRIMARY KEY (repository_id, merge_sha, baseline_id,
+		// path, side, dep_path) has no ordinal column, so two regions
+		// inserting the identical (side, dep_path) pair converge on the same
+		// 2 rows structurally — that convergence is guaranteed by the schema
+		// regardless of application logic, not proof of a merge our code
+		// performed. What this assertion actually checks is that neither
+		// region's own round trip below is corrupted by the other's insert.
 		const depRows = handle.db
 			.prepare(
 				"SELECT side, dep_path FROM evidence_dep WHERE path = 'src/a.ts' ORDER BY side, dep_path",
@@ -484,4 +540,61 @@ describe("EvidenceStore", () => {
 		expect(got.ok).toBe(true);
 		if (got.ok) expect(got.value).toBeNull();
 	});
+});
+
+// Closes the TOCTOU gap fix round 3 found: the dependency-graph agreement
+// check ran before append()'s transaction opened, so two concurrent
+// connections appending different regions of the same file could each read
+// "no conflicting sibling yet" and both proceed. This drives two separate
+// OS processes at EvidenceStore.append itself (not raw SQL), mirroring
+// concurrency.test.ts's LedgerStore.append regression.
+describe("EvidenceStore concurrent append (dependency_graph race)", () => {
+	it(
+		"two concurrent appends of different regions with DIFFERING dependency graphs: exactly one succeeds, never both",
+		async () => {
+			const graphA = ["ours:src/a.ts", "theirs:src/b.ts"];
+			const graphB = ["ours:src/a.ts", "theirs:src/c.ts"];
+
+			// Both workers spin-wait to this shared deadline before calling
+			// append(), so their append() calls land within microseconds of
+			// each other regardless of `pnpm exec tsx` process-spawn jitter —
+			// see evidence-store-worker.ts for why that jitter otherwise
+			// swamps the (much smaller) window this test targets.
+			const barrierAtEpochMs = Date.now() + 1000;
+			const [resultA, resultB] = await Promise.all([
+				runEvidenceStoreWorker(1, graphA, barrierAtEpochMs),
+				runEvidenceStoreWorker(2, graphB, barrierAtEpochMs),
+			]);
+			const results = [resultA, resultB];
+
+			// Deterministic regardless of which worker wins the BEGIN IMMEDIATE
+			// race: exactly one must succeed and exactly one must be rejected
+			// for disagreeing with the sibling that got there first. Only WHICH
+			// one wins is nondeterministic; this property is not.
+			const succeeded = results.filter((r) => r.ok);
+			const failed = results.filter((r): r is Extract<WorkerAppendResult, { ok: false }> => !r.ok);
+			expect(succeeded).toHaveLength(1);
+			expect(failed).toHaveLength(1);
+			expect(failed[0]!.error.kind).toBe("db");
+			expect(failed[0]!.error.details?.reason).toBe("dependency-graph-conflict");
+
+			// The store holds exactly one coherent graph for the file — whichever
+			// region actually won — never a mix of the two.
+			const depRows = handle.db
+				.prepare(
+					"SELECT side, dep_path FROM evidence_dep WHERE path = 'src/a.ts' ORDER BY side, dep_path",
+				)
+				.all() as { side: string; dep_path: string }[];
+			const storedGraph = new Set(depRows.map((d) => `${d.side}:${d.dep_path}`));
+			const matchesGraph = (candidate: string[]) => {
+				const candidateSet = new Set(candidate);
+				return (
+					storedGraph.size === candidateSet.size &&
+					[...storedGraph].every((entry) => candidateSet.has(entry))
+				);
+			};
+			expect(matchesGraph(graphA) !== matchesGraph(graphB)).toBe(true); // exactly one matches
+		},
+		20_000,
+	);
 });
