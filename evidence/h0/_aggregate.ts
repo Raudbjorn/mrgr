@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 
 interface H0Record {
 	triple_id: string;
-	arm: "hunk-only" | "selected" | "full-bundle" | `baseline-${"keep_ours" | "keep_theirs" | "compose"}`;
+	arm: "hunk-only" | "selected" | "full-bundle" | "baseline-keep_ours" | "baseline-keep_theirs" | "baseline-compose";
 	model: { name: string; sha: string };
 	run: number;
 	input_tokens: number;
@@ -33,6 +33,7 @@ interface ArmAggregate {
 	halt: number;
 	schema_invalid: number;
 	fabricated_evidence_ids: number;
+	emitted_source_tags: number;
 	tokens_input: number;
 	tokens_output: number;
 	tokens_total: number;
@@ -87,6 +88,7 @@ const aggregate = (records: H0Record[], resolutions: Map<string, string>, triple
 	let halt = 0;
 	let schema_invalid = 0;
 	let fabricated_evidence_ids = 0;
+	let emitted_source_tags = 0;
 	let tokens_input = 0;
 	let tokens_output = 0;
 
@@ -95,7 +97,17 @@ const aggregate = (records: H0Record[], resolutions: Map<string, string>, triple
 			schema_invalid += 1;
 			continue;
 		}
-		if (r.fabricated_ids) fabricated_evidence_ids += 1;
+		// PR-B2 / S3: fabricated means a cited [source:...] tag that does NOT
+		// match any known triple_key. Renamed from the original "any citation
+		// counts as fabricated" interpretation. The field on the record stays.
+		// The aggregate counter records whether at least one of the cited tags
+		// does not match any known triple_key (i.e., it is fabricated).
+		const recordSourceTags = r.evidence_ids_quoted.length;
+		const tags = r.evidence_ids_quoted;
+		const knownTripleKeys = new Set(resolutions.keys());
+		const hasFabricated = tags.some(t => !knownTripleKeys.has(t));
+		if (hasFabricated) fabricated_evidence_ids += 1;
+		emitted_source_tags += recordSourceTags;
 		tokens_input += r.input_tokens;
 		tokens_output += r.output_tokens;
 		if (r.decision === "halt") {
@@ -137,6 +149,7 @@ const aggregate = (records: H0Record[], resolutions: Map<string, string>, triple
 		halt,
 		schema_invalid,
 		fabricated_evidence_ids,
+		emitted_source_tags,
 		tokens_input,
 		tokens_output,
 		tokens_total: tokens_input + tokens_output,
@@ -144,6 +157,54 @@ const aggregate = (records: H0Record[], resolutions: Map<string, string>, triple
 		triples_2of3_agree,
 		triples_1of3_agree,
 	};
+};
+
+// PR-B2 / D4: McNemar paired test on two arms' per-triple correct/wrong
+// vectors. McNemar χ² with continuity correction is the standard
+// statistical test for paired binary outcomes (each triple is one
+// paired observation across the two arms). Returns null on degenerate
+// inputs (e.g. no discordant pairs) to defend against NaN.
+const mcnemar = (armA: H0Record[], armB: H0Record[]): { chi2: number; p: number | null; n_discordant: number } => {
+	const byKeyA = new Map<string, H0Record>();
+	for (const r of armA) byKeyA.set(`${r.triple_id}|${r.run}`, r);
+	let b = 0; // A wrong, B right
+	let c = 0; // A right, B wrong
+	for (const rB of armB) {
+		const rA = byKeyA.get(`${rB.triple_id}|${rB.run}`);
+		if (!rA || !rA.schema_valid || !rB.schema_valid) continue;
+		// Both must have isHistoricalMatch verdicts (compute externally and pass in)
+		const aCorrect = (rA as H0Record & { _correct?: boolean })._correct;
+		const bCorrect = (rB as H0Record & { _correct?: boolean })._correct;
+		if (aCorrect === undefined || bCorrect === undefined) continue;
+		if (aCorrect !== bCorrect) {
+			if (aCorrect) c += 1; else b += 1;
+		}
+	}
+	const n = b + c;
+	if (n === 0) return { chi2: 0, p: null, n_discordant: 0 };
+	// χ² with continuity correction.
+	const numerator = (Math.abs(b - c) - 1) ** 2;
+	const chi2 = numerator / n;
+	// p-value for χ² with 1 df via the standard normal survival function
+	// (Wilson-Hilferty approximation is overkill here; use the exact form).
+	// 1 - Φ(sqrt(chi2)) where Φ is the standard normal CDF.
+	const z = Math.sqrt(chi2);
+	const p = 2 * (1 - normalCdf(z));
+	return { chi2, p: Number.isFinite(p) ? p : null, n_discordant: n };
+};
+// Standard normal CDF via the Abramowitz & Stegun approximation (7.1.26).
+const normalCdf = (x: number): number => {
+	const a1 = 0.254829592;
+	const a2 = -0.284496736;
+	const a3 = 1.421413741;
+	const a4 = -1.453152027;
+	const a5 = 1.061405429;
+	const p = 0.3275911;
+	const sign = x < 0 ? -1 : 1;
+	const ax = Math.abs(x) / Math.sqrt(2);
+	const t = 1.0 / (1.0 + p * ax);
+	const y = 1.0 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * Math.exp(-ax * ax);
+	return 0.5 * (1.0 + sign * y);
 };
 
 const main = () => {
@@ -217,14 +278,34 @@ const main = () => {
 	const hunkOnly = byArm["hunk-only"];
 	const selected = byArm["selected"];
 	const fullBundle = byArm["full-bundle"];
+	// PR-B2 / D5 reachable kill: replace the broken h_w_halt_ratio (which
+	// divides by 0 in every run, making the kill structurally unreachable)
+	// with a denominator that always exists and a condition that always
+	// evaluates. New condition: kill if (a) every model arm is within noise
+	// of the hunk-only baseline AND (b) the best model wrong-fraction is
+	// worse than (or equal to) the trivial compose baseline wrong-fraction.
+	// The second clause is what makes the kill reachable: when trivial
+	// compose outperforms the model, we know model evidence utility is
+	// negative, and we kill the agent-adapter line.
 	const EPSILON = 0.5;
 	let killConditionMet = false;
-	if (hunkOnly && selected && fullBundle) {
-		const h_w_halt_ratio = hunkOnly.halt > 0 ? hunkOnly.wrong / hunkOnly.halt : Infinity;
-		const inNoise =
+	let killReason = "";
+	if (hunkOnly && selected && fullBundle && trivialCeiling["compose"]) {
+		const armsWithinNoise =
 			Math.abs(selected.wrong - hunkOnly.wrong) <= 1 &&
 			Math.abs(fullBundle.wrong - hunkOnly.wrong) <= 1;
-		if (h_w_halt_ratio < 1 + EPSILON && inNoise) killConditionMet = true;
+		const totalTrials = hunkOnly.triples_total;
+		const bestModelWrongFraction = totalTrials > 0
+			? Math.min(hunkOnly.wrong, selected.wrong, fullBundle.wrong) / totalTrials
+			: 1;
+		const composeWrongFraction = totalTrials > 0
+		? trivialCeiling["compose"].wrong / trivialCeiling["compose"].triples
+		: 1;
+		const modelLoses = bestModelWrongFraction >= composeWrongFraction - EPSILON;
+		if (armsWithinNoise && modelLoses) {
+			killConditionMet = true;
+			killReason = `best model wrong-fraction ${bestModelWrongFraction.toFixed(3)} >= trivial-compose ${composeWrongFraction.toFixed(3)}`;
+		}
 	}
 
 	let verdict: "positive" | "null" | "inconclusive";
@@ -252,8 +333,16 @@ const main = () => {
 		model_sha: "69cd7578d77dffc0b17e34bad9ef998d08ae0e20ccceef21bad4e7eb3d8c553b",
 		git_version: "merge-tree --write-tree --messages -z (per-call -c merge.conflictStyle=diff3)",
 		corpus_size: resolutions.size,
-		seed_subsample: 30,
-		repeats: 3,
+		// PR-B2 / S1: 898 lines in triples-*.jsonl dedup to 862 by triple_key
+		// (per ADR 03, triple_key is a content digest; same digest across
+		// different merges collapses). Report both numbers, not just one.
+		triples_total: 898, // line count in triples-*.jsonl
+		triples_unique: resolutions.size, // distinct triple_key count
+		// PR-B2 / S2: read from env (PR-A removed the hardcoded defaults in
+		// the runner; here we read the same env so aggregate.json reflects
+		// the actual subsample used in the run).
+		seed_subsample: Number(process.env.H0_SUBSAMPLE ?? 0),
+		repeats: Number(process.env.H0_REPEATS ?? 0),
 		arms: byArm,
 		cost_analysis: costAnalysis,
 		trivial_ceiling: trivialCeiling,
