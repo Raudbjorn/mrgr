@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { exportDb } from "../../src/db/export.js";
 import { importCorpusJsonl, importEvidenceJsonl } from "../../src/db/import.js";
+import { EvidenceStore } from "../../src/db/evidence-store.js";
 import { closeDb, openDb, type DbHandle } from "../../src/db/open.js";
 
 const FIXTURES_DIR = fileURLToPath(new URL("./fixtures/", import.meta.url));
@@ -64,6 +65,30 @@ describe("importEvidenceJsonl", () => {
 		expect(evidence.ok).toBe(true);
 		if (!evidence.ok) return;
 		expect(evidence.value).toEqual({ imported: 2, skippedDuplicate: 0, failed: 0 });
+	});
+
+	it("keeps a pre-OID record's OID field absent, not null, through the database", async () => {
+		// The fixture predates preimage_*_oid. SQL has one NULL, so the column
+		// cannot itself say whether the OID was unrecorded or the path was
+		// absent; the byte count settles it on read. Reporting null here would
+		// claim the path is missing from a parent that has it.
+		expect((await importCorpusJsonl(handle, CORPUS_FIXTURE)).ok).toBe(true);
+		expect((await importEvidenceJsonl(handle, EVIDENCE_FIXTURE)).ok).toBe(true);
+
+		const store = new EvidenceStore(handle);
+		const listed = store.list();
+		expect(listed.ok).toBe(true);
+		if (!listed.ok) return;
+		const record = listed.value.find((entry) => entry.status === "ok");
+		if (record === undefined || record.status !== "ok") {
+			throw new Error("expected an ok record in the fixture");
+		}
+
+		expect(record.bundle.preimage_ours_bytes).not.toBeNull();
+		expect("preimage_ours_oid" in record.bundle).toBe(false);
+		// The theirs side has no path at all, so its OID is a recorded null.
+		expect(record.bundle.preimage_theirs_bytes).toBeNull();
+		expect(record.bundle.preimage_theirs_oid).toBeNull();
 	});
 
 	it("fails closed on every record when the corpus has not been imported", async () => {

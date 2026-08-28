@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { putBlob } from "../../src/db/blob.js";
 import { main, type CliIo } from "../../src/db/cli.js";
-import { closeDb, openDb } from "../../src/db/open.js";
+import { closeDb, openDb, SCHEMA_VERSION_STRING } from "../../src/db/open.js";
 
 const FIXTURES_DIR = join(dirname(fileURLToPath(import.meta.url)), "fixtures");
 const LEGACY_CORPUS = join(FIXTURES_DIR, "legacy-corpus.jsonl");
@@ -97,7 +97,7 @@ describe("mrgr-db export", () => {
 			schema_version: string;
 			tables: Record<string, { rows: number }>;
 		};
-		expect(manifest.schema_version).toBe("mrgr-db/1");
+		expect(manifest.schema_version).toBe(SCHEMA_VERSION_STRING);
 		for (const table of TABLE_NAMES) {
 			expect(existsSync(join(outDir, `${table}.jsonl`))).toBe(true);
 		}

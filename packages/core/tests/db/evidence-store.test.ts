@@ -166,6 +166,8 @@ function okRecord(): OkEvidenceRecord {
 			preimage_theirs: null,
 			preimage_ours_bytes: Buffer.byteLength("héllo wörld\n", "utf8"),
 			preimage_theirs_bytes: null,
+			preimage_ours_oid: OID_B,
+			preimage_theirs_oid: null,
 			preimage_ours_truncated: false,
 			preimage_theirs_truncated: false,
 			dependency_graph: ["ours:src/a.ts", "theirs:src/b.ts"],
@@ -261,6 +263,36 @@ describe("EvidenceStore", () => {
 			record.conflict_ordinal,
 		);
 		expect(got.ok).toBe(true);
+		if (got.ok) expect(got.value).toEqual(record);
+	});
+
+	it("round-trips a referenced bundle: preimage content dropped, OID kept", () => {
+		// The form a large committed artifact takes — the bytes are recoverable
+		// from the repository with `git cat-file blob <oid>`, so the record
+		// carries the reference instead. The store must be able to hold it, or
+		// the artifact cannot be imported back.
+		const base = okRecord();
+		const record: OkEvidenceRecord = {
+			...base,
+			bundle: {
+				...base.bundle,
+				preimage_ours: null,
+				// bytes and OID stay: the side HAS the path, the content is
+				// simply not carried here. Null content with a null OID would
+				// instead mean the path is absent from that parent.
+				preimage_ours_bytes: base.bundle.preimage_ours_bytes,
+				preimage_ours_oid: OID_B,
+			},
+		};
+		expect(evidenceStore.append(record).ok).toBe(true);
+		const got = evidenceStore.get(
+			record.repository_id,
+			record.merge_sha,
+			record.baseline_id,
+			record.conflict_path,
+			record.conflict_ordinal,
+		);
+		expect(got.ok, got.ok ? "" : JSON.stringify(got.error)).toBe(true);
 		if (got.ok) expect(got.value).toEqual(record);
 	});
 

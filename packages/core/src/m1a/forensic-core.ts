@@ -53,6 +53,8 @@ interface Sized {
 	/** Byte length of the original, before any truncation. */
 	bytes: number;
 	truncated: boolean;
+	/** Git object name of the blob these bytes came from. */
+	oid: string;
 }
 
 /**
@@ -62,7 +64,10 @@ interface Sized {
  * code units. For any non-ASCII input that is neither a byte count nor a
  * character count, so a field documented in bytes reported something else.
  */
-function sizeAndTruncate(stdout: string | Buffer, maxBytes?: number): Sized {
+function sizeAndTruncate(
+	stdout: string | Buffer,
+	maxBytes?: number,
+): Omit<Sized, "oid"> {
 	// Size the ORIGINAL bytes Git produced. Decoding to a string and
 	// re-encoding does not round-trip for a blob that is not valid UTF-8, so
 	// the recorded size would describe replacement characters, not the file.
@@ -116,6 +121,38 @@ type PreimageFetch =
 	| { ok: false; error: ToolError };
 
 /**
+ * The blob's object name, so a consumer can recover the exact bytes with
+ * `git cat-file blob <oid>` without this record carrying them.
+ *
+ * Resolved rather than computed: hashing the decoded string would not
+ * round-trip for a non-UTF-8 blob, and Git's answer is the one that has to
+ * match for recovery to work.
+ */
+async function resolveBlobOid(
+	gitPath: string,
+	parent: string,
+	path: string,
+): Promise<Result<string>> {
+	const operation = `resolveBlobOid(${parent}:${path})`;
+	const result = await runGit(gitPath, ["rev-parse", `${parent}:${path}`]);
+	if (!result.ok) {
+		return propagate(
+			toolError(result.error.kind, operation, result.error.message, result.error.details),
+		);
+	}
+	const oid = decodeStdout(result.value.stdout).trim();
+	if (!/^[0-9a-f]{40}$|^[0-9a-f]{64}$/.test(oid)) {
+		return err(
+			"git",
+			operation,
+			"git rev-parse did not emit an object name",
+			{ stdout_head: oid.slice(0, 40) },
+		);
+	}
+	return ok(oid);
+}
+
+/**
  * Fetch one parent's version of the file.
  *
  * Returns `null` when the revision exists but does not contain the path. Any
@@ -146,9 +183,19 @@ async function fetchPreimage(
 		};
 	}
 	if (result.value.exitCode === 0) {
+		const oid = await resolveBlobOid(gitPath, parent, path);
+		if (!oid.ok) {
+			return {
+				ok: false,
+				error: toolError(oid.error.kind, operation, oid.error.message, oid.error.details),
+			};
+		}
 		return {
 			ok: true,
-			value: sizeAndTruncate(result.value.stdout, options.maxBytes),
+			value: {
+				...sizeAndTruncate(result.value.stdout, options.maxBytes),
+				oid: oid.value,
+			},
 		};
 	}
 
@@ -500,6 +547,8 @@ export async function extractEvidenceBundles(
 			preimage_theirs: preimageTheirs.value?.content ?? null,
 			preimage_ours_bytes: preimageOurs.value?.bytes ?? null,
 			preimage_theirs_bytes: preimageTheirs.value?.bytes ?? null,
+			preimage_ours_oid: preimageOurs.value?.oid ?? null,
+			preimage_theirs_oid: preimageTheirs.value?.oid ?? null,
 			preimage_ours_truncated: preimageOurs.value?.truncated ?? false,
 			preimage_theirs_truncated: preimageTheirs.value?.truncated ?? false,
 			dependency_graph: dependencyGraph.entries,

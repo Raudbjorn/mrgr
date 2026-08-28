@@ -57,14 +57,80 @@ describe("EvidenceBundleSchema", () => {
 		preimage_theirs: null,
 		preimage_ours_bytes: null,
 		preimage_theirs_bytes: null,
+		preimage_ours_oid: null,
+		preimage_theirs_oid: null,
 		preimage_ours_truncated: false,
 		preimage_theirs_truncated: false,
 		dependency_graph: ["ours:Makefile.am", "theirs:Makefile.am"],
 		dependency_graph_status: "derived",
 	};
 
+	const OID = "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391";
+
 	it("accepts the canonical shape", () => {
 		expect(EvidenceBundleSchema.safeParse(canonical).success).toBe(true);
+	});
+
+	it("keeps the OID when the preimage content is dropped", () => {
+		// The referenced form: an artifact too large to commit stores the blob
+		// OID instead of the bytes. The blob is recoverable from the public
+		// repository, so the evidence stays checkable at a fraction of the
+		// size. Distinguishable from an absent path only because the OID
+		// survives — hence this field carries the distinction, not a flag.
+		const referenced = {
+			...canonical,
+			preimage_ours: null,
+			preimage_ours_bytes: 12,
+			preimage_ours_oid: OID,
+		};
+		const parsed = EvidenceBundleSchema.safeParse(referenced);
+		expect(parsed.success).toBe(true);
+		expect(parsed.data?.preimage_ours_oid).toBe(OID);
+	});
+
+	it("accepts a bundle written before the OID field existed", () => {
+		// Every sidecar written before this field was added has a byte count
+		// and no OID. Those records are still true; the OID is simply not
+		// recorded in them. An ABSENT field means "never recorded", which is a
+		// different fact from null ("the path is absent from that parent"), so
+		// legacy evidence stays readable without claiming an OID it never had.
+		const { preimage_ours_oid, preimage_theirs_oid, ...legacy } = {
+			...canonical,
+			preimage_ours: "header\nours\nfooter\n",
+			preimage_ours_bytes: 19,
+		};
+		expect(EvidenceBundleSchema.safeParse(legacy).success).toBe(true);
+	});
+
+	it("rejects an OID on a side that reports no byte count", () => {
+		// A null byte count means the path is absent from that parent, and an
+		// absent path has no blob. Allowing both would make the referenced
+		// form indistinguishable from add/add evidence.
+		const parsed = EvidenceBundleSchema.safeParse({
+			...canonical,
+			preimage_ours_oid: OID,
+			preimage_ours_bytes: null,
+		});
+		expect(parsed.success).toBe(false);
+	});
+
+	it("rejects a byte count on a side that reports no OID", () => {
+		const parsed = EvidenceBundleSchema.safeParse({
+			...canonical,
+			preimage_ours_oid: null,
+			preimage_ours_bytes: 12,
+		});
+		expect(parsed.success).toBe(false);
+	});
+
+	it("rejects an OID that is not a Git object name", () => {
+		expect(
+			EvidenceBundleSchema.safeParse({
+				...canonical,
+				preimage_ours_oid: "not-an-oid",
+				preimage_ours_bytes: 12,
+			}).success,
+		).toBe(false);
 	});
 
 	it("rejects a dependency_graph entry that is not a side-tagged path", () => {
@@ -157,6 +223,40 @@ describe("extractEvidenceBundles — preimage semantics", () => {
 
 		expect(bundle.preimage_ours_truncated).toBe(false);
 		expect(bundle.preimage_ours_bytes).toBe(Buffer.byteLength(oursFile, "utf8"));
+	});
+
+	it("records the blob OID Git resolves for each side", async () => {
+		const repository = await newRepository();
+		const oursFile = "header\nours choice\nfooter\n";
+		const theirsFile = "header\ntheirs choice\nfooter\n";
+		const { ours, theirs } = await divergent(
+			repository,
+			{ [CONFLICT_PATH]: "header\nbase choice\nfooter\n" },
+			{ [CONFLICT_PATH]: oursFile },
+			{ [CONFLICT_PATH]: theirsFile },
+		);
+
+		const result = await extractEvidenceBundles(repository, ours, theirs, CONFLICT_PATH);
+		expect(result.ok, result.ok ? "" : JSON.stringify(result.error)).toBe(true);
+		if (!result.ok) return;
+		const bundle = result.value[0];
+		if (!bundle) throw new Error("expected a bundle");
+
+		// Compared against Git's own answer, not against a digest this code
+		// computed — the point of the field is that a third party can run
+		// `git cat-file blob <oid>` and get these exact bytes back.
+		const expectedOurs = await runGit(repository, ["rev-parse", `${ours}:${CONFLICT_PATH}`]);
+		const expectedTheirs = await runGit(repository, [
+			"rev-parse",
+			`${theirs}:${CONFLICT_PATH}`,
+		]);
+		expect(expectedOurs.ok && expectedTheirs.ok).toBe(true);
+		if (!expectedOurs.ok || !expectedTheirs.ok) return;
+
+		expect(bundle.preimage_ours_oid).toBe(expectedOurs.value.stdout.toString().trim());
+		expect(bundle.preimage_theirs_oid).toBe(expectedTheirs.value.stdout.toString().trim());
+		// Each side gets its own OID; the two files differ, so the OIDs must.
+		expect(bundle.preimage_ours_oid).not.toBe(bundle.preimage_theirs_oid);
 	});
 
 	it("counts bytes, not UTF-16 code units", async () => {
@@ -271,6 +371,11 @@ describe("extractEvidenceBundles — preimage semantics", () => {
 		if (result.ok) {
 			const bundle = result.value[0];
 			expect(bundle?.preimage_ours).toBeNull();
+			// An absent path has no blob, so no OID. This is what keeps the
+			// referenced form (content dropped, OID kept) distinguishable from
+			// evidence that the path was never there.
+			expect(bundle?.preimage_ours_oid).toBeNull();
+			expect(bundle?.preimage_theirs_oid).not.toBeNull();
 		} else {
 			expect(result.error.kind).toBe("parse");
 			expect(result.error.message).toContain("No diff3 conflict markers");

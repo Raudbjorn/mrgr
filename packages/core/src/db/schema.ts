@@ -133,6 +133,12 @@ CREATE TABLE evidence_bundle (
   preimage_theirs_sha  TEXT REFERENCES blob(sha256),
   preimage_ours_bytes   INTEGER,
   preimage_theirs_bytes INTEGER,
+  -- Git object name of the parent-side blob. Distinct from preimage_*_sha:
+  -- that addresses a row in this database's own blob store, this addresses
+  -- the blob in the source repository. Keeping it lets an export drop the
+  -- content and stay recoverable with: git cat-file blob OID
+  preimage_ours_oid    TEXT,
+  preimage_theirs_oid  TEXT,
   preimage_ours_truncated   INTEGER,
   preimage_theirs_truncated INTEGER,
   dependency_graph_status TEXT,
@@ -149,8 +155,22 @@ CREATE TABLE evidence_bundle (
     AND dependency_graph_status IS NOT NULL
     AND preimage_ours_truncated IS NOT NULL
     AND preimage_theirs_truncated IS NOT NULL)),
-  CHECK ((preimage_ours_sha   IS NULL) = (preimage_ours_bytes   IS NULL)),
-  CHECK ((preimage_theirs_sha IS NULL) = (preimage_theirs_bytes IS NULL)),
+  -- Stored content implies a size. The converse does NOT hold: a referenced
+  -- record keeps the size and the OID while dropping the bytes, so the
+  -- earlier (sha IS NULL) = (bytes IS NULL) biconditional is gone.
+  --
+  -- A null oid column means "not recorded" -- either a legacy row or a side
+  -- with no path -- and cannot be constrained further here: SQL has one null,
+  -- while the record schema distinguishes absent from null. That distinction
+  -- is reconstructed on read from the byte count.
+  CHECK (preimage_ours_sha   IS NULL OR preimage_ours_bytes   IS NOT NULL),
+  CHECK (preimage_theirs_sha IS NULL OR preimage_theirs_bytes IS NOT NULL),
+  CHECK (preimage_ours_oid IS NULL
+    OR preimage_ours_oid GLOB '[0-9a-f]*'
+    AND (length(preimage_ours_oid) = 40 OR length(preimage_ours_oid) = 64)),
+  CHECK (preimage_theirs_oid IS NULL
+    OR preimage_theirs_oid GLOB '[0-9a-f]*'
+    AND (length(preimage_theirs_oid) = 40 OR length(preimage_theirs_oid) = 64)),
   PRIMARY KEY (repository_id, merge_sha, baseline_id, path, ordinal),
   FOREIGN KEY (repository_id, merge_sha, baseline_id, path)
     REFERENCES conflict_path(repository_id, merge_sha, baseline_id, path)

@@ -77,6 +77,8 @@ const result = store.append({
 		preimage_theirs: null,
 		preimage_ours_bytes: null,
 		preimage_theirs_bytes: null,
+			preimage_ours_oid: null,
+			preimage_theirs_oid: null,
 		preimage_ours_truncated: false,
 		preimage_theirs_truncated: false,
 		dependency_graph: dependencyGraph,

@@ -5,8 +5,8 @@ import { SCHEMA_SQL } from "./schema.js";
 import { dbErr, dbOk, type DbResult } from "./result.js";
 
 export const APPLICATION_ID = 0x6d726772; // "mrgr"
-export const USER_VERSION = 1;
-export const SCHEMA_VERSION_STRING = "mrgr-db/1";
+export const USER_VERSION = 2;
+export const SCHEMA_VERSION_STRING = "mrgr-db/2";
 
 export interface DbHandle {
 	db: DatabaseSync;
