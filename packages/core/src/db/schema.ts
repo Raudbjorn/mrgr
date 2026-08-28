@@ -230,4 +230,33 @@ CREATE TABLE run_result (
   CHECK (decision != 'halt' OR halt_reason IS NOT NULL),
   PRIMARY KEY (run_id, triple_id, run_index)
 ) STRICT;
+
+CREATE TABLE IF NOT EXISTS llama_run_stats (
+  run_id            TEXT PRIMARY KEY REFERENCES run(run_id),
+  harness           TEXT NOT NULL CHECK (harness IN
+                          ('llama-bench','test-backend-ops','ppl-probe','manual')),
+  backend           TEXT NOT NULL CHECK (backend IN
+                          ('sycl','openvino','vulkan','cpu')),
+  model_quant       TEXT NOT NULL,
+  context_len       INTEGER NOT NULL CHECK (context_len >= 0),
+  n_parallel        INTEGER NOT NULL CHECK (n_parallel >= 0),
+  kv_type           TEXT CHECK (kv_type IS NULL OR kv_type IN
+                          ('f16','q8_0','turbo2','turbo3','turbo4_0')),
+  flash_attn        INTEGER NOT NULL CHECK (flash_attn IN (0,1)),
+  rng_seed          INTEGER NOT NULL,
+  harness_decision  TEXT CHECK (harness_decision IS NULL OR harness_decision IN
+                          ('clean','conflicted','unsupported-custom-driver','error')),
+  prefill_ms        INTEGER CHECK (prefill_ms IS NULL OR prefill_ms >= 0),
+  decode_ms_total   INTEGER CHECK (decode_ms_total IS NULL OR decode_ms_total >= 0),
+  decode_tokens_total INTEGER CHECK (decode_tokens_total IS NULL OR decode_tokens_total >= 0),
+  ttft_ms           INTEGER CHECK (ttft_ms IS NULL OR ttft_ms >= 0),
+  g_tok_s           REAL    CHECK (g_tok_s IS NULL OR g_tok_s >= 0),
+  ppl               REAL    CHECK (ppl IS NULL OR ppl >= 0),
+  exit_code         INTEGER NOT NULL,
+  gate_fail_count   INTEGER NOT NULL CHECK (gate_fail_count >= 0),
+  binary_sha256     TEXT NOT NULL,
+  spv_sha256_json   TEXT NOT NULL DEFAULT '[]',
+  metrics_json      TEXT NOT NULL,
+  recorded_at       TEXT NOT NULL
+) STRICT;
 `;
