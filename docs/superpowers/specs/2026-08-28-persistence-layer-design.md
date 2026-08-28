@@ -417,10 +417,19 @@ while no mrgr process is writing**. Concurrent tursodb writes are unsupported;
 - A `manifest.json` records per-file sha256 + row counts + `schema_version` +
   the source DB's `meta`.
 - **Binding property: two exports of the same logical content produce
-  byte-identical content-table files**, regardless of insertion order, vacuum
-  state, or page layout. This is the artifact the plan's "three runs
-  byte-identical JSON" gates bind to; the `.db` file itself is never a digest
-  target.
+  byte-identical content-table files**, independent of vacuum state, page
+  layout, and — for every table ordered by a content key or an explicit
+  position column — insertion order. This is the artifact the plan's "three
+  runs byte-identical JSON" gates bind to; the `.db` file itself is never a
+  digest target.
+- **`ledger` is ordered by `seq`, which records append order, and that is
+  deliberate.** Two databases holding the same ledger records appended in
+  different orders are not the same logical content: for an audit trail, the
+  sequence in which decisions were recorded is itself evidence. The record
+  `id`s are content-derived and therefore identical across such databases, but
+  their `seq` pairing differs and the export reflects that faithfully. Verified
+  by probe: reversing the append order of two ledger records changes
+  `ledger.jsonl` and nothing else.
 - **Excluded from that property: `meta.jsonl` and `manifest.json`.** `meta`
   records when and by what this particular database was created, and the
   manifest embeds it. Two databases holding identical content but created at
