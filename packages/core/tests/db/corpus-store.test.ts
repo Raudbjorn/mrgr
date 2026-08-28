@@ -169,4 +169,28 @@ describe("CorpusStore", () => {
 		expect(got.ok).toBe(true);
 		if (got.ok) expect(got.value).toEqual(record);
 	});
+
+	it("rejects a repository row that violates the remote/local column pairing instead of silently dropping it", () => {
+		// Bypasses RepositoryRef's discriminated union on purpose: this proves
+		// the SQL layer's CHECK constraint rejects a malformed row rather than
+		// the type system preventing one from being constructed. Fields are
+		// explicit null (not merely absent) so the store binds real SQL NULLs
+		// instead of failing earlier on an undefined bind parameter.
+		const record: CorpusRecordV2 = {
+			...conflictedRecord(),
+			repository: {
+				kind: "remote",
+				id: "remote:bad",
+				host: null,
+				slug: null,
+				cacheKey: null,
+			} as unknown as CorpusRecordV2["repository"],
+		};
+		const result = store.append(record);
+		expect(result.ok).toBe(false);
+		if (!result.ok) {
+			expect(result.error.kind).toBe("db");
+			expect(JSON.stringify(result.error.details)).toMatch(/CHECK constraint failed/i);
+		}
+	});
 });

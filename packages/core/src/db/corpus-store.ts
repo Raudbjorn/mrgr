@@ -9,6 +9,9 @@ import type {
 } from "../evaluation/types.js";
 import type { ToolError } from "../evaluation/result.js";
 
+/** SQLite result code for a PRIMARY KEY (or other UNIQUE) constraint violation. */
+const SQLITE_CONSTRAINT_PRIMARYKEY = 1555;
+
 /**
  * Corpus persistence over mrgr-db/1.
  *
@@ -29,8 +32,21 @@ export class CorpusStore {
 		);
 		if (!existing.ok) return existing;
 		if (existing.value !== null) {
-			if (canonicalJson(existing.value) === canonicalJson(record)) {
-				return dbOk(undefined); // idempotent re-append
+			// canonicalJson throws TypeError on a non-JSON-serializable value;
+			// every other call site in this file sits inside a try/catch that
+			// converts to dbErr, so this one must too rather than letting a
+			// thrown error cross the module boundary.
+			try {
+				if (canonicalJson(existing.value) === canonicalJson(record)) {
+					return dbOk(undefined); // idempotent re-append
+				}
+			} catch (cause) {
+				return dbErr("db", "append corpus record", "Content comparison failed", {
+					repository_id: record.repository.id,
+					merge_sha: record.merge.sha,
+					baseline_id: record.baselineId,
+					cause: String(cause),
+				});
 			}
 			return dbErr("db", "append corpus record", "Duplicate key with different content", {
 				repository_id: record.repository.id,
@@ -88,40 +104,118 @@ export class CorpusStore {
 		}
 	}
 
+	/**
+	 * repository is a shared dimension table keyed by id, so a PK conflict on
+	 * re-append is the normal path (many corpus records share one
+	 * repository), not an edge case. This is a plain INSERT rather than
+	 * INSERT OR IGNORE: the table's remote/local CHECK constraint pairs
+	 * host/slug/cache_key against absolute_path, and IGNORE swallows a CHECK
+	 * failure exactly like it swallows a uniqueness conflict — a malformed
+	 * row would be silently dropped instead of rejected, surfacing later
+	 * only as a confusing FOREIGN KEY error from corpus_record. Catching the
+	 * PK-conflict code specifically and comparing content keeps the
+	 * legitimate shared-row case idempotent while still letting a genuine
+	 * CHECK violation (or anything else) propagate as an error.
+	 */
 	private insertRepository(repository: RepositoryRef): void {
-		this.handle.db
-			.prepare(
-				`INSERT OR IGNORE INTO repository
+		const db = this.handle.db;
+		const host = repository.kind === "remote" ? repository.host : null;
+		const slug = repository.kind === "remote" ? repository.slug : null;
+		const cacheKey = repository.kind === "remote" ? repository.cacheKey : null;
+		const absolutePath = repository.kind === "local" ? repository.absolutePath : null;
+		try {
+			db.prepare(
+				`INSERT INTO repository
 				 (id, kind, host, slug, cache_key, absolute_path)
 				 VALUES (?, ?, ?, ?, ?, ?)`,
-			)
-			.run(
-				repository.id,
-				repository.kind,
-				repository.kind === "remote" ? repository.host : null,
-				repository.kind === "remote" ? repository.slug : null,
-				repository.kind === "remote" ? repository.cacheKey : null,
-				repository.kind === "local" ? repository.absolutePath : null,
-			);
+			).run(repository.id, repository.kind, host, slug, cacheKey, absolutePath);
+		} catch (cause) {
+			if ((cause as { errcode?: number }).errcode !== SQLITE_CONSTRAINT_PRIMARYKEY) {
+				throw cause;
+			}
+			const existing = db
+				.prepare(
+					"SELECT kind, host, slug, cache_key, absolute_path FROM repository WHERE id = ?",
+				)
+				.get(repository.id) as
+				| {
+						kind: string;
+						host: string | null;
+						slug: string | null;
+						cache_key: string | null;
+						absolute_path: string | null;
+				  }
+				| undefined;
+			const identical =
+				existing !== undefined &&
+				existing.kind === repository.kind &&
+				existing.host === host &&
+				existing.slug === slug &&
+				existing.cache_key === cacheKey &&
+				existing.absolute_path === absolutePath;
+			if (!identical) {
+				throw new Error(`repository ${repository.id} already exists with different content`);
+			}
+		}
 	}
 
+	/**
+	 * baseline is likewise a shared dimension table (many merges can replay
+	 * against the same baseline), so the same plain-INSERT-plus-PK-conflict
+	 * treatment applies as insertRepository, for the same reason: IGNORE
+	 * would silently drop a row that fails baseline_id's length CHECK
+	 * instead of rejecting it.
+	 */
 	private insertBaseline(record: CorpusRecordV2): void {
-		this.handle.db
-			.prepare(
-				`INSERT OR IGNORE INTO baseline
+		const db = this.handle.db;
+		const replayCommand = canonicalJson(record.replayProvenance);
+		try {
+			db.prepare(
+				`INSERT INTO baseline
 				 (baseline_id, git_version, algorithm, strategy, environment_policy,
 				  normalization_version, replay_command)
 				 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-			)
-			.run(
+			).run(
 				record.baselineId,
 				record.replayProvenance.gitVersion,
 				record.replayProvenance.algorithm,
 				record.replayProvenance.strategy,
 				record.replayProvenance.environmentPolicy,
 				record.replayProvenance.normalizationVersion,
-				canonicalJson(record.replayProvenance),
+				replayCommand,
 			);
+		} catch (cause) {
+			if ((cause as { errcode?: number }).errcode !== SQLITE_CONSTRAINT_PRIMARYKEY) {
+				throw cause;
+			}
+			const existing = db
+				.prepare(
+					`SELECT git_version, algorithm, strategy, environment_policy,
+					        normalization_version, replay_command
+					 FROM baseline WHERE baseline_id = ?`,
+				)
+				.get(record.baselineId) as
+				| {
+						git_version: string;
+						algorithm: string;
+						strategy: string;
+						environment_policy: string;
+						normalization_version: string;
+						replay_command: string;
+				  }
+				| undefined;
+			const identical =
+				existing !== undefined &&
+				existing.git_version === record.replayProvenance.gitVersion &&
+				existing.algorithm === record.replayProvenance.algorithm &&
+				existing.strategy === record.replayProvenance.strategy &&
+				existing.environment_policy === record.replayProvenance.environmentPolicy &&
+				existing.normalization_version === record.replayProvenance.normalizationVersion &&
+				existing.replay_command === replayCommand;
+			if (!identical) {
+				throw new Error(`baseline ${record.baselineId} already exists with different content`);
+			}
+		}
 	}
 
 	private insertMergeBases(record: CorpusRecordV2): void {
