@@ -103,6 +103,21 @@ describe("blob store", () => {
 		if (!put.ok) expect(put.error.kind).toBe("db");
 	});
 
+	it("fast path: putting the identical blob twice still returns ok with the same digest, one row", () => {
+		const bytes = new TextEncoder().encode("fast path content");
+		const first = putBlob(handle, bytes);
+		expect(first.ok).toBe(true);
+		if (!first.ok) return;
+		const second = putBlob(handle, bytes);
+		expect(second.ok).toBe(true);
+		if (!second.ok) return;
+		expect(second.value).toBe(first.value);
+		const n = handle.db
+			.prepare("SELECT count(*) AS n FROM blob")
+			.get() as { n: number };
+		expect(n.n).toBe(1);
+	});
+
 	it("reports a missing blob as not-found", () => {
 		const got = getBlob(handle, "0".repeat(64));
 		expect(got.ok).toBe(false);
