@@ -1,10 +1,10 @@
 // evidence/h0/_aggregate.ts — derive aggregate.json from runs/*.jsonl
-import { readFileSync, writeFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, readdirSync } from "node:fs";
 import { createHash } from "node:crypto";
 
 interface H0Record {
 	triple_id: string;
-	arm: "hunk-only" | "selected" | "full-bundle";
+	arm: "hunk-only" | "selected" | "full-bundle" | `baseline-${"keep_ours" | "keep_theirs" | "compose"}`;
 	model: { name: string; sha: string };
 	run: number;
 	input_tokens: number;
@@ -152,6 +152,9 @@ const main = () => {
 		.filter((f) => f.endsWith(".jsonl") && !f.startsWith("_"))
 		.map((f) => `${runsDir}/${f}`)
 		.sort();
+	if (existsSync("evidence/h0/baselines.json")) {
+		files.push("evidence/h0/baselines.json");
+	}
 
 	const resolutions = loadResolutionByKey([
 		"evidence/h0/triples-jq-diff3.jsonl",
@@ -174,11 +177,35 @@ const main = () => {
 	for (const file of files) {
 		const records = loadRecords(file);
 		if (records.length === 0) continue;
-		const arm = records[0].arm;
-		byArm[arm] = aggregate(records, resolutions, triples);
-		console.log(`${arm}: ${records.length} records, ${byArm[arm].correct}c/${byArm[arm].wrong}w/${byArm[arm].halt}h tokens=${byArm[arm].tokens_total}`);
+		// PR-B1: a single file may contain records for multiple arms (e.g.
+		// baselines.json holds keep_ours, keep_theirs, compose records).
+		// Group by arm before aggregating so each per-arm bucket is computed
+		// from records of that arm only.
+		const byArmLocal: Record<string, H0Record[]> = {};
+		for (const r of records) {
+			if (!byArmLocal[r.arm]) byArmLocal[r.arm] = [];
+			byArmLocal[r.arm].push(r);
+		}
+		for (const [arm, armRecords] of Object.entries(byArmLocal)) {
+			byArm[arm] = aggregate(armRecords, resolutions, triples);
+			console.log(`${arm}: ${armRecords.length} records, ${byArm[arm].correct}c/${byArm[arm].wrong}w/${byArm[arm].halt}h tokens=${byArm[arm].tokens_total}`);
+		}
 	}
 
+	// PR-B1 / D3: derive trivial-baseline ceilings. Every model arm must
+	// beat `TRIVIAL_CEILING_COMPOSE` for the result to be honest; if it does
+	// not, the verdict should be `null` regardless of arm-vs-arm comparison.
+	const trivialCeiling: Record<string, { correct: number; wrong: number; halt: number; triples: number }> = {};
+	for (const [arm, agg] of Object.entries(byArm)) {
+		if (arm.startsWith("baseline-")) {
+			trivialCeiling[arm.slice("baseline-".length)] = {
+				correct: agg.correct,
+				wrong: agg.wrong,
+				halt: agg.halt,
+				triples: agg.triples_total,
+			};
+		}
+	}
 	const costAnalysis: Record<string, { cost_wrong: number | null; cost_halt: number | null; ratio: number | null }> = {};
 	for (const [arm, agg] of Object.entries(byArm)) {
 		const cw = agg.wrong > 0 ? agg.tokens_total / agg.wrong : null;
@@ -229,6 +256,14 @@ const main = () => {
 		repeats: 3,
 		arms: byArm,
 		cost_analysis: costAnalysis,
+		trivial_ceiling: trivialCeiling,
+		honest_signal: (() => {
+			const compose = trivialCeiling["compose"];
+			if (!compose || !hunkOnly || !selected || !fullBundle) return null;
+			// Honest = at least one model arm beats the trivial compose ceiling.
+			const bestModelWrong = Math.min(hunkOnly.wrong, selected.wrong, fullBundle.wrong);
+			return bestModelWrong < compose.wrong;
+		})(),
 		kill_condition: {
 			epsilon: EPSILON,
 			met: killConditionMet,
