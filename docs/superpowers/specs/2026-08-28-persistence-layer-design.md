@@ -414,10 +414,17 @@ while no mrgr process is writing**. Concurrent tursodb writes are unsupported;
   `blobs/<sha256>` files (raw bytes).
 - A `manifest.json` records per-file sha256 + row counts + `schema_version` +
   the source DB's `meta`.
-- **Binding property: two exports of the same logical content are
-  byte-identical**, regardless of insertion order, vacuum state, or page
-  layout. This is the artifact the plan's "three runs byte-identical JSON"
-  gates bind to; the `.db` file itself is never a digest target.
+- **Binding property: two exports of the same logical content produce
+  byte-identical content-table files**, regardless of insertion order, vacuum
+  state, or page layout. This is the artifact the plan's "three runs
+  byte-identical JSON" gates bind to; the `.db` file itself is never a digest
+  target.
+- **Excluded from that property: `meta.jsonl` and `manifest.json`.** `meta`
+  records when and by what this particular database was created, and the
+  manifest embeds it. Two databases holding identical content but created at
+  different moments legitimately differ there. Every other table — including
+  `ledger`, whose `created_at` is a caller-supplied input, not a wall-clock
+  read inside the store — is covered.
 
 `mrgr db import`:
 

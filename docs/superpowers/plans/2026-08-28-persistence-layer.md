@@ -555,7 +555,10 @@ A file with any tables and the wrong pragmas is rejected without writes
 - [ ] **Step 7: Run tests to verify they pass**
 
 Run: `pnpm exec vitest run tests/db/open.test.ts`
-Expected: PASS (5 tests). Also run: `pnpm exec tsc -p tsconfig.json --noEmit` and `bash ../../scripts/verify-carried.sh` — wait: verify-carried runs from `packages/core/`, check the script's expected cwd with `head -5 ../../scripts/verify-carried.sh`; run it from wherever the M0 docs say (repo root: `bash scripts/verify-carried.sh`).
+Expected: PASS (5 tests).
+
+Then, from the repo root: `bash scripts/verify-carried.sh` (it expects repo-root cwd).
+From `packages/core/`: `pnpm exec tsc -p tsconfig.json --noEmit`.
 Expected: clean typecheck, carried manifest passes.
 
 - [ ] **Step 8: Commit**
@@ -782,7 +785,9 @@ git commit -m "feat(db): canonical JSON and content-addressed blob store"
   - `get(repositoryId: string, mergeSha: string, baselineId: string): DbResult<CorpusRecordV2 | null>`
   - `list(): DbResult<CorpusRecordV2[]>` — ordered by (repository_id, merge_sha, baseline_id).
 
-Row mapping (exact): `repository` → repository table by `record.repository` union; `baseline` row from `record.baselineId` + `record.replayProvenance` fields `gitVersion, algorithm, strategy, environmentPolicy, normalizationVersion` and `replay_command` = `canonicalJson({algorithm, strategy})` is WRONG — the carried code derives baselineId from a replay command string not exposed on the record. The record does not carry the replay command, so store `replay_command` as the empty-marker `"(not recorded on CorpusRecordV2)"`? No — omitted columns must not hold fake data. Resolution: `baseline.replay_command` is dropped from the INSERT and the schema keeps the column NOT NULL — **this is a real conflict; resolve it by storing the only faithful value the record carries**: `replay_command` = `canonicalJson(record.replayProvenance)`. It is derivable, deterministic, and honest (the full provenance envelope, which is what baselineId binds). Document this in a comment in `corpus-store.ts`.
+Row mapping (exact): `repository` → repository table by `record.repository` union; `baseline` row from `record.baselineId` + `record.replayProvenance` fields `gitVersion, algorithm, strategy, environmentPolicy, normalizationVersion`.
+
+`baseline.replay_command`: `CorpusRecordV2` does not expose the literal replay-command string that `baselineId` was derived from — it lives inside the carried `git.ts`. Store `canonicalJson(record.replayProvenance)`: the full provenance envelope is what `baselineId` binds, it is deterministic, and it invents nothing. A comment in `corpus-store.ts` must say so.
 `parent_attr_ours/theirs` = `record.replayProvenance.parentAttributes.ours/theirs`; `repo_merge_config_hash` = `record.replayProvenance.repoMergeConfigHash`; `merge_base.base_index` = index in `record.mergeBases`; reachability counts joined from `record.baseReachabilityCounts` by `baseSha` (absent → NULL pair); region JSON columns = `canonicalJson` of the corresponding record fields; `novel_after_normalization` boolean → 0/1; reconstruction inverts all of this exactly (booleans back from 0/1, `error` field omitted—not null—when `error_json` IS NULL, `changedPathIntersection` null for non-single topology, arrays rebuilt in stored order).
 
 - [ ] **Step 1: Write the failing test `tests/db/corpus-store.test.ts`**
@@ -1142,15 +1147,14 @@ export class CorpusStore {
 						? 1
 						: 0,
 				region.tripleKey,
-				region.localizationStatus === "exact" || hasAnyRange(region)
-					? canonicalJson(region.automaticRanges)
-					: canonicalJson(region.automaticRanges),
+				// These four are always objects on ConflictRegionRecord — their
+				// fields are nullable, the containers are not. Only
+				// resolutionRange is itself nullable.
+				canonicalJson(region.automaticRanges),
 				region.resolutionRange === null ? null : canonicalJson(region.resolutionRange),
-				region.rawDigests === null ? null : canonicalJson(region.rawDigests),
-				region.normalizedDigests === null
-					? null
-					: canonicalJson(region.normalizedDigests),
-				region.rawCounts === null ? null : canonicalJson(region.rawCounts),
+				canonicalJson(region.rawDigests),
+				canonicalJson(region.normalizedDigests),
+				canonicalJson(region.rawCounts),
 			);
 		}
 	}
@@ -1385,14 +1389,6 @@ function rowToRegion(row: Record<string, unknown>): ConflictRegionRecord {
 		tripleKey: null,
 	};
 }
-
-function hasAnyRange(region: ConflictRegionRecord): boolean {
-	return (
-		region.automaticRanges.base !== null ||
-		region.automaticRanges.ours !== null ||
-		region.automaticRanges.theirs !== null
-	);
-}
 ```
 
 Implementation note: inexact regions store `automatic_ranges`/`rawDigests`
@@ -1561,7 +1557,8 @@ export interface LedgerRecord extends LedgerInput {
 
 export class LedgerStore {
 	constructor(handle: DbHandle);
-	append(input: LedgerInput): DbResult<LedgerRecord>;
+	/** createdAt defaults to new Date().toISOString(); injectable for determinism tests. */
+	append(input: LedgerInput, createdAt?: string): DbResult<LedgerRecord>;
 	get(id: string): DbResult<LedgerRecord | null>;
 	list(): DbResult<LedgerRecord[]>; // ORDER BY seq
 }
@@ -1835,7 +1832,7 @@ export class RunStore {
 ```typescript
 export interface ExportManifest {
 	schema_version: string;                 // "mrgr-db/1"
-	meta: Record<string, string>;           // the meta table minus created_at? NO — verbatim copy
+	meta: Record<string, string>;           // verbatim copy of the meta table
 	tables: Record<string, { rows: number; sha256: string }>; // per exported file
 }
 export function exportDb(
@@ -1847,7 +1844,7 @@ export function exportDb(
 
 Behavior: for each table in the fixed order `meta, repository, baseline, corpus_record, merge_base, conflict_path, conflict_region, evidence_bundle, evidence_dep, blob, ledger, run, run_result` — `SELECT * ORDER BY <primary key columns>`; each row serialized as `canonicalJson` of the column→value object **excluding** `blob.bytes` (replaced by nothing — the blob table exports `{sha256, byte_len}` only); one row per line, LF, UTF-8, written to `<outDir>/<table>.jsonl` (a table with zero rows writes an empty file — presence is part of the contract). With `withBlobs: true`, raw bytes additionally land in `<outDir>/blobs/<sha256>` (no extension). `manifest.json` = pretty-printed (2-space) canonical-key-order JSON of `ExportManifest`, written last. Directory created with `mkdir recursive`; existing files overwritten (export is a pure function of the DB).
 
-- [ ] **Step 1: Write the failing test** — three tests: (1) export a DB populated via `CorpusStore` + `LedgerStore`; every listed table file exists, manifest row counts match, manifest sha256 of each file matches a recomputed hash; (2) **determinism**: build two DBs inserting the same two corpus records and two ledger records in opposite orders; both exports produce byte-identical files (compare file hashes for every table) — this is the spec's binding "byte-identical export" property; (3) `withBlobs` writes `blobs/<sha256>` files whose recomputed sha256 equals their name.
+- [ ] **Step 1: Write the failing test** — three tests: (1) export a DB populated via `CorpusStore` + `LedgerStore`; every listed table file exists, manifest row counts match, manifest sha256 of each file matches a recomputed hash; (2) **determinism**: build two DBs inserting the same two corpus records and two ledger records in opposite orders, passing the same fixed `createdAt` to every `LedgerStore.append`; both exports produce byte-identical files for **every table except `meta.jsonl`**, and `manifest.json` is likewise excluded from the comparison (both embed per-database creation provenance — see spec §8). Compare recomputed file hashes table by table; (3) `withBlobs` writes `blobs/<sha256>` files whose recomputed sha256 equals their name.
 - [ ] **Step 2: Run to verify failure.**
 - [ ] **Step 3: Implement.** PK orderings, explicit per table: `meta(key)`, `repository(id)`, `baseline(baseline_id)`, `corpus_record(repository_id, merge_sha, baseline_id)`, `merge_base(+ base_sha)`, `conflict_path(+ path)`, `conflict_region(+ path, ordinal)`, `evidence_bundle(+ path, ordinal)`, `evidence_dep(+ path, side, dep_path)`, `blob(sha256)`, `ledger(seq)`, `run(run_id)`, `run_result(run_id, triple_id, run_index)`.
 - [ ] **Step 4: Run to verify pass.**
@@ -1879,7 +1876,7 @@ export async function importEvidenceJsonl(handle: DbHandle, path: string): Promi
 
 Both: run the carried fail-closed reader (a malformed file aborts the whole import — same posture as everywhere else), then append each record; identical duplicate → `skippedDuplicate`; store rejection → `failed` with the first error returned in `details`. Evidence import order: corpus must be imported first (FKs); an evidence record whose corpus row is absent counts as `failed` with reason in details.
 
-- [ ] **Step 1: Write fixtures + failing test** — three tests: (1) corpus import: `imported: 2`, re-import → `skippedDuplicate: 2`; (2) evidence import after corpus import: `imported: 2` (including the ordinal-0 failed row); evidence import *without* corpus → both `failed`; (3) **round-trip**: import both fixtures → export → import the exported `*.jsonl`? No — export format ≠ legacy format; instead: import fixtures into DB A, export A; import the same fixtures into DB B, export B; A's and B's exports are byte-identical.
+- [ ] **Step 1: Write fixtures + failing test** — three tests: (1) corpus import: `imported: 2`, re-import → `skippedDuplicate: 2`; (2) evidence import after corpus import: `imported: 2` (including the ordinal-0 failed row); evidence import *without* corpus → both `failed`; (3) **round-trip**: the export format is not the legacy format, so this is an import-determinism check rather than a literal round trip — import the fixtures into DB A and export it, import the same fixtures into DB B and export it, then assert A's and B's exports are byte-identical for every table except `meta.jsonl` and `manifest.json` (spec §8).
 - [ ] **Step 2: Run to verify failure.**
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: Run to verify pass. Also run the whole suite once:** `pnpm exec vitest run` — carried 120 + m1a + db all green.
