@@ -200,6 +200,24 @@ function okRecordEmptyGraph(ordinal: 1 | 2): OkEvidenceRecord {
 	};
 }
 
+/**
+ * Deliberately unsorted, with a duplicate entry ("ours:a.txt" appears twice).
+ * DependencyGraphSchema is a plain array with no ordering or uniqueness
+ * constraint, so a fixture in sorted, duplicate-free order (as every other
+ * fixture in this file happens to be) cannot catch a store that silently
+ * sorts and/or dedups on storage (fix round 4).
+ */
+function unsortedDuplicateGraphRecord(): OkEvidenceRecord {
+	const base = okRecord();
+	return {
+		...base,
+		bundle: {
+			...base.bundle,
+			dependency_graph: ["theirs:z.txt", "ours:b.txt", "ours:a.txt", "ours:a.txt"],
+		},
+	};
+}
+
 function failedPathLevelRecord(): EvidenceRecord {
 	return {
 		schemaVersion: 1,
@@ -509,6 +527,45 @@ describe("EvidenceStore", () => {
 			{ side: "ours", dep_path: "src/a.ts" },
 			{ side: "theirs", dep_path: "src/b.ts" },
 		]);
+	});
+
+	it("preserves dependency_graph exactly, including unsorted order and a duplicate entry, on round trip", () => {
+		const record = unsortedDuplicateGraphRecord();
+		expect(evidenceStore.append(record).ok).toBe(true);
+
+		const got = evidenceStore.get(
+			record.repository_id,
+			record.merge_sha,
+			record.baseline_id,
+			record.conflict_path,
+			record.conflict_ordinal,
+		);
+		expect(got.ok).toBe(true);
+		if (got.ok) expect(got.value).toEqual(record);
+		// Explicit on top of the full-record toEqual above: this is the exact
+		// property fix round 4 exists to guarantee — not sorted, not deduped.
+		if (got.ok && got.value?.status === "ok") {
+			expect(got.value.bundle.dependency_graph).toEqual([
+				"theirs:z.txt",
+				"ours:b.txt",
+				"ours:a.txt",
+				"ours:a.txt",
+			]);
+		}
+	});
+
+	it("re-appending an identical record with an unsorted, duplicate-containing dependency_graph is idempotent, not a conflict", () => {
+		const record = unsortedDuplicateGraphRecord();
+		expect(evidenceStore.append(record).ok).toBe(true);
+		const second = evidenceStore.append(record);
+		expect(second.ok).toBe(true);
+
+		// No rows were duplicated by the second append: one row per array
+		// entry (four, including the repeated one), not eight.
+		const depRowCount = handle.db
+			.prepare("SELECT COUNT(*) AS n FROM evidence_dep WHERE path = 'src/a.ts'")
+			.get() as { n: number };
+		expect(depRowCount.n).toBe(4);
 	});
 
 	it("is idempotent for an identical duplicate, errors on a different one", () => {

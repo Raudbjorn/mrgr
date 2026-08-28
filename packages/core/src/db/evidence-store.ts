@@ -165,6 +165,16 @@ export class EvidenceStore {
 	 * Fail closed if this region's `dependency_graph` disagrees with whatever
 	 * is already stored for its file.
 	 *
+	 * Compared as an ORDERED SEQUENCE, not a set: `DependencyGraphSchema` is a
+	 * plain array with no ordering or uniqueness constraint, so producer order
+	 * is meaningful and duplicate entries are representable — and `get()`
+	 * must reproduce both exactly (fix round 4; `evidence_dep.position`
+	 * carries the array index for this reason). A set comparison would treat
+	 * the same entries in a different order, or with a duplicate collapsed,
+	 * as agreement, and then fail to round-trip whichever region's literal
+	 * array wasn't chosen as canonical. Two sibling regions with the same
+	 * entries in a different order are therefore NOT considered to agree.
+	 *
 	 * Existence is decided by whether a prior `status: "ok"` `evidence_bundle`
 	 * row exists for this file — NOT by whether `evidence_dep` has any rows.
 	 * Those disagree exactly when a file's first ok region has a legitimately
@@ -196,7 +206,8 @@ export class EvidenceStore {
 		const existingDeps = db
 			.prepare(
 				`SELECT side, dep_path FROM evidence_dep
-				 WHERE repository_id = ? AND merge_sha = ? AND baseline_id = ? AND path = ?`,
+				 WHERE repository_id = ? AND merge_sha = ? AND baseline_id = ? AND path = ?
+				 ORDER BY position`,
 			)
 			.all(
 				record.repository_id,
@@ -205,11 +216,11 @@ export class EvidenceStore {
 				record.conflict_path,
 			) as { side: string; dep_path: string }[];
 
-		const existingSet = new Set(existingDeps.map((d) => `${d.side}:${d.dep_path}`));
-		const incomingSet = new Set(record.bundle.dependency_graph);
+		const existingSequence = existingDeps.map((d) => `${d.side}:${d.dep_path}`);
+		const incomingSequence = record.bundle.dependency_graph;
 		const agrees =
-			existingSet.size === incomingSet.size &&
-			[...existingSet].every((entry) => incomingSet.has(entry));
+			existingSequence.length === incomingSequence.length &&
+			existingSequence.every((entry, index) => entry === incomingSequence[index]);
 		if (!agrees) {
 			return dbErr(
 				"db",
@@ -218,8 +229,8 @@ export class EvidenceStore {
 				{
 					reason: "dependency-graph-conflict",
 					...keyDetails(record),
-					existing_count: existingSet.size,
-					incoming_count: incomingSet.size,
+					existing_count: existingSequence.length,
+					incoming_count: incomingSequence.length,
 				},
 			);
 		}
@@ -265,7 +276,13 @@ export class EvidenceStore {
 			);
 
 		// Per-file, not per-region: two regions of the same file share these
-		// rows. A plain INSERT (not OR IGNORE) is used deliberately, mirroring
+		// rows. `position` (the entry's index in the producer's array) is part
+		// of the primary key specifically so a repeated (side, dep_path) pair
+		// is stored as its own row rather than colliding with an earlier
+		// identical one — DependencyGraphSchema allows duplicates, and they
+		// must round-trip, not collapse (fix round 4).
+		//
+		// A plain INSERT (not OR IGNORE) is used deliberately, mirroring
 		// insertRepository/insertBaseline in corpus-store.ts: INSERT OR IGNORE
 		// swallows a CHECK-constraint violation exactly like it swallows a
 		// uniqueness conflict, so a future producer bug that emitted a bad
@@ -276,10 +293,10 @@ export class EvidenceStore {
 		// a genuine CHECK violation surface as a real, typed error.
 		const insertDep = this.handle.db.prepare(
 			`INSERT INTO evidence_dep
-			 (repository_id, merge_sha, baseline_id, path, side, dep_path)
-			 VALUES (?, ?, ?, ?, ?, ?)`,
+			 (repository_id, merge_sha, baseline_id, path, side, dep_path, position)
+			 VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		);
-		for (const entry of bundle.dependency_graph) {
+		bundle.dependency_graph.forEach((entry, position) => {
 			// Split on the first colon only: dep paths may themselves contain
 			// colons.
 			const sep = entry.indexOf(":");
@@ -293,19 +310,22 @@ export class EvidenceStore {
 					key.conflict_path,
 					side,
 					depPath,
+					position,
 				);
 			} catch (cause) {
 				if ((cause as { errcode?: number }).errcode !== SQLITE_CONSTRAINT_PRIMARYKEY) {
 					throw cause;
 				}
 				// evidence_dep's PRIMARY KEY (repository_id, merge_sha,
-				// baseline_id, path, side, dep_path) covers every column the
-				// table has — unlike repository/baseline, there is no
-				// non-key content left that could disagree, so a PK conflict
-				// here is always a byte-identical duplicate. No content
-				// verification needed.
+				// baseline_id, path, side, dep_path, position) covers every
+				// column the table has — unlike repository/baseline, there is
+				// no non-key content left that could disagree, so a PK
+				// conflict here is always a byte-identical duplicate (a
+				// sibling region re-inserting the same entry at the same
+				// position, which checkDependencyGraphAgreement already
+				// verified matches). No content verification needed.
 			}
-		}
+		});
 	}
 
 	private putBlobOrThrow(text: string): string {
@@ -453,11 +473,15 @@ export class EvidenceStore {
 			preimageTheirs = Buffer.from(got.value).toString("utf8");
 		}
 
+		// ORDER BY position, not (side, dep_path): dependency_graph is an
+		// unordered-schema array that may contain duplicates, and position
+		// (the producer's array index) is what makes both round-trip exactly
+		// (fix round 4).
 		const depRows = this.handle.db
 			.prepare(
 				`SELECT side, dep_path FROM evidence_dep
 				 WHERE repository_id = ? AND merge_sha = ? AND baseline_id = ? AND path = ?
-				 ORDER BY side, dep_path`,
+				 ORDER BY position`,
 			)
 			.all(repository_id, merge_sha, baseline_id, conflict_path) as {
 			side: string;

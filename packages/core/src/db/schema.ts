@@ -164,7 +164,16 @@ CREATE TABLE evidence_dep (
   path          TEXT NOT NULL,
   side          TEXT NOT NULL CHECK (side IN ('ours','theirs')),
   dep_path      TEXT NOT NULL,
-  PRIMARY KEY (repository_id, merge_sha, baseline_id, path, side, dep_path),
+  position      INTEGER NOT NULL CHECK (position >= 0),
+  -- position is the entry's index in the producer's dependency_graph array.
+  -- DependencyGraphSchema (m1a/evidence.ts) is a plain array with no
+  -- ordering or uniqueness constraint, so the same (side, dep_path) pair can
+  -- legitimately appear more than once; without position in the key, a
+  -- second identical pair would collide with the first and either vanish
+  -- (INSERT OR IGNORE) or be rejected as a duplicate (plain INSERT) instead
+  -- of being preserved as its own entry. Every column here is part of the
+  -- primary key, so a PK conflict is always a byte-identical duplicate.
+  PRIMARY KEY (repository_id, merge_sha, baseline_id, path, side, dep_path, position),
   FOREIGN KEY (repository_id, merge_sha, baseline_id, path)
     REFERENCES conflict_path(repository_id, merge_sha, baseline_id, path)
 ) STRICT;
