@@ -28,9 +28,9 @@ other file here.
 |---|---|---|
 | `REVIEW-2026-08-27.md` | Independent review; five independently disqualifying defects | **governing** |
 | `corpus.json` | Frozen corpus manifest: per-repo counts, digests, licenses | good |
-| `triples-jq-diff3.jsonl` | 377 exact-localized triples from `stedolan/jq` (MIT, C) | good |
-| `triples-cli-diff3.jsonl` | 521 exact-localized triples from `cli/cli` (MIT, Go) | good |
-| `scan-jq-diff3.jsonl`, `scan-cli-diff3.jsonl` | Raw schema-v2 corpora the triples were materialized from | good |
+| `RETRACTED/triples-jq-diff3.jsonl` | 377 exact-localized triples from `stedolan/jq` (MIT, C) | **retracted** — see `RETRACTION.json` |
+| `RETRACTED/triples-cli-diff3.jsonl` | 521 exact-localized triples from `cli/cli` (MIT, Go) | **retracted** |
+| `RETRACTED/scan-*-diff3.jsonl` | Raw schema-v2 corpora the triples were materialized from | **retracted** |
 | `runs/*.jsonl` | Per-triple arm output: hunk-only, full-bundle, selected | raw output is real; the decisions it records were made under a broken prompt |
 | `aggregate.json` | Scored aggregation | **do not cite** — see D3/D4/D5 in the review |
 | `_h0_runner.ts`, `_aggregate.ts`, `_corpus_freeze.ts` | The scripts that produced the above | kept so the defects are inspectable at source |
@@ -64,6 +64,23 @@ arms; account samples independently rather than multiplying temp-0 repeats;
 define a kill rule that can actually fire; and make `dependency_graph` a
 computed value rather than the hardcoded `"(none — single-file conflict)"`
 string it currently is.
+
+## The retracted corpus
+
+The four `*.jsonl` files moved to `h0/RETRACTED/` on 2026-08-28. They record
+`baselineId 89218aca…09cf`, which denotes a **default-style** replay — but the
+producing tree forced `-c merge.conflictStyle=diff3` without updating
+`baselineInput`, so every record misreports the provenance of its own run.
+
+They were moved rather than edited. The bytes are unchanged and their SHA-256
+digests are recorded in [`h0/RETRACTION.json`](h0/RETRACTION.json) and verified
+against the moved files. Moving them is the point: a consumer with a stale path
+now fails loudly instead of silently reading a corpus that lies about how it was
+produced.
+
+What this does **not** do: repair those records, or replace them. No corrected
+run exists yet. Under the fixed mechanism the same invocation would record
+`e2dea6a7…3509`.
 
 ## Provenance
 

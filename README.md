@@ -95,8 +95,12 @@ Fixed, each with a test that fails without the fix:
   base section and the section regex required a newline that an empty section
   does not have.
 
-Still open (P1/P2): materialization propagation, focused schema snapshots, and
-a runnable smoke over the committed H0 triples. The sidecar is not claimed to
+Still open: a runnable smoke over the committed H0 triples (P1.4), plus P2 —
+materialization propagation and focused schema snapshots. Two further P1 items
+are **void rather than deferred**: they target assertions in a file that was
+never carried into this repo, and the sidecar decision means no bundle reaches
+`parseCorpusRecord` at all. See
+[`docs/adr/03-m1a-evidence-scope.md`](docs/adr/03-m1a-evidence-scope.md). The sidecar is not claimed to
 be the final persistence design; moving bundles inline later is a schema
 decision with a version bump.
 
