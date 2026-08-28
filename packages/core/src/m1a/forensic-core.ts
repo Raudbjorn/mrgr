@@ -31,8 +31,14 @@ const stripDelimiter = (section: string): string =>
 
 export interface ExtractOptions {
 	/**
-	 * Optional byte budget per preimage. Omitted means no limit: the whole
-	 * parent-side file is captured.
+	 * Optional byte budget per preimage. Omitted means no limit *imposed here*:
+	 * the whole parent-side file is captured.
+	 *
+	 * `runGit`'s own `DEFAULT_GIT_OUTPUT_LIMIT_BYTES` (64 MiB) still applies
+	 * and is deliberately not raised — a blob past it fails with an
+	 * `output-limit` error rather than being silently shortened. Note also that
+	 * `maxBytes` truncates AFTER the blob has been read, so it bounds what is
+	 * stored, not what is buffered.
 	 *
 	 * Truncation is applied on the UTF-8 byte buffer, not on the JavaScript
 	 * string, and never splits a multi-byte character. The recorded
@@ -243,6 +249,11 @@ async function fetchDependencyGraph(
 				"log",
 				"--pretty=format:",
 				"--name-only",
+				// NUL-delimited. Without -z, core.quotePath defaults to true and
+				// Git C-quotes any path containing a byte above 0x80, so
+				// "café.txt" arrives as "caf\303\251.txt" — mangled, and no
+				// longer equal to the path it is supposed to identify.
+				"-z",
 				"--diff-filter=AM",
 				`${mergeBase}..${parent}`,
 			],
@@ -256,8 +267,8 @@ async function fetchDependencyGraph(
 		return Array.from(
 			new Set(
 				decodeStdout(result.value.stdout)
-					.split("\n")
-					.map((line) => line.trim())
+					.split("\0")
+					.map((entry) => entry.trim())
 					.filter(Boolean),
 			),
 		);

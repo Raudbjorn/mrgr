@@ -426,3 +426,29 @@ function gitOkText(
 	if (!result.ok) throw new Error(`git failed: ${JSON.stringify(result.error)}`);
 	return result.value.stdoutText();
 }
+
+describe("review fixes — non-ASCII paths", () => {
+	it("keeps non-ASCII dependency paths verbatim", async () => {
+		// git log --name-only C-quotes any path with a byte above 0x80 unless
+		// -z is used, so "café.txt" would arrive as "caf\303\251.txt" and no
+		// longer equal the path it identifies.
+		const repository = await newRepository();
+		const accented = "café.txt";
+		const { ours, theirs } = await divergent(
+			repository,
+			{ [CONFLICT_PATH]: "base\n", [accented]: "base\n" },
+			{ [CONFLICT_PATH]: "ours\n", [accented]: "ours\n" },
+			{ [CONFLICT_PATH]: "theirs\n", [accented]: "theirs\n" },
+		);
+
+		const result = await extractEvidenceBundles(repository, ours, theirs, CONFLICT_PATH);
+		expect(result.ok, result.ok ? "" : JSON.stringify(result.error)).toBe(true);
+		if (!result.ok) return;
+		const graph = result.value[0]?.dependency_graph ?? [];
+
+		expect(graph.some((entry) => entry.endsWith(accented))).toBe(true);
+		// No C-quoted octal escapes and no surrounding quotes.
+		expect(graph.some((entry) => entry.includes("\\3"))).toBe(false);
+		expect(graph.some((entry) => entry.includes('"'))).toBe(false);
+	});
+});
