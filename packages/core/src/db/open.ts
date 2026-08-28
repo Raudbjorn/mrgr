@@ -56,8 +56,6 @@ export function openDb(
 			db.exec("BEGIN IMMEDIATE");
 			try {
 				db.exec(SCHEMA_SQL);
-				db.exec(`PRAGMA application_id = ${APPLICATION_ID}`);
-				db.exec(`PRAGMA user_version = ${USER_VERSION}`);
 				const insertMeta = db.prepare(
 					"INSERT INTO meta (key, value) VALUES (?, ?)",
 				);
@@ -69,6 +67,9 @@ export function openDb(
 				db.exec("ROLLBACK");
 				throw cause;
 			}
+			// Set pragmas after transaction completes
+			db.exec(`PRAGMA application_id = ${APPLICATION_ID}`);
+			db.exec(`PRAGMA user_version = ${USER_VERSION}`);
 			return dbOk({ db, path });
 		}
 
