@@ -136,6 +136,22 @@ function countRows(buf: Buffer): number {
 	return buf.toString("utf8").split("\n").filter((l) => l.length > 0).length;
 }
 
+/**
+ * True if `handle`'s connection is currently inside a transaction: attempts
+ * a BEGIN, which SQLite refuses ("cannot start a transaction within a
+ * transaction") only when one is already open. Rolls back the probe
+ * transaction it opens on success, so this is side-effect-free either way.
+ */
+function isInTransaction(handle: DbHandle): boolean {
+	try {
+		handle.db.exec("BEGIN");
+	} catch {
+		return true;
+	}
+	handle.db.exec("ROLLBACK");
+	return false;
+}
+
 function readJsonl(path: string): Record<string, unknown>[] {
 	const buf = readFileSync(path, "utf8");
 	if (buf.length === 0) return [];
@@ -401,5 +417,44 @@ describe("exportDb", () => {
 		const result = exportDb(handle, outDir);
 		expect(result.ok).toBe(true);
 		expect(existsSync(join(outDir, "blobs"))).toBe(false);
+	});
+
+	it("leaves no transaction open on the connection after a successful export", () => {
+		new CorpusStore(handle).append(corpusRecord(OID_PARENT1));
+		const outDir = join(dir, "export");
+		const result = exportDb(handle, outDir);
+		expect(result.ok).toBe(true);
+		expect(isInTransaction(handle)).toBe(false);
+		expect(() => handle.db.prepare("SELECT 1").get()).not.toThrow();
+	});
+
+	it("rolls back the read transaction and leaves the connection usable when a table read fails partway through", () => {
+		// The whole read phase (all 13 tables) runs inside one transaction
+		// before any file is written. Dropping a table that sorts after
+		// several successful reads (meta, repository, baseline, corpus_record)
+		// exercises rollback from mid-loop, not just from the first table.
+		const dir2 = mkdtempSync(join(tmpdir(), "mrgr-db-fail-"));
+		const opened = openDb(join(dir2, "mrgr.db"), { create: true });
+		if (!opened.ok) throw new Error("failed to open test db");
+		const handle2 = opened.value;
+		try {
+			new CorpusStore(handle2).append(corpusRecord(OID_PARENT1));
+			handle2.db.exec("DROP TABLE merge_base");
+
+			const outDir = join(dir2, "export");
+			const result = exportDb(handle2, outDir);
+			expect(result.ok).toBe(false);
+
+			// A read-phase failure writes nothing, not even the tables that
+			// were successfully read before the one that failed.
+			expect(readdirSync(outDir)).toEqual([]);
+
+			// No transaction left open, and the connection still works.
+			expect(isInTransaction(handle2)).toBe(false);
+			expect(() => handle2.db.prepare("SELECT 1").get()).not.toThrow();
+		} finally {
+			closeDb(handle2);
+			rmSync(dir2, { recursive: true, force: true });
+		}
 	});
 });

@@ -57,6 +57,9 @@ const TABLE_SPECS: readonly { name: string; orderBy: string }[] = [
  * insertion order or SELECT * column order (canonicalJson sorts keys).
  * meta.jsonl and manifest.json legitimately vary between databases because
  * meta.created_at records when a given database file was created.
+ *
+ * "The database's logical content" means one consistent snapshot — see the
+ * transaction in phase 1 below.
  */
 export function exportDb(
 	handle: DbHandle,
@@ -83,25 +86,60 @@ export function exportDb(
 		});
 	}
 
+	// Phase 1: read every table inside one deferred transaction, so the
+	// snapshot is consistent across all 13 SELECTs. Without this, a writer
+	// committing between two of them (e.g. a new conflict_path row landing
+	// after conflict_path was read but before its child conflict_region is)
+	// produces a directory that is internally hash-consistent — every
+	// manifest digest matches its file — while describing a database state
+	// that never existed. Under WAL a deferred read transaction does not
+	// block concurrent writers; it only fixes what *this* export sees.
+	try {
+		handle.db.exec("BEGIN DEFERRED");
+	} catch (cause) {
+		return dbErr("db", "export db", "Could not open a read transaction", {
+			cause: String(cause),
+		});
+	}
+
+	const rowsByTable = new Map<string, Record<string, unknown>[]>();
+	for (const spec of TABLE_SPECS) {
+		const isBlob = spec.name === "blob";
+		const columns = isBlob ? (withBlobs ? "sha256, byte_len, bytes" : "sha256, byte_len") : "*";
+
+		try {
+			const rows = handle.db
+				.prepare(`SELECT ${columns} FROM ${spec.name} ORDER BY ${spec.orderBy}`)
+				.all() as Record<string, unknown>[];
+			rowsByTable.set(spec.name, rows);
+		} catch (cause) {
+			rollbackSafely(handle);
+			return dbErr("db", "export db", `Failed to read table ${spec.name}`, {
+				table: spec.name,
+				cause: String(cause),
+			});
+		}
+	}
+
+	try {
+		handle.db.exec("COMMIT");
+	} catch (cause) {
+		rollbackSafely(handle);
+		return dbErr("db", "export db", "Failed to close the read transaction", {
+			cause: String(cause),
+		});
+	}
+
+	// Phase 2: serialize and write. No further DB access — everything needed
+	// was captured in the snapshot above.
 	const tables: Record<string, { rows: number; sha256: string }> = {};
 	let metaRecord: Record<string, string> = {};
 	let manifestBlobs: { sha256: string; byte_len: number }[] | undefined;
 
 	for (const spec of TABLE_SPECS) {
 		const isBlob = spec.name === "blob";
-		const columns = isBlob ? (withBlobs ? "sha256, byte_len, bytes" : "sha256, byte_len") : "*";
-
-		let rows: Record<string, unknown>[];
-		try {
-			rows = handle.db
-				.prepare(`SELECT ${columns} FROM ${spec.name} ORDER BY ${spec.orderBy}`)
-				.all() as Record<string, unknown>[];
-		} catch (cause) {
-			return dbErr("db", "export db", `Failed to read table ${spec.name}`, {
-				table: spec.name,
-				cause: String(cause),
-			});
-		}
+		// Populated for every TABLE_SPECS entry in phase 1 above; cannot miss.
+		const rows = rowsByTable.get(spec.name) as Record<string, unknown>[];
 
 		if (spec.name === "meta") {
 			metaRecord = {};
@@ -199,6 +237,21 @@ export function exportDb(
 	}
 
 	return dbOk(manifest);
+}
+
+/**
+ * Best-effort rollback of the read-phase transaction. Swallows the error:
+ * this only runs after something has already gone wrong, and a connection
+ * that isn't actually inside a transaction (e.g. BEGIN itself never
+ * succeeded) throwing on ROLLBACK must not shadow the original failure or
+ * leave the caller unsure whether cleanup happened.
+ */
+function rollbackSafely(handle: DbHandle): void {
+	try {
+		handle.db.exec("ROLLBACK");
+	} catch {
+		/* nothing to roll back, or the connection is already unusable */
+	}
 }
 
 /**
