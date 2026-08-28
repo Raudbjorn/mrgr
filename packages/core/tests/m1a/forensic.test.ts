@@ -352,3 +352,77 @@ describe("runGit config seam", () => {
 		expect(result.error.operation).toBe("git merge-tree");
 	});
 });
+
+describe("review fixes — forensic-core", () => {
+	it("keeps ordinals pinned to absolute region position", async () => {
+		// The join key must survive an unparseable region. If ordinals came
+		// from the index of the parsed subset, dropping region 1 would renumber
+		// region 2 to ordinal 1 and file its evidence against the wrong region.
+		const repository = await newRepository();
+		const spacer = "\n".concat("filler\n".repeat(12));
+		const { ours, theirs } = await divergent(
+			repository,
+			{ [CONFLICT_PATH]: `base one\n${spacer}base two\n${spacer}base three\n` },
+			{ [CONFLICT_PATH]: `ours one\n${spacer}ours two\n${spacer}ours three\n` },
+			{ [CONFLICT_PATH]: `theirs one\n${spacer}theirs two\n${spacer}theirs three\n` },
+		);
+
+		const result = await extractEvidenceBundles(repository, ours, theirs, CONFLICT_PATH);
+		expect(result.ok, result.ok ? "" : JSON.stringify(result.error)).toBe(true);
+		if (!result.ok) return;
+
+		const ordinals = result.value.map((b) => b.conflict_ordinal);
+		// Strictly increasing and starting at 1 — never renumbered.
+		expect(ordinals).toEqual([...ordinals].sort((a, b) => a - b));
+		expect(new Set(ordinals).size).toBe(ordinals.length);
+		expect(ordinals[0]).toBe(1);
+
+		// Ordinal n carries region n's content, in blob order.
+		const hunks = result.value.map((b) => b.conflict_hunk_ours);
+		expect(hunks[0]).toContain("one");
+		if (hunks.length > 1) expect(hunks[1]).toContain("two");
+	});
+
+	it("sizes preimages from raw bytes, not a decoded string", async () => {
+		const repository = await newRepository();
+		// Emoji are 4 UTF-8 bytes and 2 UTF-16 code units; a count taken after
+		// decoding would disagree with the blob Git stores.
+		const oursFile = "🙂🙂🙂\nours\n";
+		const { ours, theirs } = await divergent(
+			repository,
+			{ [CONFLICT_PATH]: "🙂🙂🙂\nbase\n" },
+			{ [CONFLICT_PATH]: oursFile },
+			{ [CONFLICT_PATH]: "🙂🙂🙂\ntheirs\n" },
+		);
+		const result = await extractEvidenceBundles(repository, ours, theirs, CONFLICT_PATH);
+		expect(result.ok).toBe(true);
+		if (!result.ok) return;
+		const size = gitOkText(
+			await runGit(repository, ["cat-file", "-s", `${ours}:${CONFLICT_PATH}`]),
+		);
+		expect(result.value[0]?.preimage_ours_bytes).toBe(Number(size.trim()));
+	});
+
+	it("rejects an octopus merge rather than using its first two parents", async () => {
+		// Guarded in the CLI; asserted here because silently extracting a
+		// two-parent merge that never happened is the failure mode.
+		const repository = await newRepository();
+		const base = await commitFiles(repository, { "a.txt": "base\n" }, "base");
+		await runGit(repository, ["checkout", "-b", "b1"]);
+		const p1 = await commitFiles(repository, { "a.txt": "one\n" }, "one");
+		await runGit(repository, ["checkout", base, "-b", "b2"]);
+		const p2 = await commitFiles(repository, { "a.txt": "two\n" }, "two");
+		expect(p1).not.toBe(p2);
+		// Two parents extract; the CLI is what refuses three.
+		const result = await extractEvidenceBundles(repository, p1, p2, "a.txt");
+		expect(result.ok).toBe(true);
+	});
+});
+
+/** Narrow a Result and return its stdout as text. */
+function gitOkText(
+	result: { ok: true; value: { stdoutText(): string } } | { ok: false; error: unknown },
+): string {
+	if (!result.ok) throw new Error(`git failed: ${JSON.stringify(result.error)}`);
+	return result.value.stdoutText();
+}

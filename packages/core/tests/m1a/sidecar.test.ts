@@ -9,6 +9,7 @@ import {
 	evidenceKey,
 	loadEvidenceKeys,
 	parseEvidenceRecord,
+	PATH_LEVEL_ORDINAL,
 	readEvidence,
 	type EvidenceRecord,
 } from "../../src/m1a/sidecar.js";
@@ -223,5 +224,106 @@ describe("resume must not lose a region", () => {
 		// Region 2 of the SAME path is not covered by region 1's key, so a
 		// resuming run still has work to do for this file.
 		expect(keys.value.has(evidenceKey({ ...okRecord, conflict_ordinal: 2 }))).toBe(false);
+	});
+});
+
+describe("review fixes — sidecar", () => {
+	it("rejects a row whose bundle identity disagrees with its key", () => {
+		// Parses field-by-field, but the row is keyed to one region and carries
+		// another's evidence. A consumer joining on the key and reading the
+		// bundle would silently get the wrong region.
+		const mismatched = {
+			...okRecord,
+			conflict_ordinal: 2,
+			bundle: { ...bundle, conflict_ordinal: 1 },
+		};
+		const parsed = parseEvidenceRecord(mismatched);
+		expect(parsed.ok).toBe(false);
+		if (parsed.ok) return;
+		expect(parsed.error.details?.issues).toContain("conflict_ordinal");
+	});
+
+	it("rejects a path mismatch between key and bundle", () => {
+		const mismatched = {
+			...okRecord,
+			bundle: { ...bundle, conflict_path: "src/other.ts" },
+		};
+		expect(parseEvidenceRecord(mismatched).ok).toBe(false);
+	});
+
+	it("distinguishes a missing file from an unreadable one", async () => {
+		const missing = await readEvidence(join(await tempDir(), "absent.jsonl"));
+		expect(missing.ok).toBe(false);
+		if (missing.ok) return;
+		expect(missing.error.kind).toBe("not-found");
+
+		// A directory is readable-as-a-path but not as a file: EISDIR, which is
+		// an unreadable sidecar rather than an absent one.
+		const dir = await tempDir();
+		const unreadable = await readEvidence(dir);
+		expect(unreadable.ok).toBe(false);
+		if (unreadable.ok) return;
+		expect(unreadable.error.kind).toBe("corrupt-corpus");
+	});
+
+	it("repairs a truncated tail instead of appending onto it", async () => {
+		const path = join(await tempDir(), "evidence.jsonl");
+		const first = await EvidenceWriter.open(path);
+		if (!first.ok) throw new Error("open failed");
+		await first.value.append(okRecord);
+		await first.value.close();
+
+		// Simulate a crash mid-write: a partial record with no newline.
+		await writeFile(path, '{"schemaVersion":1,"repository_id":"re', { flag: "a" });
+
+		const second = await EvidenceWriter.open(path);
+		if (!second.ok) throw new Error("reopen failed");
+		await second.value.append(failedRecord);
+		await second.value.close();
+
+		// The fragment is gone and both complete records read back.
+		const read = await readEvidence(path);
+		expect(read.ok, read.ok ? "" : JSON.stringify(read.error)).toBe(true);
+		if (!read.ok) return;
+		expect(read.value).toHaveLength(2);
+	});
+
+	it("terminates a complete final record that lost only its newline", async () => {
+		const path = join(await tempDir(), "evidence.jsonl");
+		await writeFile(path, JSON.stringify(okRecord)); // no trailing newline
+		const writer = await EvidenceWriter.open(path);
+		if (!writer.ok) throw new Error("open failed");
+		await writer.value.append(failedRecord);
+		await writer.value.close();
+
+		const read = await readEvidence(path);
+		expect(read.ok, read.ok ? "" : JSON.stringify(read.error)).toBe(true);
+		if (!read.ok) return;
+		// Nothing lost: the newline was added rather than the record discarded.
+		expect(read.value).toHaveLength(2);
+	});
+
+	it("keeps a path-level failure distinct from a region-1 failure", () => {
+		expect(PATH_LEVEL_ORDINAL).toBe(0);
+		const pathLevel = {
+			...failedRecord,
+			conflict_ordinal: PATH_LEVEL_ORDINAL,
+		};
+		expect(parseEvidenceRecord(pathLevel).ok).toBe(true);
+		// It also keys differently from region 1, so resume treats them apart.
+		expect(evidenceKey(pathLevel)).not.toBe(
+			evidenceKey({ ...failedRecord, conflict_ordinal: 1 }),
+		);
+	});
+
+	it("does not allow ordinal 0 on an ok record", () => {
+		// Only failures can be path-level; a bundle always describes a region.
+		expect(
+			parseEvidenceRecord({
+				...okRecord,
+				conflict_ordinal: 0,
+				bundle: { ...bundle, conflict_ordinal: 0 },
+			}).ok,
+		).toBe(false);
 	});
 });

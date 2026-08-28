@@ -56,9 +56,13 @@ interface Sized {
  * code units. For any non-ASCII input that is neither a byte count nor a
  * character count, so a field documented in bytes reported something else.
  */
-function sizeAndTruncate(original: string, maxBytes?: number): Sized {
-	const buffer = Buffer.from(original, "utf8");
+function sizeAndTruncate(stdout: string | Buffer, maxBytes?: number): Sized {
+	// Size the ORIGINAL bytes Git produced. Decoding to a string and
+	// re-encoding does not round-trip for a blob that is not valid UTF-8, so
+	// the recorded size would describe replacement characters, not the file.
+	const buffer = Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout, "utf8");
 	const bytes = buffer.byteLength;
+	const original = buffer.toString("utf8");
 	if (maxBytes === undefined || bytes <= maxBytes) {
 		return { content: original, bytes, truncated: false };
 	}
@@ -118,8 +122,11 @@ async function fetchPreimage(
 	options: ExtractOptions,
 ): Promise<PreimageFetch> {
 	const operation = `fetchPreimage(${parent}:${path})`;
+	// 0 or 128 only. Git uses 128 for both "no such revision" and "no such
+	// path"; any other status is a real failure and must surface as one rather
+	// than being folded into "absent".
 	const result = await runGit(gitPath, ["show", `${parent}:${path}`], {
-		acceptedExitCodes: [0, 1, 128],
+		acceptedExitCodes: [0, 128],
 	});
 	if (!result.ok) {
 		return {
@@ -135,7 +142,7 @@ async function fetchPreimage(
 	if (result.value.exitCode === 0) {
 		return {
 			ok: true,
-			value: sizeAndTruncate(decodeStdout(result.value.stdout), options.maxBytes),
+			value: sizeAndTruncate(result.value.stdout, options.maxBytes),
 		};
 	}
 
@@ -156,13 +163,47 @@ async function fetchPreimage(
 			}),
 		};
 	}
-	// Revision is real; the path simply is not in it. Evidence, not failure.
+	// The revision is real, so prove the path is genuinely absent rather than
+	// assuming it from the 128. Anything but a clean "absent" is operational.
+	const pathProbe = await runGit(gitPath, ["cat-file", "-e", `${parent}:${path}`], {
+		acceptedExitCodes: [0, 128],
+	});
+	if (!pathProbe.ok) {
+		return {
+			ok: false,
+			error: toolError(
+				pathProbe.error.kind,
+				operation,
+				pathProbe.error.message,
+				pathProbe.error.details,
+			),
+		};
+	}
+	if (pathProbe.value.exitCode === 0) {
+		return {
+			ok: false,
+			error: toolError(
+				"git",
+				operation,
+				"git show failed for a path that exists in the revision",
+				{ parent, path, exitCode: result.value.exitCode },
+			),
+		};
+	}
+	// Revision is real and the path is not in it. Evidence, not failure.
 	return { ok: true, value: null };
 }
 
 interface DependencyGraph {
 	entries: string[];
 	status: DependencyGraphStatus;
+	/**
+	 * Set when the graph is unavailable because a Git command FAILED, as
+	 * opposed to there genuinely being no merge base. The caller turns this
+	 * into a recorded extraction failure instead of shipping a bundle whose
+	 * empty graph hides a timeout.
+	 */
+	error?: ToolError;
 }
 
 /**
@@ -184,11 +225,17 @@ async function fetchDependencyGraph(
 		["merge-base", parentOurs, parentTheirs],
 		{ acceptedExitCodes: [0, 1, 128] },
 	);
-	if (!mergeBaseResult.ok || mergeBaseResult.value.exitCode !== 0) return unavailable;
+	// A timeout, output-limit or spawn failure is not "these histories are
+	// unrelated". Only a clean non-zero exit means no merge base exists.
+	if (!mergeBaseResult.ok) {
+		return { entries: [], status: "unavailable", error: mergeBaseResult.error };
+	}
+	if (mergeBaseResult.value.exitCode !== 0) return unavailable;
 
 	const mergeBase = decodeStdout(mergeBaseResult.value.stdout).trim().split("\n")[0] ?? "";
 	if (!mergeBase) return unavailable;
 
+	let operational: ToolError | undefined;
 	const collect = async (parent: string): Promise<string[] | null> => {
 		const result = await runGit(
 			gitPath,
@@ -201,7 +248,11 @@ async function fetchDependencyGraph(
 			],
 			{ acceptedExitCodes: [0, 1] },
 		);
-		if (!result.ok || result.value.exitCode !== 0) return null;
+		if (!result.ok) {
+			operational ??= result.error;
+			return null;
+		}
+		if (result.value.exitCode !== 0) return null;
 		return Array.from(
 			new Set(
 				decodeStdout(result.value.stdout)
@@ -213,7 +264,11 @@ async function fetchDependencyGraph(
 	};
 
 	const [ours, theirs] = await Promise.all([collect(parentOurs), collect(parentTheirs)]);
-	if (ours === null || theirs === null) return unavailable;
+	if (ours === null || theirs === null) {
+		return operational === undefined
+			? unavailable
+			: { entries: [], status: "unavailable", error: operational };
+	}
 
 	return {
 		entries: [
@@ -233,26 +288,49 @@ function propagate(inner: ToolError): Result<never> {
 }
 
 interface Diff3Region {
+	/** 1-based position among ALL regions in the blob, parseable or not. */
+	ordinal: number;
 	ours: string;
 	base: string;
 	theirs: string;
 }
 
-function parseDiff3Regions(blob: string): Diff3Region[] {
+interface ParsedRegions {
+	regions: Diff3Region[];
+	/** Ordinals Git emitted that the splitter could not decompose. */
+	unparseable: number[];
+}
+
+/**
+ * Split every diff3 region in a blob.
+ *
+ * The ordinal is the region's position among ALL matches, so a region the
+ * splitter cannot decompose leaves a gap rather than renumbering the regions
+ * after it. Deriving the ordinal from the surviving subset would silently
+ * shift later regions onto the wrong identity — and that identity is what a
+ * sidecar row joins to a corpus region by.
+ */
+function parseDiff3Regions(blob: string): ParsedRegions {
 	const regions: Diff3Region[] = [];
+	const unparseable: number[] = [];
 	diff3RegionRegex.lastIndex = 0;
 	const matches = blob.match(diff3RegionRegex);
-	if (!matches) return regions;
-	for (const region of matches) {
+	if (!matches) return { regions, unparseable };
+	matches.forEach((region, index) => {
+		const ordinal = index + 1;
 		const parts = diff3SplitRegex.exec(region);
-		if (!parts) continue;
+		if (!parts) {
+			unparseable.push(ordinal);
+			return;
+		}
 		regions.push({
+			ordinal,
 			ours: stripDelimiter(parts[1] ?? ""),
 			base: stripDelimiter(parts[2] ?? ""),
 			theirs: stripDelimiter(parts[3] ?? ""),
 		});
-	}
-	return regions;
+	});
+	return { regions, unparseable };
 }
 
 type ConflictBlobResult =
@@ -331,7 +409,8 @@ async function fetchConflictBlob(
 		};
 	}
 	const treeOid = decodeStdout(mergeTree.value.stdout).trim().split("\n")[0] ?? "";
-	if (!/^[0-9a-f]{40}$/.test(treeOid)) {
+	// SHA-1 (40) or SHA-256 (64): a sha256 repository emits 64-hex object IDs.
+	if (!/^[0-9a-f]{40}$|^[0-9a-f]{64}$/.test(treeOid)) {
 		return {
 			ok: false,
 			error: toolError(
@@ -374,6 +453,10 @@ export async function extractEvidenceBundles(
 		return propagate(preimageTheirs.error);
 	}
 
+	if (dependencyGraph.error !== undefined) {
+		return propagate(dependencyGraph.error);
+	}
+
 	const blob = await fetchConflictBlob(
 		gitPath,
 		parentOurs,
@@ -385,20 +468,20 @@ export async function extractEvidenceBundles(
 		return propagate(blob.error);
 	}
 
-	const regions = parseDiff3Regions(blob.blob);
+	const { regions, unparseable } = parseDiff3Regions(blob.blob);
 	if (regions.length === 0) {
 		return err(
 			"parse",
 			"extractEvidenceBundles",
 			"No diff3 conflict markers found",
-			{ path: conflictPath },
+			{ path: conflictPath, unparseable_regions: unparseable.length },
 		);
 	}
 
-	const bundles = regions.map((region, index) =>
+	const bundles = regions.map((region) =>
 		EvidenceBundleSchema.parse({
 			conflict_path: conflictPath,
-			conflict_ordinal: index + 1,
+			conflict_ordinal: region.ordinal,
 			conflict_hunk_ours: region.ours,
 			conflict_hunk_base: region.base,
 			conflict_hunk_theirs: region.theirs,

@@ -8,6 +8,7 @@ import { extractEvidenceBundles } from "./forensic-core.js";
 import {
 	EVIDENCE_SCHEMA_VERSION,
 	EvidenceWriter,
+	PATH_LEVEL_ORDINAL,
 	evidenceKey,
 	loadEvidenceKeys,
 	type EvidenceRecord,
@@ -171,26 +172,48 @@ export async function main(
 				conflict_path: path,
 			};
 
-			const write = async (entry: EvidenceRecord): Promise<boolean> => {
+			// Every write goes through here so that `seen` is updated in step
+			// with the file. Loading the resume set once and never adding to it
+			// meant a corpus with duplicate records, or a record repeating a
+			// path, appended the same key twice in a single run.
+			// "skipped" and "written" are distinct outcomes so the summary counts
+			// each region once. Reporting a resumed region as both ok and
+			// skipped would overstate the work done.
+			const write = async (
+				entry: EvidenceRecord,
+			): Promise<"written" | "skipped" | "error"> => {
+				const key = evidenceKey(entry);
+				if (seen.has(key)) {
+					skipped += 1;
+					return "skipped";
+				}
 				const appended = await writer.value.append(entry);
 				if (!appended.ok) {
 					io.stderr(`${JSON.stringify(appended.error)}\n`);
-					return false;
+					return "error";
 				}
-				return true;
+				seen.add(key);
+				return "written";
 			};
 
-			const failure = async (message: string, detail: string): Promise<boolean> =>
+			// A failure that happens before any region is known is a PATH-level
+			// failure. It is filed at PATH_LEVEL_ORDINAL rather than 1 so it
+			// cannot be mistaken for "region 1 failed, regions 2..n untried" —
+			// which is a different and recoverable state.
+			const failure = async (
+				message: string,
+				detail: string,
+			): Promise<"written" | "skipped" | "error"> =>
 				write({
 					...identity,
 					schemaVersion: EVIDENCE_SCHEMA_VERSION,
-					conflict_ordinal: 1,
+					conflict_ordinal: PATH_LEVEL_ORDINAL,
 					status: "failed",
 					error: {
 						kind: "config",
 						operation: "mrgr-evidence",
 						message,
-						details: { path, detail },
+						details: { path, detail, scope: "path" },
 					},
 				});
 
@@ -201,29 +224,37 @@ export async function main(
 			// what makes resume idempotent.
 
 			if (gitPath === null) {
-				failedCount += 1;
-				if (!(await failure("No repository path for a remote record", "pass --repo"))) {
+				if ((await failure("No repository path for a remote record", "pass --repo")) === "error") {
 					await writer.value.close();
 					return 1;
 				}
+				failedCount += 1;
 				continue;
 			}
-			if (ours === undefined || theirs === undefined) {
-				failedCount += 1;
-				if (!(await failure("Merge does not have two parents", "octopus or root"))) {
+			if (ours === undefined || theirs === undefined || parents.length !== 2) {
+				// Exactly two. Fewer is a root; more is an octopus, where
+				// silently taking the first two would extract evidence for a
+				// merge that never happened.
+				if (
+					(await failure(
+						"Merge does not have exactly two parents",
+						`parents=${parents.length}`,
+					)) === "error"
+				) {
 					await writer.value.close();
 					return 1;
 				}
+				failedCount += 1;
 				continue;
 			}
 
 			const opened = await openLocalRepository(gitPath);
 			if (!opened.ok) {
-				failedCount += 1;
-				if (!(await failure(opened.error.message, opened.error.operation))) {
+				if ((await failure(opened.error.message, opened.error.operation)) === "error") {
 					await writer.value.close();
 					return 1;
 				}
+				failedCount += 1;
 				continue;
 			}
 
@@ -236,27 +267,22 @@ export async function main(
 			);
 
 			if (!bundles.ok) {
-				failedCount += 1;
 				const entry: EvidenceRecord = {
 					...identity,
 					schemaVersion: EVIDENCE_SCHEMA_VERSION,
-					conflict_ordinal: 1,
+					conflict_ordinal: PATH_LEVEL_ORDINAL,
 					status: "failed",
-					error: bundles.error,
+					error: { ...bundles.error, details: { ...bundles.error.details, scope: "path" } },
 				};
-				if (!(await write(entry))) {
+				if ((await write(entry)) === "error") {
 					await writer.value.close();
 					return 1;
 				}
+				failedCount += 1;
 				continue;
 			}
 
 			for (const bundle of bundles.value) {
-				if (seen.has(evidenceKey({ ...identity, conflict_ordinal: bundle.conflict_ordinal }))) {
-					skipped += 1;
-					continue;
-				}
-				okCount += 1;
 				const entry: EvidenceRecord = {
 					...identity,
 					schemaVersion: EVIDENCE_SCHEMA_VERSION,
@@ -264,10 +290,12 @@ export async function main(
 					status: "ok",
 					bundle,
 				};
-				if (!(await write(entry))) {
+				const outcome = await write(entry);
+				if (outcome === "error") {
 					await writer.value.close();
 					return 1;
 				}
+				if (outcome === "written") okCount += 1;
 			}
 		}
 	}

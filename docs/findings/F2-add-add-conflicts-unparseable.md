@@ -18,7 +18,7 @@ Git had emitted a perfectly ordinary conflict.
 
 Git writes an add/add conflict with an **empty base section**:
 
-```
+```text
 <<<<<<< 1fe1bf0...
 ours
 ||||||| d41e07d
@@ -32,7 +32,7 @@ There is nothing between `|||||||` and `=======`. Verified directly with
 
 The section-splitting regex was:
 
-```
+```text
 /^<<<<<<<[^\n]*\n([\s\S]*?)\n\|\|\|\|\|\|[^\n]*\n([\s\S]*?)\n=======\n([\s\S]*?)\n>>>>>>>/
 ```
 
@@ -59,7 +59,7 @@ Each capture absorbs its own trailing newline instead of requiring one before
 the next marker, and a single delimiting newline is stripped afterwards so
 non-empty sections keep their previous values exactly:
 
-```
+```text
 /^<<<<<<<[^\n]*\n([\s\S]*?)\|{7}[^\n]*\n([\s\S]*?)={7}\n([\s\S]*?)>{7}/
 ```
 

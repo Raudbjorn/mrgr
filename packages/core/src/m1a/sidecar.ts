@@ -8,6 +8,16 @@ import { err, ok, type Result, type ToolError } from "../evaluation/result.js";
 
 export const EVIDENCE_SCHEMA_VERSION = 1 as const;
 
+/**
+ * Ordinal reserved for a failure that occurred before any region was known —
+ * a bad repository path, a non-two-parent merge, an unparseable blob.
+ *
+ * Region ordinals are 1-based, so a path-level failure filed at 1 is
+ * indistinguishable from "region 1 failed and the rest were never tried".
+ * Filing it at 0 keeps those two states apart.
+ */
+export const PATH_LEVEL_ORDINAL = 0;
+
 const ToolErrorSchema: z.ZodType<ToolError> = z.object({
 	kind: z.enum([
 		"config",
@@ -38,7 +48,7 @@ const ToolErrorSchema: z.ZodType<ToolError> = z.object({
  * path and ordinal gives the same stable identity `ConflictRegionRecord` uses,
  * so a sidecar row joins 1:1 to a corpus region.
  */
-export const EvidenceRecordSchema = z.discriminatedUnion("status", [
+const BaseEvidenceRecordSchema = z.discriminatedUnion("status", [
 	z.object({
 		schemaVersion: z.literal(EVIDENCE_SCHEMA_VERSION),
 		repository_id: z.string().min(1),
@@ -55,11 +65,36 @@ export const EvidenceRecordSchema = z.discriminatedUnion("status", [
 		merge_sha: z.string().min(1),
 		baseline_id: z.string().min(1),
 		conflict_path: z.string().min(1),
-		conflict_ordinal: z.number().int().positive(),
+		conflict_ordinal: z.number().int().nonnegative(), // 0 = PATH_LEVEL_ORDINAL
 		status: z.literal("failed"),
 		error: ToolErrorSchema,
 	}),
 ]);
+
+/**
+ * A row is only coherent if the key it is filed under matches the identity the
+ * bundle carries. Validating them independently allows a row keyed to region 1
+ * that contains region 2's evidence, which parses cleanly and joins wrongly.
+ */
+export const EvidenceRecordSchema = BaseEvidenceRecordSchema.superRefine(
+	(record, ctx) => {
+		if (record.status !== "ok") return;
+		if (record.bundle.conflict_path !== record.conflict_path) {
+			ctx.addIssue({
+				code: "custom",
+				path: ["bundle", "conflict_path"],
+				message: `bundle.conflict_path ${JSON.stringify(record.bundle.conflict_path)} does not match record conflict_path ${JSON.stringify(record.conflict_path)}`,
+			});
+		}
+		if (record.bundle.conflict_ordinal !== record.conflict_ordinal) {
+			ctx.addIssue({
+				code: "custom",
+				path: ["bundle", "conflict_ordinal"],
+				message: `bundle.conflict_ordinal ${record.bundle.conflict_ordinal} does not match record conflict_ordinal ${record.conflict_ordinal}`,
+			});
+		}
+	},
+);
 
 export type EvidenceRecord = z.infer<typeof EvidenceRecordSchema>;
 
@@ -130,10 +165,14 @@ export async function readEvidence(path: string): Promise<Result<EvidenceRecord[
 		}
 	} catch (cause) {
 		const code = (cause as NodeJS.ErrnoException).code ?? null;
-		return err("not-found", "read evidence", "Evidence file could not be read", {
-			path,
-			code,
-		});
+		return err(
+			code === "ENOENT" ? "not-found" : "corrupt-corpus",
+			"read evidence",
+			code === "ENOENT"
+				? "Evidence file does not exist"
+				: "Evidence file could not be read",
+			{ path, code },
+		);
 	}
 	return ok(records);
 }
@@ -146,6 +185,54 @@ export async function loadEvidenceKeys(path: string): Promise<Result<Set<string>
 		return existing;
 	}
 	return ok(new Set(existing.value.map(evidenceKey)));
+}
+
+/**
+ * Make the file safe to append to.
+ *
+ * A crash mid-write leaves a partial final line. Appending after it would
+ * splice the next record onto the fragment and corrupt both, and a fail-closed
+ * reader would then reject the whole sidecar. If the trailing fragment is
+ * itself a complete record missing only its newline, terminate it; otherwise
+ * discard it. Same contract as `prepareAppendBoundary` in
+ * `evaluation/corpus.ts`.
+ */
+async function prepareAppendBoundary(handle: FileHandle): Promise<void> {
+	const metadata = await handle.stat();
+	if (metadata.size === 0) return;
+
+	let position = metadata.size;
+	let tail = Buffer.alloc(0);
+	let tailOffset = 0;
+	const chunkSize = 64 * 1024;
+	while (position > 0) {
+		const length = Math.min(chunkSize, position);
+		const start = position - length;
+		const chunk = Buffer.allocUnsafe(length);
+		const read = await handle.read(chunk, 0, length, start);
+		const bytes = chunk.subarray(0, read.bytesRead);
+		const newline = bytes.lastIndexOf(0x0a);
+		if (newline >= 0) {
+			tailOffset = start + newline + 1;
+			tail = Buffer.concat([bytes.subarray(newline + 1), tail]);
+			break;
+		}
+		tail = Buffer.concat([bytes, tail]);
+		position = start;
+	}
+	if (tail.length === 0) return;
+
+	let complete = false;
+	try {
+		complete = parseEvidenceRecord(JSON.parse(tail.toString("utf8"))).ok;
+	} catch {
+		complete = false;
+	}
+	if (complete) {
+		await handle.writeFile("\n", "utf8");
+		return;
+	}
+	await handle.truncate(tailOffset);
 }
 
 /**
@@ -167,10 +254,14 @@ export class EvidenceWriter {
 	) {}
 
 	static async open(path: string): Promise<Result<EvidenceWriter>> {
+		let handle: FileHandle | undefined;
 		try {
-			const handle = await open(path, "a");
+			// "a+" so the tail can be read before appending to it.
+			handle = await open(path, "a+");
+			await prepareAppendBoundary(handle);
 			return ok(new EvidenceWriter(handle, path));
 		} catch (cause) {
+			if (handle !== undefined) await handle.close().catch(() => undefined);
 			const code = (cause as NodeJS.ErrnoException).code ?? null;
 			return err("config", "open evidence", "Evidence file could not be opened", {
 				path,
