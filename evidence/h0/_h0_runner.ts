@@ -9,9 +9,34 @@ const CORPUS_FILES = [
 	"evidence/h0/triples-jq-diff3.jsonl",
 	"evidence/h0/triples-cli-diff3.jsonl",
 ];
-const SUBSAMPLE = Number(process.env.H0_SUBSAMPLE ?? 30);
-const REPEATS = Number(process.env.H0_REPEATS ?? 3);
-const ARMS = ["hunk-only", "selected", "full-bundle"] as const;
+// PR-A: refuse to run with the legacy hardcoded defaults. The plan's S2 fix
+// requires env-var-driven SUBSAMPLE/REPEATS. Run with H0_SUBSAMPLE=... H0_REPEATS=... .
+const _subsampleEnv = process.env.H0_SUBSAMPLE;
+const _repeatsEnv = process.env.H0_REPEATS;
+if (_subsampleEnv === undefined || _repeatsEnv === undefined) {
+	throw new Error("H0_SUBSAMPLE and H0_REPEATS must be set (PR-A: hardcoded defaults removed per S2 fix)");
+}
+const SUBSAMPLE = Number(_subsampleEnv);
+const REPEATS = Number(_repeatsEnv);
+if (!Number.isFinite(SUBSAMPLE) || SUBSAMPLE <= 0) throw new Error(`H0_SUBSAMPLE must be a positive integer, got ${_subsampleEnv}`);
+if (!Number.isFinite(REPEATS) || REPEATS <= 0) throw new Error(`H0_REPEATS must be a positive integer, got ${_repeatsEnv}`);
+// PR-B2 / D4 reproducibility: H0_SEED is required for deterministic Fisher-Yates subsampling.
+const _seedEnv = process.env.H0_SEED;
+if (_seedEnv === undefined) {
+	throw new Error("H0_SEED must be set (PR-B2: reproducibility via Fisher-Yates subsampling)");
+}
+const SEED = Number(_seedEnv);
+if (!Number.isInteger(SEED)) throw new Error(`H0_SEED must be a 32-bit integer, got ${_seedEnv}`);
+// PR-B2 / D4 per-repeat temperature: cycle through [0.0, 0.5, 0.9] so repeats
+// are not identical (temp=0 collapses n repeats to 1 effective sample).
+const REPEAT_TEMPERATURES: readonly number[] = [0.0, 0.5, 0.9];
+// PR-B2 / D3: extend ARMS with the three trivial baselines. The baselines
+// are pre-computed by _baselines.ts (PR-B1) and live in baselines.json;
+// the runner skips the LLM call for those arms and copies records from
+// baselines.json into the run output.
+const MODEL_ARMS = ["hunk-only", "selected", "full-bundle"] as const;
+const BASELINE_ARMS = ["baseline-keep_ours", "baseline-keep_theirs", "baseline-compose"] as const;
+const ARMS = [...MODEL_ARMS, ...BASELINE_ARMS] as const;
 type Arm = typeof ARMS[number];
 const SMALL_INPUT_BUDGET_CHARS = 2400;
 
@@ -46,7 +71,9 @@ interface H0Record {
 }
 
 const isSmallTriple = (t: Triple): boolean => {
-	const sample = `Repository: ${t.repository_id}\nMerge: ${t.merge_sha}\nPath: ${t.path}\nTriple: ${t.triple_key}\nCategory: ${t.category}\n\n<<CONFLICT_HUNK>>\n<<<<<<< ours\n${t.ours}=======\n${t.theirs}>>>>>>>\n<<END_HUNK>>\n<<RESOLUTION_HINT>>\n${t.resolution}<<END_RESOLUTION>>\n`;
+	// PR-A: drop the resolution from the input-budget calculation. Resolution
+	// is for the grader, not the model.
+	const sample = `Repository: ${t.repository_id}\nMerge: ${t.merge_sha}\nPath: ${t.path}\nTriple: ${t.triple_key}\nCategory: ${t.category}\n\n<<CONFLICT_HUNK>>\n<<<<<<< ours\n${t.ours}=======\n${t.theirs}>>>>>>>\n<<END_HUNK>>\n`;
 	return sample.length <= SMALL_INPUT_BUDGET_CHARS;
 };
 
@@ -66,7 +93,6 @@ const buildMessages = (triple: Triple, arm: Arm): { role: "system" | "user"; con
 	const hunkOnly =
 		`<<CONFLICT_HUNK>>\n` +
 		`<<<<<<< ours\n${triple.ours}=======\n${triple.theirs}>>>>>>>\n<<END_HUNK>>\n` +
-		`<<RESOLUTION_HINT>>\n${triple.resolution}<<END_RESOLUTION>>\n` +
 		`\nDecide. Reply with strict JSON only.`;
 	const cap = 1200;
 	const trim = (s: string) => s.length > cap ? s.slice(0, cap) + "\n[…truncated…]" : s;
@@ -88,6 +114,24 @@ const buildMessages = (triple: Triple, arm: Arm): { role: "system" | "user"; con
 			hunkOnly +
 			`\nDecide. Reply with strict JSON only.`;
 	}
+	// PR-A D2 fix: when a triple carries `preimage_ours`/`preimage_theirs`,
+	// prefer those over the conflict-region text. Pre-existing triples
+	// without preimages fall back to the old behavior (full-bundle arm
+	// shows mislabeled conflict-region text). New triples from a regen
+	// (PR-A's Step 2 regen, future) carry real preimages.
+	if (arm === "full" || arm === "full-bundle") {
+		const preimageOurs = (triple as Triple & { preimage_ours?: string | null }).preimage_ours;
+		const preimageTheirs = (triple as Triple & { preimage_theirs?: string | null }).preimage_theirs;
+		if (preimageOurs !== undefined) {
+			// Replace the FILE_FULL_PREIMAGE blocks with real preimages.
+			user = header +
+				`<<FILE_FULL_PREIMAGE (ours side)>>\n${trim(preimageOurs)}\n<<END_PREIMAGE_OURS>>\n` +
+				`<<FILE_FULL_PREIMAGE (theirs side)>>\n${preimageTheirs !== null && preimageTheirs !== undefined ? trim(preimageTheirs) : "(absent)"}\n<<END_PREIMAGE_THEIRS>>\n` +
+				`<<DEPENDENCY_LIST>>\n(none)<<END_DEPENDENCY>>\n\n` +
+				hunkOnly +
+				`\nDecide. Reply with strict JSON only.`;
+		}
+	}
 	return [
 		{ role: "system", content: SYSTEM_PROMPT },
 		{ role: "user", content: user },
@@ -96,12 +140,15 @@ const buildMessages = (triple: Triple, arm: Arm): { role: "system" | "user"; con
 
 const callAdjudicator = async (
 	messages: { role: "system" | "user"; content: string }[],
+	opts: { temperature: number; seed: number },
 ): Promise<{ content: string; input_tokens: number; output_tokens: number; ok: boolean }> => {
 	const body = {
 		model: `/mnt/ssd1/models/${MODEL_TAG}.gguf`,
 		messages,
 		max_tokens: 512,
-		temperature: 0.0,
+		// PR-B2 / D4: temperature and seed are per-call, not hardcoded.
+		temperature: opts.temperature,
+		seed: opts.seed,
 	};
 	try {
 		const res = await fetch(`${ADJUDICATOR}/v1/chat/completions`, {
@@ -180,12 +227,59 @@ const loadExistingKeys = (path: string): Set<string> => {
 	return keys;
 };
 
-const subsample = <T>(items: T[], n: number): T[] => {
-	if (items.length <= n) return items;
-	const stride = items.length / n;
-	const out: T[] = [];
-	for (let i = 0; i < n; i += 1) out.push(items[Math.floor(i * stride)] as T);
-	return out;
+// PR-B2 / S4 + D4: Fisher-Yates shuffle seeded by SEED. Reproducible
+// across runs that share H0_SEED; replaces the stride-based sampler
+// which is not random (S4 defect).
+const mulberry32 = (a: number): () => number => {
+	return () => {
+		a |= 0; a = (a + 0x6D2B79F5) | 0;
+		let t = Math.imul(a ^ (a >>> 15));
+		t = (t + Math.imul(t ^ (t >>> 7))) | 0;
+		return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+	};
+};
+const subsample = <T>(items: T[], n: number, seed: number): T[] => {
+	if (items.length <= n) return items.slice();
+	const rng = mulberry32(seed);
+	const a = items.slice();
+	for (let i = a.length - 1; i > 0; i -= 1) {
+		const j = Math.floor(rng() * (i + 1));
+		const tmp = a[i] as T;
+		a[i] = a[j] as T;
+		a[j] = tmp;
+	}
+	return a.slice(0, n);
+};
+
+// PR-B2 / D3: read baselines.json once at start of main; build a
+// (triple_id, arm, run) -> record map for O(1) lookup in the run loop.
+interface BaselineRecord {
+	triple_id: string;
+	arm: string;
+	run: number;
+	decision: string;
+	reason_text: string;
+	duration_ms: number;
+	input_tokens: number;
+	output_tokens: number;
+	evidence_ids_quoted: string[];
+	fabricated_ids: boolean;
+	schema_valid: boolean;
+	halt_reason: string | null;
+	model: { name: string; sha: string };
+}
+const loadBaselineRecords = async (): Promise<Map<string, BaselineRecord>> => {
+	const m = new Map<string, BaselineRecord>();
+	if (!existsSync("evidence/h0/baselines.json")) return m;
+	const text = readFileSync("evidence/h0/baselines.json", "utf8");
+	for (const line of text.split("\n")) {
+		if (line === "") continue;
+		try {
+			const r = JSON.parse(line) as BaselineRecord;
+			m.set(`${r.triple_id}|${r.arm}|${r.run}`, r);
+		} catch {}
+	}
+	return m;
 };
 
 const main = async () => {
@@ -193,7 +287,7 @@ const main = async () => {
 	const stamp = process.env.H0_STAMP ?? new Date().toISOString().replace(/[:.]/g, "-");
 	const triples = CORPUS_FILES.flatMap(loadTriples);
 	console.log(`loaded ${triples.length} triples from ${CORPUS_FILES.length} files`);
-	const sampled = subsample(triples.filter(isSmallTriple), SUBSAMPLE);
+	const sampled = subsample(triples.filter(isSmallTriple), SUBSAMPLE, SEED);
 	console.log(`subsampled to ${sampled.length} triples (H0_SUBSAMPLE=${SUBSAMPLE}, REPEATS=${REPEATS})`);
 
 	for (const arm of ARMS) {
@@ -203,11 +297,26 @@ const main = async () => {
 		let i = 0;
 		for (const triple of sampled) {
 			i += 1;
-			for (let r = 1; r <= REPEATS; r += 1) {
+			// PR-B2 / D3: load baseline records once, then look up per arm+triple+repeat.
+	const baselineRecords = await loadBaselineRecords();
+	for (let r = 1; r <= REPEATS; r += 1) {
 				const key = `${triple.triple_key}|${arm}|${r}`;
 				if (done.has(key)) continue;
+				// Baseline arms: copy precomputed record, skip LLM call.
+				if (BASELINE_ARMS.includes(arm as typeof BASELINE_ARMS[number])) {
+					const br = baselineRecords.get(`${triple.triple_key}|${arm}|${r}`);
+					if (br) {
+						appendJsonl(outPath, br);
+						console.log(`  [${arm}] triple ${i}/${sampled.length} run ${r}: baseline ${br.decision}`);
+						continue;
+					}
+					// Fall through if baseline record missing (caller did not run _baselines.ts).
+				}
 				const t0 = Date.now();
-				const result = await callAdjudicator(buildMessages(triple, arm));
+				const result = await callAdjudicator(buildMessages(triple, arm), {
+			temperature: REPEAT_TEMPERATURES[(r - 1) % REPEAT_TEMPERATURES.length],
+			seed: SEED + r,
+		});
 				const parsed = parseDecision(result.content);
 				const record: H0Record = {
 					triple_id: triple.triple_key,

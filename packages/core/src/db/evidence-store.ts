@@ -42,6 +42,27 @@ function keyDetails(record: EvidenceKeyFields): DbToolError["details"] {
  * result this store exists to prevent. `append` therefore fails closed with
  * reason `"dependency-graph-conflict"` instead of writing anything.
  */
+/**
+ * Rebuild one side's OID field from its column, which has lost a distinction
+ * the record schema keeps: SQL has a single NULL, while the bundle separates
+ * "never recorded" (field absent) from "no path in that parent" (field null).
+ *
+ * The byte count is the discriminator. A side with a byte count and no OID can
+ * only be a row written before the OID existed, so the field is omitted rather
+ * than reported as null — which would assert the path was absent, and would
+ * also fail the schema's own oid/bytes agreement check.
+ */
+function readOid(
+	side: "ours" | "theirs",
+	oid: unknown,
+	bytes: unknown,
+): Partial<Pick<EvidenceBundle, "preimage_ours_oid" | "preimage_theirs_oid">> {
+	const field = `preimage_${side}_oid` as const;
+	if (typeof oid === "string") return { [field]: oid };
+	if (bytes === null) return { [field]: null };
+	return {};
+}
+
 export class EvidenceStore {
 	constructor(private readonly handle: DbHandle) {}
 
@@ -253,9 +274,10 @@ export class EvidenceStore {
 				  hunk_ours_sha, hunk_base_sha, hunk_theirs_sha,
 				  preimage_ours_sha, preimage_theirs_sha,
 				  preimage_ours_bytes, preimage_theirs_bytes,
+				  preimage_ours_oid, preimage_theirs_oid,
 				  preimage_ours_truncated, preimage_theirs_truncated,
 				  dependency_graph_status)
-				 VALUES (?, ?, ?, ?, ?, 'ok', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				 VALUES (?, ?, ?, ?, ?, 'ok', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			)
 			.run(
 				key.repository_id,
@@ -270,6 +292,10 @@ export class EvidenceStore {
 				preimageTheirsSha,
 				bundle.preimage_ours_bytes,
 				bundle.preimage_theirs_bytes,
+				// An unrecorded OID and an absent path both store as SQL NULL;
+				// `readOid` below tells them apart again from the byte count.
+				bundle.preimage_ours_oid ?? null,
+				bundle.preimage_theirs_oid ?? null,
 				bundle.preimage_ours_truncated ? 1 : 0,
 				bundle.preimage_theirs_truncated ? 1 : 0,
 				bundle.dependency_graph_status,
@@ -498,6 +524,8 @@ export class EvidenceStore {
 			preimage_theirs: preimageTheirs,
 			preimage_ours_bytes: row.preimage_ours_bytes as number | null,
 			preimage_theirs_bytes: row.preimage_theirs_bytes as number | null,
+			...readOid("ours", row.preimage_ours_oid, row.preimage_ours_bytes),
+			...readOid("theirs", row.preimage_theirs_oid, row.preimage_theirs_bytes),
 			preimage_ours_truncated: row.preimage_ours_truncated === 1,
 			preimage_theirs_truncated: row.preimage_theirs_truncated === 1,
 			dependency_graph: depRows.map((d) => `${d.side}:${d.dep_path}`),

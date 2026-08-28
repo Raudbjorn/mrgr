@@ -7,7 +7,7 @@ import { dbErr, dbOk, type DbResult } from "./result.js";
 import type { DbHandle } from "./open.js";
 
 export interface ExportManifest {
-	schema_version: string; // "mrgr-db/1"
+	schema_version: string; // SCHEMA_VERSION_STRING, e.g. "mrgr-db/2"
 	meta: Record<string, string>; // verbatim copy of the meta table
 	tables: Record<string, { rows: number; sha256: string }>; // per exported file
 	// Present only when withBlobs was requested: without it, blobs/ is not

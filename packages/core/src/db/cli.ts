@@ -6,6 +6,8 @@ import { exportDb } from "./export.js";
 import { importCorpusJsonl, importEvidenceJsonl } from "./import.js";
 import { closeDb, openDb, type DbHandle } from "./open.js";
 import { dbErr, dbOk, type DbResult, type DbToolError } from "./result.js";
+import type { Result } from "../evaluation/result.js";
+import { runLlamaCppRecord, runLlamaCppReindex, type LlamaCppRecordResult } from "./llama-cpp-cli.js";
 
 export interface CliIo {
 	stdout: (text: string) => void;
@@ -19,6 +21,8 @@ Usage:
   mrgr-db import --db PATH (--corpus FILE | --evidence FILE)
   mrgr-db export --db PATH --out DIR [--with-blobs]
   mrgr-db verify --db PATH
+  mrgr-db llama-cpp record --db PATH --harness <name> ... --binary <path> --metrics-jsonl <path>
+  mrgr-db llama-cpp reindex --db PATH [--since YYYY-MM-DD]
   mrgr-db --help
 
 init    Create PATH if it does not exist, or accept it unchanged if it
@@ -31,6 +35,11 @@ export  Dump PATH to canonical JSONL under DIR, one file per table plus
 verify  PRAGMA integrity_check, PRAGMA foreign_key_check, the schema-version
         checks openDb already enforces, and a digest re-check of every
         stored blob. Prints per-table row counts on success.
+llama-cpp record  Append one or more llama.cpp runs to PATH from a metrics
+        JSONL stream. Idempotent on duplicate config+metrics.
+llama-cpp reindex  Re-push mrgr/.do-not-commit/persistence/*.md into the
+        home Qdrant collection. Stub: returns a typed error until Step 4
+        wires the embedder and REST client.
 `;
 
 /**
@@ -299,6 +308,37 @@ async function runVerify(argv: readonly string[]): Promise<DbResult<string>> {
 	return verified;
 }
 
+async function runLlamaCpp(
+	command: string,
+	argv: readonly string[],
+): Promise<DbResult<string | null>> {
+	// Translate the carried-Result return into a DbResult so the dispatcher's
+	// signature stays uniform. The `"db"` kind collapses to `"config"` for
+	// CLI-side consumption.
+	let dbPath = "mrgr.db";
+	let rest = argv;
+	if (argv[0] === "--db" && typeof argv[1] === "string") {
+		dbPath = argv[1];
+		rest = argv.slice(2);
+	}
+	let r: Result<unknown>;
+	if (command === "record") {
+		r = await runLlamaCppRecord(dbPath, rest);
+	} else if (command === "reindex") {
+		r = await runLlamaCppReindex(dbPath, rest);
+	} else {
+		return usageError("mrgr-db", "Unknown llama-cpp subcommand; expected record | reindex", {
+			subcommand: command,
+		});
+	}
+	if (!r.ok) return dbErr("config", r.error.operation, r.error.message, r.error.details);
+	if (r.value === null) return dbOk(null);
+	if (command === "record") {
+		return dbOk(`recorded ${(r.value as LlamaCppRecordResult[]).length} run(s)\n`);
+	}
+	return dbOk(`${JSON.stringify(r.value)}\n`);
+}
+
 async function execute(argv: readonly string[]): Promise<DbResult<string | null>> {
 	if (argv.length === 1 && argv[0] === "--help") return dbOk(HELP);
 	const command = argv[0];
@@ -307,6 +347,7 @@ async function execute(argv: readonly string[]): Promise<DbResult<string | null>
 	if (command === "import") return runImport(rest);
 	if (command === "export") return runExport(rest);
 	if (command === "verify") return runVerify(rest);
+	if (command === "llama-cpp") return runLlamaCpp(rest[0] ?? "", rest.slice(1));
 	return usageError("mrgr-db", "A known command is required; use --help", {
 		command: command ?? null,
 	});

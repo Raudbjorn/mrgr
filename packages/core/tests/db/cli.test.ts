@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { putBlob } from "../../src/db/blob.js";
 import { main, type CliIo } from "../../src/db/cli.js";
-import { closeDb, openDb } from "../../src/db/open.js";
+import { closeDb, openDb, SCHEMA_VERSION_STRING } from "../../src/db/open.js";
 
 const FIXTURES_DIR = join(dirname(fileURLToPath(import.meta.url)), "fixtures");
 const LEGACY_CORPUS = join(FIXTURES_DIR, "legacy-corpus.jsonl");
@@ -97,7 +97,7 @@ describe("mrgr-db export", () => {
 			schema_version: string;
 			tables: Record<string, { rows: number }>;
 		};
-		expect(manifest.schema_version).toBe("mrgr-db/1");
+		expect(manifest.schema_version).toBe(SCHEMA_VERSION_STRING);
 		for (const table of TABLE_NAMES) {
 			expect(existsSync(join(outDir, `${table}.jsonl`))).toBe(true);
 		}
@@ -268,6 +268,167 @@ describe("mrgr-db CLI surface", () => {
 		expect(help).toContain("import --db PATH");
 		expect(help).toContain("export --db PATH");
 		expect(help).toContain("verify --db PATH");
+		expect(help).toContain("llama-cpp record");
+		expect(help).toContain("llama-cpp reindex");
 		expect(capture.stderr).toEqual([]);
+	});
+});
+
+describe("mrgr-db llama-cpp record", () => {
+	it("records one synthetic ppl-probe run and is idempotent on re-run", async () => {
+		const dir = temporaryDirectory();
+		const dbPath = join(dir, "mrgr.db");
+		const binaryPath = join(dir, "fake-llama-cpp");
+		writeFileSync(binaryPath, "");
+		const metricsPath = join(dir, "metrics.jsonl");
+		writeFileSync(
+			metricsPath,
+			JSON.stringify({
+				prefill_ms: 1234,
+				decode_ms_total: 4500,
+				decode_tokens_total: 300,
+				g_tok_s: 66.7,
+				ttft_ms: 42,
+				exit_code: 0,
+				gate_fail_count: 0,
+			}) + "\n",
+		);
+
+		const args = [
+			"llama-cpp",
+			"record",
+			"--db",
+			dbPath,
+			"--harness",
+			"ppl-probe",
+			"--backend",
+			"sycl",
+			"--model",
+			"Llama-3.1-8B",
+			"--quant",
+			"Q4_K_M",
+			"--ctx-len",
+			"2048",
+			"--n-parallel",
+			"1",
+			"--binary",
+			binaryPath,
+			"--metrics-jsonl",
+			metricsPath,
+		];
+
+		// First invocation: writes one row.
+		const first = captureIo();
+		expect(await main(args, first.io)).toBe(0);
+		expect(first.stdout.join("")).toContain("recorded 1 run");
+
+		const opened = openDb(dbPath);
+		if (!opened.ok) throw new Error(opened.error.message);
+		const runCount = (
+			opened.value.db.prepare("SELECT count(*) AS n FROM run").get() as { n: number }
+		).n;
+		const resultCount = (
+			opened.value.db.prepare("SELECT count(*) AS n FROM run_result").get() as {
+				n: number;
+			}
+		).n;
+		const statsCount = (
+			opened.value.db.prepare("SELECT count(*) AS n FROM llama_run_stats").get() as {
+				n: number;
+			}
+		).n;
+		expect(runCount).toBe(1);
+		expect(resultCount).toBe(1);
+		expect(statsCount).toBe(1);
+		closeDb(opened.value);
+
+		// Second invocation with identical config: idempotent — still one row.
+		const second = captureIo();
+		expect(await main(args, second.io)).toBe(0);
+		expect(second.stdout.join("")).toContain("recorded 1 run");
+
+		const reopened = openDb(dbPath);
+		if (!reopened.ok) throw new Error(reopened.error.message);
+		expect(
+			(reopened.value.db.prepare("SELECT count(*) AS n FROM run").get() as { n: number }).n,
+		).toBe(1);
+		closeDb(reopened.value);
+	});
+
+	it("exits 2 with a typed config error when --binary is missing", async () => {
+		const dir = temporaryDirectory();
+		const dbPath = join(dir, "mrgr.db");
+		const metricsPath = join(dir, "metrics.jsonl");
+		writeFileSync(metricsPath, "{}\n");
+
+		const capture = captureIo();
+		expect(
+			await main(
+				[
+					"llama-cpp",
+					"record",
+					"--db",
+					dbPath,
+					"--harness",
+					"ppl-probe",
+					"--backend",
+					"sycl",
+					"--model",
+					"M",
+					"--quant",
+					"Q",
+					"--ctx-len",
+					"2048",
+					"--n-parallel",
+					"1",
+					"--binary",
+					join(dir, "does-not-exist"),
+					"--metrics-jsonl",
+					metricsPath,
+				],
+				capture.io,
+			),
+		).toBe(2);
+		expect(capture.stderr).toHaveLength(1);
+		expect(JSON.parse(capture.stderr[0] as string).kind).toBe("config");
+	});
+});
+
+describe("mrgr-db llama-cpp reindex", () => {
+	it("writes a reindex manifest with sha256, byte_len, and h1_text for each markdown file", async () => {
+		const dir = temporaryDirectory();
+		const dbPath = join(dir, "mrgr.db");
+		const persistenceDir = join(dir, "persistence");
+		mkdirSync(persistenceDir);
+		writeFileSync(join(persistenceDir, "a.md"), "# Audit\nllama.cpp corpus audit.\n");
+		writeFileSync(join(persistenceDir, "b.md"), "# Decisions\nQ1 schema.\n");
+
+		const capture = captureIo();
+		expect(
+			await main(
+				["llama-cpp", "reindex", "--db", dbPath, "--persistence-dir", persistenceDir],
+				capture.io,
+			),
+		).toBe(0);
+
+		const stdout = capture.stdout.join("");
+		expect(stdout).toContain('"files_indexed":2');
+		expect(stdout).toContain('"points_total":2');
+
+		// The manifest file exists and has the expected shape.
+		const stamp = new Date().toISOString().slice(0, 10);
+		const manifestPath = join(persistenceDir, `reindex-manifest-${stamp}.json`);
+		expect(existsSync(manifestPath)).toBe(true);
+		const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as {
+			collection: string;
+			points: Array<{ file_path: string; sha256: string; byte_len: number; h1_text: string | null }>;
+		};
+		expect(manifest.collection).toBe("mrgr_persistence_reindex_local");
+		expect(manifest.points).toHaveLength(2);
+		for (const point of manifest.points) {
+			expect(point.sha256).toMatch(/^[0-9a-f]{64}$/);
+			expect(point.byte_len).toBeGreaterThan(0);
+			expect(point.h1_text).not.toBeNull();
+		}
 	});
 });

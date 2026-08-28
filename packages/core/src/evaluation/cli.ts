@@ -37,6 +37,11 @@ import {
 	type ReplayProvenance,
 } from "./types.js";
 
+import {
+	runLlamaCppRecord,
+	runLlamaCppReindex,
+} from "../db/llama-cpp-cli.js";
+
 const HELP = `WP0 merge forensics
 
 Usage:
@@ -59,19 +64,19 @@ interface ScanTarget {
 
 interface ScanOptions {
 	out: string;
-	conflictStyle?: ConflictStyle;
-	since?: string;
+	conflictStyle: ConflictStyle | undefined;
+	since: string | undefined;
 	jobs: number;
-	revRange?: string;
-	host?: string;
-	cacheDir?: string;
-	refresh?: boolean;
+	revRange: string | undefined;
+	host: string | undefined;
+	cacheDir: string | undefined;
+	refresh: boolean;
 	remote: boolean;
 }
 
 interface ParsedCommandArgs {
-	values: Record<string, string | boolean | (string | boolean)[] | undefined>;
-	positionals: string[];
+	positionals: readonly string[];
+	values: Record<string, unknown>;
 }
 
 function usageError(
@@ -428,6 +433,7 @@ function parseScan(
 
 async function execute(
 	argv: readonly string[],
+	io: CliIo,
 ): Promise<Result<string | null>> {
 	if (argv.length === 1 && argv[0] === "--help") return ok(HELP);
 	const command = argv[0];
@@ -486,7 +492,34 @@ async function execute(
 		});
 		return materialized.ok ? ok(null) : materialized;
 	}
+	if (command === "llama-cpp") {
+		const sub = argv[1];
+		if (sub === "record") {
+			const result = await runLlamaCppRecord("mrgr.db", argv.slice(2));
+			return serializeLlamaCppResult(result, io);
+		}
+		if (sub === "reindex") {
+			const result = await runLlamaCppReindex("mrgr.db", argv.slice(2));
+			return serializeLlamaCppResult(result, io);
+		}
+		return usageError(
+			"llama-cpp",
+			"Unknown llama-cpp subcommand; expected record | reindex",
+		);
+	}
 	return usageError("CLI", "Unknown or missing command; use --help");
+}
+
+/** Format a llama-cpp CLI result. Success bodies (arrays of `{run_id,...}`
+ * or reindex summaries) are JSON-printed to stdout; errors propagate to the
+ * dispatcher's existing stderr path. */
+function serializeLlamaCppResult(
+	result: Result<unknown>,
+	io: CliIo,
+): Result<string | null> {
+	if (!result.ok) return result;
+	io.stdout(`${JSON.stringify(result.value)}\n`);
+	return ok(null);
 }
 
 export async function main(
@@ -502,7 +535,7 @@ export async function main(
 ): Promise<number> {
 	let result: Result<string | null>;
 	try {
-		result = await execute(argv);
+		result = await execute(argv, io);
 	} catch {
 		result = err("unsupported", "CLI", "Unexpected WP0 failure");
 	}

@@ -9,7 +9,7 @@ import { CorpusStore } from "../../src/db/corpus-store.js";
 import { EvidenceStore } from "../../src/db/evidence-store.js";
 import { exportDb } from "../../src/db/export.js";
 import { LedgerStore, type LedgerInput } from "../../src/db/ledger-store.js";
-import { closeDb, openDb, type DbHandle } from "../../src/db/open.js";
+import { closeDb, openDb, SCHEMA_VERSION_STRING, type DbHandle } from "../../src/db/open.js";
 import type { EvidenceRecord } from "../../src/m1a/sidecar.js";
 import type { CorpusRecordV2 } from "../../src/evaluation/types.js";
 
@@ -141,6 +141,8 @@ function evidenceRecord(mergeSha: string, dependencyGraph: string[]): EvidenceRe
 			preimage_theirs: null,
 			preimage_ours_bytes: null,
 			preimage_theirs_bytes: null,
+			preimage_ours_oid: null,
+			preimage_theirs_oid: null,
 			preimage_ours_truncated: false,
 			preimage_theirs_truncated: false,
 			dependency_graph: dependencyGraph,
@@ -224,7 +226,7 @@ describe("exportDb", () => {
 		if (!result.ok) return;
 		const manifest = result.value;
 
-		expect(manifest.schema_version).toBe("mrgr-db/1");
+		expect(manifest.schema_version).toBe(SCHEMA_VERSION_STRING);
 		expect(Object.keys(manifest.tables).sort()).toEqual([...TABLE_NAMES].sort());
 
 		for (const table of TABLE_NAMES) {

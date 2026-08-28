@@ -38,6 +38,10 @@ const bundle = {
 	preimage_theirs: null,
 	preimage_ours_bytes: 19,
 	preimage_theirs_bytes: null,
+	// Set on the side that has the path, null on the side that does not —
+	// the OID and the byte count agree on that, and the schema enforces it.
+	preimage_ours_oid: "968f614ca5fe154046dfc85e9c5a6720a57d5636",
+	preimage_theirs_oid: null,
 	preimage_ours_truncated: false,
 	preimage_theirs_truncated: false,
 	dependency_graph: ["ours:src/a.ts"],
