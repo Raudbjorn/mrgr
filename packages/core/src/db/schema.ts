@@ -77,6 +77,7 @@ CREATE TABLE conflict_path (
   merge_sha     TEXT NOT NULL,
   baseline_id   TEXT NOT NULL,
   path          TEXT NOT NULL,
+  path_index    INTEGER NOT NULL CHECK (path_index >= 0),
   PRIMARY KEY (repository_id, merge_sha, baseline_id, path),
   FOREIGN KEY (repository_id, merge_sha, baseline_id)
     REFERENCES corpus_record(repository_id, merge_sha, baseline_id)
@@ -105,6 +106,7 @@ CREATE TABLE conflict_region (
   raw_digests        TEXT,
   normalized_digests TEXT,
   raw_counts         TEXT,
+  array_index        INTEGER NOT NULL CHECK (array_index >= 0),
   CHECK (localization_status != 'exact' OR (
     triple_key IS NOT NULL AND novel_after_normalization IS NOT NULL
     AND automatic_ranges IS NOT NULL AND resolution_range IS NOT NULL

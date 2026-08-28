@@ -140,8 +140,8 @@ describe("CorpusStore", () => {
 				.prepare(
 					`INSERT INTO conflict_region
 					 (repository_id, merge_sha, baseline_id, path, ordinal, category,
-					  conflict_kind, localization_status, resolution_class)
-					 VALUES (?, ?, ?, ?, 9, 'other', 'content', 'exact', 'ours')`,
+					  conflict_kind, localization_status, resolution_class, array_index)
+					 VALUES (?, ?, ?, ?, 9, 'other', 'content', 'exact', 'ours', 0)`,
 				)
 				.run(record.repository.id, record.merge.sha, record.baselineId, "src/a.ts"),
 		).toThrow(/CHECK/i);
@@ -151,5 +151,22 @@ describe("CorpusStore", () => {
 		const got = store.get("nope", OID_A, DIGEST);
 		expect(got.ok).toBe(true);
 		if (got.ok) expect(got.value).toBeNull();
+	});
+
+	it("preserves conflictPaths and conflictRegions array order when not lexicographic", () => {
+		const base = conflictedRecord();
+		const record: CorpusRecordV2 = {
+			...base,
+			conflictPaths: ["z/last.ts", "a/first.ts", "m/mid.ts"],
+			conflictRegions: [
+				{ ...base.conflictRegions[1]!, path: "m/mid.ts" },
+				{ ...base.conflictRegions[0]!, path: "z/last.ts" },
+				{ ...base.conflictRegions[0]!, path: "a/first.ts" },
+			],
+		};
+		expect(store.append(record).ok).toBe(true);
+		const got = store.get(record.repository.id, record.merge.sha, record.baselineId);
+		expect(got.ok).toBe(true);
+		if (got.ok) expect(got.value).toEqual(record);
 	});
 });

@@ -150,22 +150,28 @@ export class CorpusStore {
 
 	private insertConflicts(record: CorpusRecordV2): void {
 		const insertPath = this.handle.db.prepare(
-			`INSERT INTO conflict_path (repository_id, merge_sha, baseline_id, path)
-			 VALUES (?, ?, ?, ?)`,
+			`INSERT INTO conflict_path (repository_id, merge_sha, baseline_id, path, path_index)
+			 VALUES (?, ?, ?, ?, ?)`,
 		);
-		for (const path of record.conflictPaths) {
-			insertPath.run(record.repository.id, record.merge.sha, record.baselineId, path);
-		}
+		record.conflictPaths.forEach((path, pathIndex) => {
+			insertPath.run(
+				record.repository.id,
+				record.merge.sha,
+				record.baselineId,
+				path,
+				pathIndex,
+			);
+		});
 		const insertRegion = this.handle.db.prepare(
 			`INSERT INTO conflict_region
 			 (repository_id, merge_sha, baseline_id, path, ordinal, category,
 			  conflict_kind, stage_oid_base, stage_oid_ours, stage_oid_theirs,
 			  localization_status, resolution_class, novel_after_normalization,
 			  triple_key, automatic_ranges, resolution_range, raw_digests,
-			  normalized_digests, raw_counts)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			  normalized_digests, raw_counts, array_index)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		);
-		for (const region of record.conflictRegions) {
+		record.conflictRegions.forEach((region, arrayIndex) => {
 			insertRegion.run(
 				record.repository.id,
 				record.merge.sha,
@@ -193,8 +199,12 @@ export class CorpusStore {
 				canonicalJson(region.rawDigests),
 				canonicalJson(region.normalizedDigests),
 				canonicalJson(region.rawCounts),
+				// (path, ordinal) is unique per record but carries no cross-path
+				// array order; arrayIndex is the only thing that records
+				// conflictRegions' original position for exact reconstruction.
+				arrayIndex,
 			);
-		}
+		});
 	}
 
 	get(
@@ -308,7 +318,7 @@ export class CorpusStore {
 			.prepare(
 				`SELECT path FROM conflict_path
 				 WHERE repository_id = ? AND merge_sha = ? AND baseline_id = ?
-				 ORDER BY path`,
+				 ORDER BY path_index`,
 			)
 			.all(repositoryId, mergeSha, baselineId) as { path: string }[];
 
@@ -316,7 +326,7 @@ export class CorpusStore {
 			.prepare(
 				`SELECT * FROM conflict_region
 				 WHERE repository_id = ? AND merge_sha = ? AND baseline_id = ?
-				 ORDER BY path, ordinal`,
+				 ORDER BY array_index`,
 			)
 			.all(repositoryId, mergeSha, baselineId) as Record<string, unknown>[];
 
