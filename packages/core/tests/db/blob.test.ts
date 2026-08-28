@@ -89,6 +89,20 @@ describe("blob store", () => {
 		if (!got.ok) expect(got.error.kind).toBe("db");
 	});
 
+	it("detects same-length byte disagreement on dedup", () => {
+		const correct = new TextEncoder().encode("correctx");
+		const wrong = new TextEncoder().encode("wrong!!!"); // same length, different content
+		const sha256 = sha256Hex(correct);
+		// Insert wrong bytes under the correct hash
+		handle.db
+			.prepare("INSERT INTO blob (sha256, byte_len, bytes) VALUES (?, ?, ?)")
+			.run(sha256, wrong.byteLength, wrong);
+		// Try to put the correct bytes with same sha256
+		const put = putBlob(handle, correct);
+		expect(put.ok).toBe(false);
+		if (!put.ok) expect(put.error.kind).toBe("db");
+	});
+
 	it("reports a missing blob as not-found", () => {
 		const got = getBlob(handle, "0".repeat(64));
 		expect(got.ok).toBe(false);

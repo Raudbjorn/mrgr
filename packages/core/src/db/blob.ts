@@ -3,9 +3,10 @@ import { dbErr, dbOk, type DbResult } from "./result.js";
 import type { DbHandle } from "./open.js";
 
 /**
- * Content-addressed store. INSERT OR IGNORE + byte_len cross-check: a sha256
+ * Content-addressed store. INSERT OR IGNORE + full byte comparison: a sha256
  * collision or prior corruption surfaces as an error instead of being merged
- * silently.
+ * silently. Write-time comparison is the gatekeeper; getBlob's digest re-
+ * verification is the backstop for corruption discovered after a write.
  */
 export function putBlob(handle: DbHandle, bytes: Uint8Array): DbResult<string> {
 	const sha256 = sha256Hex(bytes);
@@ -14,9 +15,9 @@ export function putBlob(handle: DbHandle, bytes: Uint8Array): DbResult<string> {
 			.prepare("INSERT OR IGNORE INTO blob (sha256, byte_len, bytes) VALUES (?, ?, ?)")
 			.run(sha256, bytes.byteLength, bytes);
 		const row = handle.db
-			.prepare("SELECT byte_len FROM blob WHERE sha256 = ?")
-			.get(sha256) as { byte_len: number };
-		if (row.byte_len !== bytes.byteLength) {
+			.prepare("SELECT byte_len, bytes FROM blob WHERE sha256 = ?")
+			.get(sha256) as { byte_len: number; bytes: Uint8Array };
+		if (row.byte_len !== bytes.byteLength || !Buffer.from(row.bytes).equals(Buffer.from(bytes))) {
 			return dbErr("db", "put blob", "Existing blob row disagrees with content", {
 				sha256,
 				existing_byte_len: row.byte_len,
