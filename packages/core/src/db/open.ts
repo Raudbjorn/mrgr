@@ -40,11 +40,11 @@ export function openDb(
 	}
 
 	try {
-		db.exec("PRAGMA journal_mode=WAL");
-		db.exec("PRAGMA foreign_keys=ON");
-		db.exec("PRAGMA busy_timeout=10000");
-		db.exec("PRAGMA synchronous=NORMAL");
-
+		// Identity checks first: PRAGMA application_id/user_version and the
+		// meta table are plain reads that do not touch the file on disk. No
+		// persistent pragma (journal_mode) may be set until the file has
+		// been accepted below — otherwise a rejected foreign file gets
+		// converted to WAL on disk before we refuse it.
 		const appId = (
 			db.prepare("PRAGMA application_id").get() as { application_id: number }
 		).application_id;
@@ -52,7 +52,43 @@ export function openDb(
 			db.prepare("PRAGMA user_version").get() as { user_version: number }
 		).user_version;
 
-		if (!exists || (appId === 0 && userVersion === 0 && isEmpty(db))) {
+		const isNew = !exists || (appId === 0 && userVersion === 0 && isEmpty(db));
+
+		if (!isNew) {
+			if (appId !== APPLICATION_ID || userVersion !== USER_VERSION) {
+				db.close();
+				return dbErr("db", "open db", "Database schema mismatch", {
+					path,
+					reason: "schema-mismatch",
+					detected_application_id: appId,
+					detected_user_version: userVersion,
+					expected_application_id: APPLICATION_ID,
+					expected_user_version: USER_VERSION,
+				});
+			}
+
+			const meta = db
+				.prepare("SELECT value FROM meta WHERE key = 'schema_version'")
+				.get() as { value: string } | undefined;
+			if (meta?.value !== SCHEMA_VERSION_STRING) {
+				db.close();
+				return dbErr("db", "open db", "Database schema mismatch", {
+					path,
+					reason: "schema-mismatch",
+					detected_schema_version: meta?.value ?? null,
+					expected_schema_version: SCHEMA_VERSION_STRING,
+				});
+			}
+		}
+
+		// File is accepted from here on: either a fresh/empty database this
+		// tool is about to claim, or one that already carries our identity.
+		db.exec("PRAGMA journal_mode=WAL");
+		db.exec("PRAGMA foreign_keys=ON");
+		db.exec("PRAGMA busy_timeout=10000");
+		db.exec("PRAGMA synchronous=NORMAL");
+
+		if (isNew) {
 			db.exec("BEGIN IMMEDIATE");
 			try {
 				db.exec(SCHEMA_SQL);
@@ -69,32 +105,6 @@ export function openDb(
 				db.exec("ROLLBACK");
 				throw cause;
 			}
-			return dbOk({ db, path });
-		}
-
-		if (appId !== APPLICATION_ID || userVersion !== USER_VERSION) {
-			db.close();
-			return dbErr("db", "open db", "Database schema mismatch", {
-				path,
-				reason: "schema-mismatch",
-				detected_application_id: appId,
-				detected_user_version: userVersion,
-				expected_application_id: APPLICATION_ID,
-				expected_user_version: USER_VERSION,
-			});
-		}
-
-		const meta = db
-			.prepare("SELECT value FROM meta WHERE key = 'schema_version'")
-			.get() as { value: string } | undefined;
-		if (meta?.value !== SCHEMA_VERSION_STRING) {
-			db.close();
-			return dbErr("db", "open db", "Database schema mismatch", {
-				path,
-				reason: "schema-mismatch",
-				detected_schema_version: meta?.value ?? null,
-				expected_schema_version: SCHEMA_VERSION_STRING,
-			});
 		}
 
 		return dbOk({ db, path });

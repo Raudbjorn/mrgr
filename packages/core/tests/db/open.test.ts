@@ -1,4 +1,11 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -63,21 +70,45 @@ describe("openDb", () => {
 
 	it("refuses a plain SQLite file (schema mismatch), and writes nothing", () => {
 		const path = join(dir, "foreign.db");
+		const walPath = `${path}-wal`;
+		const shmPath = `${path}-shm`;
 		const foreign = new DatabaseSync(path);
 		foreign.exec("CREATE TABLE t (x)");
 		foreign.close();
+
+		const probe = new DatabaseSync(path);
+		const journalModeBefore = (
+			probe.prepare("PRAGMA journal_mode").get() as { journal_mode: string }
+		).journal_mode;
+		probe.close();
+		expect(journalModeBefore).toBe("delete");
+		const bytesBefore = readFileSync(path);
+		const mtimeBefore = statSync(path).mtimeMs;
+
 		const opened = openDb(path);
 		expect(opened.ok).toBe(false);
 		if (!opened.ok) {
 			expect(opened.error.kind).toBe("db");
 			expect(opened.error.details?.reason).toBe("schema-mismatch");
 		}
+
+		// fail-closed: no write happened, and the file was not converted to
+		// WAL (a persistent on-disk change) merely by being examined.
 		const check = new DatabaseSync(path);
 		const tables = check
 			.prepare("SELECT count(*) AS n FROM sqlite_master WHERE name = 'meta'")
 			.get() as { n: number };
-		expect(tables.n).toBe(0); // fail-closed: no write happened
+		expect(tables.n).toBe(0);
+		const journalModeAfter = (
+			check.prepare("PRAGMA journal_mode").get() as { journal_mode: string }
+		).journal_mode;
+		expect(journalModeAfter).toBe("delete");
 		check.close();
+
+		expect(existsSync(walPath)).toBe(false);
+		expect(existsSync(shmPath)).toBe(false);
+		expect(readFileSync(path)).toEqual(bytesBefore);
+		expect(statSync(path).mtimeMs).toBe(mtimeBefore);
 	});
 
 	it("refuses a non-database file", () => {
