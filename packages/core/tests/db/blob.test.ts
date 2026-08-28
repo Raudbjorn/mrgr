@@ -27,6 +27,32 @@ describe("canonicalJson", () => {
 		expect(a).toBe(b);
 		expect(a).toBe('{"a":{"c":5,"d":[2,{"y":4,"z":3}]},"b":1}');
 	});
+
+	it("Date values serialize to ISO strings via toJSON, not empty objects", () => {
+		const d1 = new Date("2020-01-01T00:00:00Z");
+		const d2 = new Date("2099-12-31T23:59:59Z");
+		const a = canonicalJson({ ts: d1 });
+		const b = canonicalJson({ ts: d2 });
+		expect(a).not.toBe(b);
+		expect(a).toBe('{"ts":"2020-01-01T00:00:00.000Z"}');
+		expect(b).toBe('{"ts":"2099-12-31T23:59:59.000Z"}');
+	});
+
+	it("Date inside array and nested object both serialize via toJSON", () => {
+		const d = new Date("2020-06-15T12:30:45Z");
+		const fromArray = canonicalJson([d]);
+		const fromNested = canonicalJson({ a: { b: d } });
+		expect(fromArray).toBe('["2020-06-15T12:30:45.000Z"]');
+		expect(fromNested).toBe('{"a":{"b":"2020-06-15T12:30:45.000Z"}}');
+	});
+
+	it("throws TypeError when passed undefined", () => {
+		expect(() => canonicalJson(undefined)).toThrow(TypeError);
+	});
+
+	it("throws TypeError when passed a function", () => {
+		expect(() => canonicalJson(() => {})).toThrow(TypeError);
+	});
 });
 
 describe("blob store", () => {
