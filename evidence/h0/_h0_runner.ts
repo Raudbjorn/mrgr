@@ -9,8 +9,17 @@ const CORPUS_FILES = [
 	"evidence/h0/triples-jq-diff3.jsonl",
 	"evidence/h0/triples-cli-diff3.jsonl",
 ];
-const SUBSAMPLE = Number(process.env.H0_SUBSAMPLE ?? 30);
-const REPEATS = Number(process.env.H0_REPEATS ?? 3);
+// PR-A: refuse to run with the legacy hardcoded defaults. The plan's S2 fix
+// requires env-var-driven SUBSAMPLE/REPEATS. Run with H0_SUBSAMPLE=... H0_REPEATS=... .
+const _subsampleEnv = process.env.H0_SUBSAMPLE;
+const _repeatsEnv = process.env.H0_REPEATS;
+if (_subsampleEnv === undefined || _repeatsEnv === undefined) {
+	throw new Error("H0_SUBSAMPLE and H0_REPEATS must be set (PR-A: hardcoded defaults removed per S2 fix)");
+}
+const SUBSAMPLE = Number(_subsampleEnv);
+const REPEATS = Number(_repeatsEnv);
+if (!Number.isFinite(SUBSAMPLE) || SUBSAMPLE <= 0) throw new Error(`H0_SUBSAMPLE must be a positive integer, got ${_subsampleEnv}`);
+if (!Number.isFinite(REPEATS) || REPEATS <= 0) throw new Error(`H0_REPEATS must be a positive integer, got ${_repeatsEnv}`);
 const ARMS = ["hunk-only", "selected", "full-bundle"] as const;
 type Arm = typeof ARMS[number];
 const SMALL_INPUT_BUDGET_CHARS = 2400;
@@ -46,7 +55,9 @@ interface H0Record {
 }
 
 const isSmallTriple = (t: Triple): boolean => {
-	const sample = `Repository: ${t.repository_id}\nMerge: ${t.merge_sha}\nPath: ${t.path}\nTriple: ${t.triple_key}\nCategory: ${t.category}\n\n<<CONFLICT_HUNK>>\n<<<<<<< ours\n${t.ours}=======\n${t.theirs}>>>>>>>\n<<END_HUNK>>\n<<RESOLUTION_HINT>>\n${t.resolution}<<END_RESOLUTION>>\n`;
+	// PR-A: drop the resolution from the input-budget calculation. Resolution
+	// is for the grader, not the model.
+	const sample = `Repository: ${t.repository_id}\nMerge: ${t.merge_sha}\nPath: ${t.path}\nTriple: ${t.triple_key}\nCategory: ${t.category}\n\n<<CONFLICT_HUNK>>\n<<<<<<< ours\n${t.ours}=======\n${t.theirs}>>>>>>>\n<<END_HUNK>>\n`;
 	return sample.length <= SMALL_INPUT_BUDGET_CHARS;
 };
 
@@ -66,7 +77,6 @@ const buildMessages = (triple: Triple, arm: Arm): { role: "system" | "user"; con
 	const hunkOnly =
 		`<<CONFLICT_HUNK>>\n` +
 		`<<<<<<< ours\n${triple.ours}=======\n${triple.theirs}>>>>>>>\n<<END_HUNK>>\n` +
-		`<<RESOLUTION_HINT>>\n${triple.resolution}<<END_RESOLUTION>>\n` +
 		`\nDecide. Reply with strict JSON only.`;
 	const cap = 1200;
 	const trim = (s: string) => s.length > cap ? s.slice(0, cap) + "\n[…truncated…]" : s;
@@ -87,6 +97,24 @@ const buildMessages = (triple: Triple, arm: Arm): { role: "system" | "user"; con
 			`<<DEPENDENCY_LIST>>\n(none)<<END_DEPENDENCY>>\n\n` +
 			hunkOnly +
 			`\nDecide. Reply with strict JSON only.`;
+	}
+	// PR-A D2 fix: when a triple carries `preimage_ours`/`preimage_theirs`,
+	// prefer those over the conflict-region text. Pre-existing triples
+	// without preimages fall back to the old behavior (full-bundle arm
+	// shows mislabeled conflict-region text). New triples from a regen
+	// (PR-A's Step 2 regen, future) carry real preimages.
+	if (arm === "full" || arm === "full-bundle") {
+		const preimageOurs = (triple as Triple & { preimage_ours?: string | null }).preimage_ours;
+		const preimageTheirs = (triple as Triple & { preimage_theirs?: string | null }).preimage_theirs;
+		if (preimageOurs !== undefined) {
+			// Replace the FILE_FULL_PREIMAGE blocks with real preimages.
+			user = header +
+				`<<FILE_FULL_PREIMAGE (ours side)>>\n${trim(preimageOurs)}\n<<END_PREIMAGE_OURS>>\n` +
+				`<<FILE_FULL_PREIMAGE (theirs side)>>\n${preimageTheirs !== null && preimageTheirs !== undefined ? trim(preimageTheirs) : "(absent)"}\n<<END_PREIMAGE_THEIRS>>\n` +
+				`<<DEPENDENCY_LIST>>\n(none)<<END_DEPENDENCY>>\n\n` +
+				hunkOnly +
+				`\nDecide. Reply with strict JSON only.`;
+		}
 	}
 	return [
 		{ role: "system", content: SYSTEM_PROMPT },
