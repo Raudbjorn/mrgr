@@ -217,7 +217,6 @@ CREATE TABLE evidence_bundle (
   path          TEXT NOT NULL,
   ordinal       INTEGER NOT NULL CHECK (ordinal >= 0),
   status        TEXT NOT NULL CHECK (status IN ('ok','failed')),
-  CHECK (status = 'failed' OR ordinal >= 1),
   hunk_ours_sha   TEXT REFERENCES blob(sha256),
   hunk_base_sha   TEXT REFERENCES blob(sha256),
   hunk_theirs_sha TEXT REFERENCES blob(sha256),
@@ -230,6 +229,9 @@ CREATE TABLE evidence_bundle (
   dependency_graph_status TEXT CHECK (dependency_graph_status IS NULL
     OR dependency_graph_status IN ('derived','unavailable')),
   error_json TEXT,
+  -- Table-level constraints must all follow the LAST column definition:
+  -- SQLite rejects any column-def appearing after a table constraint.
+  CHECK (status = 'failed' OR ordinal >= 1),
   CHECK ((status = 'failed') = (error_json IS NOT NULL)),
   CHECK (status != 'ok' OR (hunk_ours_sha IS NOT NULL
     AND hunk_base_sha IS NOT NULL AND hunk_theirs_sha IS NOT NULL

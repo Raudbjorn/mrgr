@@ -255,7 +255,6 @@ CREATE TABLE evidence_bundle (
   -- ordinal 0 = PATH_LEVEL_ORDINAL: a failure before any region was known
   -- (m1a/sidecar.ts). Only failed rows may use it.
   status        TEXT NOT NULL CHECK (status IN ('ok','failed')),
-  CHECK (status = 'failed' OR ordinal >= 1),
   hunk_ours_sha   TEXT REFERENCES blob(sha256),
   hunk_base_sha   TEXT REFERENCES blob(sha256),
   hunk_theirs_sha TEXT REFERENCES blob(sha256),
@@ -268,6 +267,9 @@ CREATE TABLE evidence_bundle (
   dependency_graph_status TEXT CHECK (dependency_graph_status IS NULL
     OR dependency_graph_status IN ('derived','unavailable')),
   error_json TEXT,
+  -- Every table-level constraint must follow the LAST column definition:
+  -- SQLite rejects any column-def that appears after a table constraint.
+  CHECK (status = 'failed' OR ordinal >= 1),
   CHECK ((status = 'failed') = (error_json IS NOT NULL)),
   CHECK (status != 'ok' OR (hunk_ours_sha IS NOT NULL
     AND hunk_base_sha IS NOT NULL AND hunk_theirs_sha IS NOT NULL
