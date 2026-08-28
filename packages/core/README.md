@@ -10,13 +10,13 @@ This package collects, replays, localizes and classifies. **It does not adjudica
 npm install @mrgr/core
 ```
 
-Requires Node ≥ 20 and **Git ≥ 2.38.0** (enforced, not assumed).
+Requires Node ≥ 22.5.0 and **Git ≥ 2.38.0** (enforced, not assumed).
 
-> The Node ≥ 20 floor is the package's declared `engines` value and is
-> **not currently verified**: the dev toolchain (pnpm 11.3.0) requires Node
-> ≥ 22.13, so CI builds and tests on Node 22. Nothing in the carried modules
-> is known to need more than Node 20, but that is an expectation, not a
-> measurement — a Node 20 job would need a pnpm old enough to run there.
+> The Node ≥ 22.5.0 floor is the package's declared `engines` value, and it
+> is a real requirement, not a conservative guess: `mrgr-db` is built on
+> `node:sqlite`, which does not exist before Node 22.5. The carried WP0
+> evaluation modules (`src/evaluation/`) have no such dependency and would
+> run on an older Node, but the package as a whole does not.
 
 The carried WP0 evaluation modules (`src/evaluation/`) have **zero runtime
 dependencies** and shell out only to `git`. The M1a evidence-bundle modules
@@ -30,9 +30,25 @@ mrgr-wp0 scan <owner/repo...> --out FILE [--host github.com] [--cache DIR] [--si
 mrgr-wp0 scan-local <path...> --out FILE [--since ISO] [--rev RANGE] [--jobs 4]
 mrgr-wp0 report FILE [--baseline ID]
 mrgr-wp0 materialize FILE --out FILE [--baseline ID] [--cache DIR]
+mrgr-db init   --db PATH
+mrgr-db import --db PATH (--corpus FILE | --evidence FILE)
+mrgr-db export --db PATH --out DIR [--with-blobs]
+mrgr-db verify --db PATH
 ```
 
-Errors are a single JSON `ToolError` on stderr; exit 0 on success, 1 otherwise. The corpus is append-only JSONL, resumable by `(repoId, mergeSha, baselineId)`, and fails closed on a malformed record rather than skipping it.
+Errors are a single JSON `ToolError` on stderr; exit 0 on success, 1 otherwise (`mrgr-db` also uses 2 for a usage mistake — an unknown or missing flag — distinct from 1 for a failure while doing the work asked). The corpus is append-only JSONL, resumable by `(repoId, mergeSha, baselineId)`, and fails closed on a malformed record rather than skipping it.
+
+## Status
+
+| Component | State |
+|---|---|
+| `mrgr-db` — workspace SQLite store (mrgr-db/1) | works: corpus + evidence + ledger + runs; canonical export; JSONL import |
+
+## Persistence
+
+`mrgr-db` is the workspace store; JSONL (corpus, sidecar evidence, and `mrgr-db export`'s output) is the transport format. Committed evidence in this repository stays exported JSONL rather than a binary `.db` file — that is what gets reviewed and diffed. `tursodb` may inspect the database file read-only for ad-hoc queries while no writer has it open; querying it while `mrgr-db` is running is not something this package tests or supports. Node ≥ 22.5 is required — `node:sqlite`, which the store is built on, does not exist before that.
+
+`mrgr-db` exits `0` on success, `2` for a usage error (an unknown or missing flag, an unknown subcommand), and `1` for an operational failure (the database is missing, an integrity check failed, a blob's digest does not match its content). This differs from `mrgr-wp0` and `mrgr-evidence`, which exit `1` for both classes — the split is deliberate for `mrgr-db`, not an oversight.
 
 ## Library
 
