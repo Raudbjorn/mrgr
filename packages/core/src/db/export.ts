@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { canonicalJson, sha256Hex } from "./canonical.js";
@@ -10,6 +10,12 @@ export interface ExportManifest {
 	schema_version: string; // "mrgr-db/1"
 	meta: Record<string, string>; // verbatim copy of the meta table
 	tables: Record<string, { rows: number; sha256: string }>; // per exported file
+	// Present only when withBlobs was requested: without it, blobs/ is not
+	// written, so there is nothing for this section to describe. Each blob
+	// file is already self-verifying (named by its own content hash); listing
+	// it here means a stale or missing blob file changes the digested
+	// manifest instead of being invisible to it.
+	blobs?: { sha256: string; byte_len: number }[];
 }
 
 /**
@@ -58,12 +64,20 @@ export function exportDb(
 	options: { withBlobs?: boolean } = {},
 ): DbResult<ExportManifest> {
 	const withBlobs = options.withBlobs ?? false;
+	const blobsDir = join(outDir, "blobs");
 
 	try {
 		mkdirSync(outDir, { recursive: true });
-		if (withBlobs) mkdirSync(join(outDir, "blobs"), { recursive: true });
+		// A prior withBlobs:true export can leave blobs/ behind. Without this,
+		// a withBlobs:false re-export of the same outDir would inherit those
+		// files untouched, and manifest.tables never mentions blob files at
+		// all — so the digested manifest would read clean while the directory
+		// silently carried content from a different export. Scoped to exactly
+		// the one subdirectory this function owns, never the caller's outDir.
+		rmSync(blobsDir, { recursive: true, force: true });
+		if (withBlobs) mkdirSync(blobsDir, { recursive: true });
 	} catch (cause) {
-		return dbErr("db", "export db", "Output directory could not be created", {
+		return dbErr("db", "export db", "Output directory could not be prepared", {
 			outDir,
 			cause: String(cause),
 		});
@@ -71,6 +85,7 @@ export function exportDb(
 
 	const tables: Record<string, { rows: number; sha256: string }> = {};
 	let metaRecord: Record<string, string> = {};
+	let manifestBlobs: { sha256: string; byte_len: number }[] | undefined;
 
 	for (const spec of TABLE_SPECS) {
 		const isBlob = spec.name === "blob";
@@ -95,15 +110,23 @@ export function exportDb(
 
 		// blob.bytes never appears in the jsonl row — it is written, unmodified,
 		// to blobs/<sha256> instead when requested.
-		const blobBytesBySha: [string, Uint8Array][] = [];
+		const blobFiles: [string, Uint8Array][] = [];
 		const jsonlRows = isBlob
 			? rows.map((row) => {
+					// bytes is only selected (and only present) when withBlobs is
+					// true; blob.bytes is NOT NULL, so within that branch it is
+					// always defined — no guard, so an unreachable state can't
+					// silently turn into a skipped blob file.
+					if (!withBlobs) {
+						const { sha256, byte_len } = row as { sha256: string; byte_len: number };
+						return { sha256, byte_len };
+					}
 					const { sha256, byte_len, bytes } = row as {
 						sha256: string;
 						byte_len: number;
-						bytes?: Uint8Array;
+						bytes: Uint8Array;
 					};
-					if (withBlobs && bytes !== undefined) blobBytesBySha.push([sha256, bytes]);
+					blobFiles.push([sha256, bytes]);
 					return { sha256, byte_len };
 				})
 			: rows;
@@ -134,9 +157,9 @@ export function exportDb(
 		tables[spec.name] = { rows: jsonlRows.length, sha256: sha256Hex(content) };
 
 		if (isBlob && withBlobs) {
-			for (const [sha256, bytes] of blobBytesBySha) {
+			for (const [sha256, bytes] of blobFiles) {
 				try {
-					writeFileSync(join(outDir, "blobs", sha256), bytes);
+					writeFileSync(join(blobsDir, sha256), bytes);
 				} catch (cause) {
 					return dbErr("db", "export db", "Failed to write blob file", {
 						sha256,
@@ -144,6 +167,9 @@ export function exportDb(
 					});
 				}
 			}
+			// Same rows, same order as jsonlRows above (both derived from the
+			// sha256-ordered query) — reused rather than re-sorted.
+			manifestBlobs = jsonlRows as { sha256: string; byte_len: number }[];
 		}
 	}
 
@@ -151,14 +177,12 @@ export function exportDb(
 		schema_version: SCHEMA_VERSION_STRING,
 		meta: metaRecord,
 		tables,
+		...(manifestBlobs !== undefined ? { blobs: manifestBlobs } : {}),
 	};
 
 	let manifestJson: string;
 	try {
-		// canonical-key-order: round-trip through canonicalJson's recursive key
-		// sort, then re-indent. JSON.parse preserves the sorted key order that
-		// JSON.stringify(..., null, 2) below then renders with pretty spacing.
-		manifestJson = `${JSON.stringify(JSON.parse(canonicalJson(manifest)), null, 2)}\n`;
+		manifestJson = `${canonicalPretty(manifest, 0)}\n`;
 	} catch (cause) {
 		return dbErr("db", "export db", "Manifest has no canonical JSON representation", {
 			cause: String(cause),
@@ -175,4 +199,51 @@ export function exportDb(
 	}
 
 	return dbOk(manifest);
+}
+
+/**
+ * Pretty-print with recursively sorted object keys, 2-space indent.
+ *
+ * Deliberately not `JSON.stringify(JSON.parse(canonicalJson(value)), null, 2)`:
+ * JSON.parse builds a plain object, and V8 (like every JS engine) always
+ * iterates integer-like string keys ("0", "1", ...) in ascending numeric
+ * order before any other keys, regardless of the order they were inserted in
+ * — so a round trip through parse can silently undo a lexicographic sort the
+ * moment a key looks like an integer. No manifest key is integer-like today,
+ * and §8 excludes manifest.json from the determinism property regardless,
+ * but "canonical key order" should mean what it says. This sorts and renders
+ * in one pass instead, so there is no intermediate object for the engine to
+ * reorder.
+ */
+function canonicalPretty(value: unknown, depth: number): string {
+	const pad = "  ".repeat(depth);
+	const childPad = "  ".repeat(depth + 1);
+
+	if (Array.isArray(value)) {
+		if (value.length === 0) return "[]";
+		const items = value.map((item) => `${childPad}${canonicalPretty(item, depth + 1)}`);
+		return `[\n${items.join(",\n")}\n${pad}]`;
+	}
+
+	if (value !== null && typeof value === "object") {
+		const record = value as Record<string, unknown>;
+		// Mirrors canonicalJson: an object property whose value is undefined is
+		// omitted, matching JSON.stringify's own behavior for objects.
+		const keys = Object.keys(record)
+			.filter((key) => record[key] !== undefined)
+			.sort();
+		if (keys.length === 0) return "{}";
+		const entries = keys.map(
+			(key) => `${childPad}${JSON.stringify(key)}: ${canonicalPretty(record[key], depth + 1)}`,
+		);
+		return `{\n${entries.join(",\n")}\n${pad}}`;
+	}
+
+	const json = JSON.stringify(value);
+	if (json === undefined) {
+		throw new TypeError(
+			"Manifest contains a value with no JSON representation (undefined, function, or symbol)",
+		);
+	}
+	return json;
 }

@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -291,6 +291,85 @@ describe("exportDb", () => {
 			.map((l) => JSON.parse(l) as Record<string, unknown>);
 		expect(lines).toHaveLength(2);
 		for (const line of lines) expect(Object.keys(line).sort()).toEqual(["byte_len", "sha256"]);
+
+		// The manifest's blobs section covers the files on disk, so a missing
+		// or extra blob file changes the digested manifest instead of being
+		// invisible to it.
+		expect(result.value.blobs).toEqual(
+			[
+				{ sha256: sha256Hex(bytes1), byte_len: bytes1.byteLength },
+				{ sha256: sha256Hex(bytes2), byte_len: bytes2.byteLength },
+			].sort((a, b) => a.sha256.localeCompare(b.sha256)),
+		);
+		const manifestOnDisk = JSON.parse(
+			readFileSync(join(outDir, "manifest.json"), "utf8"),
+		) as Record<string, unknown>;
+		expect(manifestOnDisk.blobs).toEqual(result.value.blobs);
+	});
+
+	it("without withBlobs, the manifest has no blobs section", () => {
+		putBlob(handle, Buffer.from("hello"));
+		const outDir = join(dir, "export");
+		const result = exportDb(handle, outDir);
+		expect(result.ok).toBe(true);
+		if (!result.ok) return;
+		expect(result.value.blobs).toBeUndefined();
+		const manifestOnDisk = JSON.parse(
+			readFileSync(join(outDir, "manifest.json"), "utf8"),
+		) as Record<string, unknown>;
+		expect("blobs" in manifestOnDisk).toBe(false);
+	});
+
+	it("a stale blobs/ directory from a prior withBlobs export does not survive a re-export without it", () => {
+		const bytes = Buffer.from("hello");
+		putBlob(handle, bytes);
+		const outDir = join(dir, "export");
+
+		const first = exportDb(handle, outDir, { withBlobs: true });
+		expect(first.ok).toBe(true);
+		expect(existsSync(join(outDir, "blobs", sha256Hex(bytes)))).toBe(true);
+
+		const second = exportDb(handle, outDir);
+		expect(second.ok).toBe(true);
+		expect(existsSync(join(outDir, "blobs"))).toBe(false);
+	});
+
+	it("a stale blobs/ directory is replaced, not merged, when blob content changes between exports", () => {
+		const bytesOld = Buffer.from("old blob");
+		putBlob(handle, bytesOld);
+		const outDir = join(dir, "export");
+		exportDb(handle, outDir, { withBlobs: true });
+		expect(existsSync(join(outDir, "blobs", sha256Hex(bytesOld)))).toBe(true);
+
+		// A fresh database (simulating "the same outDir reused for a different
+		// database") should not see the previous database's blob file.
+		const dir2 = mkdtempSync(join(tmpdir(), "mrgr-db-2-"));
+		const opened2 = openDb(join(dir2, "mrgr.db"), { create: true });
+		if (!opened2.ok) throw new Error("failed to open second db");
+		const bytesNew = Buffer.from("new blob");
+		putBlob(opened2.value, bytesNew);
+		try {
+			const second = exportDb(opened2.value, outDir, { withBlobs: true });
+			expect(second.ok).toBe(true);
+			expect(existsSync(join(outDir, "blobs", sha256Hex(bytesOld)))).toBe(false);
+			expect(existsSync(join(outDir, "blobs", sha256Hex(bytesNew)))).toBe(true);
+		} finally {
+			closeDb(opened2.value);
+			rmSync(dir2, { recursive: true, force: true });
+		}
+	});
+
+	it("fails closed on an unwritable output path, and leaves no manifest.json behind", () => {
+		// A regular file where a directory component is expected: mkdirSync
+		// cannot create outDir under it (ENOTDIR), so nothing gets written —
+		// including no manifest.json, which is the signal a reader should use
+		// to distinguish a good export directory from a failed one.
+		writeFileSync(join(dir, "not-a-directory"), "x");
+		const outDir = join(dir, "not-a-directory", "export");
+
+		const result = exportDb(handle, outDir);
+		expect(result.ok).toBe(false);
+		expect(existsSync(outDir)).toBe(false);
 	});
 
 	it("orders conflict_path, conflict_region and merge_base by their position column, not the natural key", () => {
