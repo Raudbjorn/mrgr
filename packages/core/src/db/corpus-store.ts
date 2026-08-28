@@ -25,38 +25,54 @@ export class CorpusStore {
 
 	append(record: CorpusRecordV2): DbResult<void> {
 		const db = this.handle.db;
-		const existing = this.get(
-			record.repository.id,
-			record.merge.sha,
-			record.baselineId,
-		);
-		if (!existing.ok) return existing;
-		if (existing.value !== null) {
-			// canonicalJson throws TypeError on a non-JSON-serializable value;
-			// every other call site in this file sits inside a try/catch that
-			// converts to dbErr, so this one must too rather than letting a
-			// thrown error cross the module boundary.
-			try {
-				if (canonicalJson(existing.value) === canonicalJson(record)) {
+
+		try {
+			// The existence check and idempotency comparison must run inside
+			// the same BEGIN IMMEDIATE transaction as the insert below. BEGIN
+			// IMMEDIATE takes the write lock immediately, so a second
+			// concurrent append() for the same key blocks here (up to
+			// busy_timeout) instead of both connections reading "no existing
+			// record" from stale state and racing to insert -- the same bug
+			// class LedgerStore.append guards against for its seq read.
+			db.exec("BEGIN IMMEDIATE");
+
+			const existing = this.get(
+				record.repository.id,
+				record.merge.sha,
+				record.baselineId,
+			);
+			if (!existing.ok) {
+				db.exec("ROLLBACK");
+				return existing;
+			}
+			if (existing.value !== null) {
+				// canonicalJson throws TypeError on a non-JSON-serializable
+				// value; caught here so it becomes a dbErr rather than
+				// escaping with the transaction left open.
+				let identical: boolean;
+				try {
+					identical = canonicalJson(existing.value) === canonicalJson(record);
+				} catch (cause) {
+					db.exec("ROLLBACK");
+					return dbErr("db", "append corpus record", "Content comparison failed", {
+						repository_id: record.repository.id,
+						merge_sha: record.merge.sha,
+						baseline_id: record.baselineId,
+						cause: String(cause),
+					});
+				}
+				if (identical) {
+					db.exec("COMMIT"); // read-only path; nothing was written
 					return dbOk(undefined); // idempotent re-append
 				}
-			} catch (cause) {
-				return dbErr("db", "append corpus record", "Content comparison failed", {
+				db.exec("ROLLBACK");
+				return dbErr("db", "append corpus record", "Duplicate key with different content", {
 					repository_id: record.repository.id,
 					merge_sha: record.merge.sha,
 					baseline_id: record.baselineId,
-					cause: String(cause),
 				});
 			}
-			return dbErr("db", "append corpus record", "Duplicate key with different content", {
-				repository_id: record.repository.id,
-				merge_sha: record.merge.sha,
-				baseline_id: record.baselineId,
-			});
-		}
 
-		try {
-			db.exec("BEGIN IMMEDIATE");
 			this.insertRepository(record.repository);
 			this.insertBaseline(record);
 			db.prepare(

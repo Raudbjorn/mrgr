@@ -1,12 +1,21 @@
+import { execFile } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { CorpusStore } from "../../src/db/corpus-store.js";
 import { closeDb, openDb, type DbHandle } from "../../src/db/open.js";
 import { resumeKey } from "../../src/evaluation/corpus.js";
 import type { CorpusRecordV2 } from "../../src/evaluation/types.js";
+
+// Package root: this file is two levels below it. Spawned as an explicit cwd
+// so the concurrency test does not depend on the caller's working directory.
+const PACKAGE_ROOT = fileURLToPath(new URL("../..", import.meta.url));
+const CORPUS_STORE_WORKER = fileURLToPath(
+	new URL("./helpers/corpus-store-worker.ts", import.meta.url),
+);
 
 const OID_A = "a".repeat(40);
 const OID_B = "b".repeat(40);
@@ -193,4 +202,91 @@ describe("CorpusStore", () => {
 			expect(JSON.stringify(result.error.details)).toMatch(/CHECK constraint failed/i);
 		}
 	});
+});
+
+const CONCURRENCY_COUNT = 50;
+
+function runCorpusStoreWorker(
+	dbPath: string,
+	side: "a" | "b",
+	count: number,
+): Promise<({ ok: true } | { ok: false; error: unknown })[]> {
+	return new Promise((resolve, reject) => {
+		execFile(
+			"pnpm",
+			["exec", "tsx", CORPUS_STORE_WORKER, dbPath, side, String(count)],
+			{ cwd: PACKAGE_ROOT },
+			(error, stdout, stderr) => {
+				if (error) {
+					reject(new Error(`${error.message}\nstderr: ${stderr}`));
+					return;
+				}
+				try {
+					resolve(JSON.parse(stdout) as ({ ok: true } | { ok: false; error: unknown })[]);
+				} catch (cause) {
+					reject(
+						new Error(
+							`worker did not print valid JSON: ${String(cause)}\nstdout: ${stdout}\nstderr: ${stderr}`,
+						),
+					);
+				}
+			},
+		);
+	});
+}
+
+// Regression for the append() TOCTOU race: the existence check and
+// idempotency comparison used to run before BEGIN IMMEDIATE, so two
+// concurrent connections could both read "no existing record" and race to
+// insert.
+//
+// A single shared key with no synchronization is not a reliable trigger:
+// process-startup jitter (confirmed empirically to run tens to hundreds of
+// milliseconds) swamps the microsecond-scale window the bug lived in, so an
+// unsynchronized attempt passes by luck even against the pre-fix code --
+// confirmed empirically, including with CONCURRENCY_COUNT independently-keyed
+// records looped with no synchronization (roughly 1 failing run in 3).
+// corpus-store-worker.ts closes that gap with a tiny file-based barrier: both
+// processes rendezvous before each index, so every one of the
+// CONCURRENCY_COUNT iterations is a genuine simultaneous attempt rather than
+// a hopeful one.
+//
+// What IS deterministic, and what this test actually asserts, is the outcome
+// once a race occurs: BEGIN IMMEDIATE serializes the two connections on the
+// write lock (bounded by openDb's busy_timeout, far longer than one insert
+// takes), so whichever process's transaction runs first, the result for that
+// key is always exactly one row and two ok:true calls -- one process taking
+// the insert path, the other reading the identical row back from inside its
+// own transaction and taking the idempotent path. Which process wins any
+// given index is not controlled and is not asserted; only "no error, and
+// never a duplicate row" is.
+//
+// Verified against the pre-fix code (scratch-reverted, not committed): the
+// unsynchronized loop above failed intermittently; this barrier-synchronized
+// version failed on every run attempted (5/5) with a real UNIQUE-constraint
+// error surfacing from one of the two processes' corpus_record insert. Against
+// the fix, both also ran 5/5 clean.
+describe("CorpusStore.append concurrency (TOCTOU regression)", () => {
+	it(
+		"two barrier-synchronized processes racing the same sequence of keys produce no errors and no duplicate rows",
+		async () => {
+			const [a, b] = await Promise.all([
+				runCorpusStoreWorker(handle.path, "a", CONCURRENCY_COUNT),
+				runCorpusStoreWorker(handle.path, "b", CONCURRENCY_COUNT),
+			]);
+			expect(a).toHaveLength(CONCURRENCY_COUNT);
+			expect(b).toHaveLength(CONCURRENCY_COUNT);
+			for (const result of [...a, ...b]) {
+				expect(result.ok).toBe(true);
+			}
+
+			const row = handle.db
+				.prepare(
+					`SELECT COUNT(*) AS n FROM corpus_record WHERE repository_id = ?`,
+				)
+				.get("local:/tmp/concurrent-repo") as { n: number };
+			expect(row.n).toBe(CONCURRENCY_COUNT);
+		},
+		30_000,
+	);
 });
