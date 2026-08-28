@@ -187,6 +187,12 @@ All 5 Task 1 tests passing.
 
 ---
 
+## Fix Round 3 Summary
+
+**Change**: Staged and committed deletion of `packages/core/vitest.config.mjs` via `git rm`. The file was deleted from disk in round 2 but remained in git's index. With the file genuinely removed from the repository, 160/160 tests pass across 13 files; git status shows clean working tree. Commit SHA: 3144e96.
+
+---
+
 ## Summary
 
-Task 1 is **complete and verified**. All files created, schema reordered to comply with SQLite grammar, all tests passing, pragma atomicity restored, TypeCheck clean, carried modules verified. Implementation is faithful to the brief (spec corrected to match valid DDL), follows project conventions, and implements fail-closed semantics correctly.
+Task 1 is **complete and verified**. All files created, schema reordered to comply with SQLite grammar, all tests passing (160/160), pragma atomicity restored inside transaction, TypeCheck clean, carried modules verified (24 files unmodified). Implementation is faithful to the brief (spec corrected to match valid DDL), follows project conventions, and implements fail-closed semantics correctly.
