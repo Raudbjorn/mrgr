@@ -260,6 +260,96 @@ describe("EvidenceStore", () => {
 		expect(shas[0]!.preimage_ours_sha).toBe(shas[1]!.preimage_ours_sha);
 	});
 
+	it("two regions of the same file agreeing on dependency_graph both append and share evidence_dep rows", () => {
+		const region1 = okRecord();
+		const region2 = okRecordOrdinal2(); // same dependency_graph as region1
+		expect(evidenceStore.append(region1).ok).toBe(true);
+		expect(evidenceStore.append(region2).ok).toBe(true);
+
+		// One row per (side, dep_path) pair, not per region: 2 entries shared
+		// across both regions means 2 rows, not 4.
+		const depRows = handle.db
+			.prepare(
+				"SELECT side, dep_path FROM evidence_dep WHERE path = 'src/a.ts' ORDER BY side, dep_path",
+			)
+			.all() as { side: string; dep_path: string }[];
+		expect(depRows).toEqual([
+			{ side: "ours", dep_path: "src/a.ts" },
+			{ side: "theirs", dep_path: "src/b.ts" },
+		]);
+
+		const got1 = evidenceStore.get(
+			region1.repository_id,
+			region1.merge_sha,
+			region1.baseline_id,
+			region1.conflict_path,
+			region1.conflict_ordinal,
+		);
+		expect(got1.ok).toBe(true);
+		if (got1.ok) expect(got1.value).toEqual(region1);
+
+		const got2 = evidenceStore.get(
+			region2.repository_id,
+			region2.merge_sha,
+			region2.baseline_id,
+			region2.conflict_path,
+			region2.conflict_ordinal,
+		);
+		expect(got2.ok).toBe(true);
+		if (got2.ok) expect(got2.value).toEqual(region2);
+	});
+
+	it("rejects a second region whose dependency_graph disagrees with its file siblings, leaving the first region's rows unchanged", () => {
+		const region1 = okRecord();
+		expect(evidenceStore.append(region1).ok).toBe(true);
+
+		const conflicting: OkEvidenceRecord = {
+			...okRecordOrdinal2(),
+			bundle: {
+				...okRecordOrdinal2().bundle,
+				// Different dep set than region1's ["ours:src/a.ts", "theirs:src/b.ts"].
+				dependency_graph: ["ours:src/a.ts"],
+			},
+		};
+		const result = evidenceStore.append(conflicting);
+		expect(result.ok).toBe(false);
+		if (!result.ok) {
+			expect(result.error.kind).toBe("db");
+			expect(result.error.details?.reason).toBe("dependency-graph-conflict");
+		}
+
+		// Nothing was written for the rejected region.
+		const got2 = evidenceStore.get(
+			conflicting.repository_id,
+			conflicting.merge_sha,
+			conflicting.baseline_id,
+			conflicting.conflict_path,
+			conflicting.conflict_ordinal,
+		);
+		expect(got2.ok).toBe(true);
+		if (got2.ok) expect(got2.value).toBeNull();
+
+		// Region 1's own rows are exactly as they were before the rejected append.
+		const depRows = handle.db
+			.prepare(
+				"SELECT side, dep_path FROM evidence_dep WHERE path = 'src/a.ts' ORDER BY side, dep_path",
+			)
+			.all() as { side: string; dep_path: string }[];
+		expect(depRows).toEqual([
+			{ side: "ours", dep_path: "src/a.ts" },
+			{ side: "theirs", dep_path: "src/b.ts" },
+		]);
+		const got1 = evidenceStore.get(
+			region1.repository_id,
+			region1.merge_sha,
+			region1.baseline_id,
+			region1.conflict_path,
+			region1.conflict_ordinal,
+		);
+		expect(got1.ok).toBe(true);
+		if (got1.ok) expect(got1.value).toEqual(region1);
+	});
+
 	it("is idempotent for an identical duplicate, errors on a different one", () => {
 		const record = okRecord();
 		evidenceStore.append(record);

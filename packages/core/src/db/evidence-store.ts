@@ -28,6 +28,16 @@ function keyDetails(record: EvidenceKeyFields): DbToolError["details"] {
  * `conflict_region`: a path-level failure (`PATH_LEVEL_ORDINAL`) has no
  * region to point at. The region-existence check for `status: "ok"` rows
  * therefore lives here, not in the schema.
+ *
+ * `dependency_graph` is a property of the FILE, not of any one region within
+ * it — the carried producer derives it once per file and copies it into
+ * every region's bundle — so `evidence_dep` stores it once per file and every
+ * region is expected to agree. A region whose `dependency_graph` disagrees
+ * with a sibling already on file is a producer bug, not something to merge:
+ * silently unioning the two would make `get()` return a graph that belongs
+ * to no single region, which is exactly the kind of plausible-but-wrong
+ * result this store exists to prevent. `append` therefore fails closed with
+ * reason `"dependency-graph-conflict"` instead of writing anything.
  */
 export class EvidenceStore {
 	constructor(private readonly handle: DbHandle) {}
@@ -93,6 +103,9 @@ export class EvidenceStore {
 					...keyDetails(value),
 				});
 			}
+
+			const conflict = this.checkDependencyGraphAgreement(value);
+			if (!conflict.ok) return conflict;
 		}
 
 		const db = this.handle.db;
@@ -128,6 +141,57 @@ export class EvidenceStore {
 				cause: String(cause),
 			});
 		}
+	}
+
+	/**
+	 * Fail closed if this region's `dependency_graph` disagrees with whatever
+	 * is already stored for its file. No existing rows means no sibling has
+	 * been appended yet (or the empty table cannot yet distinguish that from
+	 * a sibling whose own graph was empty), so an unopposed write proceeds.
+	 */
+	private checkDependencyGraphAgreement(
+		record: Extract<EvidenceRecord, { status: "ok" }>,
+	): DbResult<void> {
+		let existingDeps: { side: string; dep_path: string }[];
+		try {
+			existingDeps = this.handle.db
+				.prepare(
+					`SELECT side, dep_path FROM evidence_dep
+					 WHERE repository_id = ? AND merge_sha = ? AND baseline_id = ? AND path = ?`,
+				)
+				.all(
+					record.repository_id,
+					record.merge_sha,
+					record.baseline_id,
+					record.conflict_path,
+				) as { side: string; dep_path: string }[];
+		} catch (cause) {
+			return dbErr("db", "append evidence", "Dependency graph check failed", {
+				...keyDetails(record),
+				cause: String(cause),
+			});
+		}
+		if (existingDeps.length === 0) return dbOk(undefined);
+
+		const existingSet = new Set(existingDeps.map((d) => `${d.side}:${d.dep_path}`));
+		const incomingSet = new Set(record.bundle.dependency_graph);
+		const agrees =
+			existingSet.size === incomingSet.size &&
+			[...existingSet].every((entry) => incomingSet.has(entry));
+		if (!agrees) {
+			return dbErr(
+				"db",
+				"append evidence",
+				"dependency_graph disagrees with another region of the same file",
+				{
+					reason: "dependency-graph-conflict",
+					...keyDetails(record),
+					existing_count: existingSet.size,
+					incoming_count: incomingSet.size,
+				},
+			);
+		}
+		return dbOk(undefined);
 	}
 
 	private insertOkBundle(bundle: EvidenceBundle, key: EvidenceKeyFields): void {
@@ -181,6 +245,19 @@ export class EvidenceStore {
 			const sep = entry.indexOf(":");
 			const side = entry.slice(0, sep);
 			const depPath = entry.slice(sep + 1);
+			// Defense in depth: DependencyGraphSchema's regex already rejects
+			// any entry that doesn't start with "ours:"/"theirs:" before
+			// append() gets this far, but evidence_dep's CHECK (side IN
+			// ('ours','theirs')) would otherwise be silently swallowed by
+			// INSERT OR IGNORE rather than rejecting a bad value on a future
+			// producer bug — exactly the silent-omission failure this store
+			// exists to prevent. Throwing here still surfaces as a typed
+			// dbErr via append()'s catch.
+			if (side !== "ours" && side !== "theirs") {
+				throw new Error(
+					`Invalid dependency_graph side ${JSON.stringify(side)} in entry ${JSON.stringify(entry)}`,
+				);
+			}
 			insertDep.run(
 				key.repository_id,
 				key.merge_sha,
