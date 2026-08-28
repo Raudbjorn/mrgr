@@ -48,8 +48,26 @@ export class LedgerStore {
 
 	append(input: LedgerInput, createdAt: string = new Date().toISOString()): DbResult<LedgerRecord> {
 		const db = this.handle.db;
-		const id = sha256Hex(canonicalJson(input));
-		const canonicalInput = canonicalJson(input);
+
+		// Explicitly projected, not `canonicalJson(input)` directly: LedgerRecord
+		// extends LedgerInput, so a caller re-hashing a fetched record (a live
+		// Task 8 usage) would otherwise typecheck and silently fold id/seq/
+		// createdAt into the hash, breaking "id excludes seq and createdAt" and
+		// making that call non-idempotent.
+		const projected = projectInput(input);
+
+		let canonicalInput: string;
+		try {
+			canonicalInput = canonicalJson(projected);
+		} catch (cause) {
+			return dbErr(
+				"db",
+				"append ledger record",
+				"Ledger input has no canonical JSON representation",
+				{ cause: String(cause) },
+			);
+		}
+		const id = sha256Hex(canonicalInput);
 
 		try {
 			// Ledger rows are the audit trail: force fsync-on-commit for this
@@ -93,23 +111,23 @@ export class LedgerStore {
 			).run(
 				id,
 				next,
-				input.recordType,
-				input.recordSchemaVersion,
-				canonicalJson(input.inputRefs),
-				input.intermediateTreeOid,
-				input.outputTreeOid,
-				input.evidenceDigest,
-				input.auditPhase,
-				input.adjudicatorKind,
-				input.adjudicatorIdentity,
-				input.reason,
-				canonicalJson(input.payload),
-				input.supersedes,
+				projected.recordType,
+				projected.recordSchemaVersion,
+				canonicalJson(projected.inputRefs),
+				projected.intermediateTreeOid,
+				projected.outputTreeOid,
+				projected.evidenceDigest,
+				projected.auditPhase,
+				projected.adjudicatorKind,
+				projected.adjudicatorIdentity,
+				projected.reason,
+				canonicalJson(projected.payload),
+				projected.supersedes,
 				createdAt,
 			);
 			db.exec("COMMIT");
 
-			return dbOk({ ...input, id, seq: next, createdAt });
+			return dbOk({ ...projected, id, seq: next, createdAt });
 		} catch (cause) {
 			try {
 				db.exec("ROLLBACK");
@@ -151,6 +169,23 @@ export class LedgerStore {
 			return dbErr("db", "list ledger records", "Read failed", { cause: String(cause) });
 		}
 	}
+}
+
+function projectInput(input: LedgerInput): LedgerInput {
+	return {
+		recordType: input.recordType,
+		recordSchemaVersion: input.recordSchemaVersion,
+		inputRefs: input.inputRefs,
+		intermediateTreeOid: input.intermediateTreeOid,
+		outputTreeOid: input.outputTreeOid,
+		evidenceDigest: input.evidenceDigest,
+		auditPhase: input.auditPhase,
+		adjudicatorKind: input.adjudicatorKind,
+		adjudicatorIdentity: input.adjudicatorIdentity,
+		reason: input.reason,
+		payload: input.payload,
+		supersedes: input.supersedes,
+	};
 }
 
 function rowToRecord(row: Record<string, unknown>): LedgerRecord {
