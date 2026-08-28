@@ -6,9 +6,11 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { putBlob } from "../../src/db/blob.js";
 import { sha256Hex } from "../../src/db/canonical.js";
 import { CorpusStore } from "../../src/db/corpus-store.js";
+import { EvidenceStore } from "../../src/db/evidence-store.js";
 import { exportDb } from "../../src/db/export.js";
 import { LedgerStore, type LedgerInput } from "../../src/db/ledger-store.js";
 import { closeDb, openDb, type DbHandle } from "../../src/db/open.js";
+import type { EvidenceRecord } from "../../src/m1a/sidecar.js";
 import type { CorpusRecordV2 } from "../../src/evaluation/types.js";
 
 const REPO_ID = "local:/tmp/repo";
@@ -108,6 +110,42 @@ function corpusRecord(mergeSha: string): CorpusRecordV2 {
 		// Recorded order z, a; path sorts a, z — index and natural-key order disagree.
 		conflictPaths: ["src/z.ts", "src/a.ts"],
 		conflictRegions: [region("src/z.ts", OID_BASE_Z), region("src/a.ts", OID_BASE_A)],
+	};
+}
+
+/**
+ * An "ok" evidence record for corpusRecord()'s "src/z.ts" ordinal 1 region,
+ * with a caller-supplied dependency_graph. DependencyGraphSchema
+ * (m1a/evidence.ts) is a plain array with no ordering or uniqueness
+ * constraint, so a sorted, duplicate-free fixture (as one might reach for by
+ * default) cannot catch an export that silently sorts by (side, dep_path)
+ * instead of by the producer's recorded position — same trap the store's own
+ * fix round 4 exists to cover, one layer out.
+ */
+function evidenceRecord(mergeSha: string, dependencyGraph: string[]): EvidenceRecord {
+	return {
+		schemaVersion: 1,
+		repository_id: REPO_ID,
+		merge_sha: mergeSha,
+		baseline_id: DIGEST,
+		conflict_path: "src/z.ts",
+		conflict_ordinal: 1,
+		status: "ok",
+		bundle: {
+			conflict_path: "src/z.ts",
+			conflict_ordinal: 1,
+			conflict_hunk_ours: "ours-hunk\n",
+			conflict_hunk_base: "base-hunk\n",
+			conflict_hunk_theirs: "theirs-hunk\n",
+			preimage_ours: null,
+			preimage_theirs: null,
+			preimage_ours_bytes: null,
+			preimage_theirs_bytes: null,
+			preimage_ours_truncated: false,
+			preimage_theirs_truncated: false,
+			dependency_graph: dependencyGraph,
+			dependency_graph_status: "derived",
+		},
 	};
 }
 
@@ -409,6 +447,26 @@ describe("exportDb", () => {
 		expect(bases.map((r) => r.base_index)).toEqual([0, 1]);
 		// Recorded order was z, a — a natural-key (base_sha) sort would have produced a, z.
 		expect(bases.map((r) => r.base_sha)).toEqual([OID_BASE_Z, OID_BASE_A]);
+	});
+
+	it("orders evidence_dep by position, reproducing the producer's dependency_graph order and duplicates", () => {
+		new CorpusStore(handle).append(corpusRecord(OID_PARENT1));
+		// Deliberately unsorted with a repeated (side, dep_path) pair: a
+		// (side, dep_path) sort would produce ours:a.txt, ours:a.txt,
+		// ours:b.txt, theirs:z.txt — collapsing nothing (duplicates are still
+		// two rows) but reordering everything.
+		const graph = ["theirs:z.txt", "ours:b.txt", "ours:a.txt", "ours:a.txt"];
+		const appended = new EvidenceStore(handle).append(evidenceRecord(OID_PARENT1, graph));
+		expect(appended.ok).toBe(true);
+
+		const outDir = join(dir, "export");
+		const result = exportDb(handle, outDir);
+		expect(result.ok).toBe(true);
+		if (!result.ok) return;
+
+		const deps = readJsonl(join(outDir, "evidence_dep.jsonl"));
+		expect(deps.map((r) => `${r.side}:${r.dep_path}`)).toEqual(graph);
+		expect(deps.map((r) => r.position)).toEqual([0, 1, 2, 3]);
 	});
 
 	it("without withBlobs, no blobs directory is created", () => {

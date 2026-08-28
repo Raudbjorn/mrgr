@@ -20,16 +20,22 @@ export interface ExportManifest {
 
 /**
  * Position column each table is ordered by. Most tables carry a natural key
- * that is already stable content (an id, a hash, a foreign key tuple); three
- * tables — conflict_path, conflict_region, merge_base — record array/object
- * position from their source record via an explicit index column
- * (path_index, array_index, base_index) because their natural key (path,
- * (path, ordinal), base_sha) does not preserve the original order and
- * sorting by it would silently re-order recorded evidence. ledger orders by
- * seq, its assigned arrival order, not by id (its content hash).
+ * that is already stable content (an id, a hash, a foreign key tuple); four
+ * tables — conflict_path, conflict_region, merge_base, evidence_dep — record
+ * array position from their source record via an explicit index column
+ * (path_index, array_index, base_index, position) because their natural key
+ * (path, (path, ordinal), base_sha, (side, dep_path)) does not preserve the
+ * original order — and, for evidence_dep specifically, does not preserve
+ * duplicates either: dependency_graph is a plain array that may repeat the
+ * same (side, dep_path) pair, and evidence_dep's own PRIMARY KEY only stays
+ * collision-free across duplicates because `position` is part of it.
+ * Sorting any of these four by their natural key would silently re-order (or,
+ * for evidence_dep, additionally reshuffle relative to) recorded evidence.
+ * ledger orders by seq, its assigned arrival order, not by id (its content
+ * hash).
  *
- * evidence_bundle and evidence_dep have no such index column in the schema:
- * they export in primary-key order, which is the only order available.
+ * evidence_bundle has no such index column in the schema: it exports in
+ * primary-key order, which is the only order available.
  */
 const TABLE_SPECS: readonly { name: string; orderBy: string }[] = [
 	{ name: "meta", orderBy: "key" },
@@ -40,7 +46,7 @@ const TABLE_SPECS: readonly { name: string; orderBy: string }[] = [
 	{ name: "conflict_path", orderBy: "repository_id, merge_sha, baseline_id, path_index" },
 	{ name: "conflict_region", orderBy: "repository_id, merge_sha, baseline_id, array_index" },
 	{ name: "evidence_bundle", orderBy: "repository_id, merge_sha, baseline_id, path, ordinal" },
-	{ name: "evidence_dep", orderBy: "repository_id, merge_sha, baseline_id, path, side, dep_path" },
+	{ name: "evidence_dep", orderBy: "repository_id, merge_sha, baseline_id, path, position" },
 	{ name: "blob", orderBy: "sha256" },
 	{ name: "ledger", orderBy: "seq" },
 	{ name: "run", orderBy: "run_id" },
