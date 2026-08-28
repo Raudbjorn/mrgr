@@ -155,9 +155,11 @@ CREATE TABLE baseline (
   strategy               TEXT NOT NULL,
   environment_policy     TEXT NOT NULL,
   normalization_version  TEXT NOT NULL,
-  replay_command         TEXT NOT NULL,
-  repo_merge_config_hash TEXT NOT NULL
+  replay_command         TEXT NOT NULL
 ) STRICT;
+-- baseline_id derives from {schemaVersion, gitVersion, environmentPolicy,
+-- replayCommand, normalizationVersion}; repoMergeConfigHash varies per repo
+-- and lives on corpus_record
 
 CREATE TABLE corpus_record (
   repository_id      TEXT NOT NULL REFERENCES repository(id),
@@ -167,8 +169,9 @@ CREATE TABLE corpus_record (
   parent_theirs_sha  TEXT NOT NULL CHECK (length(parent_theirs_sha) = 40),
   author_date        TEXT NOT NULL,
   subject            TEXT NOT NULL,
-  parent_attr_ours   TEXT NOT NULL,
-  parent_attr_theirs TEXT NOT NULL,
+  parent_attr_ours   TEXT,   -- nullable ObjectId (ReplayProvenance.parentAttributes)
+  parent_attr_theirs TEXT,
+  repo_merge_config_hash TEXT,  -- per-record, nullable (varies per repo)
   replay_status      TEXT NOT NULL CHECK (replay_status IN
     ('clean','conflicted','unrelated','unsupported-custom-driver','error')),
   automatic_tree_oid TEXT CHECK (automatic_tree_oid IS NULL
@@ -187,8 +190,10 @@ CREATE TABLE merge_base (
   merge_sha     TEXT NOT NULL,
   baseline_id   TEXT NOT NULL,
   base_sha      TEXT NOT NULL CHECK (length(base_sha) = 40),
-  ours_exclusive_commits   INTEGER NOT NULL CHECK (ours_exclusive_commits >= 0),
-  theirs_exclusive_commits INTEGER NOT NULL CHECK (theirs_exclusive_commits >= 0),
+  base_index    INTEGER NOT NULL CHECK (base_index >= 0),  -- order in mergeBases[]
+  ours_exclusive_commits   INTEGER CHECK (ours_exclusive_commits   IS NULL OR ours_exclusive_commits   >= 0),
+  theirs_exclusive_commits INTEGER CHECK (theirs_exclusive_commits IS NULL OR theirs_exclusive_commits >= 0),
+  CHECK ((ours_exclusive_commits IS NULL) = (theirs_exclusive_commits IS NULL)),
   PRIMARY KEY (repository_id, merge_sha, baseline_id, base_sha),
   FOREIGN KEY (repository_id, merge_sha, baseline_id)
     REFERENCES corpus_record(repository_id, merge_sha, baseline_id)
@@ -210,6 +215,12 @@ CREATE TABLE conflict_region (
   baseline_id   TEXT NOT NULL,
   path          TEXT NOT NULL,
   ordinal       INTEGER NOT NULL CHECK (ordinal >= 1),
+  category      TEXT NOT NULL CHECK (category IN
+    ('lockfile','migration','documentation','generated','other')),
+  conflict_kind TEXT NOT NULL,
+  stage_oid_base   TEXT CHECK (stage_oid_base   IS NULL OR length(stage_oid_base)   = 40),
+  stage_oid_ours   TEXT CHECK (stage_oid_ours   IS NULL OR length(stage_oid_ours)   = 40),
+  stage_oid_theirs TEXT CHECK (stage_oid_theirs IS NULL OR length(stage_oid_theirs) = 40),
   localization_status TEXT NOT NULL CHECK (localization_status IN
     ('exact','ambiguous','unsupported-binary','unsupported-structural')),
   resolution_class TEXT NOT NULL CHECK (resolution_class IN
@@ -240,8 +251,11 @@ CREATE TABLE evidence_bundle (
   merge_sha     TEXT NOT NULL,
   baseline_id   TEXT NOT NULL,
   path          TEXT NOT NULL,
-  ordinal       INTEGER NOT NULL,
+  ordinal       INTEGER NOT NULL CHECK (ordinal >= 0),
+  -- ordinal 0 = PATH_LEVEL_ORDINAL: a failure before any region was known
+  -- (m1a/sidecar.ts). Only failed rows may use it.
   status        TEXT NOT NULL CHECK (status IN ('ok','failed')),
+  CHECK (status = 'failed' OR ordinal >= 1),
   hunk_ours_sha   TEXT REFERENCES blob(sha256),
   hunk_base_sha   TEXT REFERENCES blob(sha256),
   hunk_theirs_sha TEXT REFERENCES blob(sha256),
@@ -264,9 +278,12 @@ CREATE TABLE evidence_bundle (
   CHECK ((preimage_ours_sha   IS NULL) = (preimage_ours_bytes   IS NULL)),
   CHECK ((preimage_theirs_sha IS NULL) = (preimage_theirs_bytes IS NULL)),
   PRIMARY KEY (repository_id, merge_sha, baseline_id, path, ordinal),
-  FOREIGN KEY (repository_id, merge_sha, baseline_id, path, ordinal)
-    REFERENCES conflict_region(repository_id, merge_sha, baseline_id, path, ordinal)
+  FOREIGN KEY (repository_id, merge_sha, baseline_id, path)
+    REFERENCES conflict_path(repository_id, merge_sha, baseline_id, path)
 ) STRICT;
+-- FK stops at conflict_path because failed rows may carry ordinal 0, which
+-- has no region row. For status='ok' rows the store verifies the matching
+-- conflict_region row exists before inserting (fail-closed in code).
 -- Note: preimage_*_bytes records the ORIGINAL size (pre-truncation), same as
 -- the sidecar today. A truncated preimage's blob holds the truncated bytes;
 -- byte_len < preimage_*_bytes iff *_truncated = 1.
