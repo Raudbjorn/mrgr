@@ -1819,7 +1819,9 @@ export class RunStore {
 - [ ] **Step 4: Run to verify pass.**
 - [ ] **Step 5: Commit** — `git commit -m "feat(db): RunStore for experiment arms with PK resume"`.
 
----### Task 8: Canonical export
+---
+
+### Task 8: Canonical export
 
 **Files:**
 - Create: `packages/core/src/db/export.ts`
