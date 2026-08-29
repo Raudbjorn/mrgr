@@ -57,7 +57,6 @@ mode summarizes store outcomes as `imported`, `failed`, and `skipped`. In both
 modes, any generated `status: "failed"` record exits `1` even when it was
 persisted successfully.
 
-
 ## Library
 
 ```ts
