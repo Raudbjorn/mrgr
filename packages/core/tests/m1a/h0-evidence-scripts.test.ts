@@ -145,5 +145,34 @@ describe.sequential("H0 baseline and aggregate producers", () => {
 		expect(aggregate.kill_condition.met).toBe(true);
 		expect(aggregate.verdict).toBe("null");
 	});
+
+	it("rejects duplicate triple/run rows before scoring", async () => {
+		const directory = fixtureDirectory();
+		await runScript(directory, "evidence/h0/_baselines.ts");
+		const baselineRows = readFileSync(
+			join(directory, "evidence/h0/baselines.json"),
+			"utf8",
+		)
+			.trim()
+			.split("\n")
+			.map((line) => JSON.parse(line) as {
+				triple_id: string;
+				arm: string;
+			});
+		for (const arm of BASELINE_ARMS) {
+			const rows = baselineRows.filter(
+				(row) => row.arm === arm && row.triple_id === "selected-triple",
+			);
+			if (arm === "baseline-compose") rows.push(rows[0]);
+			writeJsonl(
+				join(directory, `evidence/h0/runs/${arm}-${STAMP}.jsonl`),
+				rows,
+			);
+		}
+
+		await expect(
+			runScript(directory, "evidence/h0/_aggregate.ts"),
+		).rejects.toThrow("different sampled triple/run set");
+	});
 });
 

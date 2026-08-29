@@ -60,7 +60,9 @@ const loadRecords = (path: string): H0Record[] =>
 
 const sameRecordKeys = (records: H0Record[], expected: Set<string>): boolean => {
 	const actual = new Set(records.map((record) => `${record.triple_id}|${record.run}`));
-	return actual.size === expected.size && [...expected].every((key) => actual.has(key));
+	return records.length === expected.size &&
+		actual.size === expected.size &&
+		[...expected].every((key) => actual.has(key));
 };
 
 const loadResolutionByKey = (paths: string[]): Map<string, string> => {
@@ -267,9 +269,13 @@ export const main = () => {
 			throw new Error(`${file} contains another arm`);
 		}
 		if (expectedRecordKeys === undefined) {
-			expectedRecordKeys = new Set(
+			const keys = new Set(
 				records.map((record) => `${record.triple_id}|${record.run}`),
 			);
+			if (keys.size !== records.length) {
+				throw new Error(`${file} has duplicate triple/run rows`);
+			}
+			expectedRecordKeys = keys;
 			sampledTripleKeys = new Set(records.map((record) => record.triple_id));
 		} else if (!sameRecordKeys(records, expectedRecordKeys)) {
 			throw new Error(`${file} has a different sampled triple/run set`);
