@@ -165,6 +165,27 @@ describe("--db flag wiring", () => {
 		expect(dbRun.stdout.join("")).toMatch(/evidence records:/);
 		expect(sidecarRun.stdout.join("")).toMatch(/evidence records:/);
 	});
+	it("returns operational failure when sidecar extraction records failures", async () => {
+		const directory = await tempDir();
+		const { corpusPath } = await seedCorpusAndDb(directory);
+		const sidecarPath = join(directory, "failed.jsonl");
+
+		const capture = captureIo();
+		const exitCode = await mrgrEvidenceMain(
+			[
+				corpusPath,
+				"--out",
+				sidecarPath,
+				"--repo",
+				join(directory, "missing-repository"),
+			],
+			capture.io,
+		);
+
+		expect(exitCode).toBe(1);
+		expect(capture.stdout.join("")).toMatch(/failed=[1-9]/);
+	});
+
 
 	it("B2: --db and --out together are mutually exclusive and exit 2", async () => {
 		const directory = await tempDir();
@@ -217,16 +238,16 @@ describe("--db flag wiring", () => {
 		expect(existsSync(dbPath)).toBe(false);
 		expect(capture.stdout).toEqual([]);
 		expect(capture.stderr).toHaveLength(1);
-		// The brief pins only exit 2 and file absence. Stderr is the
-		// JSON-encoded ToolError; either parseArgs (unknown option) or
-		// the wired CLI's openDb(path, {}) not-found failure is fine —
-		// assert only that the line parses and carries a non-empty message.
 		const parsed = JSON.parse(capture.stderr[0] as string) as {
+			kind?: unknown;
+			operation?: unknown;
 			message?: unknown;
 		};
-		expect(
-			typeof parsed.message === "string" && parsed.message.length > 0,
-		).toBe(true);
+		expect(parsed).toMatchObject({
+			kind: "not-found",
+			operation: "open db",
+			message: "Database file does not exist",
+		});
 		expect(capture.stderr[0] ?? "").not.toContain("stack");
 	});
 });

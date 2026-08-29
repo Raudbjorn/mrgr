@@ -38,23 +38,32 @@ interface ParsedFile {
 	rows: AggregateRow[];
 }
 
-function validateRow(row: AggregateRow): { ok: true; decision: RunResultRecord["decision"] } | { ok: false; reason: string } {
-	if (typeof row.triple_id !== "string") return { ok: false, reason: "missing triple_id" };
-	if (typeof row.arm !== "string") return { ok: false, reason: "missing arm" };
-	if (!row.model || typeof row.model.name !== "string" || typeof row.model.sha !== "string") {
+function validateRow(row: unknown): { ok: true; decision: RunResultRecord["decision"] } | { ok: false; reason: string } {
+	if (typeof row !== "object" || row === null || Array.isArray(row)) {
+		return { ok: false, reason: "row must be a JSON object" };
+	}
+	const candidate = row as Partial<AggregateRow>;
+	if (typeof candidate.triple_id !== "string") return { ok: false, reason: "missing triple_id" };
+	if (typeof candidate.arm !== "string") return { ok: false, reason: "missing arm" };
+	if (
+		typeof candidate.model !== "object" ||
+		candidate.model === null ||
+		typeof candidate.model.name !== "string" ||
+		typeof candidate.model.sha !== "string"
+	) {
 		return { ok: false, reason: "missing model.name / model.sha" };
 	}
-	if (typeof row.run !== "number") return { ok: false, reason: "missing run" };
-	if (typeof row.input_tokens !== "number") return { ok: false, reason: "missing input_tokens" };
-	if (typeof row.output_tokens !== "number") return { ok: false, reason: "missing output_tokens" };
-	if (typeof row.schema_valid !== "boolean") return { ok: false, reason: "missing schema_valid (boolean)" };
-	if (typeof row.halt_reason !== "string" && row.halt_reason !== null) {
+	if (typeof candidate.run !== "number") return { ok: false, reason: "missing run" };
+	if (typeof candidate.input_tokens !== "number") return { ok: false, reason: "missing input_tokens" };
+	if (typeof candidate.output_tokens !== "number") return { ok: false, reason: "missing output_tokens" };
+	if (typeof candidate.schema_valid !== "boolean") return { ok: false, reason: "missing schema_valid (boolean)" };
+	if (typeof candidate.halt_reason !== "string" && candidate.halt_reason !== null) {
 		return { ok: false, reason: "halt_reason must be string or null" };
 	}
-	if (!DECISION_VALUES.has(row.decision as RunResultRecord["decision"])) {
-		return { ok: false, reason: `decision "${row.decision}" not in CHECK enum` };
+	if (!DECISION_VALUES.has(candidate.decision as RunResultRecord["decision"])) {
+		return { ok: false, reason: `decision "${String(candidate.decision)}" not in CHECK enum` };
 	}
-	return { ok: true, decision: row.decision as RunResultRecord["decision"] };
+	return { ok: true, decision: candidate.decision as RunResultRecord["decision"] };
 }
 
 // Run-id/timestamp token in the canonical H0 file naming convention
@@ -81,9 +90,9 @@ function parseFile(path: string): ParsedFile | { error: DbResult<never> } {
 	const rows: AggregateRow[] = [];
 	for (const line of lines) {
 		if (line.length === 0) continue;
-		let parsed: AggregateRow;
+		let parsed: unknown;
 		try {
-			parsed = JSON.parse(line) as AggregateRow;
+			parsed = JSON.parse(line) as unknown;
 		} catch (cause) {
 			return {
 				error: dbErr("parse", "h0-aggregate", "malformed JSONL line", {
@@ -98,7 +107,7 @@ function parseFile(path: string): ParsedFile | { error: DbResult<never> } {
 				error: dbErr("parse", "h0-aggregate", v.reason, { path }),
 			};
 		}
-		rows.push(parsed);
+		rows.push(parsed as AggregateRow);
 	}
 	return { path, rows };
 }
@@ -111,8 +120,15 @@ export async function loadH0Aggregate(
 	if (!Array.isArray(options.files) || options.files.length === 0) {
 		return dbErr("config", "h0-aggregate", "options.files must be a non-empty array");
 	}
-	if (typeof options.commitPin !== "string" || options.commitPin.length === 0) {
-		return dbErr("config", "h0-aggregate", "options.commitPin must be a non-empty string");
+	if (
+		typeof options.commitPin !== "string" ||
+		!/^[0-9a-f]{40}$/.test(options.commitPin)
+	) {
+		return dbErr(
+			"config",
+			"h0-aggregate",
+			"options.commitPin must be a 40-character lowercase hexadecimal SHA-1",
+		);
 	}
 	// The ruling-supersedes-stale-default override: the legacy `runsDir` key
 	// is NOT accepted by this loader at all. The public API is explicit-

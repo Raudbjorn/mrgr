@@ -306,6 +306,38 @@ describe("loadH0Aggregate — happy path", () => {
 });
 
 describe("loadH0Aggregate — file-level provenance guards", () => {
+	it("returns a typed parse error for a non-object JSONL value", async () => {
+		const path = join(dir, `full-bundle-${RUN_TS}.jsonl`);
+		writeFileSync(path, "null\n");
+
+		await expect(
+			loadH0Aggregate(dbPath, {
+				files: [path],
+				commitPin: COMMIT_PIN,
+			}),
+		).resolves.toMatchObject({
+			ok: false,
+			error: { kind: "parse" },
+		});
+	});
+
+	it("rejects a commit pin that is not a full lowercase SHA-1", async () => {
+		const path = writeJsonl(
+			`full-bundle-${RUN_TS}.jsonl`,
+			fixtureRows("full-bundle", 1),
+		);
+
+		const result = await loadH0Aggregate(dbPath, {
+			files: [path],
+			commitPin: "x",
+		});
+
+		expect(result.ok).toBe(false);
+		if (!result.ok) {
+			expect(result.error.message).toMatch(/40-character lowercase hexadecimal/);
+		}
+	});
+
 	it("rejects a call that mixes filenames from different run-id/timestamp sets", async () => {
 		const fullBundlePath = writeJsonl(`full-bundle-${RUN_TS}.jsonl`, fixtureRows("full-bundle", 1));
 		const differentTsPath = writeJsonl(

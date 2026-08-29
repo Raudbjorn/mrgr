@@ -52,6 +52,11 @@ mrgr-db verify --db PATH
 `mrgr-db` is the workspace store; JSONL (corpus, sidecar evidence, and `mrgr-db export`'s output) is the transport format. Committed evidence in this repository stays exported JSONL rather than a binary `.db` file — that is what gets reviewed and diffed. `tursodb` may inspect the database file read-only for ad-hoc queries while no writer has it open; querying it while `mrgr-db` is running is not something this package tests or supports. Node ≥ 22.5 is required — `node:sqlite`, which the store is built on, does not exist before that.
 
 `mrgr-db` and `mrgr-evidence` exit `0` on success, `2` for a usage error, and `1` for an operational failure. `mrgr-wp0` retains its historical exit `1` for both usage and operational failures. `mrgr-h0-load` follows the `0`/`2`/`1` split but emits concise text rather than a JSON `ToolError`.
+Sidecar mode summarizes `ok`, `failed`, and `skipped` evidence records; database
+mode summarizes store outcomes as `imported`, `failed`, and `skipped`. In both
+modes, any generated `status: "failed"` record exits `1` even when it was
+persisted successfully.
+
 
 ## Library
 

@@ -367,7 +367,7 @@ async function runSidecarMode(
 	io.stdout(
 		`evidence records: ok=${okCount} failed=${failedCount} skipped=${skipped}\n`,
 	);
-	return 0;
+	return failedCount === 0 ? 0 : 1;
 }
 
 /**
@@ -386,13 +386,12 @@ async function runSidecarMode(
  * by error envelope — so a record read back through `EvidenceStore.list`
  * round-trips the same shape as one read back through `readEvidence`.
  *
- * Counts mirror the sidecar summary: every record the extractor generated
- * is persisted exactly once. `imported` covers a fresh insert,
- * `skippedDuplicate` covers a same-key re-append, `failed` covers a store
- * rejection. A non-zero generationFailureCount exits 1 even when those
- * rows persisted cleanly: a `status: "failed"` row is a record of
- * extraction that did not produce a bundle, which is a processing
- * failure regardless of where it was filed.
+ * Store counts preserve their database meanings: `imported` covers every
+ * fresh row (including persisted `status: "failed"` records),
+ * `skippedDuplicate` covers a same-key re-append, and `failed` covers a store
+ * rejection. A non-zero generationFailureCount exits 1, matching sidecar mode:
+ * a `status: "failed"` row is a record of extraction that did not produce a
+ * bundle, which is an operational failure regardless of where it was filed.
  */
 async function runDbMode(options: ParsedOptions, io: CliIo): Promise<number> {
 	if (options.db === undefined) {
