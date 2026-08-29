@@ -150,12 +150,22 @@ const callAdjudicator = async (
 		temperature: opts.temperature,
 		seed: opts.seed,
 	};
+	// Operational hardening (resumed-run timeout): the upstream /v1/chat/completions
+	// endpoint can hang indefinitely under heavy host load. Wrap the fetch in a
+	// 90s AbortController; on timeout we return ok=false so the runner writes a
+	// schema-invalid record and the aggregator counts it as halt. The kill
+	// branch stays reachable (no Infinity denominator).
+	const FETCH_TIMEOUT_MS = 90_000;
+	const ctrl = new AbortController();
+	const to = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
 	try {
 		const res = await fetch(`${ADJUDICATOR}/v1/chat/completions`, {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify(body),
+			signal: ctrl.signal,
 		});
+		clearTimeout(to);
 		if (!res.ok) {
 			return { content: `__http_${res.status}__`, input_tokens: 0, output_tokens: 0, ok: false };
 		}
@@ -171,14 +181,17 @@ const callAdjudicator = async (
 			output_tokens: usage?.completion_tokens ?? 0,
 			ok: true,
 		};
-	} catch (err) {
-		return {
-			content: `__network_error_${(err as Error).message.slice(0, 80)}__`,
-			input_tokens: 0,
-			output_tokens: 0,
-			ok: false,
-		};
-	}
+} catch (err) {
+	clearTimeout(to);
+	return {
+		content: `__network_error_${(err as Error).message.slice(0, 80)}__`,
+		input_tokens: 0,
+		output_tokens: 0,
+		ok: false,
+	};
+} finally {
+	clearTimeout(to);
+}
 };
 
 const parseDecision = (text: string): { decision: H0Record["decision"]; reason: string; schema_valid: boolean; fabricated_ids: boolean; evidence_ids: string[] } => {
