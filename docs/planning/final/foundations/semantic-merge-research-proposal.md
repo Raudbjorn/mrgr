@@ -3,7 +3,7 @@
 **A research proposal for agent-assisted conflict resolution grounded in anti-unification and theory colimits**
 
 | | |
-| --- | --- |
+|---|---|
 | Version | 0.1.0 (draft) |
 | Date | 2026-08-25 |
 | Status | Pre-measurement. No implementation commitment. |
@@ -199,7 +199,7 @@ pair.
 be the ternary anti-unification of `O, A, B`. A hole `x` is:
 
 | Class | Condition | Resolution |
-| --- | --- | --- |
+|---|---|---|
 | uncontested | `xθ_A = xθ_B` | that value |
 | unilateral-A | `xθ_B = xθ_O ≠ xθ_A` | `xθ_A` |
 | unilateral-B | `xθ_A = xθ_O ≠ xθ_B` | `xθ_B` |
@@ -262,7 +262,7 @@ logics with computable colimits.
 Three conditions must hold for the architecture to be well-defined:
 
 | | Condition | Status |
-| --- | --- | --- |
+|---|---|---|
 | **C1** | A span `L_A ← L_C → L_B` exists identifying the shared fragment | **Open — this is the hard part** |
 | **C2** | The merge problem is solvable in `L_S` | Depends on `L_S` carrying equations, not just structure |
 | **C3** | `ρ` admits a put-back satisfying round-tripping laws | Bidirectional transformation problem; known-hard |
@@ -459,11 +459,9 @@ No new code beyond instrumentation.
   (CST shape is a grammar-authoring artifact and must be quotiented out).
 - Implement Props. 1–3; measure RQ3.
 - Pull the three sides from the index, never the marker-laden working tree:
-
   ```bash
   git show :1:path > base && git show :2:path > ours && git show :3:path > theirs
   ```
-
 - Prototype the skeleton/residue split with Comby first — metavariable holes
   without a full parse, days rather than weeks to signal.
 
@@ -489,7 +487,7 @@ Complete disposition of everything considered, including rejections and why.
 ### 6.1 Rejected
 
 | Avenue | Disposition |
-| --- | --- |
+|---|---|
 | **Dapper / distributed tracing** | **Rejected as design inspiration.** Its central innovation — sampling at 1/1024, justified by "a notable pattern surfaces thousands of times" — is inverted for this domain, where the rare case *is* the point and 100% retention is required. Its hardest design goal (application-level transparency via library instrumentation) solves a problem that does not exist when you control the whole stack. Its 204 ns span-creation budget is irrelevant against LLM inference at ~10⁹ ns. Its nested-RPC causality model cannot express "step 7 invalidated step 3," which is normal agent behaviour. **Retained:** out-of-band collection as an invariant; and the organizational lesson that opening the trace datastore through a simple API produced tools the authors never anticipated. For actual tracing, use OpenTelemetry GenAI semantic conventions — Dapper's productionized descendant — not the 2010 paper. |
 | **ANTLR** | **Rejected as parser.** Grammar quality in `grammars-v4` is uneven; tree-sitter grammars are maintained because editors depend on them. ANTLR's error recovery is bolted-on, and mid-rebase files frequently do not fully parse. ANTLR yields a CST shaped by the grammar author's rule factoring, so merging on it means merging on someone's left-recursion elimination. Java-first ecosystem. |
 | **"Grammar of conflict" (context-free)** | **Rejected on expressiveness.** The invariant to be exploited — "it presumably runs" — is not context-free. Declare-before-use is the canonical proof that programming languages are not context-free; name binding and type correctness are context-sensitive. ANTLR provides LL(\*), strictly weaker. **More decisively:** syntactic validity is a near-useless filter here, because the set of grammar-legal resolutions for a typical conflict is combinatorially large and a generative grammar makes it *larger*. The problem is discriminative. Adding context-sensitivity via semantic predicates amounts to writing a compiler frontend per language; those exist (rust-analyzer, tsc, mypy). |
@@ -499,7 +497,7 @@ Complete disposition of everything considered, including rejections and why.
 ### 6.2 Adopted or under evaluation
 
 | Avenue | Role |
-| --- | --- |
+|---|---|
 | **mergiraf** | Layer 1, already in use. Tree-sitter structural merge. The baseline. |
 | **tree-sitter** | Parsing substrate. Error-tolerant, incrementally reparsing, editor-funded grammar maintenance. |
 | **Anti-unification** (Plotkin 1970; Huet for higher-order) | **Core formalism** for §3.3. Provides skeleton + explicit substitutions, which is the property that makes the abstraction survivable — a lossy abstraction that discards the residue cannot be inverted. |
@@ -532,7 +530,7 @@ The system is a **triage classifier plus a resolver**, and must be measured as
 both.
 
 | Metric | Definition | Target |
-| --- | --- | --- |
+|---|---|---|
 | Resolution precision | correct / attempted | ≥ 0.95 |
 | Halt recall | halts / (conflicts where the system would have been wrong) | ≥ 0.90 |
 | Coverage | attempted / total | maximize subject to the above |
@@ -554,7 +552,7 @@ code in a place nobody looks for a week.
 ### 7.3 Threats to validity
 
 | Threat | Mitigation |
-| --- | --- |
+|---|---|
 | Committed resolution ≠ correct resolution | Sample-audit against subsequent bug-fix commits touching the same region |
 | Own-repo corpus is unrepresentative (AI-authored PRs skew per AgenticFlict) | Report own-corpus and Merge-Bench separately; never pool |
 | Language monoculture | Stratify by language; report per-language |
@@ -634,4 +632,4 @@ step 3 returns a number.
 - Shen, B. et al. *IntelliMerge: A Refactoring-Aware Software Merging Technique.* OOPSLA 2019.
 - Sigelman, B. H. et al. *Dapper, a Large-Scale Distributed Systems Tracing Infrastructure.* Google Technical Report, 2010.
 - Zhang, K. & Shasha, D. *Simple Fast Algorithms for the Editing Distance Between Trees.* SIAM J. Comput. 1989.
-- The Pijul manual — patch theory. <https://pijul.org>
+- The Pijul manual — patch theory. https://pijul.org
