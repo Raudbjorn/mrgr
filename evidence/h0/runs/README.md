@@ -5,8 +5,8 @@ PR-A/PR-B1/PR-B2/PR-C redesign chain landed at `b87a064` on `origin/main`.
 
 ## Parameters
 
-- `H0_SUBSAMPLE=30` — 30 triples (15 jq + 15 cli, per-corpus balance from
-  Fisher-Yates subsample)
+- `H0_SUBSAMPLE=30` — 30 triples — **target 15 jq + 15 cli (per-corpus balance); actual 30 jq + 0 cli** due to broken PRNG (`_h0_runner.ts:249-250`; both `Math.imul` calls one-argument → return `0` → Fisher-Yates collapses to one-position rotation → deterministic 30-jq sample regardless of seed value). See §23.1 of `docs/planning/final/canonical-final-planning-document.md` for the full diagnosis. **Verdict: INVALID.**
+
 - `H0_REPEATS=3` — 3 repeats per triple/arm, cycled through temperatures
   `[0.0, 0.5, 0.9]` per `_h0_runner.ts:32`
 - `H0_SEED=12648430` — 32-bit integer seeding mulberry32 Fisher-Yates
