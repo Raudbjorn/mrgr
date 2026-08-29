@@ -30,13 +30,16 @@ mrgr-wp0 scan <owner/repo...> --out FILE [--host github.com] [--cache DIR] [--si
 mrgr-wp0 scan-local <path...> --out FILE [--since ISO] [--rev RANGE] [--jobs 4]
 mrgr-wp0 report FILE [--baseline ID]
 mrgr-wp0 materialize FILE --out FILE [--baseline ID] [--cache DIR]
+mrgr-evidence CORPUS --out FILE [--repo PATH] [--max-bytes N] [--resume]
+mrgr-evidence CORPUS --db PATH [--repo PATH] [--max-bytes N]
+mrgr-h0-load --db PATH
 mrgr-db init   --db PATH
 mrgr-db import --db PATH (--corpus FILE | --evidence FILE)
 mrgr-db export --db PATH --out DIR [--with-blobs]
 mrgr-db verify --db PATH
 ```
 
-Errors are a single JSON `ToolError` on stderr; exit 0 on success, 1 otherwise (`mrgr-db` also uses 2 for a usage mistake — an unknown or missing flag — distinct from 1 for a failure while doing the work asked). The corpus is append-only JSONL, resumable by `(repoId, mergeSha, baselineId)`, and fails closed on a malformed record rather than skipping it.
+`mrgr-wp0`, `mrgr-evidence`, and `mrgr-db` errors are a single JSON `ToolError` on stderr; `mrgr-h0-load` emits a concise text error. All four exit 0 on success and 1 for operational failure. `mrgr-evidence`, `mrgr-h0-load`, and `mrgr-db` use exit 2 for usage mistakes; `mrgr-wp0` uses exit 1 for both classes. The corpus is append-only JSONL, resumable by `(repoId, mergeSha, baselineId)`, and fails closed on a malformed record rather than skipping it.
 
 ## Status
 
@@ -48,7 +51,7 @@ Errors are a single JSON `ToolError` on stderr; exit 0 on success, 1 otherwise (
 
 `mrgr-db` is the workspace store; JSONL (corpus, sidecar evidence, and `mrgr-db export`'s output) is the transport format. Committed evidence in this repository stays exported JSONL rather than a binary `.db` file — that is what gets reviewed and diffed. `tursodb` may inspect the database file read-only for ad-hoc queries while no writer has it open; querying it while `mrgr-db` is running is not something this package tests or supports. Node ≥ 22.5 is required — `node:sqlite`, which the store is built on, does not exist before that.
 
-`mrgr-db` exits `0` on success, `2` for a usage error (an unknown or missing flag, an unknown subcommand), and `1` for an operational failure (the database is missing, an integrity check failed, a blob's digest does not match its content). This differs from `mrgr-wp0` and `mrgr-evidence`, which exit `1` for both classes — the split is deliberate for `mrgr-db`, not an oversight.
+`mrgr-db` and `mrgr-evidence` exit `0` on success, `2` for a usage error, and `1` for an operational failure. `mrgr-wp0` retains its historical exit `1` for both usage and operational failures. `mrgr-h0-load` follows the `0`/`2`/`1` split but emits concise text rather than a JSON `ToolError`.
 
 ## Library
 
