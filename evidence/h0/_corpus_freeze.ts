@@ -14,6 +14,7 @@ const lines = (path: string): Record<string, unknown>[] =>
 
 const jqTriples = lines("evidence/h0/triples-jq-diff3.jsonl");
 const cliTriples = lines("evidence/h0/triples-cli-diff3.jsonl");
+const redisTriples = lines("evidence/h0/triples-redis-diff3.jsonl");
 
 const tripleKey = (t: Record<string, unknown>): string =>
 	typeof t.triple_key === "string" ? t.triple_key : "";
@@ -42,8 +43,14 @@ const corpus = {
 	repos: [
 		summarize("stedolan/jq", "/home/svnbjrn/rsrch/semantic-merge/local/jq", "MIT", jqTriples),
 		summarize("cli/cli", "/home/svnbjrn/rsrch/semantic-merge/local/cli-cli", "MIT", cliTriples),
+		// Mined merge commits are concentrated in history from >3 years ago
+		// (only 14 merges repo-wide in the last 3 years, 0 in the last year),
+		// which predates the Redis 8 relicense — current HEAD is
+		// RSALv2/SSPLv1/AGPLv3, but Redis 7.2 and earlier (what these
+		// conflicts were mined from) is BSD-3-Clause.
+		summarize("redis/redis", "/home/svnbjrn/rsrch/semantic-merge/local/redis", "BSD-3-Clause (pre-8.0 history; current HEAD is RSALv2/SSPLv1/AGPLv3)", redisTriples),
 	],
-	triples_total: jqTriples.length + cliTriples.length,
+	triples_total: jqTriples.length + cliTriples.length + redisTriples.length,
 	languages: ["C", "Go"],
 };
 
@@ -59,10 +66,9 @@ const stableSubset = {
 };
 const stableHash = sha256(JSON.stringify(stableSubset));
 
-console.log(`frozen: jq=${jqTriples.length} cli=${cliTriples.length} total=${corpus.triples_total}`);
-console.log(`jq exact_count: ${corpus.repos[0].exact_count}`);
-console.log(`cli exact_count: ${corpus.repos[1].exact_count}`);
+console.log(`frozen: jq=${jqTriples.length} cli=${cliTriples.length} redis=${redisTriples.length} total=${corpus.triples_total}`);
+for (const repo of corpus.repos) {
+	console.log(`${repo.repo_id} exact_count: ${repo.exact_count}, path_set_digest: ${repo.path_set_digest}`);
+}
 console.log(`jq sample triple_key: ${tripleKey(jqTriples[0] as Record<string, unknown>)}`);
-console.log(`jq path_set_digest: ${corpus.repos[0].path_set_digest}`);
-console.log(`cli path_set_digest: ${corpus.repos[1].path_set_digest}`);
 console.log(`stable-subset sha256: ${stableHash}`);

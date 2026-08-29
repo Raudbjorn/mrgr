@@ -59,11 +59,13 @@ interface OutTriple extends RawTriple {
 const REPO_PATHS: Record<string, string> = {
 	"stedolan/jq": "/home/svnbjrn/rsrch/semantic-merge/local/jq",
 	"cli/cli": "/home/svnbjrn/rsrch/semantic-merge/local/cli-cli",
+	"redis/redis": "/home/svnbjrn/rsrch/semantic-merge/local/redis",
 };
 
 const TRIPLE_FILES: { src: string; dst: string }[] = [
 	{ src: "evidence/h0/triples-jq-diff3.jsonl", dst: "evidence/h0/triples-jq-diff3.jsonl" },
 	{ src: "evidence/h0/triples-cli-diff3.jsonl", dst: "evidence/h0/triples-cli-diff3.jsonl" },
+	{ src: "evidence/h0/triples-redis-diff3.jsonl", dst: "evidence/h0/triples-redis-diff3.jsonl" },
 ];
 
 // CAP_BYTES: 1 MiB. Beyond this, the preimage is truncated and the
@@ -143,11 +145,7 @@ const regenOne = (src: string): OutTriple[] => {
 	const repoId = typeof triples[0]!.repository_id === "string"
 		? triples[0]!.repository_id
 		: "";
-	const cwd = REPO_PATHS["stedolan/jq"] === repoId
-		? REPO_PATHS["stedolan/jq"]
-		: REPO_PATHS["cli/cli"] === repoId
-			? REPO_PATHS["cli/cli"]
-			: "";
+	const cwd = Object.values(REPO_PATHS).includes(repoId) ? repoId : "";
 	if (cwd === "" || !existsSync(cwd)) {
 		throw new Error(`cwd not found for repo_id=${repoId} in ${src}`);
 	}

@@ -13,7 +13,12 @@ interface H0Record {
 	halt_reason: string | null;
 	reason_text: string;
 	evidence_ids_quoted: string[];
-	fabricated_ids: boolean;
+	// Populated by the runner for LLM-arm records (the id(s) actually shown
+	// in that record's prompt). Absent/empty on baseline records, which never
+	// cite anything — safe, since `.every()` on an empty evidence_ids_quoted
+	// short-circuits true without reading this field.
+	evidence_ids_exposed?: string[];
+	has_source_tags: boolean;
 	duration_ms: number;
 	schema_valid: boolean;
 }
@@ -97,15 +102,16 @@ const aggregate = (records: H0Record[], resolutions: Map<string, string>, triple
 			schema_invalid += 1;
 			continue;
 		}
-		// PR-B2 / S3: fabricated means a cited [source:...] tag that does NOT
-		// match any known triple_key. Renamed from the original "any citation
-		// counts as fabricated" interpretation. The field on the record stays.
-		// The aggregate counter records whether at least one of the cited tags
-		// does not match any known triple_key (i.e., it is fabricated).
+		// PR-D / S3-narrow: fabricated means a cited [source:...] tag that is
+		// NOT among the ids this specific record's prompt actually exposed
+		// (evidence_ids_exposed, populated by the runner's buildMessages).
+		// Narrower than "not a known triple_key anywhere in the corpus" —
+		// that global check would pass a hallucinated-but-real citation of
+		// some OTHER triple's key that was never shown to the model.
 		const recordSourceTags = r.evidence_ids_quoted.length;
 		const tags = r.evidence_ids_quoted;
-		const knownTripleKeys = new Set(resolutions.keys());
-		const hasFabricated = tags.some(t => !knownTripleKeys.has(t));
+		const exposedIds = new Set(r.evidence_ids_exposed ?? []);
+		const hasFabricated = tags.some(t => !exposedIds.has(t));
 		if (hasFabricated) fabricated_evidence_ids += 1;
 		emitted_source_tags += recordSourceTags;
 		tokens_input += r.input_tokens;
@@ -207,6 +213,16 @@ const normalCdf = (x: number): number => {
 	return 0.5 * (1.0 + sign * y);
 };
 
+// Single source of truth for the corpus's triple files — read by both the
+// resolution-lookup and triple-lookup loads below, and by the triples_total
+// count in aggregate_doc. A 4th corpus repo means adding one path here, not
+// three separate hardcoded lists.
+const CORPUS_TRIPLE_FILES = [
+	"evidence/h0/triples-jq-diff3.jsonl",
+	"evidence/h0/triples-cli-diff3.jsonl",
+	"evidence/h0/triples-redis-diff3.jsonl",
+];
+
 const main = () => {
 	const runsDir = "evidence/h0/runs";
 	const files = readdirSync(runsDir)
@@ -217,18 +233,15 @@ const main = () => {
 		files.push("evidence/h0/baselines.json");
 	}
 
-	const resolutions = loadResolutionByKey([
-		"evidence/h0/triples-jq-diff3.jsonl",
-		"evidence/h0/triples-cli-diff3.jsonl",
-	]);
+	const resolutions = loadResolutionByKey(CORPUS_TRIPLE_FILES);
 	const triples = new Map<string, Triple>();
-	for (const p of [
-		"evidence/h0/triples-jq-diff3.jsonl",
-		"evidence/h0/triples-cli-diff3.jsonl",
-	]) {
+	let triplesTotalLines = 0;
+	for (const p of CORPUS_TRIPLE_FILES) {
 		const text = readFileSync(p, "utf8").trim();
 		if (text === "") continue;
-		for (const line of text.split("\n")) {
+		const lines = text.split("\n");
+		triplesTotalLines += lines.length;
+		for (const line of lines) {
 			const t = JSON.parse(line) as Triple;
 			triples.set(t.triple_key, t);
 		}
@@ -308,7 +321,7 @@ const main = () => {
 		}
 	}
 
-	let verdict: "positive" | "null" | "inconclusive";
+	let verdict: "positive" | "null" | "inconclusive" | "invalid";
 	let verdictReason: string;
 	if (!hunkOnly || !selected || !fullBundle) {
 		verdict = "inconclusive";
@@ -327,16 +340,35 @@ const main = () => {
 		verdictReason = "neither arm reduced wrong count vs hunk-only baseline";
 	}
 
+	// Invalidation rule (see evidence/h0/INVALIDATION-RULE.md): any arm with
+	// fabricated_evidence_ids > 0 invalidates the whole run, regardless of
+	// what the count-based verdict above concluded. Previously enforced only
+	// by a human reading this file's output and citing an uncommitted plan
+	// document — now enforced here, in the code that produces the verdict.
+	const invalidationReasons: string[] = [];
+	for (const [arm, agg] of Object.entries(byArm)) {
+		if (agg.fabricated_evidence_ids > 0) {
+			invalidationReasons.push(`${arm}: fabricated_evidence_ids=${agg.fabricated_evidence_ids}`);
+		}
+	}
+	const runValid = invalidationReasons.length === 0;
+	if (!runValid) {
+		verdict = "invalid";
+		verdictReason = `run invalid per any-flag fabrication rule: ${invalidationReasons.join("; ")}`;
+	}
+
 	const aggregate_doc = {
 		produced_at: new Date().toISOString(),
 		model: "Qwen3-Coder-30B-A3B-Instruct-UD-Q3_K_XL",
 		model_sha: "69cd7578d77dffc0b17e34bad9ef998d08ae0e20ccceef21bad4e7eb3d8c553b",
 		git_version: "merge-tree --write-tree --messages -z (per-call -c merge.conflictStyle=diff3)",
 		corpus_size: resolutions.size,
-		// PR-B2 / S1: 898 lines in triples-*.jsonl dedup to 862 by triple_key
-		// (per ADR 03, triple_key is a content digest; same digest across
-		// different merges collapses). Report both numbers, not just one.
-		triples_total: 898, // line count in triples-*.jsonl
+		// PR-B2 / S1: line count in triples-*.jsonl dedups to a smaller unique
+		// count by triple_key (per ADR 03, triple_key is a content digest; same
+		// digest across different merges collapses). Report both numbers, not
+		// just one. Computed from CORPUS_TRIPLE_FILES, not hardcoded, so it
+		// stays correct as corpus files are added.
+		triples_total: triplesTotalLines, // line count in triples-*.jsonl
 		triples_unique: resolutions.size, // distinct triple_key count
 		// PR-B2 / S2: read from env (PR-A removed the hardcoded defaults in
 		// the runner; here we read the same env so aggregate.json reflects
@@ -361,6 +393,8 @@ const main = () => {
 		},
 		verdict,
 		verdict_reason: verdictReason,
+		run_valid: runValid,
+		invalidation_reasons: invalidationReasons,
 		predicted_outcome: "selected reduces unsupported wrong decisions; full bundle mixed or worse; selection policy is the product mechanism",
 	};
 

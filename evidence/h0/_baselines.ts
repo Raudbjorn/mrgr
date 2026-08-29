@@ -24,6 +24,7 @@ interface Triple {
 const CORPUS_FILES = [
 	"evidence/h0/triples-jq-diff3.jsonl",
 	"evidence/h0/triples-cli-diff3.jsonl",
+	"evidence/h0/triples-redis-diff3.jsonl",
 ];
 
 const OUT_PATH = "evidence/h0/baselines.json";
