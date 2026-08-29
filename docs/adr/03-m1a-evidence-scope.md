@@ -42,6 +42,16 @@ deferred.
 Retiring them touches nothing: there is no file to modify and the carried gate
 is never involved.
 
+## H0 rerun baseline gate
+
+An H0 aggregate reads the six model and baseline arm files for one explicit
+`H0_STAMP`. Every arm must contain the same `(triple_id, run)` keys.
+
+The aggregate is `null` unless the best model arm's
+`wrong / (correct + wrong + halt)` fraction beats the aligned
+`baseline-compose` fraction by at least **0.05** (five percentage points).
+The margin is absolute on the `[0, 1]` fraction scale.
+
 ## Related
 
 `triple_key` in the H0 corpus is a **content digest**, not an identity. It

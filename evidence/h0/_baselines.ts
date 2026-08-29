@@ -10,6 +10,7 @@
 // is invoked here per record so the ceiling is computed consistently;
 // we do NOT fork the grader.
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { isHistoricalMatch } from "./_aggregate.js";
 
 const BASELINES = ["keep_ours", "keep_theirs", "compose"] as const;
 type Baseline = typeof BASELINES[number];
@@ -33,27 +34,6 @@ const loadTriples = (paths: string[]): Triple[] =>
 		readFileSync(p, "utf8").trim().split("\n").filter(Boolean).map(l => JSON.parse(l) as Triple)
 	);
 
-// Mirror of _aggregate.ts isHistoricalMatch (kept inline to avoid an import
-// cycle and to keep this script runnable as a one-off without compiling the
-// aggregator). If the two diverge, STOP — see PR-B1 STOP condition 1.
-const norm = (s: string): string => s.replace(/\s+/g, "").trim();
-const isMatch = (decision: Baseline, resolution: string, ours: string, theirs: string): boolean => {
-	const r = norm(resolution);
-	const o = norm(ours);
-	const t = norm(theirs);
-	if (decision === "keep_ours") return r === o;
-	if (decision === "keep_theirs") return r === t;
-	// compose: pass if resolution equals ours or theirs OR shares ≥1 line >3 chars
-	if (r === o || r === t) return true;
-	const overlap = (a: string, b: string): number => {
-		const set = new Set<string>();
-		for (const line of a.split("\n")) if (line.length > 3) set.add(line);
-		let hits = 0;
-		for (const line of b.split("\n")) if (set.has(line)) hits += 1;
-		return hits;
-	};
-	return overlap(resolution, ours) > 0 || overlap(resolution, theirs) > 0;
-};
 
 interface BaselineRecord {
 	triple_id: string;
@@ -80,7 +60,7 @@ const mkRecord = (triple: Triple, arm: Baseline, run: number, repeats: number): 
 	output_tokens: 0,
 	decision: arm,
 	halt_reason: null,
-	reason_text: `trivial baseline: always emit "${arm}"; isHistoricalMatch=${isMatch(arm, triple.resolution, triple.ours, triple.theirs)}`,
+	reason_text: `trivial baseline: always emit "${arm}"; isHistoricalMatch=${isHistoricalMatch(arm, triple.resolution, triple.ours, triple.theirs)}`,
 	evidence_ids_quoted: [],
 	fabricated_ids: false,
 	duration_ms: 0,
