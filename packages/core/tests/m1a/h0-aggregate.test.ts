@@ -47,7 +47,7 @@ import { loadH0Aggregate } from "../../src/m1a/h0-aggregate.js";
  * No ledger entry (per brief).
  */
 
-const COMMIT_PIN = "085ad4f";
+const COMMIT_PIN = "085ad4fe33042b82b3725abaa8884eb0ca396ed2";
 const RUN_TS = "2026-08-27T10-27-45-544Z";
 
 interface FixtureRow {
@@ -274,6 +274,35 @@ describe("loadH0Aggregate — happy path", () => {
 			.get() as { n: number };
 		expect(ledgerCount.n).toBe(0);
 	});
+	it("rolls back the run when a later row conflicts", async () => {
+		const rows = fixtureRows("full-bundle", 2);
+		const lateConflict: FixtureRow = {
+			...rows[1]!,
+			decision: "compose",
+			halt_reason: null,
+			output_tokens: rows[1]!.output_tokens + 1,
+		};
+		const path = writeJsonl(
+			`full-bundle-${RUN_TS}.jsonl`,
+			[...rows, lateConflict],
+		);
+
+		const result = await loadH0Aggregate(dbPath, {
+			files: [path],
+			commitPin: COMMIT_PIN,
+		});
+		expect(result.ok).toBe(false);
+
+		const runCount = handle.db
+			.prepare("SELECT count(*) AS n FROM run")
+			.get() as { n: number };
+		const resultCount = handle.db
+			.prepare("SELECT count(*) AS n FROM run_result")
+			.get() as { n: number };
+		expect(runCount.n).toBe(0);
+		expect(resultCount.n).toBe(0);
+	});
+
 });
 
 describe("loadH0Aggregate — file-level provenance guards", () => {

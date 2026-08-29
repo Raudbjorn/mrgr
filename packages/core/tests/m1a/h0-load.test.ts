@@ -7,9 +7,16 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { closeDb, openDb, type DbHandle } from "../../src/db/open.js";
 import { canonicalJson, sha256Hex } from "../../src/db/canonical.js";
 import { LedgerStore, type LedgerInput } from "../../src/db/ledger-store.js";
-import { RunStore, type RunConfig, type RunResultRecord } from "../../src/db/run-store.js";
+import { RunStore, type RunConfig } from "../../src/db/run-store.js";
 
-import { loadH0MaterializedTriples } from "../../src/m1a/h0-load.js";
+import {
+	ADJUDICATOR_IDENTITY,
+	ARM_NAME,
+	COMMIT_PIN,
+	HALT_REASON,
+	MODEL_NAME,
+	loadH0MaterializedTriples,
+} from "../../src/m1a/h0-load.js";
 
 /**
  * RED tests for `mrgr-h0-load`.
@@ -42,9 +49,6 @@ import { loadH0MaterializedTriples } from "../../src/m1a/h0-load.js";
  *   - reason             = "loaded: shape-only persistence, no verdict claim"
  */
 
-const HALT_REASON = "loaded: shape-only persistence, no verdict claim";
-const ADJUDICATOR_IDENTITY = "h0-load.ts@085ad4f";
-const COMMIT_PIN = "085ad4f33042b82b3725abaa8884eb0ca396ed2";
 
 const __filename = fileURLToPath(import.meta.url);
 const REPO_ROOT = join(dirname(__filename), "../../../..");
@@ -130,6 +134,10 @@ function derivedTripleId(triple: {
 }
 
 describe("loadH0MaterializedTriples", () => {
+	it("pins the loader run to the real 40-hex source commit", () => {
+		expect(COMMIT_PIN).toBe("085ad4fe33042b82b3725abaa8884eb0ca396ed2");
+		expect(COMMIT_PIN).toMatch(/^[0-9a-f]{40}$/);
+	});
 	it("A1 — round-trips every triple as a halt row preserving triple_key and ordinal", async () => {
 		const fixture = loadFixture(3);
 		expect(fixture).toHaveLength(3);
@@ -237,6 +245,55 @@ describe("loadH0MaterializedTriples", () => {
 			)
 			.get(row.run_id) as { n: number };
 		expect(pkCount.n).toBe(898);
+	});
+
+	it("rolls back earlier rows when a later run_result conflicts", async () => {
+		const triples = loadFixture(3);
+		const runStore = new RunStore(handle);
+		const created = runStore.createRun({
+			arm: ARM_NAME,
+			modelName: MODEL_NAME,
+			modelSha: COMMIT_PIN,
+			config: {
+				source: [
+					"evidence/h0/triples-jq-diff3.jsonl",
+					"evidence/h0/triples-cli-diff3.jsonl",
+				],
+				triples: 898,
+			},
+		});
+		expect(created.ok).toBe(true);
+		if (!created.ok) return;
+
+		const conflicting = triples[1]!;
+		const seeded = runStore.appendResult({
+			runId: created.value,
+			tripleId: derivedTripleId(conflicting),
+			runIndex: conflicting.ordinal,
+			decision: "compose",
+			haltReason: null,
+			reasonText: "pre-existing conflicting row",
+			inputTokens: null,
+			outputTokens: null,
+			durationMs: null,
+			schemaValid: true,
+		});
+		expect(seeded.ok).toBe(true);
+
+		const result = await loadH0MaterializedTriples(dbPath, { limit: 3 });
+		expect(result.ok).toBe(false);
+
+		const rows = runStore.listResults(created.value);
+		expect(rows.ok).toBe(true);
+		if (!rows.ok) return;
+		expect(rows.value).toHaveLength(1);
+		expect(rows.value[0]?.tripleId).toBe(derivedTripleId(conflicting));
+		expect(rows.value.some((row) => row.tripleId === derivedTripleId(triples[0]!))).toBe(false);
+
+		const ledgerCount = handle.db
+			.prepare("SELECT count(*) AS n FROM ledger")
+			.get() as { n: number };
+		expect(ledgerCount.n).toBe(0);
 	});
 
 	it("A2 — writes exactly one run row whose arm and config_json match the brief", async () => {

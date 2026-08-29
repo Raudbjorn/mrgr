@@ -8,10 +8,10 @@ import { canonicalJson, sha256Hex } from "../db/canonical.js";
 import { dbErr, dbOk, type DbResult } from "../db/result.js";
 import { closeDb, openDb, type DbHandle } from "../db/open.js";
 import { LedgerStore, type LedgerInput } from "../db/ledger-store.js";
-import { RunStore, type RunConfig, type RunResultRecord } from "../db/run-store.js";
+import { RunStore, type RunConfig } from "../db/run-store.js";
 import type { ImportCounts } from "../db/import.js";
 
-export const COMMIT_PIN = "085ad4f33042b82b3725abaa8884eb0ca396ed2";
+export const COMMIT_PIN = "085ad4fe33042b82b3725abaa8884eb0ca396ed2";
 export const HALT_REASON = "loaded: shape-only persistence, no verdict claim";
 export const ARM_NAME = "h0-materialized-loader";
 
@@ -79,8 +79,8 @@ export async function loadH0MaterializedTriples(
 	dbPath: string,
 	options: LoadOptions = {},
 ): Promise<DbResult<ImportCounts>> {
-	// Phase 1: parse every input before any DB write. A reader failure
-	// surfaces as a typed error; nothing reaches the database.
+	// Parse every input before any DB write. A reader failure surfaces as a
+	// typed error; nothing reaches the database.
 	const sources: string[] = [...DEFAULT_SOURCES];
 	const allTriples: MaterializedTriple[] = [];
 	for (const path of sources) {
@@ -95,12 +95,36 @@ export async function loadH0MaterializedTriples(
 	}
 
 	const triples = options.limit === undefined ? allTriples : allTriples.slice(0, options.limit);
-
 	const opened = openDb(dbPath, { create: true });
 	if (!opened.ok) return opened;
 	const handle: DbHandle = opened.value;
+	const db = handle.db;
+	let transactionOpen = false;
+	let originalSynchronous: number | undefined;
+
+	const rollback = (): void => {
+		if (!transactionOpen) return;
+		db.exec("ROLLBACK");
+		transactionOpen = false;
+	};
 
 	try {
+		const synchronousRow = db.prepare("PRAGMA synchronous").get();
+		if (
+			synchronousRow === undefined ||
+			typeof synchronousRow !== "object" ||
+			!("synchronous" in synchronousRow) ||
+			typeof synchronousRow.synchronous !== "number"
+		) {
+			return dbErr("db", "h0-load", "Could not read SQLite synchronous mode");
+		}
+		originalSynchronous = synchronousRow.synchronous;
+
+		// The run, every result, and its audit ledger row are one durable unit.
+		db.exec("PRAGMA synchronous=FULL");
+		db.exec("BEGIN IMMEDIATE");
+		transactionOpen = true;
+
 		const runConfig: RunConfig = {
 			arm: ARM_NAME,
 			modelName: MODEL_NAME,
@@ -116,11 +140,14 @@ export async function loadH0MaterializedTriples(
 
 		const runStore = new RunStore(handle);
 		const created = runStore.createRun(runConfig);
-		if (!created.ok) return created;
+		if (!created.ok) {
+			rollback();
+			return created;
+		}
 		const runId = created.value;
 
 		for (const triple of triples) {
-			const record: RunResultRecord = {
+			const appended = runStore.appendResult({
 				runId,
 				tripleId: deriveTripleId(triple),
 				runIndex: triple.ordinal,
@@ -131,9 +158,11 @@ export async function loadH0MaterializedTriples(
 				outputTokens: null,
 				durationMs: null,
 				schemaValid: true,
-			};
-			const appended = runStore.appendResult(record);
-			if (!appended.ok) return appended;
+			});
+			if (!appended.ok) {
+				rollback();
+				return appended;
+			}
 		}
 
 		const ledgerInput: LedgerInput = {
@@ -150,13 +179,43 @@ export async function loadH0MaterializedTriples(
 			payload: { imported: triples.length, source: "evidence/h0/triples-*.jsonl" },
 			supersedes: null,
 		};
+		const ledgerRow = new LedgerStore(handle).append(
+			ledgerInput,
+			new Date().toISOString(),
+			{ transaction: "external" },
+		);
+		if (!ledgerRow.ok) {
+			rollback();
+			return ledgerRow;
+		}
 
-		const ledger = new LedgerStore(handle);
-		const ledgerRow = ledger.append(ledgerInput);
-		if (!ledgerRow.ok) return ledgerRow;
-
+		db.exec("COMMIT");
+		transactionOpen = false;
 		return dbOk({ imported: triples.length, skippedDuplicate: 0, failed: 0 });
+	} catch (cause) {
+		try {
+			rollback();
+		} catch {
+			/* the original transaction failure is more useful */
+		}
+		return dbErr("db", "h0-load", "Transactional import failed", {
+			cause: String(cause),
+		});
 	} finally {
+		if (transactionOpen) {
+			try {
+				rollback();
+			} catch {
+				/* connection may already be unusable */
+			}
+		}
+		if (originalSynchronous !== undefined) {
+			try {
+				db.exec(`PRAGMA synchronous=${originalSynchronous}`);
+			} catch {
+				/* connection may already be unusable */
+			}
+		}
 		closeDb(handle);
 	}
 }

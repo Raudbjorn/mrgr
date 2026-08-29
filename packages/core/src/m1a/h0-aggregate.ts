@@ -180,13 +180,23 @@ export async function loadH0Aggregate(
 		}
 	}
 
-	// Phase 4: open DB and write rows. Abort on the first write failure —
-	// fail-closed, not silent partial import.
+	// Phase 4: persist every run and result in one transaction. Any late
+	// constraint failure rolls the whole import back.
 	const opened = openDb(dbPath, { create: true });
 	if (!opened.ok) return opened;
 	const handle: DbHandle = opened.value;
+	const db = handle.db;
+	let transactionOpen = false;
+
+	const rollback = (): void => {
+		if (!transactionOpen) return;
+		db.exec("ROLLBACK");
+		transactionOpen = false;
+	};
 
 	try {
+		db.exec("BEGIN IMMEDIATE");
+		transactionOpen = true;
 		const store = new RunStore(handle);
 		let total = 0;
 
@@ -203,15 +213,22 @@ export async function loadH0Aggregate(
 				},
 			};
 			const created = store.createRun(config);
-			if (!created.ok) return created;
+			if (!created.ok) {
+				rollback();
+				return created;
+			}
 			const runId = created.value;
 
 			for (const row of f.rows) {
 				const v = validateRow(row);
 				if (!v.ok) {
-					return dbErr("parse", "h0-aggregate", v.reason, { path: f.path, tripleId: row.triple_id });
+					rollback();
+					return dbErr("parse", "h0-aggregate", v.reason, {
+						path: f.path,
+						tripleId: row.triple_id,
+					});
 				}
-				const record: RunResultRecord = {
+				const appended = store.appendResult({
 					runId,
 					tripleId: row.triple_id,
 					runIndex: row.run,
@@ -222,15 +239,35 @@ export async function loadH0Aggregate(
 					outputTokens: row.output_tokens,
 					durationMs: null,
 					schemaValid: row.schema_valid,
-				};
-				const appended = store.appendResult(record);
-				if (!appended.ok) return appended;
+				});
+				if (!appended.ok) {
+					rollback();
+					return appended;
+				}
 				total += 1;
 			}
 		}
 
+		db.exec("COMMIT");
+		transactionOpen = false;
 		return dbOk({ imported: total, skippedDuplicate: 0, failed: 0 });
+	} catch (cause) {
+		try {
+			rollback();
+		} catch {
+			/* the original transaction failure is more useful */
+		}
+		return dbErr("db", "h0-aggregate", "Transactional import failed", {
+			cause: String(cause),
+		});
 	} finally {
+		if (transactionOpen) {
+			try {
+				rollback();
+			} catch {
+				/* connection may already be unusable */
+			}
+		}
 		closeDb(handle);
 	}
 }
