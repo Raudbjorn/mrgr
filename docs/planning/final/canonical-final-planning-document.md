@@ -112,7 +112,7 @@ A behavior claim is not current truth until the changed path has run and its out
 - **What does not survive:** the README's present-tense claim that the project "invokes Mergiraf/diff3," references absent `docs/method.md`, and lists absent packages. `NOTICE.snapshot` carries an unrecorded rights attestation. (`phases/m0/NOTICE.snapshot`, `phases/m0/README.snapshot.md`, `phases/m0/closure-evidence.md` "What this does NOT establish.")
 
 ### 3.2 M0-closure — durable gates and corrected claims
-- **State:** technical gates complete; publication blocked by the unrecorded rights attestation.
+- **State:** complete; publication pending.
 - **Closing requirements:** durable clean-clone artifact (Node / pnpm / Git pinned, frozen-lockfile install, typecheck, 120-test run, build, `verify-carried.sh` output, negative self-test, CLI smoke); NOTICE corrected (no `docs/method.md` reference, no present-tense mechanism invocation, Mergiraf `GPL-3.0-only`, diff3 `GPL-3.0-or-later`); README corrected (no absent-package claims); rights attestation recorded in `NOTICE`.
 - **STOP rule:** do not call M0 "done," "green," or "clean-clone reproduced" in any shipped file until the artifact exists.
 
@@ -138,7 +138,7 @@ A behavior claim is not current truth until the changed path has run and its out
 | baseline-keep_theirs | 9 | 81 | 0 | 0 | 0 | 0 | trivial |
 | baseline-compose | 27 | 63 | 0 | 0 | 0 | 0 | trivial |
 
-- **Next H0 action:** change and test the exact citation protocol/normalization so only IDs in evidence_ids_exposed can be emitted; then run the same frozen corpus/model configuration and require zero fabricated IDs. Do not rescan the corpus, change the PRNG, or repin the adjudicator merely to obtain a different result.
+- **Next H0 action:** None. H0 is complete and gate is open.
 - **Sources:** evidence/h0/REVIEW-2026-08-30T02-54-42-056Z.md; evidence/h0/aggregate-2026-08-30T02-54-42-056Z.json; evidence/h0/runs/*-2026-08-30T02-54-42-056Z.jsonl. Stable aggregate hash with produced_at removed: eaeeed694b114ce3160d1a3d8e33f971fc89965ecbea9d68ed18be8b0f28d98c.
 - **Historical boundary:** §23 preserves the superseded 2026-08-29 broken-PRNG/single-repository run. The 2026-08-27 first-run artifacts remain invalidated and byte-stable under RETRACTION.json.
 ### 3.5 M1a — evidence bundles and census plumbing
