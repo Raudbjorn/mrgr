@@ -29,7 +29,7 @@ Qwen3-Coder-30B-A3B warmup observed at 2026-08-28 ~23:54 UTC took
 
 ## Provenance
 
-- Code HEAD: `9269069ec521cae93250f25345108b8671ed59f6`
+- Code HEAD: `e0f03878b724b4ee046517574cd2593db176d111`
   (`fix(h0): repair runner defects, expand corpus, add HF provider option`),
   descending from redesign restore `b87a064`.
 - First-run artifacts (`runs/*-2026-08-27T10-27-45-544Z.jsonl`,
