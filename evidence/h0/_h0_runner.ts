@@ -15,8 +15,13 @@ if (PROVIDER !== "local" && PROVIDER !== "hf") {
 	throw new Error(`H0_PROVIDER must be "local" or "hf", got ${PROVIDER}`);
 }
 const ADJUDICATOR = process.env.H0_ADJUDICATOR ?? "http://127.0.0.1:8089";
-const MODEL_TAG = process.env.H0_MODEL_TAG ?? "Qwen3-Coder-30B-A3B-Instruct-UD-Q3_K_XL";
-const MODEL_SHA = "69cd7578d77dffc0b17e34bad9ef998d08ae0e20ccceef21bad4e7eb3d8c553b";
+const DEFAULT_MODEL_TAG = "Qwen3-Coder-30B-A3B-Instruct-UD-Q3_K_XL";
+const DEFAULT_MODEL_SHA = "69cd7578d77dffc0b17e34bad9ef998d08ae0e20ccceef21bad4e7eb3d8c553b";
+const MODEL_TAG = process.env.H0_MODEL_TAG ?? DEFAULT_MODEL_TAG;
+const MODEL_SHA = process.env.H0_MODEL_SHA ?? (MODEL_TAG === DEFAULT_MODEL_TAG ? DEFAULT_MODEL_SHA : "");
+if (PROVIDER === "local" && !/^[0-9a-f]{64}$/.test(MODEL_SHA)) {
+	throw new Error("H0_MODEL_SHA must be a lowercase SHA-256 when H0_MODEL_TAG overrides the pinned default");
+}
 // HF Inference Providers routing — "<hf-model-id>:<provider>" per
 // https://huggingface.co/docs/inference-providers. No sha pin exists for a
 // cloud model; the provider-qualified model string is the only identity we
@@ -405,7 +410,7 @@ const stratifiedSample = <T extends { repository_id: string }>(items: T[], n: nu
 	const repos = Array.from(byRepo.keys()).sort();
 	if (repos.length === 0) return [];
 	const baseQuota = Math.floor(n / repos.length);
-	let remainder = n - baseQuota * repos.length;
+	const remainder = n - baseQuota * repos.length;
 	const quota = new Map<string, number>(repos.map((r) => [r, baseQuota]));
 	// Deterministic remainder allocation: extra slots go to the repos with
 	// the largest eligible pools (most room to absorb them without falling
