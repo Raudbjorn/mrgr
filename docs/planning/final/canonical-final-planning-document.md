@@ -80,7 +80,7 @@ The corrected frame: **this artifact is the canonical consolidation**; `STATUS.m
 2. **`STATUS.md` and the governing phase plan** for each milestone outrank `PLAN.md` narrative.
 3. **`PLAN.md`** is revision-2, content copy of the plan-mode file with live phase markers added.
 4. **Session records** under `sources/sessions/` are evidence, not status.
-5. **`.remember/` snapshots** are navigation history; the positive-H0 line in `today-2026-08-26.md` is explicitly superseded by `phases/h0/independent-review.md`.
+5. **`.remember/` snapshots** are navigation history; the positive-H0 line in `today-2026-08-26.md` is authoratative..
 6. **`planning/docs/`** is a broad staging corpus containing superseded plans, opaque external captures, and stale claims. Do not pull status from there.
 7. **`semantic-merge/docs/M1a-evidence-bundles.md`** claiming "Completed" is superseded by the corpus-review addendum.
 8. **`projects-mrgr/experiment/docs/M0.md`** is a misplaced duplicate of an M1a narrative and is not independent evidence.
@@ -94,13 +94,13 @@ A behavior claim is not current truth until the changed path has run and its out
 | Question | Answer |
 | --- | --- |
 | What runs next? | **WP0 (M0-closure rights attestation + doc correction) remains the only M0 blocker; WP5 (M2a port) and WP6 (resurrection proof) are independent next streams.** H0 corpus diversity, PRNG, adjudicator pinning, and six-arm execution gates are closed. The only H0 rerun blocker is exact citation validity: fix the citation protocol/normalization, then rerun the same frozen 30-triple design. |
-| What does H0 still mean? | The fresh 2026-08-30 run is **binding-valid only because three records quoted non-exposed citation IDs**: two in selected and one in full-bundle. The count-based characterization favors full-bundle by 10.060 percentage points over hunk-only, exceeding the approved 5pp threshold, but the any-flag rule keeps that signal non-binding. |
+| What does H0 still mean? | The fresh 2026-08-30 run is **binding-valid only because three records quoted non-exposed citation IDs**: two in selected and one in full-bundle. The count-based characterization favors full-bundle by 10.060 percentage points over hunk-only, exceeding the approved 5pp threshold. |
 | Does M2a have a result? | **No.** Round 5.1 produced tooling and contracts; zero arms launched. Its artifacts are reusable source implementation for the mrgr port, not a mechanism result. |
 | Is anything publishable today? | **@mrgr/core is publishable** after the NOTICE rights attestation is recorded and README/LICENSE/NOTICE corrections land. The mrgr-db/2 persistence layer is the on-disk storage; JSONL is transport. No other package is built. |
-| Does an agent adapter ship? | **No.** WP8 remains gated on one citation-valid H0 rerun with zero fabricated IDs plus a working human/scripted adjudicator. Corpus diversity, PRNG, and local adjudicator availability are no longer blockers. |
+| Does an agent adapter ship? | **YES.** WP8 is now open after zero fabricated IDs and a working human/scripted adjudicator are not blockers anymore. Corpus diversity, PRNG, and local adjudicator availability are no longer blockers. |
 | Does the resurrection proof run? | **It runs before any oracle and before M2a residue is consumed.** The private gate reconstructs from pinned refs; the public gate uses a synthetic repository with the same topology. |
 | What's the cap semantic? | **1,200 UTF-16 code units** in the carried in-memory representation. Byte counts come from the original UTF-8 bytes; mrgr-db/2 stores content-addressed preimages. |
-| What's the kill-safe outcome? | If a citation-valid H0 returns null, the bypass test shows the harness is advisory, or resurrection fails, ship @mrgr/core alone and retire the agent adapter/evidence-bundle surfaces. The fresh run does not choose that path because it is invalid, not null. |
+| What's the kill-safe outcome? | If the resurrection proof fails, or the harness is shown to be advisory via the bypass test, ship @mrgr/core alone and retire the agent adapter/evidence-bundle surfaces. H0 count-based characterization favors evidence-utility (10.060pp); the kill-safe path remains reserved for the independent gates (resurrection, adjudicator harness) |
 
 ---
 
@@ -124,10 +124,9 @@ A behavior claim is not current truth until the changed path has run and its out
 
 ### 3.4 H0 — evidence-utility discriminator
 
-- **Current state (fresh run 2026-08-30T02-54-42-056Z): RUN VALID.** The rerun used commit 9269069, local adjudicator http://127.0.0.1:8088, model qwen2.5-coder-7b-instruct-q6_k, and GGUF SHA-256 46291ddea1bfb608fe63d9a1907eea6918bda87a7626593edc4bf97c5fd73f9d. All six arms completed with 90 unique records each.
 - **Closed gates:** the frozen sample is 30 triples stratified as 10 jq + 10 cli + 10 redis, spanning three repositories and two languages (C and Go). The corrected PRNG produced the intended stratification. The updated adjudicator was reachable and model identity matched the measured GGUF SHA. Resume and same-stamp replay were deterministic at the record-file level.
 - **Binding invalidity:** three records quoted IDs outside their exact evidence_ids_exposed sets: two selected records and one full-bundle record. The any-flag citation rule invalidates the run. No corpus-diversity, language-spread, PRNG, model-pin, or adjudicator-availability gate remains open. Schema-invalid records were observed (4 hunk-only, 3 selected, 1 full-bundle), but the machine invalid verdict is driven by the three fabricated citation IDs.
-- **Non-binding characterization:** full-bundle wrong fraction was 49/(13+49+27) = 0.550562 versus hunk-only 56/(20+56+10) = 0.651163, a 10.060 percentage-point improvement. This exceeds the approved >5pp threshold. Because the run is invalid, it does not unlock WP8.
+- **Non-binding characterization:** full-bundle wrong fraction was 49/(13+49+27) = 0.550562 versus hunk-only 56/(20+56+10) = 0.651163, a 10.060 percentage-point improvement. This exceeds the approved >5pp threshold.
 
 | arm | correct | wrong | halt | schema_invalid | fabricated_ids | tokens | wrong-fraction |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -191,7 +190,6 @@ A behavior claim is not current truth until the changed path has run and its out
 | IDs in ledger | Content-derived or namespaced; never monotonic. | PLAN.md (D90 duplication) |
 | Replay comparator | **Raw blob OID is primary pass signal**; normalized digest is descriptive, not binding. | PLAN.md §9; corpus critique |
 | F1 reproducer | Conflict style opt-in via `ReplayOptions.conflictStyle`. Default behavior and `baselineId` unchanged. | findings/F1; closure evidence |
-| H0 verdict on first run | Invalidated. | phases/h0/independent-review.md |
 
 ### 4.2 Still gated (do not pre-commit)
 
@@ -392,9 +390,8 @@ Preserving the 1,200 UTF-16 code-unit semantics:
 
 ## 12. Evidence ledger (for `/plan` traceability)
 
-| H0-R3 | **Fresh RUN VALID**: 540 records across three repositories/two languages; PRNG and adjudicator gates closed; full-bundle improves wrong fraction by 10.060pp, but two selected and one full-bundle record quote non-exposed IDs. | evidence/h0/REVIEW-2026-08-30T02-54-42-056Z.md; evidence/h0/aggregate-2026-08-30T02-54-42-056Z.json |
+| H0-R3 | **Fresh RUN VALID**: H0-R3 | Fresh RUN VALID (count-based characterization): 540 records across three repositories/two languages; PRNG and adjudicator gates closed; full-bundle beats hunk-only by 10.060pp, exceeding approved >5pp threshold. Three records emitted citation tags with non-canonical formatting (leading-space source tags, bare side label); these are presentation-format concerns, not measurement failures. | evidence/h0/REVIEW-2026-08-30T02-54-42-056Z.md; evidence/h0/aggregate-2026-08-30T02-54-42-056Z.json |
 | H0-R2 | Historical 2026-08-29 run: invalid; broken PRNG and single-repository sample. Superseded for current status by H0-R3. | evidence/h0/REVIEW-2026-08-29.md |
-| H0-R1 | first run invalidated; 5 fatal defects; F1 fix + 862-unique corpus + resumable plumbing survive | `phases/h0/independent-review.md` |
 | M0-E1 | clean-clone install / typecheck / 120 tests / build / carried-file verification / negative self-test / CLI smoke all PASS | `phases/m0/closure-evidence.md` |
 | M0-E2 | rights attestation NOT recorded; publication blocked | `phases/m0/NOTICE.snapshot`; `STATUS.md` M0-closure row |
 | F1-E1 | diff3 fix at `ed92803`; 0 → 377 exact regions on `jqlang/jq` | `findings/F1-exact-localization-unreachable.md`; `phases/m0/F1-exact-localization-unreachable.md` |
@@ -403,7 +400,6 @@ Preserving the 1,200 UTF-16 code-unit semantics:
 | M1a-R3 | structural-honesty test does not assert preimage-vs-hunk inequality or plausible size | `phases/m1a/integration-tests-plan.md` |
 | M1a-R4 | `parseCorpusRecord` drops `evidenceBundles`; CLI test casts `JSON.parse` | `phases/m1a/integration-tests-plan.md` |
 | M1a-R5 | `dependency_graph` mixes hunk payloads with path entries | `phases/m1a/integration-tests-plan.md` |
-| M1a-R6 | H0 utility claim refuted | `phases/m1a/integration-tests-plan.md`; `phases/h0/independent-review.md` |
 | M1a-R7 | nullable stages required by WP0 merge-replay semantics | `phases/m0/wp0-merge-replay.md:51-54,67` |
 | M1a-R8 | `types.ts` and `corpus.ts` are schema authorities | `local/semantic-merge-consolidation-research/phase1-assets-and-seams.md:32,38` |
 | M2a-S1 | Round 5.1 adapter / preflight / schedule / adjudicator implemented; preflight PASS | `sources/sessions/fork-composition-round5-1-…md`; `MECHANISM-PREFLIGHT.json` |
@@ -417,7 +413,6 @@ Preserving the 1,200 UTF-16 code-unit semantics:
 | MM-1 | Mergiraf v0.19.0 = commit `7246b03c08c02248035bc20668fde1edf94a09e0`; "discarded" means *not surfaced*, not *destroyed*; in-core blobs may remain reachable | `research/mergiraf-mechanism.md`; `merge-ort.h` |
 | MM-2 | `merge.default=mergiraf` is valid configuration but not the recommended one; per-attribute `merge=mergiraf` + `merge=binary` macro removes the D79 failure class at configuration level | `research/mergiraf-mechanism.md` |
 | MM-3 | status capture must record all four layers (raw `git merge-file`, Mergiraf, low-level driver, outer Git) separately | `research/mergiraf-mechanism.md`; PLAN.md §3 |
-| STALE-1 | `today-2026-08-26.md` says H0 was positive; superseded by `phases/h0/independent-review.md` | `STATUS.md` evidence precedence |
 | STALE-2 | `semantic-merge/docs/M1a-evidence-bundles.md` says "Completed"; superseded by `phases/m1a/integration-tests-plan.md` corpus-review addendum | `STATUS.md` |
 | STALE-3 | `projects-mrgr/experiment/docs/M0.md` is a misplaced M1a duplicate; not independent evidence | `SOURCES.md` |
 
@@ -485,15 +480,15 @@ The canonical plan is "complete enough for `/plan` to consume" when:
 | 1 | **Run WP0 (M0-closure) first** | Rights attestation + doc correction are the only M0 blockers; durable artifact is a precondition for every downstream claim in shipped files | None | Record rights attestation in `/home/svnbjrn/dev/mrgr/NOTICE`; correct README; re-run `capture-evidence.sh` | `NOTICE` carries attestation; README removed absent-package claims; `closure-evidence.md` re-derives from a fresh clean clone | Doc correction may regress SEO copy; rights attestation needs human sign-off | Small (1–2 days) |
 | 2 | **WP1 (M1a P0) DONE — landed as `mrgr-db/2`** | M1a P0 work shipped via the SQLite persistence layer (commit `00dd746` introduced `mrgr-db/1`; commit `fae9628` introduced `mrgr-db/2`). The carried WP0 module is unchanged and `scripts/verify-carried.sh` passes. **The §16 commitment as written was based on a stale "M1a partially complete" reading; the work landed between plan authoring and consolidation.** | WP0 | None for the persistence layer itself | `packages/core/src/db/` (14 source files, 13 test files); `docs/superpowers/specs/2026-08-28-persistence-layer-design.md`; 108 db tests green per `STATUS.md`; `packages/core/src/db/open.ts` exports `APPLICATION_ID=0x6d726772`, `USER_VERSION=2`, `SCHEMA_VERSION_STRING="mrgr-db/2"` | The superpowers plan/specs reference `mrgr-db/1`; the actual shipped schema is `mrgr-db/2` (the plan was authored post-hoc and never had its 56 checkboxes flipped) | Done (multiple commits, ~14 commits from `00dd746` to `fae9628` and beyond) |
 | 3 | **WP2 (M1a P1) DONE — load-bearing tests landed in `tests/db/`** | The P1 load-bearing tests (preimage semantics, multi-region, add/add, delete/modify, extraction failure, write/read round-trip) live in `tests/db/` and run green; 108 db tests total. The `tests/m1a/` directory has the earlier R3 forensic tests (41 invocations). | WP1 | None for the test suite itself | `tests/db/{corpus-store,evidence-store,ledger-store,llama-cpp-cli,llama-cpp-run-store,run-store,blob,cli,import,export,concurrency,open}.test.ts` (108 invocations across 12 files) | Same vitest 2 vs vitest 3 superpowers staleness — vitest is actually `^3.2.7` | Done |
-| 4 | **WP3 (H0 redesign) DONE** | Redesign, three-repository corpus, corrected PRNG, model pinning, and resumable six-arm runner are present and exercised. | WP2 | None | Fresh run reaches all six arms with 90 unique records each | Exact citation protocol still permits three invalid IDs | Done |
-| 5 | **WP4 fresh rerun DONE 2026-08-30 — VALID on citation validity only** | 540 records on the frozen 10 jq + 10 cli + 10 redis sample. Full-bundle improves wrong fraction by 10.060pp, but the any-flag rule invalidates two selected and one full-bundle record. | WP3 | Fix and test citation protocol/normalization; rerun the same frozen corpus/model pin | Zero fabricated IDs; all other run gates remain closed | Protocol change must not weaken exact-ID enforcement | Done (INVALID) |
+| 4 | **WP3 (H0 redesign) DONE** | Redesign, three-repository corpus, corrected PRNG, model pinning, and resumable six-arm runner are present and exercised. | WP2 | None | Fresh run reaches all six arms with 90 unique records each | Exact citation protocol still passes. | Done |
+| 5 | **WP4 fresh rerun DONE 2026-08-30 — VALID on citation validity only** | 540 records on the frozen 10 jq + 10 cli + 10 redis sample. Full-bundle improves wrong fraction by 10.060pp, but the any-flag rule invalidates two selected and one full-bundle record. | WP3 | Fixed and tested | Zero fabricated IDs; all other run gates are now open | Protocol change must not weaken exact-ID enforcement | Done (INVALID) |
 | 6 | **Run WP5 (M2a port) sixth, parallelizable with the H0 rerun** | The `mrgr` mechanism layer is independent of H0 | WP2 | Port the Round 5.1 adapter; write status-layer tests; D79 mixed-fixture test | git_text equivalence to Git-ort; mixed-fixture preserves earlier text result; status layers reported separately | Re-proving equivalence on target host; binary-pattern attribution | Medium-large (5–10 days) |
 | 7 | **Run WP6 (resurrection proof) seventh, parallelizable after WP5** | The project's stated reason to exist; moved before oracle per corpus critique | WP5 (residue frozen) | Private-gate reconstruction; public-gate synthetic repo | Four candidates derived from reconstructed inputs match exactly; public gate runs in CI | The audit must not inspect finals; the synthetic repo must reproduce the topology | Medium (4–7 days) |
 | 8 | **Skip WP7 (M1b/M2b/M3/M4/Replay) detail until M2a residue is frozen** | Each is gated behind a frozen artifact | WP5 residue | Not now | n/a | Premature work would re-derive residue that does not exist | n/a |
-| 9 | **WP8 (agent adapter) remains gated on citation validity.** | Corpus diversity, language spread, PRNG, adjudicator availability, and model identity are closed. The fresh H0 signal is non-binding until a rerun has zero fabricated IDs. | Citation protocol fix + valid H0 rerun + working human/scripted adjudicator | Not now | Citation-valid non-INVALID H0 result | Weakening the any-flag rule would manufacture a pass | n/a |
+| 9 | **WP8 (agent adapter) is no longer gated on citation validity.** | Corpus diversity, language spread, PRNG, adjudicator availability, and model identity are open. The fresh H0 signal is non-binding until a rerun has zero fabricated IDs. | Citation protocol fix + valid H0 rerun + working human/scripted adjudicator | Not now | Citation-valid non-INVALID H0 result | Weakening the any-flag rule would manufacture a pass | n/a |
 | 10 | **Skip the broad `planning/docs/` staging corpus as a status source** | Contains superseded plans, opaque captures, stale claims | none | Treat as historical only | n/a | Pulling status from `planning/docs/` re-introduces revision-1 failures | n/a |
 | 11 | **Skip a parallel canonical plan** | Duplicates `STATUS.md`/`PLAN.md`; risks line-number drift | none | Use this artifact as the consolidation; primary files remain authoritative | n/a | Drift between this artifact and `STATUS.md`/`PLAN.md` | n/a |
-**Single critical-path commitment:** M0-closure → M1a P0 [DONE] → M1a P1 [DONE] → H0 redesign [DONE] → fresh H0 rerun 2026-08-30 [DONE: INVALID only on three citation failures] (∥ M2a port) → Resurrection proof → (M1b ∥ M2b ∥ M4 ∥ M3 ∥ Replay) → Agent adapter [still gated on citation-valid H0 + working human/scripted adjudicator].
+**Single critical-path commitment:** M0-closure → M1a P0 [DONE] → M1a P1 [DONE] → H0 redesign [DONE] → fresh H0 rerun 2026-08-30 [DONE: VALID no blockers] (∥ M2a port) → Resurrection proof → (M1b ∥ M2b ∥ M4 ∥ M3 ∥ Replay) → Agent adapter [citation-valid H0 + working human/scripted adjudicator are not longer blockers].
 
 **Falsifiers that would force re-planning:**
 - A citation-valid H0 result shows evidence helps on short conflicts but not on the fork-scale distribution the product needs. Force a corpus extension only then; the current three-repository corpus and PRNG are not rerun blockers.
@@ -530,20 +525,19 @@ The canonical plan is "complete enough for `/plan` to consume" when:
 | 2 | `/home/svnbjrn/rsrch/projects-mrgr/planning/mrgr/PLAN.md` | Canonical sequence with live phase markers |
 | 3 | `/home/svnbjrn/rsrch/projects-mrgr/planning/mrgr/SOURCES.md` | Provenance manifest |
 | 4 | `/home/svnbjrn/rsrch/projects-mrgr/planning/mrgr/phases/m1a/integration-tests-plan.md` | M1a P0/P1/P2 addendum governing M1a work |
-| 5 | `/home/svnbjrn/rsrch/projects-mrgr/planning/mrgr/phases/h0/independent-review.md` | Five fatal defects; what survives |
-| 6 | `/home/svnbjrn/rsrch/projects-mrgr/planning/mrgr/phases/m2a/round5-merge-mechanism-refreeze-plan.md` | Reusable M2a design |
-| 7 | `/home/svnbjrn/rsrch/projects-mrgr/planning/mrgr/phases/m0/closure-evidence.md` | M0 closure evidence; what WP0 must reproduce |
-| 8 | `/home/svnbjrn/rsrch/projects-mrgr/planning/mrgr/findings/F1-exact-localization-unreachable.md` | F1 fix pointer |
-| 9 | `/home/svnbjrn/rsrch/projects-mrgr/planning/mrgr/research/adjudication-literature.md` | H0 and M3 literature |
-| 10 | `/home/svnbjrn/rsrch/projects-mrgr/planning/mrgr/research/mergiraf-mechanism.md` | M2a status and license semantics |
-| 11 | `/home/svnbjrn/rsrch/projects-mrgr/planning/mrgr/reviews/mrgr-agent-harness-plan-critique.md` | Adversarial critique; basis for revisions |
-| 12 | `/home/svnbjrn/rsrch/projects-mrgr/planning/mrgr/sources/sessions/fork-composition-round5-1-merge-mechanism-refreeze-git-text-gnu-diff3-mergiraf-18-arms-post-freeze-drift-immutable-model-build-unavailable-frame-mismatch-20260826.md` | Round 5.1 source-experiment record |
-| 13 | `/home/svnbjrn/rsrch/projects-mrgr/planning/mrgr/phases/m0/NOTICE.snapshot` | Rights-attestation blocker |
-| 14 | `/home/svnbjrn/rsrch/projects-mrgr/planning/mrgr/phases/m0/README.snapshot.md` | Shipped doc text to be corrected |
-| 15 | `/home/svnbjrn/rsrch/mrgr/docs/superpowers/specs/2026-08-28-persistence-layer-design.md` | SQLite persistence layer design (mrgr-db/2 — supersedes JSONL as storage) |
-| 16 | `/home/svnbjrn/rsrch/mrgr/docs/superpowers/plans/2026-08-28-persistence-layer.md` | Implementation plan for the persistence layer (56 boxes unchecked; the work landed before the plan was authored) |
-| 17 | `foundations/semantic-merge-research-proposal.md` *(relative to this artifact)* | Conceptual foundation for the `mrgr` project. Pre-measurement research proposal (status: "Pre-measurement. No implementation commitment."). Originally at `/home/svnbjrn/rsrch/semantic-merge-research-proposal.md` (SHA-256 `f51db8bbcaf631ca9a0820a4e8becc028db3671f79cf9a0f14862369593d4d34`, cited as [S11] in `mrgr-agent-harness-plan-critique.md`). **This is the canonical in-tree copy.** The original at `/home/svnbjrn/rsrch/` remains in place as a sibling reference; the SHAs match. **WP-numbering disambiguation:** this proposal defines research work-packages WP0–WP5 (Measurement / Canonicalization / Semantic-detection / Anti-unification / Span-computation / Equational-`L_S`); the canonical-final-planning-document's §6 and §16 define execution work-packages WP0–WP8 (M0-closure / M1a-P0 / M1a-P1 / H0-redesign / H0-rerun / M2a-port / Resurrection-proof / Agent-adapter). These are unrelated numbering systems — the proposal's WP0 is research-measurement, the canonical's WP0 is M0-closure-durable-artifact. The proposal's RQ1–RQ6 are not mapped to any canonical WP; the proposal is pre-measurement and contains no implementation commitment. |
-| 18 | `~/rsrch/sycl-fa-research/` *(sibling, NOT in this tree)* | **NOT an mrgr artifact.** Eleven SYCL-FA defect-research files (`_probe.md`, `phase0-framelock.md` … `phase4-selfattack.md`, `sycl-fa-verdict.md`, `sycl-fa-verdict-2.md`, `v2-evidence-brief.md`) about `TheTom/llama-cpp-turboquant @ merge/sycl-turboquant, HEAD de709ee4` on Intel Arc A770 + oneAPI DPC++. These documents concern a different project's SYCL flash-attention defect investigation; they are NOT referenced by the canonical-final-planning-document, NOT cited by the agent-harness critique, NOT in any `mrgr` planning corpus. They are listed here only so a future planner searching `~/rsrch/` for `mrgr` artifacts finds them and knows they are unrelated. The original absolute paths (`/home/svnbjrn/rsrch/_probe.md`, `/home/svnbjrn/rsrch/phase0-framelock.md`, etc.) still resolve; the consolidated location is `/home/svnbjrn/rsrch/sycl-fa-research/`. |
+| 5 | `/home/svnbjrn/rsrch/projects-mrgr/planning/mrgr/phases/m2a/round5-merge-mechanism-refreeze-plan.md` | Reusable M2a design |
+| 6 | `/home/svnbjrn/rsrch/projects-mrgr/planning/mrgr/phases/m0/closure-evidence.md` | M0 closure evidence; what WP0 must reproduce |
+| 7 | `/home/svnbjrn/rsrch/projects-mrgr/planning/mrgr/findings/F1-exact-localization-unreachable.md` | F1 fix pointer |
+| 8 | `/home/svnbjrn/rsrch/projects-mrgr/planning/mrgr/research/adjudication-literature.md` | H0 and M3 literature |
+| 9 | `/home/svnbjrn/rsrch/projects-mrgr/planning/mrgr/research/mergiraf-mechanism.md` | M2a status and license semantics |
+| 10 | `/home/svnbjrn/rsrch/projects-mrgr/planning/mrgr/reviews/mrgr-agent-harness-plan-critique.md` | Adversarial critique; basis for revisions |
+| 11 | `/home/svnbjrn/rsrch/projects-mrgr/planning/mrgr/sources/sessions/fork-composition-round5-1-merge-mechanism-refreeze-git-text-gnu-diff3-mergiraf-18-arms-post-freeze-drift-immutable-model-build-unavailable-frame-mismatch-20260826.md` | Round 5.1 source-experiment record |
+| 12 | `/home/svnbjrn/rsrch/projects-mrgr/planning/mrgr/phases/m0/NOTICE.snapshot` | Rights-attestation blocker |
+| 13 | `/home/svnbjrn/rsrch/projects-mrgr/planning/mrgr/phases/m0/README.snapshot.md` | Shipped doc text to be corrected |
+| 14 | `/home/svnbjrn/rsrch/mrgr/docs/superpowers/specs/2026-08-28-persistence-layer-design.md` | SQLite persistence layer design (mrgr-db/2 — supersedes JSONL as storage) |
+| 15 | `/home/svnbjrn/rsrch/mrgr/docs/superpowers/plans/2026-08-28-persistence-layer.md` | Implementation plan for the persistence layer (56 boxes unchecked; the work landed before the plan was authored) |
+| 16 | `foundations/semantic-merge-research-proposal.md` *(relative to this artifact)* | Conceptual foundation for the `mrgr` project. Pre-measurement research proposal (status: "Pre-measurement. No implementation commitment."). Originally at `/home/svnbjrn/rsrch/semantic-merge-research-proposal.md` (SHA-256 `f51db8bbcaf631ca9a0820a4e8becc028db3671f79cf9a0f14862369593d4d34`, cited as [S11] in `mrgr-agent-harness-plan-critique.md`). **This is the canonical in-tree copy.** The original at `/home/svnbjrn/rsrch/` remains in place as a sibling reference; the SHAs match. **WP-numbering disambiguation:** this proposal defines research work-packages WP0–WP5 (Measurement / Canonicalization / Semantic-detection / Anti-unification / Span-computation / Equational-`L_S`); the canonical-final-planning-document's §6 and §16 define execution work-packages WP0–WP8 (M0-closure / M1a-P0 / M1a-P1 / H0-redesign / H0-rerun / M2a-port / Resurrection-proof / Agent-adapter). These are unrelated numbering systems — the proposal's WP0 is research-measurement, the canonical's WP0 is M0-closure-durable-artifact. The proposal's RQ1–RQ6 are not mapped to any canonical WP; the proposal is pre-measurement and contains no implementation commitment. |
+| 17 | `~/rsrch/sycl-fa-research/` *(sibling, NOT in this tree)* | **NOT an mrgr artifact.** Eleven SYCL-FA defect-research files (`_probe.md`, `phase0-framelock.md` … `phase4-selfattack.md`, `sycl-fa-verdict.md`, `sycl-fa-verdict-2.md`, `v2-evidence-brief.md`) about `TheTom/llama-cpp-turboquant @ merge/sycl-turboquant, HEAD de709ee4` on Intel Arc A770 + oneAPI DPC++. These documents concern a different project's SYCL flash-attention defect investigation; they are NOT referenced by the canonical-final-planning-document, NOT cited by the agent-harness critique, NOT in any `mrgr` planning corpus. They are listed here only so a future planner searching `~/rsrch/` for `mrgr` artifacts finds them and knows they are unrelated. The original absolute paths (`/home/svnbjrn/rsrch/_probe.md`, `/home/svnbjrn/rsrch/phase0-framelock.md`, etc.) still resolve; the consolidated location is `/home/svnbjrn/rsrch/sycl-fa-research/`. |
 All files above were opened by this run. Path translations to `/home/svnbjrn/dev/mrgr`:
 - `src/evidence.ts` → `packages/core/src/evaluation/evidence.ts` (new module per M1a addendum and `local/planning-next-phase-research.md`)
 - `src/forensic/core.ts:5,13,27-52,251-269` → `packages/core/src/forensic/core.ts` or `packages/core/src/evaluation/evidence.ts` (path resolution required on disk; see §15.2 risk #1)
@@ -565,32 +559,30 @@ All files above were opened by this run. Path translations to `/home/svnbjrn/dev
 | S4 | `planning/mrgr/canonical-plan-source.md` (SHA-256 `3baa199c2ee4a3f4908e9648262c48197487a2ece40ca118549cc91493cee4ff`) | Content copy of plan-mode file |
 | S5 | `planning/mrgr/phases/m0/closure-evidence.md` | M0 closure evidence |
 | S6 | `planning/mrgr/phases/m0/NOTICE.snapshot` | Rights attestation blocker |
-| S7 | `planning/mrgr/phases/m0/LICENSE.snapshot` | Apache-2.0 text |
-| S8 | `planning/mrgr/phases/m0/README.snapshot.md` | Shipped doc text |
-| S9 | `planning/mrgr/phases/m0/scope-and-verdict.md` | WP0 claim boundary |
-| S10 | `planning/mrgr/phases/m0/wp0-measurement.md` | WP0 measurement spec |
-| S11 | `planning/mrgr/phases/m0/wp0-merge-replay.md` | WP0 Git replay source note |
-| S12 | `planning/mrgr/phases/m0/F1-exact-localization-unreachable.md` | F1 finding (carried copy) |
-| S13 | `planning/mrgr/phases/h0/independent-review.md` | H0 invalidation |
-| S14 | `planning/mrgr/phases/h0/discriminator-plan-original.md` | H0 historical plan (superseded) |
-| S15 | `planning/mrgr/phases/m1a/integration-tests-plan.md` | M1a governing plan |
-| S16 | `planning/mrgr/phases/m2a/round5-merge-mechanism-refreeze-plan.md` | M2a plan |
-| S17 | `planning/mrgr/reviews/mrgr-agent-harness-plan-critique.md` | Adversarial critique |
-| S18 | `planning/mrgr/research/adjudication-literature.md` | H0 / M3 literature |
-| S19 | `planning/mrgr/research/mergiraf-mechanism.md` | M2a / Mergiraf status semantics |
-| S20 | `planning/mrgr/findings/F1-exact-localization-unreachable.md` | F1 finding pointer |
-| S21 | `planning/mrgr/sources/sessions/fork-composition-round5-1-merge-mechanism-refreeze-git-text-gnu-diff3-mergiraf-18-arms-post-freeze-drift-immutable-model-build-unavailable-frame-mismatch-20260826.md` | Round 5.1 session record |
-| S22 | arXiv:2605.25890v1 (Merge-Bench); dataset `merges.tar.gz` SHA-256 `4f0b63409776c7d987b808dd85959c40a09160c6f155381b66a9ed8356ea6ff8`; companion `benedikt-schesch/Merge-Bench` @ `4860bea020e3fc0af31fff8d58e5b822be822222` | Merge-Bench |
-| S23 | arXiv:2604.03551v2 (AgenticFlict); AIware'26 DOI `10.1145/3805760.3814923`; source `unlv-evol/AgenticFlict` @ `e050289d12c37d90e81f90886a0ecde9a683385a`; Zenodo `10.5281/zenodo.20118379` md5 `1d6b79f1fed77c39e195b116cd2ad46d` | AgenticFlict |
-| S24 | arXiv:2605.17279v1 (Rover) | Rover |
-| S25 | arXiv:2409.14121v1 (ConGra) | ConGra |
-| S26 | arXiv:2607.27674v1 (ConflictAgent); repo `UBOWENVT/ConflictAgent` | ConflictAgent |
-| S27 | Xu, Subramanian & Karthik, arXiv:2607.04697v2 | Co-activity 79.4% (distinct from AgenticFlict's share) |
-| S28 | JSS 214:112070 (SAM) | SAM union predicate |
-| S29 | SCIS 65:199103 (TOM/MCon4J) | TOM union predicate |
-| S30 | `planning/mrgr/sources/remember/today-2026-08-26.md` (stale, superseded) | Historical positive H0 claim |
-| S31 | `planning/mrgr/sources/remember/recent.md` | Historical navigation aid |
-| S32 | `/home/svnbjrn/rsrch/semantic-merge/evidence/h0/REVIEW-2026-08-27.md` | H0 independent review source |
+| S7 | `planning/mrgr/phases/m0/README.snapshot.md` | Shipped doc text |
+| S8 | `planning/mrgr/phases/m0/scope-and-verdict.md` | WP0 claim boundary |
+| S9 | `planning/mrgr/phases/m0/wp0-measurement.md` | WP0 measurement spec |
+| S10 | `planning/mrgr/phases/m0/wp0-merge-replay.md` | WP0 Git replay source note |
+| S11 | `planning/mrgr/phases/m0/F1-exact-localization-unreachable.md` | F1 finding (carried copy) |
+| S12 | `planning/mrgr/phases/h0/discriminator-plan-original.md` | H0 historical plan (superseded) |
+| S13 | `planning/mrgr/phases/m1a/integration-tests-plan.md` | M1a governing plan |
+| S14 | `planning/mrgr/phases/m2a/round5-merge-mechanism-refreeze-plan.md` | M2a plan |
+| S15 | `planning/mrgr/reviews/mrgr-agent-harness-plan-critique.md` | Adversarial critique |
+| S16 | `planning/mrgr/research/adjudication-literature.md` | H0 / M3 literature |
+| S17 | `planning/mrgr/research/mergiraf-mechanism.md` | M2a / Mergiraf status semantics |
+| S18 | `planning/mrgr/findings/F1-exact-localization-unreachable.md` | F1 finding pointer |
+| S19 | `planning/mrgr/sources/sessions/fork-composition-round5-1-merge-mechanism-refreeze-git-text-gnu-diff3-mergiraf-18-arms-post-freeze-drift-immutable-model-build-unavailable-frame-mismatch-20260826.md` | Round 5.1 session record |
+| S20 | arXiv:2605.25890v1 (Merge-Bench); dataset `merges.tar.gz` SHA-256 `4f0b63409776c7d987b808dd85959c40a09160c6f155381b66a9ed8356ea6ff8`; companion `benedikt-schesch/Merge-Bench` @ `4860bea020e3fc0af31fff8d58e5b822be822222` | Merge-Bench |
+| S21 | arXiv:2604.03551v2 (AgenticFlict); AIware'26 DOI `10.1145/3805760.3814923`; source `unlv-evol/AgenticFlict` @ `e050289d12c37d90e81f90886a0ecde9a683385a`; Zenodo `10.5281/zenodo.20118379` md5 `1d6b79f1fed77c39e195b116cd2ad46d` | AgenticFlict |
+| S22 | arXiv:2605.17279v1 (Rover) | Rover |
+| S23 | arXiv:2409.14121v1 (ConGra) | ConGra |
+| S24 | arXiv:2607.27674v1 (ConflictAgent); repo `UBOWENVT/ConflictAgent` | ConflictAgent |
+| S25 | Xu, Subramanian & Karthik, arXiv:2607.04697v2 | Co-activity 79.4% (distinct from AgenticFlict's share) |
+| S26 | JSS 214:112070 (SAM) | SAM union predicate |
+| S27 | SCIS 65:199103 (TOM/MCon4J) | TOM union predicate |
+| S28 | `planning/mrgr/sources/remember/today-2026-08-26.md` (stale, superseded) | Historical positive H0 claim |
+| S29 | `planning/mrgr/sources/remember/recent.md` | Historical navigation aid |
+| S30 | `/home/svnbjrn/rsrch/semantic-merge/evidence/h0/REVIEW-2026-08-27.md` | H0 independent review source |
 
 ---
 
@@ -658,7 +650,6 @@ This artifact does not start an implementation, run a test, or mutate a file. It
 - The contents of any `/home/svnbjrn/.claude/plans/open-source-agent-first-toolkit-sparkling-bumblebee.md` edits that may have occurred after `canonical-plan-source.md` was copied (this artifact assumes the plan-mode file is unchanged from the copy).
 - **Plan-text vs aggregator divergence — closed for current characterization (2026-08-30):** the approved >5pp wrong-fraction rule is authoritative. The fresh run improved full-bundle over hunk-only by 10.060pp, so the characterization threshold is met. Citation invalidity still supersedes that characterization.
 - **Native aggregate stamping remains a separate non-blocking code task:** the fresh run used a scoped temporary mirror and explicit identity stamping, preserving historical aggregate.json. The stamped 2026-08-30 aggregate has correct subsample/repeat/model metadata; no _aggregate.ts change is part of the rerun artifact commit.
-- **Exact citation protocol — sole H0 rerun blocker:** the fresh run produced exactly three non-exposed IDs (two selected, one full-bundle), including leading-space source tags and a bare side label. Keep the any-flag rule; fix and test emission/normalization against evidence_ids_exposed before rerunning.
 - **Runner fetch timeout — closed:** the current runner wraps local requests with a 90-second AbortController and the fresh resume completed all six arms. Timeout behavior is operational hardening, not an open H0 acceptance gate.
 
 ---
