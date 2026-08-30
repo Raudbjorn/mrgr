@@ -4,6 +4,8 @@
 
 Paths below are relative to `.do-not-commit/planning/` unless given as a full absolute path or a URL.
 
+**`.do-not-commit/planning/` is gitignored (verified 2026-08-30 — `git ls-files .do-not-commit/` returns zero tracked files).** These paths resolve on a machine that has that local, untracked directory populated; they do **not** exist in a fresh clone, in CI, or for a PR reviewer. Confirmed independently by CodeRabbit's own sandbox check on this PR. Treat S5–S19 as local-only references, not as artifacts this repository ships.
+
 | ID | Path or URL | Use |
 |---|---|---|
 | S1 | `PLAN.md` (SHA-256 `93e13342577876a7504188d6756ed932149e944f9309ae5eb30d48f57d846216`) | Canonical sequence |

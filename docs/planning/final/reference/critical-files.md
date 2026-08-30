@@ -8,6 +8,8 @@
 
 Paths below are relative to `.do-not-commit/planning/` unless stated otherwise.
 
+**`.do-not-commit/planning/` is gitignored (verified 2026-08-30, 0 tracked files) — see `reference/sources.md` §19 for the full note.** These rows are local-only references; they don't resolve in a fresh clone, CI, or for a PR reviewer.
+
 | If your task touches... | Read |
 | --- | --- |
 | Anything at all | `PLAN.md` — canonical sequence with live phase markers (SHA-256 verified matching on disk, 2026-08-30) |

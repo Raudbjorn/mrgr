@@ -19,13 +19,13 @@ What remains `[UNVERIFIED]`: the on-disk state of `/home/svnbjrn/rsrch/mrgr` (HE
 
 What the corpus got wrong versus current evidence:
 - The first H0 run's positive verdict (superseded by independent review).
-- The README/NOTICE present-tense claims (must be corrected before publication).
+- The README/NOTICE present-tense claims. **Corrected 2026-08-30 (verified on disk):** both are already fixed — this is now completed historical context, not a pending publication requirement.
 - The M1a "Completed" claim in `semantic-merge/docs/M1a-evidence-bundles.md` (superseded by the corpus-review addendum).
 - The Round 5.1 terminal frame lock (invalidated by post-freeze drift + missing `MODEL_BUILD`).
 - The `projects-mrgr/experiment/docs/M0.md` duplicate M1a narrative (misplaced; not independent evidence).
 
 Overall confidence:
-- **High** for the binding of `STATUS.md` as current truth, the corpus critique as the reason for revision 2, and the H0 invalidation as disqualifying.
+- **High** for the corpus critique as the reason for revision 2, and (historically) the first-run H0 invalidation as disqualifying. **Corrected 2026-08-30:** `STATUS.md` is not a high-confidence current-truth source — it's internally inconsistent (§1.5 rule 2). The phase-N `current-state.md` files are the verified current-truth source instead.
 - **High** for the M1a P0/P1/P2 ordering and the truncation contract.
 - **High** for M2a being a port, not a result.
 - **Medium** for path translations between the M1a addendum's stated sites and the on-disk `packages/core/src/...` subtree.
