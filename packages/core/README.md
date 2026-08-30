@@ -39,7 +39,7 @@ mrgr-db export --db PATH --out DIR [--with-blobs]
 mrgr-db verify --db PATH
 ```
 
-`mrgr-wp0`, `mrgr-evidence`, and `mrgr-db` errors are a single JSON `ToolError` on stderr; `mrgr-h0-load` emits a concise text error. All four exit 0 on success and 1 for operational failure. `mrgr-evidence`, `mrgr-h0-load`, and `mrgr-db` use exit 2 for usage mistakes; `mrgr-wp0` uses exit 1 for both classes. The corpus is append-only JSONL, resumable by `(repoId, mergeSha, baselineId)`, and fails closed on a malformed record rather than skipping it.
+Direct command errors from `mrgr-wp0`, `mrgr-evidence`, and `mrgr-db` are a single JSON `ToolError` on stderr; `mrgr-h0-load` emits a concise text error. `mrgr-evidence` can separately generate a `status: "failed"` record for a single conflict — that's a written extraction-failure row, not a `ToolError`, and it still prints a plain-text summary line and exits 1. All four commands exit 0 on success and 1 for operational failure (including any generated failure record). `mrgr-evidence`, `mrgr-h0-load`, and `mrgr-db` use exit 2 for usage mistakes; `mrgr-wp0` uses exit 1 for both classes. The corpus is append-only JSONL, resumable by `(repoId, mergeSha, baselineId)`, and fails closed on a malformed record rather than skipping it.
 
 ## Status
 

@@ -282,37 +282,38 @@ async function runSidecarMode(
 			// what makes resume idempotent.
 
 			if (gitPath === null) {
-				if ((await failure("No repository path for a remote record", "pass --repo")) === "error") {
+				const outcome = await failure("No repository path for a remote record", "pass --repo");
+				if (outcome === "error") {
 					await writer.value.close();
 					return 1;
 				}
-				failedCount += 1;
+				if (outcome === "written") failedCount += 1;
 				continue;
 			}
 			if (ours === undefined || theirs === undefined || parents.length !== 2) {
 				// Exactly two. Fewer is a root; more is an octopus, where
 				// silently taking the first two would extract evidence for a
 				// merge that never happened.
-				if (
-					(await failure(
-						"Merge does not have exactly two parents",
-						`parents=${parents.length}`,
-					)) === "error"
-				) {
+				const outcome = await failure(
+					"Merge does not have exactly two parents",
+					`parents=${parents.length}`,
+				);
+				if (outcome === "error") {
 					await writer.value.close();
 					return 1;
 				}
-				failedCount += 1;
+				if (outcome === "written") failedCount += 1;
 				continue;
 			}
 
 			const opened = await openLocalRepository(gitPath);
 			if (!opened.ok) {
-				if ((await failure(opened.error.message, opened.error.operation)) === "error") {
+				const outcome = await failure(opened.error.message, opened.error.operation);
+				if (outcome === "error") {
 					await writer.value.close();
 					return 1;
 				}
-				failedCount += 1;
+				if (outcome === "written") failedCount += 1;
 				continue;
 			}
 
@@ -332,11 +333,12 @@ async function runSidecarMode(
 					status: "failed",
 					error: { ...bundles.error, details: { ...bundles.error.details, scope: "path" } },
 				};
-				if ((await write(entry)) === "error") {
+				const outcome = await write(entry);
+				if (outcome === "error") {
 					await writer.value.close();
 					return 1;
 				}
-				failedCount += 1;
+				if (outcome === "written") failedCount += 1;
 				continue;
 			}
 

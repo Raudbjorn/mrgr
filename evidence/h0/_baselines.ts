@@ -9,6 +9,16 @@
 // The same `isHistoricalMatch` rule the aggregator uses (in _aggregate.ts)
 // is invoked here per record so the ceiling is computed consistently;
 // we do NOT fork the grader.
+//
+// `_aggregate.ts`'s per-run gate reads `runs/baseline-{arm}-{H0_STAMP}.jsonl`
+// for every arm, model and baseline alike — an "aligned" set restricted to
+// the triples actually sampled for that stamp, not the full corpus. When
+// `H0_STAMP` is set, this script additionally writes those three filtered
+// per-stamp files (in `evidence/h0/runs/`), alongside the unfiltered
+// full-corpus `baselines.json` it always writes. The sampled triple set is
+// read from that stamp's `hunk-only` model-arm file, which must already
+// exist — baselines run after (or alongside, once model arms are written)
+// the model run for the same stamp, not before it.
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { isHistoricalMatch } from "./_aggregate.js";
 
@@ -97,6 +107,40 @@ const main = (): void => {
 	console.log(`wrote ${count} baseline records to ${OUT_PATH}`);
 	console.log(`  per arm: ${count / BASELINES.length / repeats} triples × ${repeats} repeats`);
 	console.log(`  arms: ${BASELINES.join(", ")}`);
+
+	const stamp = process.env.H0_STAMP;
+	if (stamp === undefined) {
+		console.log("H0_STAMP not set — skipping per-stamp aligned baseline files (see runs/README.md)");
+		return;
+	}
+	const runsDir = "evidence/h0/runs";
+	const modelArmFile = `${runsDir}/hunk-only-${stamp}.jsonl`;
+	if (!existsSync(modelArmFile)) {
+		throw new Error(
+			`H0_STAMP=${stamp} set but ${modelArmFile} does not exist — run the model arms for ` +
+			`this stamp first, or unset H0_STAMP to write only the full-corpus baselines.json`,
+		);
+	}
+	const sampledTripleIds = new Set(
+		readFileSync(modelArmFile, "utf8")
+			.trim()
+			.split("\n")
+			.filter(Boolean)
+			.map((l) => (JSON.parse(l) as { triple_id: string }).triple_id),
+	);
+	for (const a of BASELINES) {
+		const arm = `baseline-${a}` as const;
+		const alignedLines: string[] = [];
+		for (const t of triples) {
+			if (!sampledTripleIds.has(t.triple_key)) continue;
+			for (let r = 1; r <= repeats; r += 1) {
+				alignedLines.push(JSON.stringify(mkRecord(t, a, r, repeats)));
+			}
+		}
+		const outPath = `${runsDir}/${arm}-${stamp}.jsonl`;
+		writeFileSync(outPath, alignedLines.join("\n") + "\n");
+		console.log(`wrote ${alignedLines.length} aligned records to ${outPath}`);
+	}
 };
 
 main();
