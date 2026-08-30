@@ -8,7 +8,6 @@ import { afterEach, describe, expect, it } from "vitest";
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
 const STAMP = "2026-08-29T05-51-13-934Z";
 const MODEL_ARMS = ["hunk-only", "selected", "full-bundle"] as const;
-const BASELINE_ARMS = ["baseline-keep_ours", "baseline-keep_theirs", "baseline-compose"] as const;
 
 const temporaryDirectories: string[] = [];
 
@@ -95,6 +94,10 @@ describe.sequential("H0 baseline and aggregate producers", () => {
 
 	it("aggregates aligned stamped baselines with one grader and a five-point margin", async () => {
 		const directory = fixtureDirectory();
+		// _baselines.ts writes the aligned per-stamp runs/baseline-{arm}-{STAMP}.jsonl
+		// files itself when H0_STAMP is set (runScript sets it) and a model arm
+		// file for that stamp already exists (fixtureDirectory wrote hunk-only
+		// above) — this exercises the real production handoff, not a fake.
 		await runScript(directory, "evidence/h0/_baselines.ts");
 		const baselineRows = readFileSync(
 			join(directory, "evidence/h0/baselines.json"),
@@ -107,14 +110,6 @@ describe.sequential("H0 baseline and aggregate producers", () => {
 				arm: string;
 				reason_text: string;
 			});
-		for (const arm of BASELINE_ARMS) {
-			writeJsonl(
-				join(directory, `evidence/h0/runs/${arm}-${STAMP}.jsonl`),
-				baselineRows.filter(
-					(row) => row.arm === arm && row.triple_id === "selected-triple",
-				),
-			);
-		}
 
 		await runScript(directory, "evidence/h0/_aggregate.ts");
 
@@ -148,27 +143,17 @@ describe.sequential("H0 baseline and aggregate producers", () => {
 
 	it("rejects duplicate triple/run rows before scoring", async () => {
 		const directory = fixtureDirectory();
+		// Real per-stamp baseline files come from _baselines.ts (same as the
+		// test above); duplicate one row in the real baseline-compose output
+		// to trigger the aggregator's mismatched/duplicate-key rejection.
 		await runScript(directory, "evidence/h0/_baselines.ts");
-		const baselineRows = readFileSync(
-			join(directory, "evidence/h0/baselines.json"),
-			"utf8",
-		)
+		const composeFile = join(directory, `evidence/h0/runs/baseline-compose-${STAMP}.jsonl`);
+		const composeRows = readFileSync(composeFile, "utf8")
 			.trim()
 			.split("\n")
-			.map((line) => JSON.parse(line) as {
-				triple_id: string;
-				arm: string;
-			});
-		for (const arm of BASELINE_ARMS) {
-			const rows = baselineRows.filter(
-				(row) => row.arm === arm && row.triple_id === "selected-triple",
-			);
-			if (arm === "baseline-compose") rows.push(rows[0]);
-			writeJsonl(
-				join(directory, `evidence/h0/runs/${arm}-${STAMP}.jsonl`),
-				rows,
-			);
-		}
+			.map((line) => JSON.parse(line) as Record<string, unknown>);
+		composeRows.push(composeRows[0]!);
+		writeJsonl(composeFile, composeRows);
 
 		await expect(
 			runScript(directory, "evidence/h0/_aggregate.ts"),
