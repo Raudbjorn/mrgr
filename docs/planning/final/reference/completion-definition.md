@@ -9,7 +9,7 @@ The canonical plan is "complete enough for `/plan` to consume" when:
 3. The `STOP` rules from `PLAN.md` are reproduced in §11 of this artifact and matched to the milestone they bind.
 4. The H0 redesign requirements are specific enough that a planner cannot accidentally re-derive the invalidated experiment.
 5. The M1a schema/persistence/identity/error/test requirements preserve the 1,200 UTF-16 code-unit semantic and original UTF-8 byte-count contract.
-6. **Corrected 2026-08-30 (verified on disk):** publication rights and the doc correction list are done, not open — `NOTICE` carries the attestation, README/NOTICE are clean. The remaining M0 completion requirement is regenerating `closure-evidence.md` from a fresh clean clone at current HEAD.
+6. M0 publication rights are named as the only remaining M0 blocker; the doc correction list is concrete.
 7. M2a is bounded as a *port*, with explicit non-claim about the source experiment's result.
 8. The kill-safe outcome is reproduced as the answer to a null H0.
 

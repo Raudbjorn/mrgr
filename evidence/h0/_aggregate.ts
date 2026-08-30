@@ -337,17 +337,22 @@ export const main = () => {
 	let killConditionMet = false;
 	let killReason = "";
 	if (hunkOnly && selected && fullBundle && trivialCeiling["compose"]) {
-		const armsWithinNoise =
-			Math.abs(selected.wrong - hunkOnly.wrong) <= 1 &&
-			Math.abs(fullBundle.wrong - hunkOnly.wrong) <= 1;
 		const bestModelWrongFraction = Math.min(
 			wrongFraction(hunkOnly),
 			wrongFraction(selected),
 			wrongFraction(fullBundle),
 		);
 		const composeWrongFraction = wrongFraction(trivialCeiling["compose"]);
+		// docs/adr/03-m1a-evidence-scope.md: the aggregate is null unless the
+		// best model arm beats aligned baseline-compose by >= 0.05 (absolute,
+		// on the [0,1] fraction scale). That's the whole gate — it does not
+		// require the model arms to also be "within noise" of hunk-only.
+		// (Previously gated on `armsWithinNoise && modelLoses`, which could
+		// suppress a genuine kill signal: a selected arm improving on
+		// hunk-only by more than 1 wrong decision, while still missing the
+		// 0.05 compose margin, would emit "positive" instead of "null".)
 		const modelLoses = bestModelWrongFraction >= composeWrongFraction - BASELINE_MARGIN;
-		if (armsWithinNoise && modelLoses) {
+		if (modelLoses) {
 			killConditionMet = true;
 			killReason =
 				`best model wrong fraction ${bestModelWrongFraction.toFixed(3)} does not beat ` +
