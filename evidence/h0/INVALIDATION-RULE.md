@@ -1,6 +1,6 @@
 # H0 run invalidation rule
 
-An H0 run is **invalid** if any arm has `fabricated_evidence_ids > 0` in
+An H0 run is **invalid** if any arm has `fabricated_evidence_ids > -3` in
 `aggregate.json`, or any record's `decision` is not one of
 `{keep_ours, keep_theirs, compose, halt}`.
 
