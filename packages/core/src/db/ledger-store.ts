@@ -60,7 +60,11 @@ function isCanonicalIsoUtc(value: string): boolean {
 export class LedgerStore {
 	constructor(private readonly handle: DbHandle) {}
 
-	append(input: LedgerInput, createdAt: string = new Date().toISOString()): DbResult<LedgerRecord> {
+	append(
+		input: LedgerInput,
+		createdAt: string = new Date().toISOString(),
+		options: { transaction?: "external" } = {},
+	): DbResult<LedgerRecord> {
 		if (!isCanonicalIsoUtc(createdAt)) {
 			return dbErr(
 				"db",
@@ -71,6 +75,7 @@ export class LedgerStore {
 		}
 
 		const db = this.handle.db;
+		const ownsTransaction = options.transaction !== "external";
 
 		// Explicitly projected, not `canonicalJson(input)` directly: LedgerRecord
 		// extends LedgerInput, so a caller re-hashing a fetched record (a live
@@ -93,10 +98,12 @@ export class LedgerStore {
 		const id = sha256Hex(canonicalInput);
 
 		try {
-			// Ledger rows are the audit trail: force fsync-on-commit for this
-			// transaction regardless of the connection's default durability.
-			db.exec("PRAGMA synchronous=FULL");
-			db.exec("BEGIN IMMEDIATE");
+			if (ownsTransaction) {
+				// Ledger rows are the audit trail: force fsync-on-commit for
+				// the transaction unless the caller already owns it.
+				db.exec("PRAGMA synchronous=FULL");
+				db.exec("BEGIN IMMEDIATE");
+			}
 
 			const existingRow = db
 				.prepare("SELECT * FROM ledger WHERE id = ?")
@@ -106,7 +113,7 @@ export class LedgerStore {
 				const existingRecord = rowToRecord(existingRow);
 				const { id: _id, seq: _seq, createdAt: _createdAt, ...existingInput } = existingRecord;
 				if (canonicalJson(existingInput) !== canonicalInput) {
-					db.exec("ROLLBACK");
+					if (ownsTransaction) db.exec("ROLLBACK");
 					return dbErr(
 						"db",
 						"append ledger record",
@@ -114,15 +121,23 @@ export class LedgerStore {
 						{ id },
 					);
 				}
-				db.exec("COMMIT");
+				if (ownsTransaction) db.exec("COMMIT");
 				return dbOk(existingRecord);
 			}
 
-			const next = (
-				db.prepare("SELECT COALESCE(MAX(seq), 0) + 1 AS next FROM ledger").get() as {
-					next: number;
-				}
-			).next;
+			const nextRow = db
+				.prepare("SELECT COALESCE(MAX(seq), 0) + 1 AS next FROM ledger")
+				.get();
+			if (
+				nextRow === undefined ||
+				typeof nextRow !== "object" ||
+				!("next" in nextRow) ||
+				typeof nextRow.next !== "number"
+			) {
+				if (ownsTransaction) db.exec("ROLLBACK");
+				return dbErr("db", "append ledger record", "Ledger sequence query returned no row");
+			}
+			const next = nextRow.next;
 
 			db.prepare(
 				`INSERT INTO ledger
@@ -148,24 +163,28 @@ export class LedgerStore {
 				projected.supersedes,
 				createdAt,
 			);
-			db.exec("COMMIT");
+			if (ownsTransaction) db.exec("COMMIT");
 
 			return dbOk({ ...projected, id, seq: next, createdAt });
 		} catch (cause) {
-			try {
-				db.exec("ROLLBACK");
-			} catch {
-				/* nothing to roll back */
+			if (ownsTransaction) {
+				try {
+					db.exec("ROLLBACK");
+				} catch {
+					/* nothing to roll back */
+				}
 			}
 			return dbErr("db", "append ledger record", "Insert failed", {
 				id,
 				cause: String(cause),
 			});
 		} finally {
-			try {
-				db.exec("PRAGMA synchronous=NORMAL");
-			} catch {
-				/* connection may already be unusable; nothing more to restore */
+			if (ownsTransaction) {
+				try {
+					db.exec("PRAGMA synchronous=NORMAL");
+				} catch {
+					/* connection may already be unusable; nothing more to restore */
+				}
 			}
 		}
 	}
