@@ -16,6 +16,23 @@ resolve any `§N` you find quoted elsewhere back to a file.
 
 ---
 
+## Working on something? Start here.
+
+| If you're working on... | Read |
+| --- | --- |
+| M0 (`@mrgr/core` extraction, publication) | `notes/m0.md` |
+| M1a (schema, persistence, `mrgr-db/2`) | `notes/m1a.md` |
+| H0 (evidence-utility discriminator) | `notes/h0.md` |
+| M2a (merge mechanisms) — **blocked, read first** | `notes/m2a.md` |
+| Resurrection proof — **blocked, read first** | `notes/resurrection.md` |
+| M1b/M2b/M3/M4/Replay/Agent adapter (future work) | `notes/future-work.md` |
+| Anything, every session | `phase-0-frame-and-status/` (both files) |
+
+Each `notes/<x>.md` is a routing card — pointers to the phase files plus the
+specific `reference/` rows relevant to that phase, not a copy of their
+content. If a notes file and the file it points to disagree, the pointed-to
+file wins; notes files carry no state of their own.
+
 ## Read this first
 
 - **Binding ordering rule (was §6 intro):** *"The ordering is binding: a unit
@@ -105,6 +122,13 @@ resolve any `§N` you find quoted elsewhere back to a file.
 | `parking-lot.md` | §22 Parking lot |
 | `session-close-2026-08-29.md` | §24 Session close summary (2026-08-29T07:42Z) |
 
+### `notes/` — per-phase routing cards (2026-08-30)
+One short file per phase/feature, each pointing to its phase files plus the
+specific `reference/` rows relevant to that work — not a copy of their
+content. See the table at the top of this index ("Working on something?
+Start here"). Files: `m0.md`, `m1a.md`, `h0.md`, `m2a.md`, `resurrection.md`,
+`future-work.md`.
+
 ### `foundations/` — unchanged by this split
 Pre-measurement research proposal and WP-numbering disambiguation (three
 unrelated "WP0"s across the corpus). See `foundations/README.md`.
@@ -124,8 +148,15 @@ section into one code block under strict CommonMark rendering), and the
 horizontal-rule (`---`) separators between original sections were dropped
 since each section is now its own file.
 
-**Not yet fact-checked against disk (2026-08-30):** `reference/` and the
-phase-4/5/6 files (M2a, resurrection, future work) haven't had the same
-line-by-line verification against the actual repo that M0/H0/M1a got. Don't
-assume those are current-state-verified — check before relying on a
-specific claim there.
+**Fact-check status against disk, updated 2026-08-30:** M0, M1a, H0, M2a,
+resurrection, and future-work phases are now verified against the actual
+repo (git objects, file existence, test counts) — each carries its findings
+inline, including two real blockers the original plan didn't name: the
+Round 5.1 M2a source isn't in this repo (`notes/m2a.md`), and the
+resurrection proof's five reconstruction refs aren't reachable in this
+repo's git history (`notes/resurrection.md`). **Not yet independently
+re-verified:** the remaining `reference/` files not already touched by a
+correction note (`self-attack.md`, `meta-observation.md`, `parking-lot.md`,
+`sources.md`, `completion-definition.md`, `non-goals.md`) — these were
+spot-checked (one citation in `decisions.md` confirmed against `PLAN.md`)
+but not exhaustively.
