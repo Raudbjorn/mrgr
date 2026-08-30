@@ -1,13 +1,48 @@
 // evidence/h0/_h0_runner.ts — H0 evidence-bundle discriminator runner
 import { readFileSync, writeFileSync, mkdirSync, openSync, closeSync, existsSync } from "node:fs";
 
+// PR-E: optional cloud provider backend, alongside the pinned local
+// llama.cpp adjudicator. IMPORTANT — this is NOT a drop-in replacement for
+// H0 runs: the local path is pinned by GGUF sha256 (MODEL_SHA) specifically
+// so every arm/repeat in a comparison is byte-identical, which the run's
+// preflight checks. A cloud-hosted model has no such pin — the provider can
+// swap weights/instances without notice — so H0_PROVIDER=hf breaks the
+// reproducibility guarantee the "positive"/"invalid" verdict logic assumes.
+// Use it for ad hoc/exploratory calls, not for a run meant to produce a
+// citable H0 verdict, unless that tradeoff is explicitly accepted.
+const PROVIDER = (process.env.H0_PROVIDER ?? "local") as "local" | "hf";
+if (PROVIDER !== "local" && PROVIDER !== "hf") {
+	throw new Error(`H0_PROVIDER must be "local" or "hf", got ${PROVIDER}`);
+}
 const ADJUDICATOR = process.env.H0_ADJUDICATOR ?? "http://127.0.0.1:8089";
-const MODEL_TAG = process.env.H0_MODEL_TAG ?? "Qwen3-Coder-30B-A3B-Instruct-UD-Q3_K_XL";
-const MODEL_SHA = "69cd7578d77dffc0b17e34bad9ef998d08ae0e20ccceef21bad4e7eb3d8c553b";
+const DEFAULT_MODEL_TAG = "Qwen3-Coder-30B-A3B-Instruct-UD-Q3_K_XL";
+const DEFAULT_MODEL_SHA = "69cd7578d77dffc0b17e34bad9ef998d08ae0e20ccceef21bad4e7eb3d8c553b";
+const MODEL_TAG = process.env.H0_MODEL_TAG ?? DEFAULT_MODEL_TAG;
+const MODEL_SHA = process.env.H0_MODEL_SHA ?? (MODEL_TAG === DEFAULT_MODEL_TAG ? DEFAULT_MODEL_SHA : "");
+if (PROVIDER === "local" && !/^[0-9a-f]{64}$/.test(MODEL_SHA)) {
+	throw new Error("H0_MODEL_SHA must be a lowercase SHA-256 when H0_MODEL_TAG overrides the pinned default");
+}
+// HF Inference Providers routing — "<hf-model-id>:<provider>" per
+// https://huggingface.co/docs/inference-providers. No sha pin exists for a
+// cloud model; the provider-qualified model string is the only identity we
+// can record (see H0Record.model.sha below).
+const HF_MODEL = process.env.H0_HF_MODEL ?? "deepseek-ai/DeepSeek-V4-Flash:novita";
+const HF_TOKEN = process.env.HF_TOKEN;
+if (PROVIDER === "hf" && (HF_TOKEN === undefined || HF_TOKEN === "")) {
+	throw new Error("HF_TOKEN must be set when H0_PROVIDER=hf");
+}
+// Reasoning models (confirmed: deepseek-ai/DeepSeek-V4-Flash) emit
+// `reasoning_content` before `content` and can exhaust a small max_tokens
+// budget entirely on reasoning, leaving `content` empty. 512 (the local
+// model's budget) is too tight for that — verified via a live probe call
+// that 512 produces empty content with finish_reason=length, and ~1500
+// reliably leaves room for both reasoning and the JSON answer.
+const MAX_TOKENS = PROVIDER === "hf" ? 1500 : 512;
 const RUNS_DIR = "evidence/h0/runs";
 const CORPUS_FILES = [
 	"evidence/h0/triples-jq-diff3.jsonl",
 	"evidence/h0/triples-cli-diff3.jsonl",
+	"evidence/h0/triples-redis-diff3.jsonl",
 ];
 // PR-A: refuse to run with the legacy hardcoded defaults. The plan's S2 fix
 // requires env-var-driven SUBSAMPLE/REPEATS. Run with H0_SUBSAMPLE=... H0_REPEATS=... .
@@ -52,12 +87,19 @@ interface Triple {
 	ours: string;
 	theirs: string;
 	resolution: string;
+	preimage_ours?: string | null;
+	preimage_theirs?: string | null;
+	dependency_graph?: string[];
+	dependency_graph_status?: "derived" | "unavailable";
 }
 
 interface H0Record {
 	triple_id: string;
 	arm: Arm;
 	model: { name: string; sha: string };
+	// "local" = pinned-by-sha llama.cpp, reproducible; "hf" = HF Inference
+	// Providers cloud call, NOT reproducibility-pinned (see PROVIDER comment).
+	provider: "local" | "hf";
 	run: number;
 	input_tokens: number;
 	output_tokens: number;
@@ -65,7 +107,8 @@ interface H0Record {
 	halt_reason: string | null;
 	reason_text: string;
 	evidence_ids_quoted: string[];
-	fabricated_ids: boolean;
+	evidence_ids_exposed: string[];
+	has_source_tags: boolean;
 	duration_ms: number;
 	schema_valid: boolean;
 }
@@ -80,15 +123,65 @@ const isSmallTriple = (t: Triple): boolean => {
 const loadTriples = (path: string): Triple[] =>
 	readFileSync(path, "utf8").trim().split("\n").map((l) => JSON.parse(l));
 
+// PR-D / citation-probe fix: the probe run (evidence/h0/PROBE-CITATION-CHECK.md)
+// found the model habitually cites [source:ours] / [source:theirs] — treating
+// the merge-side labels as if they were evidence ids. "using only ids you
+// were given" wasn't specific enough to stop this. Now explicit about what
+// is and is not a valid id, and the per-message CITABLE_IDS block (added in
+// buildMessages) states the exact enumerated set for that call.
 const SYSTEM_PROMPT =
 	"You are a code-merge conflict adjudicator. You will be shown a git conflict (with a base, ours, and theirs side).\n" +
 	"Reply with STRICT JSON only — no prose outside the JSON. Shape:\n" +
 	'{"decision":"keep_ours|keep_theirs|compose|halt","reason":"<<=200 tokens>"}\n' +
 	"Halt is opt-in: choose it if the conflict is unresolvable from the provided evidence alone. " +
-	"If you quote any evidence identifier, tag it as [source:<id>] using only ids you were given.\n" +
+	"If you quote evidence, tag it as [source:<id>] using ONLY an id listed in the CITABLE_IDS block. " +
+	'"ours", "theirs", "base", and section markers like <<CONFLICT_HUNK>> are structural labels, not ' +
+	"evidence ids — never cite them. If nothing in CITABLE_IDS applies, omit the [source:...] tag entirely.\n" +
 	"Stop your reply at the closing brace.";
 
-const buildMessages = (triple: Triple, arm: Arm): { role: "system" | "user"; content: string }[] => {
+// PR-D: dependency_graph is populated per-triple by _corpus_regen.ts (real
+// git-history-derived file paths). Rather than dumping the raw array (which
+// can run to hundreds of entries on a larger repo), rank by directory
+// proximity to the conflicted path and cap to a fixed, recorded N so the
+// "selected" arm tests curated evidence, not "full-bundle plus noise".
+const DEPENDENCY_LIST_TOP_N = 8;
+const DEPENDENCY_LIST_CAP_CHARS = 1200;
+
+const selectDependencyList = (triple: Triple): { text: string; ids: string[] } => {
+	if (triple.dependency_graph_status !== "derived" || !triple.dependency_graph || triple.dependency_graph.length === 0) {
+		return { text: "(none)", ids: [] };
+	}
+	const targetDir = triple.path.includes("/") ? triple.path.slice(0, triple.path.lastIndexOf("/")) : "";
+	const targetSegments = targetDir.split("/").filter(Boolean);
+	// Entries are prefixed "ours:<path>" / "theirs:<path>" — strip the side
+	// prefix before comparing directories.
+	const proximityScore = (entry: string): number => {
+		const rawPath = entry.includes(":") ? entry.slice(entry.indexOf(":") + 1) : entry;
+		const dir = rawPath.includes("/") ? rawPath.slice(0, rawPath.lastIndexOf("/")) : "";
+		if (dir === targetDir) return 0;
+		const segments = dir.split("/").filter(Boolean);
+		let shared = 0;
+		while (shared < targetSegments.length && shared < segments.length && targetSegments[shared] === segments[shared]) {
+			shared += 1;
+		}
+		return 1 + (targetSegments.length - shared) + (segments.length - shared);
+	};
+	const ranked = triple.dependency_graph
+		.map((entry, idx) => ({ entry, idx, score: proximityScore(entry) }))
+		.sort((a, b) => a.score - b.score || a.idx - b.idx)
+		.slice(0, DEPENDENCY_LIST_TOP_N)
+		.map((r) => r.entry);
+	const rendered = ranked.join("\n");
+	const text = rendered.length > DEPENDENCY_LIST_CAP_CHARS
+		? rendered.slice(0, DEPENDENCY_LIST_CAP_CHARS) + "\n[…truncated…]"
+		: rendered;
+	return { text, ids: ranked };
+};
+
+const buildMessages = (
+	triple: Triple,
+	arm: Arm,
+): { messages: { role: "system" | "user"; content: string }[]; exposedIds: string[] } => {
 	const header = `Repository: ${triple.repository_id}\nMerge: ${triple.merge_sha}\nPath: ${triple.path}\nTriple: ${triple.triple_key}\nCategory: ${triple.category}\n\n`;
 	const hunkOnly =
 		`<<CONFLICT_HUNK>>\n` +
@@ -96,21 +189,28 @@ const buildMessages = (triple: Triple, arm: Arm): { role: "system" | "user"; con
 		`\nDecide. Reply with strict JSON only.`;
 	const cap = 1200;
 	const trim = (s: string) => s.length > cap ? s.slice(0, cap) + "\n[…truncated…]" : s;
+	const exposedIds = [triple.triple_key];
 	let user = "";
 	if (arm === "hunk-only") {
 		user = header + hunkOnly;
 	} else if (arm === "selected") {
+		const dep = selectDependencyList(triple);
+		exposedIds.push(...dep.ids);
 		user =
 			header +
-			`<<DEPENDENCY_LIST>>\n(none — single-file conflict)<<END_DEPENDENCY>>\n\n` +
+			`<<DEPENDENCY_LIST>>\n${dep.text}<<END_DEPENDENCY>>\n\n` +
 			hunkOnly +
-			`\nDecide. The dependency list is empty; rely on the hunk.`;
+			(dep.ids.length > 0
+				? `\nDecide. Consult the dependency list if it helps.`
+				: `\nDecide. The dependency list is empty; rely on the hunk.`);
 	} else {
+		const dep = selectDependencyList(triple);
+		exposedIds.push(...dep.ids);
 		user =
 			header +
 			`<<FILE_FULL_PREIMAGE (ours side)>>\n${trim(triple.ours)}\n<<END_PREIMAGE_OURS>>\n` +
 			`<<FILE_FULL_PREIMAGE (theirs side)>>\n${trim(triple.theirs)}\n<<END_PREIMAGE_THEIRS>>\n` +
-			`<<DEPENDENCY_LIST>>\n(none)<<END_DEPENDENCY>>\n\n` +
+			`<<DEPENDENCY_LIST>>\n${dep.text}<<END_DEPENDENCY>>\n\n` +
 			hunkOnly +
 			`\nDecide. Reply with strict JSON only.`;
 	}
@@ -119,43 +219,69 @@ const buildMessages = (triple: Triple, arm: Arm): { role: "system" | "user"; con
 	// without preimages fall back to the old behavior (full-bundle arm
 	// shows mislabeled conflict-region text). New triples from a regen
 	// (PR-A's Step 2 regen, future) carry real preimages.
-	if (arm === "full" || arm === "full-bundle") {
-		const preimageOurs = (triple as Triple & { preimage_ours?: string | null }).preimage_ours;
-		const preimageTheirs = (triple as Triple & { preimage_theirs?: string | null }).preimage_theirs;
+	if (arm === "full-bundle") {
+		const preimageOurs = triple.preimage_ours;
+		const preimageTheirs = triple.preimage_theirs;
 		if (preimageOurs !== undefined) {
 			// Replace the FILE_FULL_PREIMAGE blocks with real preimages.
+			const dep = selectDependencyList(triple);
 			user = header +
-				`<<FILE_FULL_PREIMAGE (ours side)>>\n${trim(preimageOurs)}\n<<END_PREIMAGE_OURS>>\n` +
+				`<<FILE_FULL_PREIMAGE (ours side)>>\n${preimageOurs !== null ? trim(preimageOurs) : "(absent)"}\n<<END_PREIMAGE_OURS>>\n` +
 				`<<FILE_FULL_PREIMAGE (theirs side)>>\n${preimageTheirs !== null && preimageTheirs !== undefined ? trim(preimageTheirs) : "(absent)"}\n<<END_PREIMAGE_THEIRS>>\n` +
-				`<<DEPENDENCY_LIST>>\n(none)<<END_DEPENDENCY>>\n\n` +
+				`<<DEPENDENCY_LIST>>\n${dep.text}<<END_DEPENDENCY>>\n\n` +
 				hunkOnly +
 				`\nDecide. Reply with strict JSON only.`;
 		}
 	}
-	return [
-		{ role: "system", content: SYSTEM_PROMPT },
-		{ role: "user", content: user },
-	];
+	const dedupedIds = Array.from(new Set(exposedIds));
+	user +=
+		`\n\n<<CITABLE_IDS>>\n` +
+		`Only these may be cited as [source:<id>]: ${dedupedIds.join(", ")}\n` +
+		`"ours" and "theirs" are NOT valid ids — they label merge sides, not evidence.\n` +
+		`<<END_CITABLE_IDS>>`;
+	return {
+		messages: [
+			{ role: "system", content: SYSTEM_PROMPT },
+			{ role: "user", content: user },
+		],
+		exposedIds: dedupedIds,
+	};
 };
 
 const callAdjudicator = async (
 	messages: { role: "system" | "user"; content: string }[],
-	opts: { temperature: number; seed: number },
+	opts: { temperature: number; seed: number; maxTokens?: number },
 ): Promise<{ content: string; input_tokens: number; output_tokens: number; ok: boolean }> => {
 	const body = {
-		model: `/mnt/ssd1/models/${MODEL_TAG}.gguf`,
+		model: PROVIDER === "hf" ? HF_MODEL : `/mnt/ssd1/models/${MODEL_TAG}.gguf`,
 		messages,
-		max_tokens: 512,
+		max_tokens: opts.maxTokens ?? MAX_TOKENS,
 		// PR-B2 / D4: temperature and seed are per-call, not hardcoded.
 		temperature: opts.temperature,
 		seed: opts.seed,
 	};
+	const url = PROVIDER === "hf" ? "https://router.huggingface.co/v1/chat/completions" : `${ADJUDICATOR}/v1/chat/completions`;
+	const headers: Record<string, string> = { "Content-Type": "application/json" };
+	if (PROVIDER === "hf") headers.Authorization = `Bearer ${HF_TOKEN}`;
+	// Operational hardening (resumed-run timeout): the upstream /v1/chat/completions
+	// endpoint can hang indefinitely under heavy host load. Wrap the fetch in a
+	// 90s AbortController; on timeout we return ok=false so the runner writes a
+	// schema-invalid record and the aggregator counts it as halt. The kill
+	// branch stays reachable (no Infinity denominator).
+	// HF reasoning models can take well over 90s on a real (non-toy) prompt —
+	// observed one smoketest call hit the 90s abort with a real conflict
+	// prompt. Give the cloud path more headroom.
+	const FETCH_TIMEOUT_MS = PROVIDER === "hf" ? 180_000 : 90_000;
+	const ctrl = new AbortController();
+	const to = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
 	try {
-		const res = await fetch(`${ADJUDICATOR}/v1/chat/completions`, {
+		const res = await fetch(url, {
 			method: "POST",
-			headers: { "Content-Type": "application/json" },
+			headers,
 			body: JSON.stringify(body),
+			signal: ctrl.signal,
 		});
+		clearTimeout(to);
 		if (!res.ok) {
 			return { content: `__http_${res.status}__`, input_tokens: 0, output_tokens: 0, ok: false };
 		}
@@ -171,21 +297,24 @@ const callAdjudicator = async (
 			output_tokens: usage?.completion_tokens ?? 0,
 			ok: true,
 		};
-	} catch (err) {
-		return {
-			content: `__network_error_${(err as Error).message.slice(0, 80)}__`,
-			input_tokens: 0,
-			output_tokens: 0,
-			ok: false,
-		};
-	}
+} catch (err) {
+	clearTimeout(to);
+	return {
+		content: `__network_error_${(err as Error).message.slice(0, 80)}__`,
+		input_tokens: 0,
+		output_tokens: 0,
+		ok: false,
+	};
+} finally {
+	clearTimeout(to);
+}
 };
 
-const parseDecision = (text: string): { decision: H0Record["decision"]; reason: string; schema_valid: boolean; fabricated_ids: boolean; evidence_ids: string[] } => {
+const parseDecision = (text: string): { decision: H0Record["decision"]; reason: string; schema_valid: boolean; has_source_tags: boolean; evidence_ids: string[] } => {
 	const start = text.indexOf("{");
 	const end = text.lastIndexOf("}");
 	if (start === -1 || end === -1 || end < start) {
-		return { decision: "halt", reason: "no JSON object in response", schema_valid: false, fabricated_ids: false, evidence_ids: [] };
+		return { decision: "halt", reason: "no JSON object in response", schema_valid: false, has_source_tags: false, evidence_ids: [] };
 	}
 	const json = text.slice(start, end + 1);
 	try {
@@ -197,9 +326,13 @@ const parseDecision = (text: string): { decision: H0Record["decision"]; reason: 
 				: "halt";
 		const reason = typeof obj.reason === "string" ? obj.reason.slice(0, 400) : "";
 		const tags = Array.from(reason.matchAll(/\[source:([^\]]+)\]/g)).map((m) => m[1]);
-		return { decision, reason, schema_valid: true, fabricated_ids: tags.length > 0, evidence_ids: tags };
+		// NOTE: has_source_tags just means "quoted at least one [source:...] tag" —
+		// it is not a fabrication check. Real fabrication (a cited tag that isn't
+		// among the ids this specific prompt exposed) is computed in _aggregate.ts
+		// against each record's evidence_ids_exposed.
+		return { decision, reason, schema_valid: true, has_source_tags: tags.length > 0, evidence_ids: tags };
 	} catch (err) {
-		return { decision: "halt", reason: `JSON parse failed: ${(err as Error).message}`, schema_valid: false, fabricated_ids: false, evidence_ids: [] };
+		return { decision: "halt", reason: `JSON parse failed: ${(err as Error).message}`, schema_valid: false, has_source_tags: false, evidence_ids: [] };
 	}
 };
 
@@ -233,8 +366,8 @@ const loadExistingKeys = (path: string): Set<string> => {
 const mulberry32 = (a: number): () => number => {
 	return () => {
 		a |= 0; a = (a + 0x6D2B79F5) | 0;
-		let t = Math.imul(a ^ (a >>> 15));
-		t = (t + Math.imul(t ^ (t >>> 7))) | 0;
+		let t = Math.imul(a ^ (a >>> 15), 1 | a);
+		t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) | 0;
 		return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
 	};
 };
@@ -249,6 +382,59 @@ const subsample = <T>(items: T[], n: number, seed: number): T[] => {
 		a[j] = tmp;
 	}
 	return a.slice(0, n);
+};
+
+// FNV-1a 32-bit — deterministic per-repo sub-seed derivation, stable
+// regardless of repo enumeration order (unlike seed + array index).
+const hashString = (s: string): number => {
+	let h = 0x811c9dc5;
+	for (let i = 0; i < s.length; i += 1) {
+		h ^= s.charCodeAt(i);
+		h = Math.imul(h, 0x01000193);
+	}
+	return h >>> 0;
+};
+
+// PR-D / §5: per-repo stratified quotas, not a single global shuffle. The
+// old global subsample() never guaranteed cross-repo balance — it happened
+// to land 15/15 on the 2-repo corpus for one seed by chance. With 3 repos,
+// quotas guarantee the diversity gate by construction instead of hoping the
+// shuffle lands well (see the fix plan's §6 for why this was chosen over
+// preserving exact global-shuffle continuity).
+const stratifiedSample = <T extends { repository_id: string }>(items: T[], n: number, seed: number): T[] => {
+	const byRepo = new Map<string, T[]>();
+	for (const t of items) {
+		const arr = byRepo.get(t.repository_id);
+		if (arr) arr.push(t); else byRepo.set(t.repository_id, [t]);
+	}
+	const repos = Array.from(byRepo.keys()).sort();
+	if (repos.length === 0) return [];
+	const baseQuota = Math.floor(n / repos.length);
+	const remainder = n - baseQuota * repos.length;
+	const quota = new Map<string, number>(repos.map((r) => [r, baseQuota]));
+	// Deterministic remainder allocation: extra slots go to the repos with
+	// the largest eligible pools (most room to absorb them without falling
+	// back to an under-quota, unshuffled stratum), ties broken by repo id.
+	const byPoolSizeDesc = [...repos].sort((a, b) => {
+		const diff = (byRepo.get(b)?.length ?? 0) - (byRepo.get(a)?.length ?? 0);
+		return diff !== 0 ? diff : a.localeCompare(b);
+	});
+	for (let i = 0; i < remainder; i += 1) {
+		const r = byPoolSizeDesc[i % byPoolSizeDesc.length]!;
+		quota.set(r, (quota.get(r) ?? 0) + 1);
+	}
+	const out: T[] = [];
+	for (const r of repos) {
+		const pool = byRepo.get(r) ?? [];
+		const q = quota.get(r) ?? 0;
+		const subSeed = (seed + hashString(r)) | 0;
+		const stratum = subsample(pool, q, subSeed);
+		if (stratum.length < q) {
+			console.warn(`  stratified sample: repo ${r} has only ${pool.length} eligible triples, quota ${q} not fully met (${stratum.length} taken)`);
+		}
+		out.push(...stratum);
+	}
+	return out;
 };
 
 // PR-B2 / D3: read baselines.json once at start of main; build a
@@ -287,19 +473,19 @@ const main = async () => {
 	const stamp = process.env.H0_STAMP ?? new Date().toISOString().replace(/[:.]/g, "-");
 	const triples = CORPUS_FILES.flatMap(loadTriples);
 	console.log(`loaded ${triples.length} triples from ${CORPUS_FILES.length} files`);
-	const sampled = subsample(triples.filter(isSmallTriple), SUBSAMPLE, SEED);
+	const sampled = stratifiedSample(triples.filter(isSmallTriple), SUBSAMPLE, SEED);
 	console.log(`subsampled to ${sampled.length} triples (H0_SUBSAMPLE=${SUBSAMPLE}, REPEATS=${REPEATS})`);
 
 	for (const arm of ARMS) {
 		const outPath = `${RUNS_DIR}/${arm}-${stamp}.jsonl`;
 		const done = loadExistingKeys(outPath);
 		console.log(`[${arm}] existing records (resume): ${done.size}, output: ${outPath}`);
+		// PR-B2 / D3: load baseline records once per arm, then look up per triple+repeat.
+		const baselineRecords = await loadBaselineRecords();
 		let i = 0;
 		for (const triple of sampled) {
 			i += 1;
-			// PR-B2 / D3: load baseline records once, then look up per arm+triple+repeat.
-	const baselineRecords = await loadBaselineRecords();
-	for (let r = 1; r <= REPEATS; r += 1) {
+			for (let r = 1; r <= REPEATS; r += 1) {
 				const key = `${triple.triple_key}|${arm}|${r}`;
 				if (done.has(key)) continue;
 				// Baseline arms: copy precomputed record, skip LLM call.
@@ -313,15 +499,22 @@ const main = async () => {
 					// Fall through if baseline record missing (caller did not run _baselines.ts).
 				}
 				const t0 = Date.now();
-				const result = await callAdjudicator(buildMessages(triple, arm), {
+				const { messages, exposedIds } = buildMessages(triple, arm);
+				// full-bundle sends the largest context (full preimages); observed
+				// an HF smoketest call exhaust the shared MAX_TOKENS budget on
+				// reasoning alone for this arm specifically. Give it more room.
+				const maxTokens = PROVIDER === "hf" && arm === "full-bundle" ? 2500 : undefined;
+				const result = await callAdjudicator(messages, {
 			temperature: REPEAT_TEMPERATURES[(r - 1) % REPEAT_TEMPERATURES.length],
 			seed: SEED + r,
+			maxTokens,
 		});
 				const parsed = parseDecision(result.content);
 				const record: H0Record = {
 					triple_id: triple.triple_key,
 					arm,
-					model: { name: MODEL_TAG, sha: MODEL_SHA },
+					model: PROVIDER === "hf" ? { name: HF_MODEL, sha: "unpinned:cloud-provider" } : { name: MODEL_TAG, sha: MODEL_SHA },
+					provider: PROVIDER,
 					run: r,
 					input_tokens: result.input_tokens,
 					output_tokens: result.output_tokens,
@@ -329,7 +522,8 @@ const main = async () => {
 					halt_reason: parsed.decision === "halt" ? parsed.reason : null,
 					reason_text: parsed.reason,
 					evidence_ids_quoted: parsed.evidence_ids,
-					fabricated_ids: parsed.fabricated_ids,
+					evidence_ids_exposed: exposedIds,
+					has_source_tags: parsed.has_source_tags,
 					duration_ms: Date.now() - t0,
 					schema_valid: parsed.schema_valid,
 				};

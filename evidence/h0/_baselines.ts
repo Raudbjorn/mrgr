@@ -9,7 +9,7 @@
 // The same `isHistoricalMatch` rule the aggregator uses (in _aggregate.ts)
 // is invoked here per record so the ceiling is computed consistently;
 // we do NOT fork the grader.
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { isHistoricalMatch } from "./_aggregate.js";
 
 const BASELINES = ["keep_ours", "keep_theirs", "compose"] as const;
@@ -25,12 +25,13 @@ interface Triple {
 const CORPUS_FILES = [
 	"evidence/h0/triples-jq-diff3.jsonl",
 	"evidence/h0/triples-cli-diff3.jsonl",
+	"evidence/h0/triples-redis-diff3.jsonl",
 ];
 
 const OUT_PATH = "evidence/h0/baselines.json";
 
 const loadTriples = (paths: string[]): Triple[] =>
-	paths.flatMap(p =>
+	paths.filter(existsSync).flatMap(p =>
 		readFileSync(p, "utf8").trim().split("\n").filter(Boolean).map(l => JSON.parse(l) as Triple)
 	);
 
