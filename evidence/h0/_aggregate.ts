@@ -1,10 +1,23 @@
 // evidence/h0/_aggregate.ts — derive aggregate.json from runs/*.jsonl
-import { existsSync, readFileSync, writeFileSync, readdirSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const ARMS = [
+	"hunk-only",
+	"selected",
+	"full-bundle",
+	"baseline-keep_ours",
+	"baseline-keep_theirs",
+	"baseline-compose",
+] as const;
+type Arm = typeof ARMS[number];
+const STAMP_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z$/;
 
 interface H0Record {
 	triple_id: string;
-	arm: "hunk-only" | "selected" | "full-bundle" | "baseline-keep_ours" | "baseline-keep_theirs" | "baseline-compose";
+	arm: Arm;
 	model: { name: string; sha: string };
 	run: number;
 	input_tokens: number;
@@ -45,6 +58,13 @@ interface ArmAggregate {
 const loadRecords = (path: string): H0Record[] =>
 	readFileSync(path, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l));
 
+const sameRecordKeys = (records: H0Record[], expected: Set<string>): boolean => {
+	const actual = new Set(records.map((record) => `${record.triple_id}|${record.run}`));
+	return records.length === expected.size &&
+		actual.size === expected.size &&
+		[...expected].every((key) => actual.has(key));
+};
+
 const loadResolutionByKey = (paths: string[]): Map<string, string> => {
 	const m = new Map<string, string>();
 	for (const p of paths) {
@@ -58,7 +78,7 @@ const loadResolutionByKey = (paths: string[]): Map<string, string> => {
 	return m;
 };
 
-const isHistoricalMatch = (decision: H0Record["decision"], resolution: string, ours: string, theirs: string): boolean => {
+export const isHistoricalMatch = (decision: H0Record["decision"], resolution: string, ours: string, theirs: string): boolean => {
 	const norm = (s: string) => s.replace(/\s+/g, "").trim();
 	const r = norm(resolution);
 	const o = norm(ours);
@@ -207,15 +227,17 @@ const normalCdf = (x: number): number => {
 	return 0.5 * (1.0 + sign * y);
 };
 
-const main = () => {
-	const runsDir = "evidence/h0/runs";
-	const files = readdirSync(runsDir)
-		.filter((f) => f.endsWith(".jsonl") && !f.startsWith("_"))
-		.map((f) => `${runsDir}/${f}`)
-		.sort();
-	if (existsSync("evidence/h0/baselines.json")) {
-		files.push("evidence/h0/baselines.json");
+const wrongFraction = (arm: { correct: number; wrong: number; halt: number }): number => {
+	const denominator = arm.correct + arm.wrong + arm.halt;
+	return denominator === 0 ? Infinity : arm.wrong / denominator;
+};
+
+export const main = () => {
+	const stamp = process.env.H0_STAMP;
+	if (stamp === undefined || !STAMP_PATTERN.test(stamp)) {
+		throw new Error("H0_STAMP must be set to the run timestamp");
 	}
+	const runsDir = "evidence/h0/runs";
 
 	const resolutions = loadResolutionByKey([
 		"evidence/h0/triples-jq-diff3.jsonl",
@@ -235,22 +257,31 @@ const main = () => {
 	}
 
 	const byArm: Record<string, ArmAggregate> = {};
-	for (const file of files) {
+	let expectedRecordKeys: Set<string> | undefined;
+	let sampledTripleKeys = new Set<string>();
+	for (const arm of ARMS) {
+		const file = `${runsDir}/${arm}-${stamp}.jsonl`;
 		const records = loadRecords(file);
-		if (records.length === 0) continue;
-		// PR-B1: a single file may contain records for multiple arms (e.g.
-		// baselines.json holds keep_ours, keep_theirs, compose records).
-		// Group by arm before aggregating so each per-arm bucket is computed
-		// from records of that arm only.
-		const byArmLocal: Record<string, H0Record[]> = {};
-		for (const r of records) {
-			if (!byArmLocal[r.arm]) byArmLocal[r.arm] = [];
-			byArmLocal[r.arm].push(r);
+		if (records.length === 0) {
+			throw new Error(`${file} has no records`);
 		}
-		for (const [arm, armRecords] of Object.entries(byArmLocal)) {
-			byArm[arm] = aggregate(armRecords, resolutions, triples);
-			console.log(`${arm}: ${armRecords.length} records, ${byArm[arm].correct}c/${byArm[arm].wrong}w/${byArm[arm].halt}h tokens=${byArm[arm].tokens_total}`);
+		if (records.some((record) => record.arm !== arm)) {
+			throw new Error(`${file} contains another arm`);
 		}
+		if (expectedRecordKeys === undefined) {
+			const keys = new Set(
+				records.map((record) => `${record.triple_id}|${record.run}`),
+			);
+			if (keys.size !== records.length) {
+				throw new Error(`${file} has duplicate triple/run rows`);
+			}
+			expectedRecordKeys = keys;
+			sampledTripleKeys = new Set(records.map((record) => record.triple_id));
+		} else if (!sameRecordKeys(records, expectedRecordKeys)) {
+			throw new Error(`${file} has a different sampled triple/run set`);
+		}
+		byArm[arm] = aggregate(records, resolutions, triples);
+		console.log(`${arm}: ${records.length} records, ${byArm[arm].correct}c/${byArm[arm].wrong}w/${byArm[arm].halt}h tokens=${byArm[arm].tokens_total}`);
 	}
 
 	// PR-B1 / D3: derive trivial-baseline ceilings. Every model arm must
@@ -287,24 +318,25 @@ const main = () => {
 	// The second clause is what makes the kill reachable: when trivial
 	// compose outperforms the model, we know model evidence utility is
 	// negative, and we kill the agent-adapter line.
-	const EPSILON = 0.5;
+	const BASELINE_MARGIN = 0.05;
 	let killConditionMet = false;
 	let killReason = "";
 	if (hunkOnly && selected && fullBundle && trivialCeiling["compose"]) {
 		const armsWithinNoise =
 			Math.abs(selected.wrong - hunkOnly.wrong) <= 1 &&
 			Math.abs(fullBundle.wrong - hunkOnly.wrong) <= 1;
-		const totalTrials = hunkOnly.triples_total;
-		const bestModelWrongFraction = totalTrials > 0
-			? Math.min(hunkOnly.wrong, selected.wrong, fullBundle.wrong) / totalTrials
-			: 1;
-		const composeWrongFraction = totalTrials > 0
-		? trivialCeiling["compose"].wrong / trivialCeiling["compose"].triples
-		: 1;
-		const modelLoses = bestModelWrongFraction >= composeWrongFraction - EPSILON;
+		const bestModelWrongFraction = Math.min(
+			wrongFraction(hunkOnly),
+			wrongFraction(selected),
+			wrongFraction(fullBundle),
+		);
+		const composeWrongFraction = wrongFraction(trivialCeiling["compose"]);
+		const modelLoses = bestModelWrongFraction >= composeWrongFraction - BASELINE_MARGIN;
 		if (armsWithinNoise && modelLoses) {
 			killConditionMet = true;
-			killReason = `best model wrong-fraction ${bestModelWrongFraction.toFixed(3)} >= trivial-compose ${composeWrongFraction.toFixed(3)}`;
+			killReason =
+				`best model wrong fraction ${bestModelWrongFraction.toFixed(3)} does not beat ` +
+				`compose baseline ${composeWrongFraction.toFixed(3)} by ${BASELINE_MARGIN.toFixed(3)}`;
 		}
 	}
 
@@ -315,7 +347,7 @@ const main = () => {
 		verdictReason = "missing arm aggregate";
 	} else if (killConditionMet) {
 		verdict = "null";
-		verdictReason = `wrong/halt < 1+${EPSILON} AND selected.full-bundle within noise of hunk-only: agent adapter retired.`;
+		verdictReason = killReason;
 	} else if (selected.wrong < hunkOnly.wrong && fullBundle.wrong >= hunkOnly.wrong) {
 		verdict = "positive";
 		verdictReason = "selected evidence reduces unsupported wrong decisions; full bundle is mixed or worse; selection is the product mechanism. Proceed to M1a.";
@@ -338,10 +370,9 @@ const main = () => {
 		// different merges collapses). Report both numbers, not just one.
 		triples_total: 898, // line count in triples-*.jsonl
 		triples_unique: resolutions.size, // distinct triple_key count
-		// PR-B2 / S2: read from env (PR-A removed the hardcoded defaults in
-		// the runner; here we read the same env so aggregate.json reflects
-		// the actual subsample used in the run).
-		seed_subsample: Number(process.env.H0_SUBSAMPLE ?? 0),
+		// The loaded stamped arm files are the source of truth for the actual
+		// sampled set; H0_SUBSAMPLE is only a requested upper bound.
+		seed_subsample: sampledTripleKeys.size,
 		repeats: Number(process.env.H0_REPEATS ?? 0),
 		arms: byArm,
 		cost_analysis: costAnalysis,
@@ -354,8 +385,18 @@ const main = () => {
 			return bestModelWrong < compose.wrong;
 		})(),
 		kill_condition: {
-			epsilon: EPSILON,
+			epsilon: BASELINE_MARGIN,
 			met: killConditionMet,
+			best_model_wrong_fraction: hunkOnly && selected && fullBundle
+				? Math.min(
+					wrongFraction(hunkOnly),
+					wrongFraction(selected),
+					wrongFraction(fullBundle),
+				)
+				: null,
+			compose_wrong_fraction: trivialCeiling["compose"]
+				? wrongFraction(trivialCeiling["compose"])
+				: null,
 			selected_within_noise: hunkOnly && selected ? Math.abs(selected.wrong - hunkOnly.wrong) <= 1 : null,
 			full_bundle_within_noise: hunkOnly && fullBundle ? Math.abs(fullBundle.wrong - hunkOnly.wrong) <= 1 : null,
 		},
@@ -372,4 +413,5 @@ const main = () => {
 	console.log(`stable_hash (re-derive): ${stableHash}`);
 };
 
-main();
+const invokedPath = process.argv[1] === undefined ? "" : resolve(process.argv[1]);
+if (invokedPath === fileURLToPath(import.meta.url)) main();
