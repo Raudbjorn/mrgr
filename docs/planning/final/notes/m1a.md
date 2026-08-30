@@ -2,8 +2,10 @@
 
 # Working on M1a (schema, persistence, `mrgr-db/2`)
 
+**Branch warning (found 2026-08-30):** "M1a complete on all branches" is wrong. `packages/core/src/db/` (`mrgr-db/2`) exists on `spec/persistence-layer` and its descendants (including this branch) but is **absent from `main` and `origin/next-phase`**. If you're working from `main`, the persistence layer isn't there yet — check your branch with `git ls-tree -r --name-only <branch> | grep core/src/db/` before trusting any M1a-complete claim.
+
 **Phase files:**
-- `../phase-2-m1a-persistence/current-state.md` — state (complete on all branches; verify against `packages/core/src/db/` directly if in doubt)
+- `../phase-2-m1a-persistence/current-state.md` — state + the branch-scoping correction above, in detail
 - `../phase-2-m1a-persistence/work-packages.md` — WP1 (P0) + WP2 (P1), both DONE
 - `../phase-2-m1a-persistence/requirements.md` — schema/persistence/identity/error/test requirements (1,200 UTF-16 cap semantics)
 

@@ -45,11 +45,13 @@ file wins; notes files carry no state of their own.
   *every* session regardless of which milestone you're working — it carries
   workspace/version pinning, authority/supersession rules, and the
   answer-first verdict table.
-- **H0 is VALID; `STATUS.md`/`SOURCES.md` don't exist; WP0 is 3/4 done.**
-  Current state for all three lives at point of use — §3.4, §1.1/§1.5,
-  §3.1/§3.2 respectively — not summarized here to avoid a second copy going
-  stale. If you find text elsewhere still contradicting these three, it's
-  the stale copy — the phase-N `current-state.md` file wins (§1.5 rule 2).
+- **H0 is VALID; WP0 is 3/4 done; M1a's persistence layer is not on `main`.**
+  Current state for all three lives at point of use — §3.4, §3.1/§3.2, §3.5
+  respectively — not summarized here to avoid a second copy going stale. If
+  you find text elsewhere still contradicting these, it's the stale copy —
+  the phase-N `current-state.md` file wins (§1.5 rule 2, which also covers
+  the `STATUS.md`/`SOURCES.md` caveat — read that one rule, not scattered
+  mentions of it).
 
 ---
 

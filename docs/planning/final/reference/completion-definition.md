@@ -4,7 +4,7 @@
 
 The canonical plan is "complete enough for `/plan` to consume" when:
 
-1. The current state of every milestone is named and pinned to a source-of-truth file (the phase-N `current-state.md` files in this split, since `.do-not-commit/planning/` lacks a `STATUS.md` — see §1.5 rule 2).
+1. The current state of every milestone is named and pinned to a source-of-truth file (the phase-N `current-state.md` files in this split — `STATUS.md` caveat: §1.5 rule 2).
 2. The dependency graph is explicit; no milestone is scheduled to depend on a non-existent artifact.
 3. The `STOP` rules from `PLAN.md` are reproduced in §11 of this artifact and matched to the milestone they bind.
 4. The H0 redesign requirements are specific enough that a planner cannot accidentally re-derive the invalidated experiment.
