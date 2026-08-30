@@ -145,7 +145,7 @@ const regenOne = (src: string): OutTriple[] => {
 	const repoId = typeof triples[0]!.repository_id === "string"
 		? triples[0]!.repository_id
 		: "";
-	const cwd = Object.values(REPO_PATHS).includes(repoId) ? repoId : "";
+	const cwd = REPO_PATHS[repoId] ?? "";
 	if (cwd === "" || !existsSync(cwd)) {
 		throw new Error(`cwd not found for repo_id=${repoId} in ${src}`);
 	}
