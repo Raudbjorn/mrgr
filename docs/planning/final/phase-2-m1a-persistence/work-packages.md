@@ -1,0 +1,15 @@
+*Part of the [canonical planning document](../canonical-final-planning-document.md).*
+
+### WP1 — M1a P0 schema honesty and persistence [DONE — landed as `mrgr-db/2`]
+- **Status (2026-08-29):** DONE. The §6 description below is preserved as a historical record of the design intent. The actual delivery superseded several decisions via the SQLite persistence layer.
+- **What landed:** `packages/core/src/db/` (14 source files: `result.ts`, `schema.ts`, `open.ts`, `corpus-store.ts`, `evidence-store.ts`, `ledger-store.ts`, `run-store.ts`, `blob.ts`, `import.ts`, `export.ts`, `cli.ts`, `llama-cpp-cli.ts`, `llama-cpp-run-store.ts`, `canonical.ts`). Schema `mrgr-db/2` (`USER_VERSION=2`, `SCHEMA_VERSION_STRING="mrgr-db/2"`, `APPLICATION_ID=0x6d726772`); JSONL demoted to transport; CHECK constraints enforce region identity, dependency_graph discriminator, evidence_bundle invariants. Carried files (`src/evaluation/*`, `tests/evaluation/*`) unchanged — `scripts/verify-carried.sh` passes.
+- **Commits:** initial `00dd746 feat(db): mrgr-db/1 schema and fail-closed openDb via node:sqlite`; subsequent fixes and refactors; `fae9628 feat(m1a): reference preimages by Git blob OID (mrgr-db/2)` introduced the current schema version.
+- **Supersedes:** all of the original WP1 deliverables (region identity, dependency_graph discriminator, parseCorpusRecord work, error preservation, schema-version bump) — the SQLite CHECK constraints enforce them at the storage layer rather than as in-memory TS types.
+- **Files/symbols (historical design intent — pre-`mrgr-db`):**
+
+### WP2 — M1a P1 load-bearing tests [DONE — landed in `tests/db/`]
+- **Status (2026-08-29):** DONE. The §6 description below is preserved as a historical record. The actual delivery went via `tests/db/`, not `tests/evaluation/` as originally scoped.
+- **What landed:** 12 test files in `tests/db/`: `open.test.ts`, `corpus-store.test.ts`, `evidence-store.test.ts`, `ledger-store.test.ts`, `llama-cpp-cli.test.ts`, `llama-cpp-run-store.test.ts`, `run-store.test.ts`, `blob.test.ts`, `cli.test.ts`, `import.test.ts`, `export.test.ts`, `concurrency.test.ts`. Total: 108 invocations covering preimage source semantics, multi-region, add/add, delete/modify, write/read round-trip, idempotency, concurrency (D90 class), and the canonical byte-deterministic export determinism gate. The earlier `tests/m1a/` directory (forensic + sidecar) has 41 more invocations across 2 files (R3 work).
+- **Supersedes:** the §6 description's `tests/evaluation/evidence-roundtrip.test.ts`, `tests/evaluation/region-identity.test.ts`, etc. — those paths do not exist on disk; the equivalent coverage is in `tests/db/` instead. The acceptance gate ("10 files / 120 tests minimum") is no longer the right shape: 24 files / 232 invocations total (see §3.5).
+- **Files/symbols (historical design intent — pre-`mrgr-db`):**
+
