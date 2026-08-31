@@ -47,10 +47,29 @@ is never involved.
 An H0 aggregate reads the six model and baseline arm files for one explicit
 `H0_STAMP`. Every arm must contain the same `(triple_id, run)` keys.
 
-The aggregate is `null` unless the best model arm's
-`wrong / (correct + wrong + halt)` fraction beats the aligned
-`baseline-compose` fraction by at least **0.05** (five percentage points).
-The margin is absolute on the `[0, 1]` fraction scale.
+**Superseded 2026-08-30.** This section previously read:
+
+> The aggregate is `null` unless the best model arm's
+> `wrong / (correct + wrong + halt)` fraction beats the aligned
+> `baseline-compose` fraction by at least **0.05** (five percentage points).
+> The margin is absolute on the `[0, 1]` fraction scale.
+
+That rule is not the gate and never was — `redesign-requirements.md` §7 #5
+specifies "arm correct on ≥N more triples than the best trivial baseline at
+Fisher exact p < 0.05", a *correct-count* rule with a significance test. The
+wrong-fraction rule recorded here has `correct + wrong + halt` in its
+denominator, so an arm lowers its wrong fraction by halting more, and a policy
+that halts on everything scores a perfect 0. On the 2026-08-30 run it read
+full-bundle — the arm that halts 27 of 90 times and is significantly *worse*
+than a constant on correctness — as the best arm, and declined to kill.
+
+**The gate in force:** the aggregate is `null` unless some model arm is correct
+on more triples than the best trivial baseline, at McNemar-exact two-sided
+p < 0.05 on per-triple binary vectors (Fisher exact reported as an unpaired
+cross-check). Implemented in `evidence/h0/_aggregate.ts`; executed against the
+frozen 2026-08-30 records in
+`evidence/h0/SIGNIFICANCE-2026-08-30T02-54-42-056Z.md`. The wrong-fraction
+figures are still emitted, marked non-binding.
 
 ## Related
 

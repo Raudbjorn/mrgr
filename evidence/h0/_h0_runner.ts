@@ -1,5 +1,6 @@
 // evidence/h0/_h0_runner.ts — H0 evidence-bundle discriminator runner
 import { readFileSync, writeFileSync, mkdirSync, openSync, closeSync, existsSync } from "node:fs";
+import { createHash } from "node:crypto";
 
 // PR-E: optional cloud provider backend, alongside the pinned local
 // llama.cpp adjudicator. IMPORTANT — this is NOT a drop-in replacement for
@@ -22,6 +23,41 @@ const MODEL_SHA = process.env.H0_MODEL_SHA ?? (MODEL_TAG === DEFAULT_MODEL_TAG ?
 if (PROVIDER === "local" && !/^[0-9a-f]{64}$/.test(MODEL_SHA)) {
 	throw new Error("H0_MODEL_SHA must be a lowercase SHA-256 when H0_MODEL_TAG overrides the pinned default");
 }
+// Grammar-constrained decoding (opt-in). llama.cpp can constrain sampling to a
+// JSON Schema, which makes malformed JSON unrepresentable — 4 of the 8
+// schema-invalid records in the 2026-08-30 run were escape/comma faults inside
+// otherwise-fine answers.
+//
+// It is opt-in, and it is stamped onto every record, for one reason: a grammar
+// changes the sampling distribution, so it changes *decisions*, not just
+// formatting. A constrained run is a different experimental condition from an
+// unconstrained one, not a tidier version of it, and pooling the two would be
+// the same error as pooling the contaminated Orca corpus with the primary set.
+// `MODEL_SHA` cannot catch this — the weights are identical either way.
+//
+// Set the schema per request rather than with llama-server's
+// `--json-schema-file`: a server-wide default is invisible to the run records,
+// leaks onto every other consumer of the endpoint, and cannot be reconstructed
+// later from the artifacts. Unset here means unconstrained, which is what every
+// run through 2026-08-30 used.
+const DECISION_SCHEMA_PATH = process.env.H0_DECISION_SCHEMA;
+const DECISION_SCHEMA: unknown = DECISION_SCHEMA_PATH === undefined
+	? null
+	: JSON.parse(readFileSync(DECISION_SCHEMA_PATH, "utf8"));
+// Digest of the file's bytes, not of the reparsed object: what constrained the
+// sampler is the file on disk, and byte identity is the claim being recorded.
+const DECISION_SCHEMA_SHA: string | null = DECISION_SCHEMA_PATH === undefined
+	? null
+	: createHash("sha256").update(readFileSync(DECISION_SCHEMA_PATH)).digest("hex");
+if (DECISION_SCHEMA_PATH !== undefined && PROVIDER !== "local") {
+	// Refusing beats silently ignoring. `json_schema` is llama.cpp's body
+	// field; the HF router expects `response_format` instead, so honouring
+	// this for PROVIDER=hf would take a separate, separately-verified path.
+	throw new Error(
+		`H0_DECISION_SCHEMA is only wired for H0_PROVIDER=local (llama.cpp's json_schema body field); got provider=${PROVIDER}`,
+	);
+}
+
 // HF Inference Providers routing — "<hf-model-id>:<provider>" per
 // https://huggingface.co/docs/inference-providers. No sha pin exists for a
 // cloud model; the provider-qualified model string is the only identity we
@@ -100,6 +136,10 @@ interface H0Record {
 	// "local" = pinned-by-sha llama.cpp, reproducible; "hf" = HF Inference
 	// Providers cloud call, NOT reproducibility-pinned (see PROVIDER comment).
 	provider: "local" | "hf";
+	// SHA-256 of the JSON Schema that constrained sampling for this call, or
+	// null for unconstrained. Records written before 2026-08-30 omit the field
+	// entirely; `_aggregate.ts` reads absent and null as the same condition.
+	decision_schema_sha: string | null;
 	run: number;
 	input_tokens: number;
 	output_tokens: number;
@@ -259,6 +299,10 @@ const callAdjudicator = async (
 		// PR-B2 / D4: temperature and seed are per-call, not hardcoded.
 		temperature: opts.temperature,
 		seed: opts.seed,
+		// Per-request so the constraint travels with the run record rather than
+		// with whatever the systemd unit happened to say that week. Overrides
+		// any server-wide --json-schema-file default.
+		...(DECISION_SCHEMA !== null ? { json_schema: DECISION_SCHEMA } : {}),
 	};
 	const url = PROVIDER === "hf" ? "https://router.huggingface.co/v1/chat/completions" : `${ADJUDICATOR}/v1/chat/completions`;
 	const headers: Record<string, string> = { "Content-Type": "application/json" };
@@ -475,6 +519,11 @@ const main = async () => {
 	console.log(`loaded ${triples.length} triples from ${CORPUS_FILES.length} files`);
 	const sampled = stratifiedSample(triples.filter(isSmallTriple), SUBSAMPLE, SEED);
 	console.log(`subsampled to ${sampled.length} triples (H0_SUBSAMPLE=${SUBSAMPLE}, REPEATS=${REPEATS})`);
+	console.log(
+		DECISION_SCHEMA_SHA === null
+			? "decision schema: UNCONSTRAINED (comparable with runs through 2026-08-30)"
+			: `decision schema: ${DECISION_SCHEMA_PATH} sha256=${DECISION_SCHEMA_SHA} — grammar-constrained sampling, NOT comparable with unconstrained runs`,
+	);
 
 	for (const arm of ARMS) {
 		const outPath = `${RUNS_DIR}/${arm}-${stamp}.jsonl`;
@@ -515,6 +564,7 @@ const main = async () => {
 					arm,
 					model: PROVIDER === "hf" ? { name: HF_MODEL, sha: "unpinned:cloud-provider" } : { name: MODEL_TAG, sha: MODEL_SHA },
 					provider: PROVIDER,
+					decision_schema_sha: DECISION_SCHEMA_SHA,
 					run: r,
 					input_tokens: result.input_tokens,
 					output_tokens: result.output_tokens,
