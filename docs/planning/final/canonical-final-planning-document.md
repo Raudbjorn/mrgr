@@ -11,8 +11,8 @@ not renumbered) because other files in this repo cite them by number (e.g.
 `evidence/h0/REVIEW-2026-08-29.md` cites "§3.4"). Use the table below to
 resolve any `§N` you find quoted elsewhere back to a file.
 
-*Last split:* 2026-08-30. *Last content update before the split:* 2026-08-30
-(fresh H0 rerun closure).
+*Last split:* 2026-08-30. *Last content update:* 2026-08-30 (H0 acceptance gate
+executed — verdict null; WP8 agent adapter retired under the WP4 STOP rule).
 
 ---
 
@@ -45,7 +45,7 @@ file wins; notes files carry no state of their own.
   *every* session regardless of which milestone you're working — it carries
   workspace/version pinning, authority/supersession rules, and the
   answer-first verdict table.
-- **H0 is VALID; WP0 is 3/4 done; M1a's persistence layer is not on `main`.**
+- **H0 is VALID and NULL (phase 3 closed, agent adapter retired); WP0 is 3/4 done; M1a's persistence layer is not on `main`.**
   Current state for all three lives at point of use — §3.4, §3.1/§3.2, §3.5
   respectively — not summarized here to avoid a second copy going stale. If
   you find text elsewhere still contradicting these, it's the stale copy —
@@ -77,12 +77,13 @@ file wins; notes files carry no state of their own.
 | `work-packages.md` | §6 WP1 (P0 schema honesty) + WP2 (P1 load-bearing tests) — both DONE |
 | `requirements.md` | §8 M1a schema/persistence/identity/error/test requirements |
 
-### `phase-3-h0-evidence-utility/` — does selected evidence help adjudication?
+### `phase-3-h0-evidence-utility/` — does selected evidence help adjudication? **Answer: not measurably. Phase closed 2026-08-30.**
 | File | Covers (orig. §) |
 | --- | --- |
-| `current-state.md` | §3.4 H0 — evidence-utility discriminator (current 2026-08-30 verdict) |
-| `work-packages.md` | §6 WP3 (H0 redesign) + Work package 4 (H0 rerun) |
+| `current-state.md` | §3.4 H0 — evidence-utility discriminator (current 2026-08-30 verdict: **VALID and NULL**) |
+| `work-packages.md` | §6 WP3 (H0 redesign) + Work package 4 (H0 rerun). WP4's acceptance gate executed 2026-08-30, not met; STOP rule fired |
 | `redesign-requirements.md` | §7 H0 redesign requirements (the 5 defects, addressed by construction) |
+| `SIGNIFICANCE-…` (in `evidence/h0/`, not this tree) | The executed acceptance gate: test, alpha, verdict, and why the gate is unsatisfiable under the current grader |
 | `historical-2026-08-29-execution-record.md` | §23 — **superseded** 2026-08-29 broken-PRNG/single-repository run. Historical only; do not read as current H0 status. Current status is `current-state.md`. |
 
 ### `phase-4-m2a-mechanisms/` — merge-mechanism port (`@mrgr/mechanisms`)
@@ -102,7 +103,7 @@ file wins; notes files carry no state of their own.
 | File | Covers (orig. §) |
 | --- | --- |
 | `current-state.md` | §3.8 M1b / M2b / M3 / M4 / Replay / Agent adapter |
-| `work-packages.md` | §6 WP7 (M1b/M2b/M3/M4/Replay) + WP8 (Agent adapter) |
+| `work-packages.md` | §6 WP7 (M1b/M2b/M3/M4/Replay) + WP8 (Agent adapter — **retired 2026-08-30**) |
 
 ### `reference/` — cross-cutting material, not tied to one phase
 | File | Covers (orig. §) |

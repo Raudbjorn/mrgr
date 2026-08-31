@@ -8,7 +8,7 @@ M0-closure (rights attestation, doc correction, durable artifact)
             └─► M1a P1 (load-bearing tests: preimage semantics, multi-region, add/add, delete/modify, write/read round trip)
                     ├─► H0 redesign + rerun (killable, no answer-leakage, real preimages, baselines, independent-trial accounting)
                     │       └─► (positive) Agent adapter work — last, single surface
-                    │       └─► (null) Retire agent adapter and `@mrgr/evidence-bundle`; ship `@mrgr/core` alone
+                    │       └─► (null) ◄── TAKEN 2026-08-30. Retire agent adapter and `@mrgr/evidence-bundle`; ship `@mrgr/core` alone
                     └─► (independent of H0) M2a port to `@mrgr/mechanisms`
                             └─► M2a residue freeze
                                     ├─► Resurrection proof (private gate on pinned refs; public gate in CI)
