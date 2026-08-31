@@ -368,8 +368,15 @@ const parseDecision = (text: string): { decision: H0Record["decision"]; reason: 
 			rawDecision === "keep_ours" || rawDecision === "keep_theirs" || rawDecision === "compose" || rawDecision === "halt"
 				? rawDecision
 				: "halt";
-		const reason = typeof obj.reason === "string" ? obj.reason.slice(0, 400) : "";
-		const tags = Array.from(reason.matchAll(/\[source:([^\]]+)\]/g)).map((m) => m[1]);
+		// Extract citations from the FULL reason, then truncate for storage.
+		// These were previously read off the truncated string, so any
+		// [source:...] past character 400 never reached the aggregator's
+		// fabrication check -- an undercount, in the direction of missing an
+		// invalidation. The schema allows 800 characters (the prompt's own
+		// "<= 200 tokens" contract), so the two boundaries did not agree.
+		const fullReason = typeof obj.reason === "string" ? obj.reason : "";
+		const tags = Array.from(fullReason.matchAll(/\[source:([^\]]+)\]/g)).map((m) => m[1]);
+		const reason = fullReason.slice(0, 400);
 		// NOTE: has_source_tags just means "quoted at least one [source:...] tag" —
 		// it is not a fabrication check. Real fabrication (a cited tag that isn't
 		// among the ids this specific prompt exposed) is computed in _aggregate.ts

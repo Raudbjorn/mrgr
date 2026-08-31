@@ -62,7 +62,7 @@ WP0–WP8 (each tied to a project milestone):
 | WP5 | M2a port to `@mrgr/mechanisms` | open |
 | WP6 | Resurrection proof | open |
 | WP7 | M1b / M2b / M3 / M4 / Replay (placeholders) | not started |
-| WP8 | Agent adapter (conditional, single surface) | **retired 2026-08-30** — H0's acceptance gate not met, WP4 STOP rule fired |
+| WP8 | Agent adapter (conditional, single surface) | **retired 2026-08-30** — H0's acceptance gate not met, WP4 STOP rule fired. Later than this table's 2026-08-29 header; the other rows have not been re-verified since that date. |
 
 **These two WP-numbering systems are independent and unrelated.** Reading the
 proposal's "WP3 = Anti-unification localization" alongside the canonical's

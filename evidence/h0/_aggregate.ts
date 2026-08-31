@@ -513,7 +513,19 @@ export const main = () => {
 	}
 	const { name: modelName, sha: modelSha } = [...modelIdentities.values()][0]!;
 	const decisionSchemaSha = [...decisionSchemas][0] ?? "unconstrained";
-	const repeats = Number(process.env.H0_REPEATS ?? 0);
+	// `repeats` sets tripleVector's majority threshold, which is the binding unit
+	// for the acceptance gate, so a placeholder value silently fakes a verdict:
+	// unset gives threshold 0 and every triple scores correct for every arm;
+	// non-numeric gives NaN and every triple scores not-correct. Both emit
+	// `significance_verdict: "null"` without measuring anything -- the exact
+	// unfalsifiable-gate failure this file was rewritten to remove. Fail like
+	// H0_STAMP does.
+	const repeats = Number(process.env.H0_REPEATS);
+	if (!Number.isInteger(repeats) || repeats < 1) {
+		throw new Error(
+			`H0_REPEATS must be a positive integer; the triple-level gate threshold depends on it (got ${process.env.H0_REPEATS})`,
+		);
+	}
 
 	// PR-B1 / D3: derive trivial-baseline ceilings. Every model arm must
 	// beat `TRIVIAL_CEILING_COMPOSE` for the result to be honest; if it does
@@ -681,9 +693,14 @@ export const main = () => {
 				baseline_wrong: baselineWrong,
 				wrong_avoided: wrongAvoided,
 				halt_break_even_ratio: armHalt > 0 ? wrongAvoided / armHalt : null,
-				note: armHalt > 0
-					? `arm is cheaper than ${bestTrivialBaseline} when one halt costs less than ${(wrongAvoided / armHalt).toFixed(3)} of one wrong merge`
-					: "arm never halts; the wrong count alone decides",
+				note: armHalt === 0
+					? "arm never halts; the wrong count alone decides"
+					: wrongAvoided > 0
+						? `arm is cheaper than ${bestTrivialBaseline} when one halt costs less than ${(wrongAvoided / armHalt).toFixed(3)} of one wrong merge`
+						// A halt cannot cost less than nothing, so a non-positive
+						// wrong_avoided makes the arm unreachable at any price
+						// rather than cheap at a negative one.
+						: `arm avoids no wrong merges (wrong_avoided=${wrongAvoided}) and still halts ${armHalt} times, so no non-negative halt cost makes it cheaper than ${bestTrivialBaseline}`,
 			};
 		}
 		// The comparator that keeps the ratios above honest. A policy that

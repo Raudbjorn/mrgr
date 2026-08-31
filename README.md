@@ -31,8 +31,9 @@ mrgr records each of those mechanically: counts come from parsed, deduplicated s
 ## Status
 
 Pre-alpha and honest about it. One package exists; part of it is unfinished.
-The one experiment that has run returned a null and retired the component it
-gated. Everything else is gated on evidence, not scheduled.
+The current valid experiment — the 2026-08-30 H0 run — returned a null and
+retired the component it gated. Two earlier runs were retracted and invalidated;
+see *Earlier H0 runs*. Everything else is gated on evidence, not scheduled.
 
 | Component | State |
 |---|---|
@@ -67,8 +68,11 @@ local `llama-server`, pinned by GGUF SHA-256 and verified before execution.
 | baseline-keep_theirs | 9 | 81 | 0 | 0 | 3 / 30 | trivial |
 | baseline-compose | 27 | 63 | 0 | 0 | **9 / 30** | trivial (best) |
 
-*correct/wrong/halt count records (n = 90 per arm); historical match and the
-gate outcome are per triple (n = 30, majority of 3 repeats). Δ is the arm's
+*correct/wrong/halt count only **graded** records, so the model-arm rows sum to
+86, 87 and 89 rather than 90: schema-invalid records (4, 3 and 1 respectively)
+are excluded from every tally per the WP3 invalid-record policy and reported in
+their own column. Baselines are never schema-invalid and sum to 90. Historical
+match and the gate outcome are per triple (n = 30, majority of 3 repeats). Δ is the arm's
 triple-correct count minus the best trivial baseline's; p is McNemar's exact
 two-sided test at α = 0.05.*
 
