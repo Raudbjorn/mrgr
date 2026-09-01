@@ -83,7 +83,6 @@ endstep
 	printf -- '- Nothing about resolution: no mechanism, oracle, ledger or adjudicator exists in this commit.\n'
 	printf -- '- Nothing about real-world recall or precision. The suite is fixture-scale; `git.test.ts`\n'
 	printf -- '  deliberately builds a fake `git` executable rather than exercising a real one.\n'
-	printf -- '- Nothing about publishability: the rights attestation in NOTICE is still unrecorded.\n'
 	printf -- '- Nothing about other platforms. One host, one Node, one Git, recorded above.\n'
 } >>"$out"
 
