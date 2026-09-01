@@ -2,7 +2,7 @@
 
 # Working on M2a (merge mechanisms, `@mrgr/mechanisms` port)
 
-**Read the blocker first:** the Round 5.1 source this work is supposed to port from — `merge-mechanism-driver.sh`, `MECHANISM-PREFLIGHT.json`, `adjudicate.py` — does not exist anywhere in this repo or its remote branches (verified 2026-08-30). Before doing anything else here, locate that source or accept you're redesigning the adapter from the description in the phase files, not porting existing code.
+**Blocker resolved 2026-09-01.** The Round 5.1 source this work is supposed to port from — `merge-mechanism-driver.sh`, `MECHANISM-PREFLIGHT.json`, `adjudicate.py` — is not in this repo or its remote branches (verified 2026-08-30, still true), but is **located and verified** at `/home/svnbjrn/rsrch/projects-mrgr/experiment/round5/`. Start here: port from those files directly, no redesign-from-description needed.
 
 **Phase files:**
 - `../phase-4-m2a-mechanisms/current-state.md` — state + the blocker above, in detail
