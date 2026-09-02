@@ -71,7 +71,7 @@ describe("git_text adapter equivalence to git's own ort merge", () => {
 });
 
 describe("git_text determinism", () => {
-	test("five runs on the same fixture produce identical merged tree OIDs", async () => {
+	test("five runs on the same fixture produce identical merged blob OIDs", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "mrgr-mechanisms-determinism-"));
 		const basePath = join(dir, "base.txt");
 		writeFileSync(basePath, "line1\nline2\nline3\n");

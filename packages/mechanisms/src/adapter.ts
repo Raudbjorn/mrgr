@@ -26,11 +26,18 @@ function hasConflictMarkerLine(content: string): boolean {
 	return content.split("\n").some((line) => line === CONFLICT_MARKER_LINE);
 }
 
+const DEFAULT_MECHANISM_TIMEOUT_MS = 30_000;
+
+function mechanismTimeoutMs(): number {
+	const override = Number(process.env.MRGR_MECHANISM_TIMEOUT_MS);
+	return Number.isSafeInteger(override) && override > 0 ? override : DEFAULT_MECHANISM_TIMEOUT_MS;
+}
+
 function runGitText(input: MechanismInput): { rawStatus: number; content: string } {
 	const result = spawnSync(
 		"git",
 		["merge-file", "--stdout", "--diff3", "-L", "OURS", "-L", "BASE", "-L", "THEIRS", input.ours, input.base, input.theirs],
-		{ encoding: "buffer" },
+		{ encoding: "buffer", timeout: mechanismTimeoutMs() },
 	);
 	const rawStatus = result.status ?? 130;
 	return { rawStatus, content: result.stdout ? result.stdout.toString("utf8") : "" };
@@ -40,7 +47,7 @@ function runGnuDiff3(input: MechanismInput): { rawStatus: number; content: strin
 	const result = spawnSync(
 		"diff3",
 		["-m", "-A", "-L", "OURS", "-L", "BASE", "-L", "THEIRS", input.ours, input.base, input.theirs],
-		{ encoding: "buffer" },
+		{ encoding: "buffer", timeout: mechanismTimeoutMs() },
 	);
 	const rawStatus = result.status ?? 130;
 	return { rawStatus, content: result.stdout ? result.stdout.toString("utf8") : "" };
@@ -61,14 +68,17 @@ function runMergiraf(input: MechanismInput): { rawStatus: number; content: strin
 			"-l", "7",
 			"-t", "0",
 		],
-		{ encoding: "buffer" },
+		{ encoding: "buffer", timeout: mechanismTimeoutMs() },
 	);
-	const rawStatus = result.status ?? 130;
+	let rawStatus = result.status ?? 130;
 	let content = "";
 	try {
 		content = readFileSync(out, "utf8");
 	} catch {
-		content = "";
+		// mergiraf claimed success (or a recoverable conflict) but left no
+		// readable output — never accept that as an empty clean merge, which
+		// would silently overwrite `ours` with nothing.
+		rawStatus = 130;
 	} finally {
 		rmSync(out, { force: true });
 	}
