@@ -55,7 +55,10 @@ Direct command errors from `mrgr-wp0`, `mrgr-evidence`, and `mrgr-db` are a sing
 Sidecar mode summarizes `ok`, `failed`, and `skipped` evidence records; database
 mode summarizes store outcomes as `imported`, `failed`, and `skipped`. In both
 modes, any generated `status: "failed"` record exits `1` even when it was
-persisted successfully.
+persisted successfully. Sidecar `--resume` carries this forward across runs:
+an unresolved `status: "failed"` row already in `--out` still exits `1` even
+if nothing new fails on the resumed run — a region isn't "fixed" just because
+it was skipped as already-seen.
 
 ## Library
 

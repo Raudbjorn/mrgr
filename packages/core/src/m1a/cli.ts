@@ -11,7 +11,7 @@ import {
 	EvidenceWriter,
 	PATH_LEVEL_ORDINAL,
 	evidenceKey,
-	loadEvidenceKeys,
+	readEvidence,
 	type EvidenceRecord,
 } from "./sidecar.js";
 
@@ -189,13 +189,24 @@ async function runSidecarMode(
 	}
 
 	let seen = new Set<string>();
+	// A --resume run's failedCount otherwise only counts records THIS run
+	// writes. A region whose only record is an earlier status:"failed" row is
+	// "skipped" (already in `seen`), never re-attempted and never recounted —
+	// so a --resume run over an unfixed failure would report success while the
+	// unresolved row still sits in the file. Seed failedCount from what's
+	// already persisted so the exit code reflects the file's actual state.
+	let failedCount = 0;
 	if (options.resume) {
-		const keys = await loadEvidenceKeys(options.out);
-		if (!keys.ok) {
-			io.stderr(`${JSON.stringify(keys.error)}\n`);
-			return 1;
+		const existing = await readEvidence(options.out);
+		if (!existing.ok) {
+			if (existing.error.details?.code !== "ENOENT") {
+				io.stderr(`${JSON.stringify(existing.error)}\n`);
+				return 1;
+			}
+		} else {
+			seen = new Set(existing.value.map(evidenceKey));
+			failedCount = existing.value.filter((r) => r.status === "failed").length;
 		}
-		seen = keys.value;
 	}
 
 	const writer = await EvidenceWriter.open(options.out);
@@ -205,7 +216,6 @@ async function runSidecarMode(
 	}
 
 	let okCount = 0;
-	let failedCount = 0;
 	let skipped = 0;
 
 	for (const record of corpus.value) {
