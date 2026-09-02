@@ -23,6 +23,12 @@ describe("classifyPath", () => {
 		const rules = [{ pattern: "*.png", merge: "binary" as const }];
 		expect(classifyPath(rules, "src/index.ts")).toBeUndefined();
 	});
+
+	test("a directory-qualified pattern matches the full path, not just the basename", () => {
+		const rules = [{ pattern: "docs/*.md", merge: "mergiraf" as const }];
+		expect(classifyPath(rules, "docs/readme.md")).toBe("mergiraf");
+		expect(classifyPath(rules, "other/readme.md")).toBeUndefined();
+	});
 });
 
 describe("mergeFiles — D79-style mixed text+binary fixture", () => {

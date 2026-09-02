@@ -24,6 +24,19 @@ describe("resurrection proof — public gate (synthetic topology)", () => {
 		expect(candidates.map((c) => c.path).sort()).toEqual(["src/a.test.ts", "src/b.test.ts"]);
 	});
 
+	test("a global-flagged pattern still finds every matching candidate, not just the first", async () => {
+		const topology = JSON.parse(readFileSync(TOPOLOGY_PATH, "utf8"));
+		const { repositoryPath, inputRefs, finalRefs } = await buildSyntheticTopology(topology);
+
+		// RegExp.test with a /g flag advances lastIndex on match and carries it
+		// between calls on the same instance — a second path can then be
+		// incorrectly skipped if the pattern isn't reset before each test.
+		const globalPattern = /\.test\.ts$/g;
+		const candidates = findDeletedMonolithCandidates(repositoryPath, inputRefs, finalRefs, globalPattern);
+
+		expect(candidates.map((c) => c.path).sort()).toEqual(["src/a.test.ts", "src/b.test.ts"]);
+	});
+
 	test("a file present in both an input and a final ref is never flagged as deleted", async () => {
 		const topology = JSON.parse(readFileSync(TOPOLOGY_PATH, "utf8"));
 		const { repositoryPath, inputRefs, finalRefs } = await buildSyntheticTopology(topology);
@@ -71,9 +84,14 @@ const PRIVATE_FINAL_REFS = [
 	"r4-s3-final",
 ].map((name) => PRIVATE_REF_PREFIX + name);
 
-function refExists(cwd: string, ref: string): boolean {
+// A ref can resolve (git rev-parse succeeds) while still being unusable here:
+// this repo's join-tree import was partial at one point, with the root
+// object present but most child subtrees missing. Probe the actual
+// recursive traversal the audit performs, not just root existence, so an
+// incomplete import fails closed into a skip rather than a mid-test crash.
+function treeCanBeListed(cwd: string, ref: string): boolean {
 	try {
-		execFileSync("git", ["rev-parse", "--verify", "--quiet", ref], { cwd, stdio: "ignore" });
+		execFileSync("git", ["ls-tree", "-r", "--long", ref], { cwd, stdio: "ignore" });
 		return true;
 	} catch {
 		return false;
@@ -81,8 +99,9 @@ function refExists(cwd: string, ref: string): boolean {
 }
 
 const repoRoot = fileURLToPath(new URL("../../..", import.meta.url));
-const privateDataAvailable =
-	refExists(repoRoot, JOIN_TREE) && PRIVATE_FINAL_REFS.every((ref) => refExists(repoRoot, ref));
+const privateDataAvailable = [JOIN_TREE, ...PRIVATE_FINAL_REFS].every((ref) =>
+	treeCanBeListed(repoRoot, ref),
+);
 
 describe.skipIf(!privateDataAvailable)(
 	"resurrection proof — private gate (real reconstructed inputs, local-only)",
