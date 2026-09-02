@@ -33,6 +33,46 @@ function writeFixture(base: string, ours: string, theirs: string) {
 	return { basePath, oursPath, theirsPath };
 }
 
+describe("spawn failure handling", () => {
+	test("git_text returns normalizedStatus 130 instead of throwing when git can't be spawned", async () => {
+		const { basePath, oursPath, theirsPath } = writeFixture("a\n", "a\n", "a\n");
+		const originalPath = process.env.PATH;
+		process.env.PATH = dir; // an empty directory: git genuinely can't be found
+		try {
+			const result = await runMechanism("git_text", {
+				base: basePath,
+				ours: oursPath,
+				theirs: theirsPath,
+				path: "file.txt",
+			});
+			expect(result.ok).toBe(true);
+			if (!result.ok) return;
+			expect(result.value.normalizedStatus).toBe(130);
+		} finally {
+			process.env.PATH = originalPath;
+		}
+	});
+
+	test("gnu_diff3 returns normalizedStatus 130 instead of throwing when diff3 can't be spawned", async () => {
+		const { basePath, oursPath, theirsPath } = writeFixture("a\n", "a\n", "a\n");
+		const originalPath = process.env.PATH;
+		process.env.PATH = dir;
+		try {
+			const result = await runMechanism("gnu_diff3", {
+				base: basePath,
+				ours: oursPath,
+				theirs: theirsPath,
+				path: "file.txt",
+			});
+			expect(result.ok).toBe(true);
+			if (!result.ok) return;
+			expect(result.value.normalizedStatus).toBe(130);
+		} finally {
+			process.env.PATH = originalPath;
+		}
+	});
+});
+
 describe("git_text mechanism", () => {
 	test("clean merge produces normalizedStatus 0 and no conflict markers", async () => {
 		const { basePath, oursPath, theirsPath } = writeFixture(

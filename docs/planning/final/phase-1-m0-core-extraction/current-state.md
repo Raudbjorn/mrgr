@@ -8,7 +8,7 @@ Paths below are relative to `.do-not-commit/planning/` unless stated otherwise.
 - **What does not survive — Correction (2026-08-30, verified on disk): all three fixed.** The README's present-tense claim that the project "invokes Mergiraf/diff3" and references to absent `docs/method.md`/absent packages are gone from `README.md` (`grep` for those strings returns nothing). `NOTICE` on disk now carries the rights attestation ("Attested by the author, 2026-08-27") and the corrected Mergiraf/diff3 license lines — it no longer matches `NOTICE.snapshot`, which is the *pre*-correction capture, not current state. See §3.2.
 
 ### 3.2 M0-closure — durable gates and corrected claims
-- **State (2026-08-30, verified on disk):** 3 of 4 closing requirements are done; 1 is open.
+- **State (2026-09-01, verified on disk): 4 of 4 closing requirements are done.**
   - **DONE:** NOTICE corrected — no `docs/method.md` reference, no present-tense mechanism invocation, Mergiraf `GPL-3.0-only`, diff3 `GPL-3.0-or-later`. Verified by reading `NOTICE` directly.
   - **DONE:** README corrected — no absent-package claims. Verified by `grep`.
   - **DONE:** rights attestation recorded in `NOTICE` — "Attested by the author, 2026-08-27." (`phases/m0/NOTICE.snapshot` is the *pre-correction* capture and still shows "NOT YET RECORDED" — that's expected; it's a historical snapshot, not current state.)

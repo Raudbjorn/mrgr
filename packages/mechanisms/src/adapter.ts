@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { err, ok, type Result } from "@mrgr/core";
+import { err, ok, type Result } from "./result.js";
 
 export type Mechanism = "git_text" | "gnu_diff3" | "mergiraf";
 
@@ -33,7 +33,7 @@ function runGitText(input: MechanismInput): { rawStatus: number; content: string
 		{ encoding: "buffer" },
 	);
 	const rawStatus = result.status ?? 130;
-	return { rawStatus, content: result.stdout.toString("utf8") };
+	return { rawStatus, content: result.stdout ? result.stdout.toString("utf8") : "" };
 }
 
 function runGnuDiff3(input: MechanismInput): { rawStatus: number; content: string } {
@@ -43,7 +43,7 @@ function runGnuDiff3(input: MechanismInput): { rawStatus: number; content: strin
 		{ encoding: "buffer" },
 	);
 	const rawStatus = result.status ?? 130;
-	return { rawStatus, content: result.stdout.toString("utf8") };
+	return { rawStatus, content: result.stdout ? result.stdout.toString("utf8") : "" };
 }
 
 function runMergiraf(input: MechanismInput): { rawStatus: number; content: string } {

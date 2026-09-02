@@ -56,6 +56,10 @@ export function findDeletedMonolithCandidates(
 	const candidates: DeletedMonolithCandidate[] = [];
 	for (const [path, size] of inputEntries) {
 		if (finalPaths.has(path)) continue;
+		// A `g` or `y` flagged pattern advances lastIndex on a match and
+		// carries it between calls on the same RegExp instance — reset it so
+		// every path is tested independently, not just the first match.
+		pathPattern.lastIndex = 0;
 		if (!pathPattern.test(path)) continue;
 		candidates.push({ path, size });
 	}
