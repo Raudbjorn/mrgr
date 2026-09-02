@@ -1,8 +1,21 @@
+import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, test } from "vitest";
 import { runMechanism } from "../src/adapter.js";
+
+// mergiraf is an external Rust binary, not a workspace dependency — it's not
+// installed in every environment (notably CI, which only sets up Node/pnpm).
+// Skip rather than fail so the suite doesn't break wherever it's absent.
+function mergirafAvailable(): boolean {
+	try {
+		execFileSync(process.env.MERGIRAF_BIN ?? "mergiraf", ["--version"], { stdio: "ignore" });
+		return true;
+	} catch {
+		return false;
+	}
+}
 
 let dir: string;
 
@@ -108,7 +121,7 @@ describe("gnu_diff3 mechanism", () => {
 	});
 });
 
-describe("mergiraf mechanism", () => {
+describe.skipIf(!mergirafAvailable())("mergiraf mechanism", () => {
 	test("clean merge produces normalizedStatus 0 and no conflict markers", async () => {
 		const { basePath, oursPath, theirsPath } = writeFixture(
 			"line1\nline2\nline3\n",
