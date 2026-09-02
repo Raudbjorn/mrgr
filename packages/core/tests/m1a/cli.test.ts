@@ -187,6 +187,41 @@ describe("--db flag wiring", () => {
 	});
 
 
+	it("--resume does not launder a still-unresolved failed record into exit 0", async () => {
+		const directory = await tempDir();
+		const { corpusPath } = await seedCorpusAndDb(directory);
+		const sidecarPath = join(directory, "resume-failed.jsonl");
+		const missingRepo = join(directory, "missing-repository");
+
+		const first = captureIo();
+		const firstExit = await mrgrEvidenceMain(
+			[corpusPath, "--out", sidecarPath, "--repo", missingRepo],
+			first.io,
+		);
+		expect(firstExit).toBe(1);
+		expect(first.stdout.join("")).toMatch(/failed=[1-9]/);
+
+		// Nothing about the failure was fixed — --repo is still missing — but a
+		// --resume run only counts records it writes THIS run. Every region
+		// already has a persisted status:"failed" row, so every write() call is
+		// "skipped", failedCount never leaves 0, and the run reports success
+		// while the unresolved failed rows from the first run are still sitting
+		// in sidecarPath.
+		const second = captureIo();
+		const secondExit = await mrgrEvidenceMain(
+			[corpusPath, "--out", sidecarPath, "--repo", missingRepo, "--resume"],
+			second.io,
+		);
+
+		const persisted = await readEvidence(sidecarPath);
+		expect(persisted.ok).toBe(true);
+		if (!persisted.ok) return;
+		const unresolvedFailures = persisted.value.filter((r) => r.status === "failed");
+		expect(unresolvedFailures.length).toBeGreaterThan(0);
+
+		expect(secondExit).toBe(1);
+	});
+
 	it("B2: --db and --out together are mutually exclusive and exit 2", async () => {
 		const directory = await tempDir();
 		const { repositoryPath, corpusPath } = await seedCorpusAndDb(directory);
