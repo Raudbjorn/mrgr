@@ -22,6 +22,19 @@ describe("resurrection proof — public gate (synthetic topology)", () => {
 		);
 
 		expect(candidates.map((c) => c.path).sort()).toEqual(["src/a.test.ts", "src/b.test.ts"]);
+
+		// Path assertions alone don't exercise size parsing (git ls-tree -r
+		// --long's byte-count column) — the only other place that's checked is
+		// the private gate, which is skipped everywhere but the author's own
+		// machine. Assert real byte counts here too, computed from the fixture
+		// itself rather than hardcoded, so a parsing regression fails in CI.
+		const sizeByPath = new Map(candidates.map((c) => [c.path, c.size]));
+		expect(sizeByPath.get("src/a.test.ts")).toBe(
+			Buffer.byteLength(topology.inputs["base4-p"]["src/a.test.ts"], "utf8"),
+		);
+		expect(sizeByPath.get("src/b.test.ts")).toBe(
+			Buffer.byteLength(topology.inputs["base6-p"]["src/b.test.ts"], "utf8"),
+		);
 	});
 
 	test("a global-flagged pattern still finds every matching candidate, not just the first", async () => {

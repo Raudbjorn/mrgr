@@ -2,7 +2,7 @@
 
 # Working on M2a (merge mechanisms, `@mrgr/mechanisms` port)
 
-**Blocker resolved 2026-09-01.** The Round 5.1 source this work is supposed to port from — `merge-mechanism-driver.sh`, `MECHANISM-PREFLIGHT.json`, `adjudicate.py` — is not in this repo or its remote branches (verified 2026-08-30, still true), but is **located and verified** at `/home/svnbjrn/rsrch/projects-mrgr/experiment/round5/`. Start here: port from those files directly, no redesign-from-description needed.
+**Port done 2026-09-02, partially.** The Round 5.1 source this work ports from — `merge-mechanism-driver.sh`, `MECHANISM-PREFLIGHT.json`, `adjudicate.py` — is not in this repo or its remote branches (verified 2026-08-30, still true), but is **located and verified** at `/home/svnbjrn/rsrch/projects-mrgr/experiment/round5/`. A local TypeScript port now exists at `packages/mechanisms/src/{adapter,registry}.ts`, covering the three-mechanism dispatch, status normalization, and attribute/binary-macro routing — see `work-package.md` for exactly what's proven versus deferred (no git-merge-driver integration yet, so "outer Git" status and tree-level preservation are unproven).
 
 **Phase files:**
 - `../phase-4-m2a-mechanisms/current-state.md` — state + the blocker above, in detail
