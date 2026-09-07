@@ -1,5 +1,7 @@
 *Part of the [canonical planning document](../canonical-final-planning-document.md).*
 
+**2026-09-06 amendment:** The user authorized completing corrected Phase 3 and proceeding to deterministic Phase 4 without further interaction. The [current execution contract and handoff](../phase-3-h0-evidence-utility/execution-and-handoff-2026-09-06.md) supersede the historical recommendations below wherever they prescribe the old enum grader, normalization-only repair, thirty-case rerun, or a positive H0 prerequisite. Phase 4 is a partial port; its remaining integration gates are implementation work.
+
 ## 16. Committed recommendations (Phase 5)
 | # | Commitment | Why | Dependency | Next action | Acceptance gate | Risk | Effort |
 |---|---|---|---|---|---|---|---|

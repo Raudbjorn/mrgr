@@ -1,0 +1,1132 @@
+{
+  "id": "b9406c1895b8e53730138cff49a3499593e9a097c3626730471c263f07b669d0",
+  "source_protocol_sha256": "86ffe38086e217acf6e1a4aa4162e226862463d1bde3160478f9a6f4d2b968ce",
+  "repair_module_sha256": "b6a7cf123b0ac50001e1498cdf64964b8ac56e8e6a68cbbc6dcc01c8517b4a20",
+  "contexts": {
+    "local-context": [
+      {
+        "id": "14f7fedddc5ce2e7ea929520",
+        "revision": "0a0546f0683b7fd2f189a0bcbc8d16e1b96a77ac",
+        "path": "help.go",
+        "start_byte": 0,
+        "text": "package cli\n\nimport (\n\t\"fmt\"\n\t\"io\"\n\t\"os\"\n\t\"strings\"\n\t\"text/tabwriter\"\n\t\"text/template\"\n\t\"unicode/utf8\"\n)\n\nconst (\n\thelpName  = \"help\"\n\thelpAlias = \"h\"\n)\n\n// this instance is to avoid recursion in the ShowCommandHelp which can\n// add a help command again\nvar helpCommandDontUse = &Command{\n\tName:      helpName,\n\tAliases:   []string{helpAlias},\n\tUsage:     \"Shows a list of commands or help for one command\",\n\tArgsUsage: \"[command]\",\n}\n\nvar helpCommand = &Command{\n\tName:      helpName,\n\tAliases:   []string{helpAlias},\n\tUsage:     \"Shows a list of commands or help for one command\",\n\tArgsUsage: \"[command]\",\n\tAction: func(cCtx *Context) error {\n\t\targs := cCtx.Args()\n\t\targsPresent := args.First() != \"\"\n\t\tfirstArg := args.First()\n\n\t\t// This action can be triggered by a \"default\" action of a command\n\t\t// or via cmd.Run when cmd == helpCmd. So we have following possibilities\n\t\t//\n\t\t// 1 $ app\n\t\t// 2 $ app help\n\t\t// 3 $ app foo\n\t\t// 4 $ app help foo\n\t\t// 5 $ app foo help\n\n\t\t// Case 4. when executing a help command set the context to parent\n\t\t// to allow resolution of subsequent args. This will transform\n\t\t// $ app help foo\n\t\t//     to\n\t\t// $ app foo\n\t\t// which will then be handled as case 3\n\t\tif cCtx.Command.Name == helpName || cCtx.Command.Name == helpAlias {\n\t\t\tcCtx = cCtx.parentContext\n\t\t}\n\n\t\t// Case 4. $ app hello foo\n\t\t// foo is the command for which help needs to be shown\n\t\tif argsPresent {\n\t\t\treturn ShowCommandHelp(cCtx, firstArg)\n\t\t}\n\n\t\t// Case 1 & 2\n\t\t// Special case when running help on main app itself as opposed to indivdual\n\t\t// commands/subcommands\n\t\tif cCtx.parentContext.App == nil {\n\t\t\t_ = ShowAppHelp(cCtx)\n\t\t\treturn nil\n\t\t}\n\n\t\t// Case 3, 5\n\t\treturn ShowSubcommandHelp(cCtx)\n\t},\n}\n\n// Prints help for the App or Command\ntype helpPrinter func(w io.Writer, templ string, data interface{})\n\n// Prints help for the App or Command with custom template function.\ntype helpPrinterCustom func(w io.Writer, templ string, data interface{}, customFunc map[string]interface{})\n\n// HelpPrinter is a function that writes the help output. If not set explicitly,\n// this calls HelpPrinterCustom using only the default template functions.\n//\n// If custom logic for printing help is required, this function can be\n// overridden. If the ExtraInfo field is defined on an App, this function\n// should not be modified, as HelpPrinterCustom will be used directly in order\n// to capture the extra information.\nvar HelpPrinter helpPrinter = printHelp\n\n// HelpPrinterCustom is a function that writes the help output. It is used as\n// the default implementation of HelpPrinter, and may be called directly if\n// the ExtraInfo field is set on an App.\n//\n// In the default implementation, if the customFuncs argument contains a\n// \"wrapAt\" key, which is a function which takes no arguments and returns\n// an int, this int value will be used to produce a \"wrap\" function used\n// by the default template to wrap long lines.\nvar HelpPrinterCustom helpPrinterCustom = printHelpCustom\n\n// VersionPrinter prints the version for the App\nvar VersionPrinter = printVersion\n\n// ShowAppHelpAndExit - Prints the list of subcommands for the app and exits with exit code.\nfunc ShowAppHelpAndExit(c *Context, exitCode int) {\n\t_ = ShowAppHelp(c)\n\tos.Exit(exitCode)\n}\n\n// ShowAppHelp is an action that displays the help.\nfunc ShowAppHelp(cCtx *Context) error {\n\ttpl := cCtx.App.CustomAppHelpTemplate\n\tif tpl == \"\" {\n\t\ttpl = AppHelpTemplate\n\t}\n\n\tif cCtx.App.ExtraInfo == nil {\n\t\tHelpPrinter(cCtx.App.Writer, tpl, cCtx.App)\n\t\treturn nil\n\t}\n\n\tcustomAppData := func() map[string]interface{} {\n\t\treturn map[string]interface{}{\n\t\t\t\"ExtraInfo\": cCtx.App.ExtraInfo,\n\t\t}\n\t}\n\tHelpPrinterCustom(cCtx.App.Writer, tpl, cCtx.App, customAppData())\n\n\treturn nil\n}\n\n// DefaultAppComplete prints the list of subcommands as the default app completion method\nfunc DefaultAppComplete(cCtx *Context) {\n\tDefaultCompleteWithFlags(nil)(cCtx)\n}\n\nfunc printCommandSuggestions(commands []*Command, writer io.Writer) {\n\tfor _, command := range commands {\n\t\tif command.Hidden {\n\t\t\tcontinue\n\t\t}\n\t\tif strings.HasSuffix(os.Getenv(\"SHELL\"), \"zsh\") {\n\t\t\tfor _, name := range command.Names() {\n\t\t\t\t_, _ = fmt.Fprintf(writer, \"%s:%s\\n\", name, command.Usage)\n\t\t\t}\n\t\t} else {\n\t\t\tfor _, name := range command.Names() {\n\t\t\t\t_, _ = fmt.Fprintf(writer, \"%s\\n\", name)\n\t\t\t}\n\t\t}\n\t}\n}\n\nfunc cliArgContains(flagName string) bool {\n\tfor _, name := range strings.Split(flagName, \",\") {\n\t\tname = strings.TrimSpace(name)\n\t\tcount := utf8.RuneCountInString(name)\n\t\tif count > 2 {\n\t\t\tcount = 2\n\t\t}\n\t\tflag := fmt.Sprintf(\"%s%s\", strings.Repeat(\"-\", count), name)\n\t\tfor _, a := range os.Args {\n\t\t\tif a == flag {\n\t\t\t\treturn true\n\t\t\t}\n\t\t}\n\t}\n\treturn false\n}\n\nfunc printFlagSuggestions(lastArg string, flags []Flag, writer io.Writer) {\n\tcur := strings.TrimPrefix(lastArg, \"-\")\n\tcur = strings.TrimPrefix(cur, \"-\")\n\tfor _, flag := range flags {\n\t\tif bflag, ok := flag.(*BoolFlag); ok && bflag.Hidden {\n\t\t\tcontinue\n\t\t}\n\t\tfor _, name := range flag.Names() {\n\t\t\tname = strings.TrimSpace(name)\n\t\t\t// this will get total count utf8 letters in flag name\n\t\t\tcount := utf8.RuneCountInString(name)\n\t\t\tif count > 2 {\n\t\t\t\tcount = 2 // resuse this count to generate single - or -- in flag completion\n\t\t\t}\n\t\t\t// if flag name has more than one utf8 letter and last argument in cli has -- prefix then\n\t\t\t// skip flag completion for short flags example -v or -x\n\t\t\tif strings.HasPrefix(lastArg, \"--\") && count == 1 {\n\t\t\t\tcontinue\n\t\t\t}\n\t\t\t// match if last argument matches this flag and it is not repeated\n\t\t\tif strings.HasPrefix(name, cur) && cur != name && !cliArgContains(name) {\n\t\t\t\tflagCompletion := fmt.Sprintf(\"%s%s\", strings.Repeat(\"-\", count), name)\n\t\t\t\t_, _ = fmt.Fprintln(writer, flagCompletion)\n\t\t\t}\n\t\t}\n\t}\n}\n\nfunc DefaultCompleteWithFlags(cmd *Command) func(cCtx *Context) {\n\treturn func(cCtx *Context) {\n\t\tif len(os.Args) > 2 {\n\t\t\tlastArg := os.Args[len(os.Args)-2]\n\n\t\t\tif strings.HasPrefix(lastArg, \"-\") {\n\t\t\t\tif cmd != nil {\n\t\t\t\t\tprintFlagSuggestions(lastArg, cmd.Flags, cCtx.App.Writer)\n\n\t\t\t\t\treturn\n\t\t\t\t}\n\n\t\t\t\tprintFlagSuggestions(lastArg, cCtx.App.Flags, cCtx.App.Writer)\n\n\t\t\t\treturn\n\t\t\t}\n\t\t}\n\n\t\tif cmd != nil {\n\t\t\tprintCommandSuggestions(cmd.Subcommands, cCtx.App.Writer)\n\t\t\treturn\n\t\t}\n\n\t\tprintCommandSuggestions(cCtx.App.Commands, cCtx.App.Writer)\n\t}\n}\n\n// ShowCommandHelpAndExit - exits with code after showing help\nfunc ShowCommandHelpAndExit(c *Context, command string, code int) {\n\t_ = ShowCommandHelp(c, command)\n\tos.Exit(code)\n}\n\n// ShowCommandHelp prints help for the given command\nfunc ShowCommandHelp(ctx *Context, command string) error {\n\t// show the subcommand help for a command with subcommands\n\tif command == \"\" {\n\t\tHelpPrinter(ctx.App.Writer, SubcommandHelpTemplate, ctx.App)\n\t\treturn nil\n\t}\n\n\tfor _, c := range ctx.App.Commands {\n\t\tif c.HasName(command) {\n\t\t\tif !ctx.App.HideHelpCommand && !c.HasName(helpName) && len(c.Subcommands) != 0 {\n\t\t\t\tc.Subcommands = append(c.Subcommands, helpCommandDontUse)\n\t\t\t}\n\t\t\tif !ctx.App.HideHelp && HelpFlag != nil {\n\t\t\t\tif c.flagCategories == nil {\n\t\t\t\t\tc.flagCategories = newFlagCategoriesFromFlags([]Flag{HelpFlag})\n\t\t\t\t} else {\n\t\t\t\t\tc.flagCategories.AddFlag(\"\", HelpFlag)\n\t\t\t\t}\n\t\t\t}\n\t\t\ttempl := c.CustomHelpTemplate\n\t\t\tif templ == \"\" {\n\t\t\t\tif len(c.Subcommands) == 0 {\n\t\t\t\t\ttempl = CommandHelpTemplate\n\t\t\t\t} else {\n\t\t\t\t\ttempl = SubcommandHelpTemplate\n\t\t\t\t}\n\t\t\t}\n\n\t\t\tHelpPrinter(ctx.App.Writer, templ, c)\n\n\t\t\treturn nil\n\t\t}\n\t}\n\n\tif ctx.App.CommandNotFound == nil {\n\t\terrMsg := fmt.Sprintf(\"No help topic for '%v'\", command)\n\t\tif ctx.App.Suggest {\n\t\t\tif suggestion := SuggestCommand(ctx.App.Commands, command); suggestion != \"\" {\n\t\t\t\terrMsg += \". \" + suggestion\n\t\t\t}\n\t\t}\n\t\treturn Exit(errMsg, 3)\n\t}\n\n\tctx.App.CommandNotFound(ctx, command)\n\treturn nil\n}\n\n// ShowSubcommandHelpAndExit - Prints help for the given subcommand and exits with exit code.\nfunc ShowSubcommandHelpAndExit(c *Context, exitCode int) {\n\t_ = ShowSubcommandHelp(c)\n\tos.Exit(exitCode)\n}\n\n// ShowSubcommandHelp prints help for the given subcommand\nfunc ShowSubcommandHelp(cCtx *Context) error {\n\tif cCtx == nil {\n\t\treturn nil\n\t}\n\n\tif cCtx.Command != nil {\n\t\treturn ShowCommandHelp(cCtx, cCtx.Command.Name)\n\t}\n\n\treturn ShowCommandHelp(cCtx, \"\")\n}\n\n// ShowVersion prints the version number of the App\nfunc ShowVersion(cCtx *Context) {\n\tVersionPrinter(cCtx)\n}\n\nfunc printVersion(cCtx *Context) {\n\t_, _ = fmt.Fprintf(cCtx.App.Writer, \"%v version %v\\n\", cCtx.App.Name, cCtx.App.Version)\n}\n\n// ShowCompletions prints the lists of commands within a given context\nfunc ShowCompletions(cCtx *Context) {\n\ta := cCtx.App\n\tif a != nil && a.BashComplete != nil {\n\t\ta.BashComplete(cCtx)\n\t}\n}\n\n// ShowCommandCompletions prints the custom completions for a given command\nfunc ShowCommandCompletions(ctx *Context, command string) {\n\tc := ctx.App.Command(command)\n\tif c != nil {\n\t\tif c.BashComplete != nil {\n\t\t\tc.BashComplete(ctx)\n\t\t} else {\n\t\t\tDefaultCompleteWithFlags(c)(ctx)\n\t\t}\n\t}\n\n}\n\n// printHelpCustom is the default implementation of HelpPrinterCustom.\n//\n// The customFuncs map will be combined with a default template.FuncMap to\n// allow using arbitrary functions in template rendering.\nfunc printHelpCustom(out io.Writer, templ string, data interface{}, customFuncs map[string]interface{}) {\n\n\tconst maxLineLength = 10000\n\n\tfuncMap := template.FuncMap{\n\t\t\"join\":           strings.Join,\n\t\t\"subtract\":       subtract,\n\t\t\"indent\":         indent,\n\t\t\"nindent\":        nindent,\n\t\t\"trim\":           strings.TrimSpace,\n\t\t\"wrap\":           func(input string, offset int) string { return wrap(input, offset, maxLineLength) },\n\t\t\"offset\":         offset,\n\t\t\"offsetCommands\": offsetCommands,\n\t}\n\n\tif customFuncs[\"wrapAt\"] != nil {\n\t\tif wa, ok := customFuncs[\"wrapAt\"]; ok {\n\t\t\tif waf, ok := wa.(func() int); ok {\n\t\t\t\twrapAt := waf()\n\t\t\t\tcustomFuncs[\"wrap\"] = func(input string, offset int) string {\n\t\t\t\t\treturn wrap(input, offset, wrapAt)\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t}\n\n\tfor key, value := range customFuncs {\n\t\tfuncMap[key] = value\n\t}\n\n\tw := tabwriter.NewWriter(out, 1, 8, 2, ' ', 0)\n\tt := template.Must(template.New(\"help\").Funcs(funcMap).Parse(templ))\n\tt.New(\"helpNameTemplate\").Parse(helpNameTemplate)\n\tt.New(\"usageTemplate\").Parse(usageTemplate)\n\tt.New(\"descriptionTemplate\").Parse(descriptionTemplate)\n\tt.New(\"visibleCommandTemplate\").Parse(visibleCommandTemplate)\n\tt.New(\"copyrightTemplate\").Parse(copyrightTemplate)\n\tt.New(\"versionTemplate\").Parse(versionTemplate)\n\tt.New(\"visibleFlagCategoryTemplate\").Parse(visibleFlagCategoryTemplate)\n\tt.New(\"visibleFlagTemplate\").Parse(visibleFlagTemplate)\n\tt.New(\"visibleGlobalFlagCategoryTemplate\").Parse(strings.Replace(visibleFlagCategoryTemplate, \"OPTIONS\", \"GLOBAL OPTIONS\", -1))\n\tt.New(\"authorsTemplate\").Parse(authorsTemplate)\n\tt.New(\"visibleCommandCategoryTemplate\").Parse(visibleCommandCategoryTemplate)\n\n\terr := t.Execute(w, data)\n\tif err != nil {\n\t\t// If the writer is closed, t.Execute will fail, and there's nothing\n\t\t// we can do to recover.\n\t\tif os.Getenv(\"CLI_TEMPLATE_ERROR_DEBUG\") != \"\" {\n\t\t\t_, _ = fmt.Fprintf(ErrWriter, \"CLI TEMPLATE ERROR: %#v\\n\", err)\n\t\t}\n\t\treturn\n\t}\n\t_ = w.Flush()\n}\n\nfunc printHelp(out io.Writer, templ string, data interface{}) {\n\tHelpPrinterCustom(out, templ, data, nil)\n}\n\nfunc checkVersion(cCtx *Context) bool {\n\tfound := false\n\tfor _, name := range VersionFlag.Names() {\n\t\tif cCtx.Bool(name) {\n\t\t\tfound = true\n\t\t}\n\t}\n\treturn found\n}\n\nfunc checkHelp(cCtx *Context) bool {\n\tfound := false\n\tfor _, name := range HelpFlag.Names() {\n\t\tif cCtx.Bool(name) {\n\t\t\tfound = true\n\t\t}\n\t}\n\treturn found\n}\n\nfunc checkCommandHelp(c *Context, name string) bool {\n\tif c.Bool(\"h\") || c.Bool(\"help\") {\n\t\t_ = ShowCommandHelp(c, name)\n\t\treturn true\n\t}\n\n\treturn false\n}\n\nfunc checkSubcommandHelp(cCtx *Context) bool {\n\tif cCtx.Bool(\"h\") || cCtx.Bool(\"help\") {\n\t\t_ = ShowSubcommandHelp(cCtx)\n\t\treturn true\n\t}\n\n\treturn false\n}\n\nfunc checkShellCompleteFlag(a *App, arguments []string) (bool, []string) {\n\tif !a.EnableBashCompletion {\n\t\treturn false, arguments\n\t}\n\n\tpos := len(arguments) - 1\n\tlastArg := arguments[pos]\n\n\tif lastArg != \"--generate-bash-completion\" {\n\t\treturn false, arguments\n\t}\n\n\treturn true, arguments[:pos]\n}\n\nfunc checkCompletions(cCtx *Context) bool {\n\tif !cCtx.shellComplete {\n\t\treturn false\n\t}\n\n\tif args := cCtx.Args(); args.Present() {\n\t\tname := args.First()\n\t\tif cmd := cCtx.App.Command(name); cmd != nil {\n\t\t\t// let the command handle the completion\n\t\t\treturn false\n\t\t}\n\t}\n\n\tShowCompletions(cCtx)\n\treturn true\n}\n\nfunc checkCommandCompletions(c *Context, name string) bool {\n\tif !c.shellComplete {\n\t\treturn false\n\t}\n\n\tShowCommandCompletions(c, name)\n\treturn true\n}\n\nfunc subtract(a, b int) int {\n\treturn a - b\n}\n\nfunc indent(spaces int, v string) string {\n\tpad := strings.Repeat(\" \", spaces)\n\treturn pad + strings.Replace(v, \"\\n\", \"\\n\"+pad, -1)\n}\n\nfunc nindent(spaces int, v string) string {\n\treturn \"\\n\" + indent(spaces, v)\n}\n\nfunc wrap(input string, offset int, wrapAt int) string {\n\tvar ss []string\n\n\tlines := strings.Split(input, \"\\n\")\n\n\tpadding := strings.Repeat(\" \", offset)\n\n\tfor i, line := range lines {\n\t\tif line == \"\" {\n\t\t\tss = append(ss, line)\n\t\t} else {\n\t\t\twrapped := wrapLine(line, offset, wrapAt, padding)\n\t\t\tif i == 0 {\n\t\t\t\tss = append(ss, wrapped)\n\t\t\t} else {\n\t\t\t\tss = append(ss, padding+wrapped)\n\n\t\t\t}\n\n\t\t}\n\t}\n\n\treturn strings.Join(ss, \"\\n\")\n}\n\nfunc wrapLine(input string, offset int, wrapAt int, padding string) string {\n\tif wrapAt <= offset || len(input) <= wrapAt-offset {\n\t\treturn input\n\t}\n\n\tlineWidth := wrapAt - offset\n\twords := strings.Fields(input)\n\tif len(words) == 0 {\n\t\treturn input\n\t}\n\n\twrapped := words[0]\n\tspaceLeft := lineWidth - len(wrapped)\n\tfor _, word := range words[1:] {\n\t\tif len(word)+1 > spaceLeft {\n\t\t\twrapped += \"\\n\" + padding + word\n\t\t\tspaceLeft = lineWidth - len(word)\n\t\t} else {\n\t\t\twrapped += \" \" + word\n\t\t\tspaceLeft -= 1 + len(word)\n\t\t}\n\t}\n\n\treturn wrapped\n}\n\nfunc offset(input string, fixed int) int {\n\treturn len(input) + fixed\n}\n\n// this function tries to find the max width of the names column\n// so say we have the following rows for help\n//\n//\tfoo1, foo2, foo3  some string here\n//\tbar1, b2 some other string here\n//\n// We want to offset the 2nd row usage by some amount so that everything\n// is aligned\n//\n//\tfoo1, foo2, foo3  some string here\n//\tbar1, b2          some other string here\n//\n// to find that offset we find the length of all the rows and use the max\n// to calculate the offset\nfunc offsetCommands(cmds []*Command, fixed int) int {\n\tvar max int = 0\n\tfor _, cmd := range cmds {\n\t\ts := strings.Join(cmd.Names(), \", \")\n\t\tif len(s) > max {\n\t\t\tmax = len(s)\n\t\t}\n\t}\n\treturn max + fixed\n}\n",
+        "rank": 0,
+        "truncated": false
+      },
+      {
+        "id": "80fa61328c6300bd3fae222b",
+        "revision": "de834931826e135e850fa77be341f68d96d6865a",
+        "path": "help.go",
+        "start_byte": 0,
+        "text": "package cli\n\nimport (\n\t\"fmt\"\n\t\"io\"\n\t\"os\"\n\t\"strings\"\n\t\"text/tabwriter\"\n\t\"text/template\"\n\t\"unicode/utf8\"\n)\n\nconst (\n\thelpName  = \"help\"\n\thelpAlias = \"h\"\n)\n\n// this instance is to avoid recursion in the ShowCommandHelp which can\n// add a help command again\nvar helpCommandDontUse = &Command{\n\tName:      helpName,\n\tAliases:   []string{helpAlias},\n\tUsage:     \"Shows a list of commands or help for one command\",\n\tArgsUsage: \"[command]\",\n}\n\nvar helpCommand = &Command{\n\tName:      helpName,\n\tAliases:   []string{helpAlias},\n\tUsage:     \"Shows a list of commands or help for one command\",\n\tArgsUsage: \"[command]\",\n\tAction: func(cCtx *Context) error {\n\t\targs := cCtx.Args()\n\t\targsPresent := args.First() != \"\"\n\t\tfirstArg := args.First()\n\n\t\t// This action can be triggered by a \"default\" action of a command\n\t\t// or via cmd.Run when cmd == helpCmd. So we have following possibilities\n\t\t//\n\t\t// 1 $ app\n\t\t// 2 $ app help\n\t\t// 3 $ app foo\n\t\t// 4 $ app help foo\n\t\t// 5 $ app foo help\n\n\t\t// Case 4. when executing a help command set the context to parent\n\t\t// to allow resolution of subsequent args. This will transform\n\t\t// $ app help foo\n\t\t//     to\n\t\t// $ app foo\n\t\t// which will then be handled as case 3\n\t\tif cCtx.Command.Name == helpName || cCtx.Command.Name == helpAlias {\n\t\t\tcCtx = cCtx.parentContext\n\t\t}\n\n\t\t// Case 4. $ app hello foo\n\t\t// foo is the command for which help needs to be shown\n\t\tif argsPresent {\n\t\t\treturn ShowCommandHelp(cCtx, firstArg)\n\t\t}\n\n\t\t// Case 1 & 2\n\t\t// Special case when running help on main app itself as opposed to indivdual\n\t\t// commands/subcommands\n\t\tif cCtx.parentContext.App == nil {\n\t\t\t_ = ShowAppHelp(cCtx)\n\t\t\treturn nil\n\t\t}\n\n\t\t// Case 3, 5\n\t\treturn ShowSubcommandHelp(cCtx)\n\t},\n}\n\n// Prints help for the App or Command\ntype helpPrinter func(w io.Writer, templ string, data interface{})\n\n// Prints help for the App or Command with custom template function.\ntype helpPrinterCustom func(w io.Writer, templ string, data interface{}, customFunc map[string]interface{})\n\n// HelpPrinter is a function that writes the help output. If not set explicitly,\n// this calls HelpPrinterCustom using only the default template functions.\n//\n// If custom logic for printing help is required, this function can be\n// overridden. If the ExtraInfo field is defined on an App, this function\n// should not be modified, as HelpPrinterCustom will be used directly in order\n// to capture the extra information.\nvar HelpPrinter helpPrinter = printHelp\n\n// HelpPrinterCustom is a function that writes the help output. It is used as\n// the default implementation of HelpPrinter, and may be called directly if\n// the ExtraInfo field is set on an App.\n//\n// In the default implementation, if the customFuncs argument contains a\n// \"wrapAt\" key, which is a function which takes no arguments and returns\n// an int, this int value will be used to produce a \"wrap\" function used\n// by the default template to wrap long lines.\nvar HelpPrinterCustom helpPrinterCustom = printHelpCustom\n\n// VersionPrinter prints the version for the App\nvar VersionPrinter = printVersion\n\n// ShowAppHelpAndExit - Prints the list of subcommands for the app and exits with exit code.\nfunc ShowAppHelpAndExit(c *Context, exitCode int) {\n\t_ = ShowAppHelp(c)\n\tos.Exit(exitCode)\n}\n\n// ShowAppHelp is an action that displays the help.\nfunc ShowAppHelp(cCtx *Context) error {\n\ttpl := cCtx.App.CustomAppHelpTemplate\n\tif tpl == \"\" {\n\t\ttpl = AppHelpTemplate\n\t}\n\n\tif cCtx.App.ExtraInfo == nil {\n\t\tHelpPrinter(cCtx.App.Writer, tpl, cCtx.App)\n\t\treturn nil\n\t}\n\n\tcustomAppData := func() map[string]interface{} {\n\t\treturn map[string]interface{}{\n\t\t\t\"ExtraInfo\": cCtx.App.ExtraInfo,\n\t\t}\n\t}\n\tHelpPrinterCustom(cCtx.App.Writer, tpl, cCtx.App, customAppData())\n\n\treturn nil\n}\n\n// DefaultAppComplete prints the list of subcommands as the default app completion method\nfunc DefaultAppComplete(cCtx *Context) {\n\tDefaultCompleteWithFlags(nil)(cCtx)\n}\n\nfunc printCommandSuggestions(commands []*Command, writer io.Writer) {\n\tfor _, command := range commands {\n\t\tif command.Hidden {\n\t\t\tcontinue\n\t\t}\n\t\tif strings.HasSuffix(os.Getenv(\"SHELL\"), \"zsh\") {\n\t\t\tfor _, name := range command.Names() {\n\t\t\t\t_, _ = fmt.Fprintf(writer, \"%s:%s\\n\", name, command.Usage)\n\t\t\t}\n\t\t} else {\n\t\t\tfor _, name := range command.Names() {\n\t\t\t\t_, _ = fmt.Fprintf(writer, \"%s\\n\", name)\n\t\t\t}\n\t\t}\n\t}\n}\n\nfunc cliArgContains(flagName string) bool {\n\tfor _, name := range strings.Split(flagName, \",\") {\n\t\tname = strings.TrimSpace(name)\n\t\tcount := utf8.RuneCountInString(name)\n\t\tif count > 2 {\n\t\t\tcount = 2\n\t\t}\n\t\tflag := fmt.Sprintf(\"%s%s\", strings.Repeat(\"-\", count), name)\n\t\tfor _, a := range os.Args {\n\t\t\tif a == flag {\n\t\t\t\treturn true\n\t\t\t}\n\t\t}\n\t}\n\treturn false\n}\n\nfunc printFlagSuggestions(lastArg string, flags []Flag, writer io.Writer) {\n\tcur := strings.TrimPrefix(lastArg, \"-\")\n\tcur = strings.TrimPrefix(cur, \"-\")\n\tfor _, flag := range flags {\n\t\tif bflag, ok := flag.(*BoolFlag); ok && bflag.Hidden {\n\t\t\tcontinue\n\t\t}\n\t\tfor _, name := range flag.Names() {\n\t\t\tname = strings.TrimSpace(name)\n\t\t\t// this will get total count utf8 letters in flag name\n\t\t\tcount := utf8.RuneCountInString(name)\n\t\t\tif count > 2 {\n\t\t\t\tcount = 2 // resuse this count to generate single - or -- in flag completion\n\t\t\t}\n\t\t\t// if flag name has more than one utf8 letter and last argument in cli has -- prefix then\n\t\t\t// skip flag completion for short flags example -v or -x\n\t\t\tif strings.HasPrefix(lastArg, \"--\") && count == 1 {\n\t\t\t\tcontinue\n\t\t\t}\n\t\t\t// match if last argument matches this flag and it is not repeated\n\t\t\tif strings.HasPrefix(name, cur) && cur != name && !cliArgContains(name) {\n\t\t\t\tflagCompletion := fmt.Sprintf(\"%s%s\", strings.Repeat(\"-\", count), name)\n\t\t\t\t_, _ = fmt.Fprintln(writer, flagCompletion)\n\t\t\t}\n\t\t}\n\t}\n}\n\nfunc DefaultCompleteWithFlags(cmd *Command) func(cCtx *Context) {\n\treturn func(cCtx *Context) {\n\t\tif len(os.Args) > 2 {\n\t\t\tlastArg := os.Args[len(os.Args)-2]\n\n\t\t\tif strings.HasPrefix(lastArg, \"-\") {\n\t\t\t\tif cmd != nil {\n\t\t\t\t\tprintFlagSuggestions(lastArg, cmd.Flags, cCtx.App.Writer)\n\n\t\t\t\t\treturn\n\t\t\t\t}\n\n\t\t\t\tprintFlagSuggestions(lastArg, cCtx.App.Flags, cCtx.App.Writer)\n\n\t\t\t\treturn\n\t\t\t}\n\t\t}\n\n\t\tif cmd != nil {\n\t\t\tprintCommandSuggestions(cmd.Subcommands, cCtx.App.Writer)\n\t\t\treturn\n\t\t}\n\n\t\tprintCommandSuggestions(cCtx.App.Commands, cCtx.App.Writer)\n\t}\n}\n\n// ShowCommandHelpAndExit - exits with code after showing help\nfunc ShowCommandHelpAndExit(c *Context, command string, code int) {\n\t_ = ShowCommandHelp(c, command)\n\tos.Exit(code)\n}\n\n// ShowCommandHelp prints help for the given command\nfunc ShowCommandHelp(ctx *Context, command string) error {\n\t// show the subcommand help for a command with subcommands\n\tif command == \"\" {\n\t\tHelpPrinter(ctx.App.Writer, SubcommandHelpTemplate, ctx.App)\n\t\treturn nil\n\t}\n\n\tfor _, c := range ctx.App.Commands {\n\t\tif c.HasName(command) {\n\t\t\tif !ctx.App.HideHelpCommand && !c.HasName(helpName) && len(c.Subcommands) != 0 {\n\t\t\t\tc.Subcommands = append(c.Subcommands, helpCommandDontUse)\n\t\t\t}\n\t\t\tif !ctx.App.HideHelp && HelpFlag != nil {\n\t\t\t\tc.appendFlag(HelpFlag)\n\t\t\t}\n\t\t\ttempl := c.CustomHelpTemplate\n\t\t\tif templ == \"\" {\n\t\t\t\tif len(c.Subcommands) == 0 {\n\t\t\t\t\ttempl = CommandHelpTemplate\n\t\t\t\t} else {\n\t\t\t\t\ttempl = SubcommandHelpTemplate\n\t\t\t\t}\n\t\t\t}\n\n\t\t\tHelpPrinter(ctx.App.Writer, templ, c)\n\n\t\t\treturn nil\n\t\t}\n\t}\n\n\tif ctx.App.CommandNotFound == nil {\n\t\terrMsg := fmt.Sprintf(\"No help topic for '%v'\", command)\n\t\tif ctx.App.Suggest {\n\t\t\tif suggestion := SuggestCommand(ctx.App.Commands, command); suggestion != \"\" {\n\t\t\t\terrMsg += \". \" + suggestion\n\t\t\t}\n\t\t}\n\t\treturn Exit(errMsg, 3)\n\t}\n\n\tctx.App.CommandNotFound(ctx, command)\n\treturn nil\n}\n\n// ShowSubcommandHelpAndExit - Prints help for the given subcommand and exits with exit code.\nfunc ShowSubcommandHelpAndExit(c *Context, exitCode int) {\n\t_ = ShowSubcommandHelp(c)\n\tos.Exit(exitCode)\n}\n\n// ShowSubcommandHelp prints help for the given subcommand\nfunc ShowSubcommandHelp(cCtx *Context) error {\n\tif cCtx == nil {\n\t\treturn nil\n\t}\n\n\tif cCtx.Command != nil {\n\t\treturn ShowCommandHelp(cCtx, cCtx.Command.Name)\n\t}\n\n\treturn ShowCommandHelp(cCtx, \"\")\n}\n\n// ShowVersion prints the version number of the App\nfunc ShowVersion(cCtx *Context) {\n\tVersionPrinter(cCtx)\n}\n\nfunc printVersion(cCtx *Context) {\n\t_, _ = fmt.Fprintf(cCtx.App.Writer, \"%v version %v\\n\", cCtx.App.Name, cCtx.App.Version)\n}\n\n// ShowCompletions prints the lists of commands within a given context\nfunc ShowCompletions(cCtx *Context) {\n\ta := cCtx.App\n\tif a != nil && a.BashComplete != nil {\n\t\ta.BashComplete(cCtx)\n\t}\n}\n\n// ShowCommandCompletions prints the custom completions for a given command\nfunc ShowCommandCompletions(ctx *Context, command string) {\n\tc := ctx.App.Command(command)\n\tif c != nil {\n\t\tif c.BashComplete != nil {\n\t\t\tc.BashComplete(ctx)\n\t\t} else {\n\t\t\tDefaultCompleteWithFlags(c)(ctx)\n\t\t}\n\t}\n\n}\n\n// printHelpCustom is the default implementation of HelpPrinterCustom.\n//\n// The customFuncs map will be combined with a default template.FuncMap to\n// allow using arbitrary functions in template rendering.\nfunc printHelpCustom(out io.Writer, templ string, data interface{}, customFuncs map[string]interface{}) {\n\n\tconst maxLineLength = 10000\n\n\tfuncMap := template.FuncMap{\n\t\t\"join\":           strings.Join,\n\t\t\"subtract\":       subtract,\n\t\t\"indent\":         indent,\n\t\t\"nindent\":        nindent,\n\t\t\"trim\":           strings.TrimSpace,\n\t\t\"wrap\":           func(input string, offset int) string { return wrap(input, offset, maxLineLength) },\n\t\t\"offset\":         offset,\n\t\t\"offsetCommands\": offsetCommands,\n\t}\n\n\tif customFuncs[\"wrapAt\"] != nil {\n\t\tif wa, ok := customFuncs[\"wrapAt\"]; ok {\n\t\t\tif waf, ok := wa.(func() int); ok {\n\t\t\t\twrapAt := waf()\n\t\t\t\tcustomFuncs[\"wrap\"] = func(input string, offset int) string {\n\t\t\t\t\treturn wrap(input, offset, wrapAt)\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t}\n\n\tfor key, value := range customFuncs {\n\t\tfuncMap[key] = value\n\t}\n\n\tw := tabwriter.NewWriter(out, 1, 8, 2, ' ', 0)\n\tt := template.Must(template.New(\"help\").Funcs(funcMap).Parse(templ))\n\n\terr := t.Execute(w, data)\n\tif err != nil {\n\t\t// If the writer is closed, t.Execute will fail, and there's nothing\n\t\t// we can do to recover.\n\t\tif os.Getenv(\"CLI_TEMPLATE_ERROR_DEBUG\") != \"\" {\n\t\t\t_, _ = fmt.Fprintf(ErrWriter, \"CLI TEMPLATE ERROR: %#v\\n\", err)\n\t\t}\n\t\treturn\n\t}\n\t_ = w.Flush()\n}\n\nfunc printHelp(out io.Writer, templ string, data interface{}) {\n\tHelpPrinterCustom(out, templ, data, nil)\n}\n\nfunc checkVersion(cCtx *Context) bool {\n\tfound := false\n\tfor _, name := range VersionFlag.Names() {\n\t\tif cCtx.Bool(name) {\n\t\t\tfound = true\n\t\t}\n\t}\n\treturn found\n}\n\nfunc checkHelp(cCtx *Context) bool {\n\tfound := false\n\tfor _, name := range HelpFlag.Names() {\n\t\tif cCtx.Bool(name) {\n\t\t\tfound = true\n\t\t}\n\t}\n\treturn found\n}\n\nfunc checkCommandHelp(c *Context, name string) bool {\n\tif c.Bool(\"h\") || c.Bool(\"help\") {\n\t\t_ = ShowCommandHelp(c, name)\n\t\treturn true\n\t}\n\n\treturn false\n}\n\nfunc checkSubcommandHelp(cCtx *Context) bool {\n\tif cCtx.Bool(\"h\") || cCtx.Bool(\"help\") {\n\t\t_ = ShowSubcommandHelp(cCtx)\n\t\treturn true\n\t}\n\n\treturn false\n}\n\nfunc checkShellCompleteFlag(a *App, arguments []string) (bool, []string) {\n\tif !a.EnableBashCompletion {\n\t\treturn false, arguments\n\t}\n\n\tpos := len(arguments) - 1\n\tlastArg := arguments[pos]\n\n\tif lastArg != \"--generate-bash-completion\" {\n\t\treturn false, arguments\n\t}\n\n\treturn true, arguments[:pos]\n}\n\nfunc checkCompletions(cCtx *Context) bool {\n\tif !cCtx.shellComplete {\n\t\treturn false\n\t}\n\n\tif args := cCtx.Args(); args.Present() {\n\t\tname := args.First()\n\t\tif cmd := cCtx.App.Command(name); cmd != nil {\n\t\t\t// let the command handle the completion\n\t\t\treturn false\n\t\t}\n\t}\n\n\tShowCompletions(cCtx)\n\treturn true\n}\n\nfunc checkCommandCompletions(c *Context, name string) bool {\n\tif !c.shellComplete {\n\t\treturn false\n\t}\n\n\tShowCommandCompletions(c, name)\n\treturn true\n}\n\nfunc subtract(a, b int) int {\n\treturn a - b\n}\n\nfunc indent(spaces int, v string) string {\n\tpad := strings.Repeat(\" \", spaces)\n\treturn pad + strings.Replace(v, \"\\n\", \"\\n\"+pad, -1)\n}\n\nfunc nindent(spaces int, v string) string {\n\treturn \"\\n\" + indent(spaces, v)\n}\n\nfunc wrap(input string, offset int, wrapAt int) string {\n\tvar sb strings.Builder\n\n\tlines := strings.Split(input, \"\\n\")\n\n\tpadding := strings.Repeat(\" \", offset)\n\n\tfor i, line := range lines {\n\t\tif i != 0 {\n\t\t\tsb.WriteString(padding)\n\t\t}\n\n\t\tsb.WriteString(wrapLine(line, offset, wrapAt, padding))\n\n\t\tif i != len(lines)-1 {\n\t\t\tsb.WriteString(\"\\n\")\n\t\t}\n\t}\n\n\treturn sb.String()\n}\n\nfunc wrapLine(input string, offset int, wrapAt int, padding string) string {\n\tif wrapAt <= offset || len(input) <= wrapAt-offset {\n\t\treturn input\n\t}\n\n\tlineWidth := wrapAt - offset\n\twords := strings.Fields(input)\n\tif len(words) == 0 {\n\t\treturn input\n\t}\n\n\twrapped := words[0]\n\tspaceLeft := lineWidth - len(wrapped)\n\tfor _, word := range words[1:] {\n\t\tif len(word)+1 > spaceLeft {\n\t\t\twrapped += \"\\n\" + padding + word\n\t\t\tspaceLeft = lineWidth - len(word)\n\t\t} else {\n\t\t\twrapped += \" \" + word\n\t\t\tspaceLeft -= 1 + len(word)\n\t\t}\n\t}\n\n\treturn wrapped\n}\n\nfunc offset(input string, fixed int) int {\n\treturn len(input) + fixed\n}\n\n// this function tries to find the max width of the names column\n// so say we have the following rows for help\n//\n//\tfoo1, foo2, foo3  some string here\n//\tbar1, b2 some other string here\n//\n// We want to offset the 2nd row usage by some amount so that everything\n// is aligned\n//\n//\tfoo1, foo2, foo3  some string here\n//\tbar1, b2          some other string here\n//\n// to find that offset we find the length of all the rows and use the max\n// to calculate the offset\nfunc offsetCommands(cmds []*Command, fixed int) int {\n\tvar max int = 0\n\tfor _, cmd := range cmds {\n\t\ts := strings.Join(cmd.Names(), \", \")\n\t\tif len(s) > max {\n\t\t\tmax = len(s)\n\t\t}\n\t}\n\treturn max + fixed\n}\n",
+        "rank": 0,
+        "truncated": false
+      }
+    ],
+    "selected": [
+      {
+        "id": "88f6f7d0fbcc86af9847bc62",
+        "revision": "0a0546f0683b7fd2f189a0bcbc8d16e1b96a77ac",
+        "path": "help.go",
+        "start_byte": 6514,
+        "text": "func ShowCommandHelp(ctx *Context, command string) error {\n\t// show the subcommand help for a command with subcommands\n\tif command == \"\" {\n\t\tHelpPrinter(ctx.App.Writer, SubcommandHelpTemplate, ctx.App)\n\t\treturn nil\n\t}\n\n\tfor _, c := range ctx.App.Commands {\n\t\tif c.HasName(command) {\n\t\t\tif !ctx.App.HideHelpCommand && !c.HasName(helpName) && len(c.Subcommands) != 0 {\n\t\t\t\tc.Subcommands = append(c.Subcommands, helpCommandDontUse)\n\t\t\t}\n\t\t\tif !ctx.App.HideHelp && HelpFlag != nil {\n\t\t\t\tif c.flagCategories == nil {\n\t\t\t\t\tc.flagCategories = newFlagCategoriesFromFlags([]Flag{HelpFlag})\n\t\t\t\t} else {\n\t\t\t\t\tc.flagCategories.AddFlag(\"\", HelpFlag)\n\t\t\t\t}\n\t\t\t}\n\t\t\ttempl := c.CustomHelpTemplate\n\t\t\tif templ == \"\" {\n\t\t\t\tif len(c.Subcommands) == 0 {\n\t\t\t\t\ttempl = CommandHelpTemplate\n\t\t\t\t} else {\n\t\t\t\t\ttempl = SubcommandHelpTemplate\n\t\t\t\t}\n\t\t\t}\n\n\t\t\tHelpPrinter(ctx.App.Writer, templ, c)\n\n\t\t\treturn nil\n\t\t}\n\t}\n\n\tif ctx.App.CommandNotFound == nil {\n\t\terrMsg := fmt.Sprintf(\"No help topic for '%v'\", command)\n\t\tif ctx.App.Suggest {\n\t\t\tif suggestion := SuggestCommand(ctx.App.Commands, command); suggestion != \"\" {\n\t\t\t\terrMsg += \". \" + suggestion\n\t\t\t}\n\t\t}\n\t\treturn Exit(errMsg, 3)\n\t}\n\n\tctx.App.CommandNotFound(ctx, command)\n\treturn nil\n}",
+        "rank": 0,
+        "truncated": false
+      },
+      {
+        "id": "67b3591727c3159eea8ce8cc",
+        "revision": "de834931826e135e850fa77be341f68d96d6865a",
+        "path": "help.go",
+        "start_byte": 6514,
+        "text": "func ShowCommandHelp(ctx *Context, command string) error {\n\t// show the subcommand help for a command with subcommands\n\tif command == \"\" {\n\t\tHelpPrinter(ctx.App.Writer, SubcommandHelpTemplate, ctx.App)\n\t\treturn nil\n\t}\n\n\tfor _, c := range ctx.App.Commands {\n\t\tif c.HasName(command) {\n\t\t\tif !ctx.App.HideHelpCommand && !c.HasName(helpName) && len(c.Subcommands) != 0 {\n\t\t\t\tc.Subcommands = append(c.Subcommands, helpCommandDontUse)\n\t\t\t}\n\t\t\tif !ctx.App.HideHelp && HelpFlag != nil {\n\t\t\t\tc.appendFlag(HelpFlag)\n\t\t\t}\n\t\t\ttempl := c.CustomHelpTemplate\n\t\t\tif templ == \"\" {\n\t\t\t\tif len(c.Subcommands) == 0 {\n\t\t\t\t\ttempl = CommandHelpTemplate\n\t\t\t\t} else {\n\t\t\t\t\ttempl = SubcommandHelpTemplate\n\t\t\t\t}\n\t\t\t}\n\n\t\t\tHelpPrinter(ctx.App.Writer, templ, c)\n\n\t\t\treturn nil\n\t\t}\n\t}\n\n\tif ctx.App.CommandNotFound == nil {\n\t\terrMsg := fmt.Sprintf(\"No help topic for '%v'\", command)\n\t\tif ctx.App.Suggest {\n\t\t\tif suggestion := SuggestCommand(ctx.App.Commands, command); suggestion != \"\" {\n\t\t\t\terrMsg += \". \" + suggestion\n\t\t\t}\n\t\t}\n\t\treturn Exit(errMsg, 3)\n\t}\n\n\tctx.App.CommandNotFound(ctx, command)\n\treturn nil\n}",
+        "rank": 0,
+        "truncated": false
+      },
+      {
+        "id": "2388ed5222eee9fa33960965",
+        "revision": "0a0546f0683b7fd2f189a0bcbc8d16e1b96a77ac",
+        "path": "app.go",
+        "start_byte": 1030,
+        "text": "type App struct {\n\t// The name of the program. Defaults to path.Base(os.Args[0])\n\tName string\n\t// Full name of command for help, defaults to Name\n\tHelpName string\n\t// Description of the program.\n\tUsage string\n\t// Text to override the USAGE section of help\n\tUsageText string\n\t// Description of the program argument format.\n\tArgsUsage string\n\t// Version of the program\n\tVersion string\n\t// Description of the program\n\tDescription string\n\t// DefaultCommand is the (optional) name of a command\n\t// to run if no command names are passed as CLI arguments.\n\tDefaultCommand string\n\t// List of commands to execute\n\tCommands []*Command\n\t// List of flags to parse\n\tFlags []Flag\n\t// Boolean to enable bash completion commands\n\tEnableBashCompletion bool\n\t// Boolean to hide built-in help command and help flag\n\tHideHelp bool\n\t// Boolean to hide built-in help command but keep help flag.\n\t// Ignored if HideHelp is true.\n\tHideHelpCommand bool\n\t// Boolean to hide built-in version flag and the VERSION section of help\n\tHideVersion bool\n\t// categories contains the categorized commands and is populated on app startup\n\tcategories CommandCategories\n\t// flagCategories contains the categorized flags and is populated on app startup\n\tflagCategories FlagCategories\n\t// An action to execute when the shell completion flag is set\n\tBashComplete BashCompleteFunc\n\t// An action to execute before any subcommands are run, but after the context is ready\n\t// If a non-nil error is returned, no subcommands are run\n\tBefore BeforeFunc\n\t// An action to execute after any subcommands are run, but after the subcommand has finished\n\t// It is run even if Action() panics\n\tAfter AfterFunc\n\t// The action to execute when no subcommands are specified\n\tAction ActionFunc\n\t// Execute this function if the proper command cannot be found\n\tCommandNotFound CommandNotFoundFunc\n\t// Execute this function if a usage error occurs\n\tOnUsageError OnUsageErrorFunc\n\t// Execute this function when an invalid flag is accessed from the context\n\tInvalidFlagAccessHandler InvalidFlagAccessFunc\n\t// Compilation date\n\tCompiled time.Time\n\t// List of all authors who contributed\n\tAuthors []*Author\n\t// Copyright of the binary if any\n\tCopyright string\n\t// Reader reader to write input to (useful for tests)\n\tReader io.Reader\n\t// Writer writer to write output to\n\tWriter io.Writer\n\t// ErrWriter writes error output\n\tErrWriter io.Writer\n\t// ExitErrHandler processes any error encountered while running an App before\n\t// it is returned to the caller. If no function is provided, HandleExitCoder\n\t// is used as the default behavior.\n\tExitErrHandler ExitErrHandlerFunc\n\t// Other custom info\n\tMetadata map[string]interface{}\n\t// Carries a function which returns app specific info.\n\tExtraInfo func() map[string]string\n\t// CustomAppHelpTemplate the text template for app help topic.\n\t// cli.go uses text/template to render templates. You can\n\t// render custom help text by setting this variable.\n\tCustomAppHelpTemplate string\n\t// Boolean to enable short-option handling so user can combine several\n\t// single-character bool arguments into one\n\t// i.e. foobar -o -v -> foobar -ov\n\tUseShortOptionHandling bool\n\t// Enable suggestions for commands and flags\n\tSuggest bool\n\n\tdidSetup bool\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "8ecb6abe1979a7d8dc1d639a",
+        "revision": "0a0546f0683b7fd2f189a0bcbc8d16e1b96a77ac",
+        "path": "app.go",
+        "start_byte": 9578,
+        "text": "var c *Command",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "55718e140eef5199af592f3e",
+        "revision": "0a0546f0683b7fd2f189a0bcbc8d16e1b96a77ac",
+        "path": "category.go",
+        "start_byte": 2455,
+        "text": "func newFlagCategoriesFromFlags(fs []Flag) FlagCategories {\n\tfc := newFlagCategories()\n\tfor _, fl := range fs {\n\t\tif cf, ok := fl.(CategorizableFlag); ok {\n\t\t\tfc.AddFlag(cf.GetCategory(), cf)\n\t\t}\n\t}\n\n\treturn fc\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "33fc17a6fd2f2d016c8811bb",
+        "revision": "0a0546f0683b7fd2f189a0bcbc8d16e1b96a77ac",
+        "path": "category.go",
+        "start_byte": 2669,
+        "text": "func (f *defaultFlagCategories) AddFlag(category string, fl Flag) {\n\tif _, ok := f.m[category]; !ok {\n\t\tf.m[category] = &defaultVisibleFlagCategory{name: category, m: map[string]Flag{}}\n\t}\n\n\tf.m[category].m[fl.String()] = fl\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "5799423ede502c2925a6aa16",
+        "revision": "0a0546f0683b7fd2f189a0bcbc8d16e1b96a77ac",
+        "path": "command.go",
+        "start_byte": 2131,
+        "text": "type Commands []*Command",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "3999a67fe02bca926be8b3b0",
+        "revision": "0a0546f0683b7fd2f189a0bcbc8d16e1b96a77ac",
+        "path": "command.go",
+        "start_byte": 5339,
+        "text": "func (c *Command) HasName(name string) bool {\n\tfor _, n := range c.Names() {\n\t\tif n == name {\n\t\t\treturn true\n\t\t}\n\t}\n\treturn false\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "8ad1ff1fa5ed260614f68df0",
+        "revision": "0a0546f0683b7fd2f189a0bcbc8d16e1b96a77ac",
+        "path": "context.go",
+        "start_byte": 247,
+        "text": "type Context struct {\n\tcontext.Context\n\tApp           *App\n\tCommand       *Command\n\tshellComplete bool\n\tflagSet       *flag.FlagSet\n\tparentContext *Context\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "d383b8595d257aa334203650",
+        "revision": "0a0546f0683b7fd2f189a0bcbc8d16e1b96a77ac",
+        "path": "errors.go",
+        "start_byte": 2543,
+        "text": "func Exit(message interface{}, exitCode int) ExitCoder {\n\treturn &exitError{\n\t\tmessage:  message,\n\t\texitCode: exitCode,\n\t}\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "74a23679a9f5c273f227f68b",
+        "revision": "0a0546f0683b7fd2f189a0bcbc8d16e1b96a77ac",
+        "path": "flag.go",
+        "start_byte": 803,
+        "text": "var HelpFlag Flag = &BoolFlag{\n\tName:    \"help\",\n\tAliases: []string{\"h\"},\n\tUsage:   \"show help\",\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "c9a34a3372445d96fde52f3e",
+        "revision": "0a0546f0683b7fd2f189a0bcbc8d16e1b96a77ac",
+        "path": "flag.go",
+        "start_byte": 2436,
+        "text": "type Flag interface {\n\tfmt.Stringer\n\n\t// Apply Flag settings to the given flag set\n\tApply(*flag.FlagSet) error\n\n\t// All possible names for this flag\n\tNames() []string\n\n\t// Whether the flag has been set or not\n\tIsSet() bool\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "acca9582fdbf5dda2e1b438a",
+        "revision": "0a0546f0683b7fd2f189a0bcbc8d16e1b96a77ac",
+        "path": "help.go",
+        "start_byte": 106,
+        "text": "const (\n\thelpName  = \"help\"\n\thelpAlias = \"h\"\n)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "0663480d364553c94aeaf7be",
+        "revision": "0a0546f0683b7fd2f189a0bcbc8d16e1b96a77ac",
+        "path": "help.go",
+        "start_byte": 254,
+        "text": "var helpCommandDontUse = &Command{\n\tName:      helpName,\n\tAliases:   []string{helpAlias},\n\tUsage:     \"Shows a list of commands or help for one command\",\n\tArgsUsage: \"[command]\",\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "a448eac1337f9a6eae277cbd",
+        "revision": "0a0546f0683b7fd2f189a0bcbc8d16e1b96a77ac",
+        "path": "help.go",
+        "start_byte": 2416,
+        "text": "var HelpPrinter helpPrinter = printHelp",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "1269c5ee8d09977917457e64",
+        "revision": "0a0546f0683b7fd2f189a0bcbc8d16e1b96a77ac",
+        "path": "sliceflag.go",
+        "start_byte": 2206,
+        "text": "var (\n\t// compile time assertions\n\n\t_ SliceFlagTarget[string]  = (*StringSliceFlag)(nil)\n\t_ SliceFlagTarget[string]  = (*SliceFlag[*StringSliceFlag, []string, string])(nil)\n\t_ SliceFlagTarget[string]  = (*MultiStringFlag)(nil)\n\t_ SliceFlagTarget[float64] = (*MultiFloat64Flag)(nil)\n\t_ SliceFlagTarget[int64]   = (*MultiInt64Flag)(nil)\n\t_ SliceFlagTarget[int]     = (*MultiIntFlag)(nil)\n\n\t_ Generic    = (*flagValueHook)(nil)\n\t_ Serializer = (*flagValueHook)(nil)\n)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "1cae80e372ca4b74be829db4",
+        "revision": "0a0546f0683b7fd2f189a0bcbc8d16e1b96a77ac",
+        "path": "template.go",
+        "start_byte": 2749,
+        "text": "var CommandHelpTemplate = `NAME:\n   {{template \"helpNameTemplate\" .}}\n\nUSAGE:\n   {{template \"usageTemplate\" .}}{{if .Category}}\n\nCATEGORY:\n   {{.Category}}{{end}}{{if .Description}}\n\nDESCRIPTION:\n   {{template \"descriptionTemplate\" .}}{{end}}{{if .VisibleFlagCategories}}\n\nOPTIONS:{{template \"visibleFlagCategoryTemplate\" .}}{{else if .VisibleFlags}}\n\nOPTIONS:{{template \"visibleFlagTemplate\" .}}{{end}}`",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "f36745ba8ae2546e91d4e5da",
+        "revision": "0a0546f0683b7fd2f189a0bcbc8d16e1b96a77ac",
+        "path": "template.go",
+        "start_byte": 3344,
+        "text": "var SubcommandHelpTemplate = `NAME:\n   {{template \"helpNameTemplate\" .}}\n\nUSAGE:\n   {{if .UsageText}}{{wrap .UsageText 3}}{{else}}{{.HelpName}} command{{if .VisibleFlags}} [command options]{{end}} {{if .ArgsUsage}}{{.ArgsUsage}}{{else}}[arguments...]{{end}}{{end}}{{if .Description}}\n\nDESCRIPTION:\n   {{template \"descriptionTemplate\" .}}{{end}}{{if .VisibleCommands}}\n\nCOMMANDS:{{template \"visibleCommandTemplate\" .}}{{end}}{{if .VisibleFlagCategories}}\n\nOPTIONS:{{template \"visibleFlagCategoryTemplate\" .}}{{else if .VisibleFlags}}\n\nOPTIONS:{{template \"visibleFlagTemplate\" .}}{{end}}`",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "bc17cb748222dac63de61200",
+        "revision": "de834931826e135e850fa77be341f68d96d6865a",
+        "path": "app.go",
+        "start_byte": 1030,
+        "text": "type App struct {\n\t// The name of the program. Defaults to path.Base(os.Args[0])\n\tName string\n\t// Full name of command for help, defaults to Name\n\tHelpName string\n\t// Description of the program.\n\tUsage string\n\t// Text to override the USAGE section of help\n\tUsageText string\n\t// Description of the program argument format.\n\tArgsUsage string\n\t// Version of the program\n\tVersion string\n\t// Description of the program\n\tDescription string\n\t// DefaultCommand is the (optional) name of a command\n\t// to run if no command names are passed as CLI arguments.\n\tDefaultCommand string\n\t// List of commands to execute\n\tCommands []*Command\n\t// List of flags to parse\n\tFlags []Flag\n\t// Boolean to enable bash completion commands\n\tEnableBashCompletion bool\n\t// Boolean to hide built-in help command and help flag\n\tHideHelp bool\n\t// Boolean to hide built-in help command but keep help flag.\n\t// Ignored if HideHelp is true.\n\tHideHelpCommand bool\n\t// Boolean to hide built-in version flag and the VERSION section of help\n\tHideVersion bool\n\t// categories contains the categorized commands and is populated on app startup\n\tcategories CommandCategories\n\t// flagCategories contains the categorized flags and is populated on app startup\n\tflagCategories FlagCategories\n\t// An action to execute when the shell completion flag is set\n\tBashComplete BashCompleteFunc\n\t// An action to execute before any subcommands are run, but after the context is ready\n\t// If a non-nil error is returned, no subcommands are run\n\tBefore BeforeFunc\n\t// An action to execute after any subcommands are run, but after the subcommand has finished\n\t// It is run even if Action() panics\n\tAfter AfterFunc\n\t// The action to execute when no subcommands are specified\n\tAction ActionFunc\n\t// Execute this function if the proper command cannot be found\n\tCommandNotFound CommandNotFoundFunc\n\t// Execute this function if a usage error occurs\n\tOnUsageError OnUsageErrorFunc\n\t// Execute this function when an invalid flag is accessed from the context\n\tInvalidFlagAccessHandler InvalidFlagAccessFunc\n\t// Compilation date\n\tCompiled time.Time\n\t// List of all authors who contributed\n\tAuthors []*Author\n\t// Copyright of the binary if any\n\tCopyright string\n\t// Reader reader to write input to (useful for tests)\n\tReader io.Reader\n\t// Writer writer to write output to\n\tWriter io.Writer\n\t// ErrWriter writes error output\n\tErrWriter io.Writer\n\t// ExitErrHandler processes any error encountered while running an App before\n\t// it is returned to the caller. If no function is provided, HandleExitCoder\n\t// is used as the default behavior.\n\tExitErrHandler ExitErrHandlerFunc\n\t// Other custom info\n\tMetadata map[string]interface{}\n\t// Carries a function which returns app specific info.\n\tExtraInfo func() map[string]string\n\t// CustomAppHelpTemplate the text template for app help topic.\n\t// cli.go uses text/template to render templates. You can\n\t// render custom help text by setting this variable.\n\tCustomAppHelpTemplate string\n\t// Boolean to enable short-option handling so user can combine several\n\t// single-character bool arguments into one\n\t// i.e. foobar -o -v -> foobar -ov\n\tUseShortOptionHandling bool\n\t// Enable suggestions for commands and flags\n\tSuggest bool\n\n\tdidSetup bool\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "c60ec93069113693d5f5677f",
+        "revision": "de834931826e135e850fa77be341f68d96d6865a",
+        "path": "app.go",
+        "start_byte": 9578,
+        "text": "var c *Command",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "652255294da33a3233820a40",
+        "revision": "de834931826e135e850fa77be341f68d96d6865a",
+        "path": "app.go",
+        "start_byte": 15195,
+        "text": "func (a *App) appendFlag(fl Flag) {\n\tif !hasFlag(a.Flags, fl) {\n\t\ta.Flags = append(a.Flags, fl)\n\t}\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "f7fdfe6043b817c1cd64359c",
+        "revision": "de834931826e135e850fa77be341f68d96d6865a",
+        "path": "command.go",
+        "start_byte": 2131,
+        "text": "type Commands []*Command",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "ff1578b969d76a73da8c7c1a",
+        "revision": "de834931826e135e850fa77be341f68d96d6865a",
+        "path": "command.go",
+        "start_byte": 5339,
+        "text": "func (c *Command) HasName(name string) bool {\n\tfor _, n := range c.Names() {\n\t\tif n == name {\n\t\t\treturn true\n\t\t}\n\t}\n\treturn false\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "f6bb12b4afb02cc20284991b",
+        "revision": "de834931826e135e850fa77be341f68d96d6865a",
+        "path": "command.go",
+        "start_byte": 7668,
+        "text": "func (c *Command) appendFlag(fl Flag) {\n\tif !hasFlag(c.Flags, fl) {\n\t\tc.Flags = append(c.Flags, fl)\n\t}\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "c7645e053d7826c612d7fafe",
+        "revision": "de834931826e135e850fa77be341f68d96d6865a",
+        "path": "context.go",
+        "start_byte": 247,
+        "text": "type Context struct {\n\tcontext.Context\n\tApp           *App\n\tCommand       *Command\n\tshellComplete bool\n\tflagSet       *flag.FlagSet\n\tparentContext *Context\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "fa39b7b9dbfad5f3c7bbe21d",
+        "revision": "de834931826e135e850fa77be341f68d96d6865a",
+        "path": "errors.go",
+        "start_byte": 2543,
+        "text": "func Exit(message interface{}, exitCode int) ExitCoder {\n\treturn &exitError{\n\t\tmessage:  message,\n\t\texitCode: exitCode,\n\t}\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "26222eefb4e12558dd59655c",
+        "revision": "de834931826e135e850fa77be341f68d96d6865a",
+        "path": "flag.go",
+        "start_byte": 803,
+        "text": "var HelpFlag Flag = &BoolFlag{\n\tName:    \"help\",\n\tAliases: []string{\"h\"},\n\tUsage:   \"show help\",\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "1e289ab27b23f7e3faf46670",
+        "revision": "de834931826e135e850fa77be341f68d96d6865a",
+        "path": "help.go",
+        "start_byte": 106,
+        "text": "const (\n\thelpName  = \"help\"\n\thelpAlias = \"h\"\n)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "d6a6504179af9525d66c042a",
+        "revision": "de834931826e135e850fa77be341f68d96d6865a",
+        "path": "help.go",
+        "start_byte": 254,
+        "text": "var helpCommandDontUse = &Command{\n\tName:      helpName,\n\tAliases:   []string{helpAlias},\n\tUsage:     \"Shows a list of commands or help for one command\",\n\tArgsUsage: \"[command]\",\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "ec60507cf1c833d88e657f0f",
+        "revision": "de834931826e135e850fa77be341f68d96d6865a",
+        "path": "help.go",
+        "start_byte": 2416,
+        "text": "var HelpPrinter helpPrinter = printHelp",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "660969fdbcccb94a54453e6e",
+        "revision": "de834931826e135e850fa77be341f68d96d6865a",
+        "path": "sliceflag.go",
+        "start_byte": 2242,
+        "text": "var (\n\t// compile time assertions\n\n\t_ SliceFlagTarget[string]  = (*StringSliceFlag)(nil)\n\t_ SliceFlagTarget[string]  = (*SliceFlag[*StringSliceFlag, []string, string])(nil)\n\t_ SliceFlagTarget[string]  = (*MultiStringFlag)(nil)\n\t_ SliceFlagTarget[float64] = (*MultiFloat64Flag)(nil)\n\t_ SliceFlagTarget[int64]   = (*MultiInt64Flag)(nil)\n\t_ SliceFlagTarget[int]     = (*MultiIntFlag)(nil)\n\n\t_ Generic    = (*flagValueHook)(nil)\n\t_ Serializer = (*flagValueHook)(nil)\n)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "cfcfb71f9f6c0668358d3076",
+        "revision": "de834931826e135e850fa77be341f68d96d6865a",
+        "path": "template.go",
+        "start_byte": 1812,
+        "text": "var CommandHelpTemplate = `NAME:\n   {{$v := offset .HelpName 6}}{{wrap .HelpName 3}}{{if .Usage}} - {{wrap .Usage $v}}{{end}}\n\nUSAGE:\n   {{if .UsageText}}{{wrap .UsageText 3}}{{else}}{{.HelpName}}{{if .VisibleFlags}} [command options]{{end}} {{if .ArgsUsage}}{{.ArgsUsage}}{{else}}[arguments...]{{end}}{{end}}{{if .Category}}\n\nCATEGORY:\n   {{.Category}}{{end}}{{if .Description}}\n\nDESCRIPTION:\n   {{wrap .Description 3}}{{end}}{{if .VisibleFlagCategories}}\n\nOPTIONS:{{range .VisibleFlagCategories}}\n   {{if .Name}}{{.Name}}\n   {{end}}{{range .Flags}}{{.}}{{end}}{{end}}{{else}}{{if .VisibleFlags}}\n\nOPTIONS:\n   {{range .VisibleFlags}}{{.}}{{end}}{{end}}{{end}}\n`",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "b640cd9ead55926a212d4bb7",
+        "revision": "de834931826e135e850fa77be341f68d96d6865a",
+        "path": "template.go",
+        "start_byte": 2665,
+        "text": "var SubcommandHelpTemplate = `NAME:\n   {{.HelpName}} - {{.Usage}}\n\nUSAGE:\n   {{if .UsageText}}{{wrap .UsageText 3}}{{else}}{{.HelpName}} command{{if .VisibleFlags}} [command options]{{end}} {{if .ArgsUsage}}{{.ArgsUsage}}{{else}}[arguments...]{{end}}{{end}}{{if .Description}}\n\nDESCRIPTION:\n   {{wrap .Description 3}}{{end}}\n\nCOMMANDS:{{range .VisibleCategories}}{{if .Name}}\n   {{.Name}}:{{range .VisibleCommands}}\n     {{join .Names \", \"}}{{\"\\t\"}}{{.Usage}}{{end}}{{else}}{{ $cv := offsetCommands .VisibleCommands 5}}{{range .VisibleCommands}}\n     {{$s := join .Names \", \"}}{{$s}}{{ $sp := subtract $cv (offset $s 3) }}{{ indent $sp \"\"}}{{wrap .Usage $cv}}{{end}}{{end}}{{end}}{{if .VisibleFlags}}\n\nOPTIONS:\n   {{range .VisibleFlags}}{{.}}{{end}}{{end}}\n`",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "06e5bafa7c5f6ed0a398c5f0",
+        "revision": "0a0546f0683b7fd2f189a0bcbc8d16e1b96a77ac",
+        "path": "altsrc/default_input_source.go",
+        "start_byte": 76,
+        "text": "func defaultInputSource() (InputSourceContext, error) {\n\treturn &MapInputSource{file: \"\", valueMap: map[interface{}]interface{}{}}, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "647932ea201e8b6bb90c4075",
+        "revision": "0a0546f0683b7fd2f189a0bcbc8d16e1b96a77ac",
+        "path": "altsrc/flag_generated.go",
+        "start_byte": 483,
+        "text": "func (f *BoolFlag) Apply(set *flag.FlagSet) error {\n\tf.set = set\n\treturn f.BoolFlag.Apply(set)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "cd37d239e05ea2a54232f36d",
+        "revision": "0a0546f0683b7fd2f189a0bcbc8d16e1b96a77ac",
+        "path": "altsrc/flag_generated.go",
+        "start_byte": 1008,
+        "text": "func (f *DurationFlag) Apply(set *flag.FlagSet) error {\n\tf.set = set\n\treturn f.DurationFlag.Apply(set)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "1a0900811444249f0502d442",
+        "revision": "0a0546f0683b7fd2f189a0bcbc8d16e1b96a77ac",
+        "path": "altsrc/flag_generated.go",
+        "start_byte": 1529,
+        "text": "func (f *Float64Flag) Apply(set *flag.FlagSet) error {\n\tf.set = set\n\treturn f.Float64Flag.Apply(set)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "edbec77de50e022c3d8cca5f",
+        "revision": "0a0546f0683b7fd2f189a0bcbc8d16e1b96a77ac",
+        "path": "altsrc/flag_generated.go",
+        "start_byte": 2048,
+        "text": "func (f *GenericFlag) Apply(set *flag.FlagSet) error {\n\tf.set = set\n\treturn f.GenericFlag.Apply(set)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "74e6ce9398fec7289fa38a79",
+        "revision": "0a0546f0683b7fd2f189a0bcbc8d16e1b96a77ac",
+        "path": "altsrc/flag_generated.go",
+        "start_byte": 2543,
+        "text": "func (f *Int64Flag) Apply(set *flag.FlagSet) error {\n\tf.set = set\n\treturn f.Int64Flag.Apply(set)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "54bed4db774d7112c6361bf7",
+        "revision": "0a0546f0683b7fd2f189a0bcbc8d16e1b96a77ac",
+        "path": "altsrc/flag_generated.go",
+        "start_byte": 3010,
+        "text": "func (f *IntFlag) Apply(set *flag.FlagSet) error {\n\tf.set = set\n\treturn f.IntFlag.Apply(set)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "0ad9d3a876bf06508fb2429c",
+        "revision": "0a0546f0683b7fd2f189a0bcbc8d16e1b96a77ac",
+        "path": "altsrc/flag_generated.go",
+        "start_byte": 3533,
+        "text": "func (f *IntSliceFlag) Apply(set *flag.FlagSet) error {\n\tf.set = set\n\treturn f.IntSliceFlag.Apply(set)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "74aab4299bd581e2a3dc3155",
+        "revision": "0a0546f0683b7fd2f189a0bcbc8d16e1b96a77ac",
+        "path": "altsrc/flag_generated.go",
+        "start_byte": 4090,
+        "text": "func (f *Int64SliceFlag) Apply(set *flag.FlagSet) error {\n\tf.set = set\n\treturn f.Int64SliceFlag.Apply(set)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "328409a560e575c72192dced",
+        "revision": "0a0546f0683b7fd2f189a0bcbc8d16e1b96a77ac",
+        "path": "altsrc/flag_generated.go",
+        "start_byte": 4675,
+        "text": "func (f *Float64SliceFlag) Apply(set *flag.FlagSet) error {\n\tf.set = set\n\treturn f.Float64SliceFlag.Apply(set)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "9331cc08dce5e8d8b75df8be",
+        "revision": "0a0546f0683b7fd2f189a0bcbc8d16e1b96a77ac",
+        "path": "altsrc/flag_generated.go",
+        "start_byte": 5192,
+        "text": "func (f *StringFlag) Apply(set *flag.FlagSet) error {\n\tf.set = set\n\treturn f.StringFlag.Apply(set)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "c1043dfdf973dcf6bd5306b5",
+        "revision": "0a0546f0683b7fd2f189a0bcbc8d16e1b96a77ac",
+        "path": "altsrc/flag_generated.go",
+        "start_byte": 5673,
+        "text": "func (f *PathFlag) Apply(set *flag.FlagSet) error {\n\tf.set = set\n\treturn f.PathFlag.Apply(set)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "b8da7fce7a77f9981146bbd3",
+        "revision": "0a0546f0683b7fd2f189a0bcbc8d16e1b96a77ac",
+        "path": "altsrc/flag_generated.go",
+        "start_byte": 6234,
+        "text": "func (f *StringSliceFlag) Apply(set *flag.FlagSet) error {\n\tf.set = set\n\treturn f.StringSliceFlag.Apply(set)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "1bc01b05295b9b45f5f870d6",
+        "revision": "0a0546f0683b7fd2f189a0bcbc8d16e1b96a77ac",
+        "path": "altsrc/flag_generated.go",
+        "start_byte": 6749,
+        "text": "func (f *Uint64Flag) Apply(set *flag.FlagSet) error {\n\tf.set = set\n\treturn f.Uint64Flag.Apply(set)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "830be4262b0ab5c483166f47",
+        "revision": "0a0546f0683b7fd2f189a0bcbc8d16e1b96a77ac",
+        "path": "altsrc/flag_generated.go",
+        "start_byte": 7230,
+        "text": "func (f *UintFlag) Apply(set *flag.FlagSet) error {\n\tf.set = set\n\treturn f.UintFlag.Apply(set)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "ca1b4594a4bae1f99be5fbf3",
+        "revision": "0a0546f0683b7fd2f189a0bcbc8d16e1b96a77ac",
+        "path": "altsrc/flag.go",
+        "start_byte": 232,
+        "text": "type FlagInputSourceExtension interface {\n\tcli.Flag\n\tApplyInputSourceValue(cCtx *cli.Context, isc InputSourceContext) error\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "6258ce35857a46504754e68f",
+        "revision": "0a0546f0683b7fd2f189a0bcbc8d16e1b96a77ac",
+        "path": "altsrc/flag.go",
+        "start_byte": 579,
+        "text": "func ApplyInputSourceValues(cCtx *cli.Context, inputSourceContext InputSourceContext, flags []cli.Flag) error {\n\tfor _, f := range flags {\n\t\tinputSourceExtendedFlag, isType := f.(FlagInputSourceExtension)\n\t\tif isType {\n\t\t\terr := inputSourceExtendedFlag.ApplyInputSourceValue(cCtx, inputSourceContext)\n\t\t\tif err != nil {\n\t\t\t\treturn err\n\t\t\t}\n\t\t}\n\t}\n\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "860caf2533cbc20c6bb8d02a",
+        "revision": "0a0546f0683b7fd2f189a0bcbc8d16e1b96a77ac",
+        "path": "altsrc/flag.go",
+        "start_byte": 1216,
+        "text": "func InitInputSource(flags []cli.Flag, createInputSource func() (InputSourceContext, error)) cli.BeforeFunc {\n\treturn func(cCtx *cli.Context) error {\n\t\tinputSource, err := createInputSource()\n\t\tif err != nil {\n\t\t\treturn fmt.Errorf(\"Unable to create input source: inner error: \\n'%v'\", err.Error())\n\t\t}\n\n\t\treturn ApplyInputSourceValues(cCtx, inputSource, flags)\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "bb35c7a955c540b8b50311c3",
+        "revision": "0a0546f0683b7fd2f189a0bcbc8d16e1b96a77ac",
+        "path": "altsrc/flag.go",
+        "start_byte": 1940,
+        "text": "func InitInputSourceWithContext(flags []cli.Flag, createInputSource func(cCtx *cli.Context) (InputSourceContext, error)) cli.BeforeFunc {\n\treturn func(cCtx *cli.Context) error {\n\t\tinputSource, err := createInputSource(cCtx)\n\t\tif err != nil {\n\t\t\treturn fmt.Errorf(\"Unable to create input source with context: inner error: \\n'%v'\", err.Error())\n\t\t}\n\n\t\treturn ApplyInputSourceValues(cCtx, inputSource, flags)\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "49bf89ff41212b067fa52578",
+        "revision": "0a0546f0683b7fd2f189a0bcbc8d16e1b96a77ac",
+        "path": "altsrc/flag.go",
+        "start_byte": 2428,
+        "text": "func (f *GenericFlag) ApplyInputSourceValue(cCtx *cli.Context, isc InputSourceContext) error {\n\tif f.set == nil || cCtx.IsSet(f.Name) || isEnvVarSet(f.EnvVars) {\n\t\treturn nil\n\t}\n\tfor _, name := range f.GenericFlag.Names() {\n\t\tif !isc.isSet(name) {\n\t\t\tcontinue\n\t\t}\n\t\tvalue, err := isc.Generic(name)\n\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n\t\tif value == nil {\n\t\t\tcontinue\n\t\t}\n\t\tfor _, n := range f.Names() {\n\t\t\t_ = f.set.Set(n, value.String())\n\t\t}\n\t}\n\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "a640be545824c35eda750bc3",
+        "revision": "0a0546f0683b7fd2f189a0bcbc8d16e1b96a77ac",
+        "path": "altsrc/flag.go",
+        "start_byte": 2969,
+        "text": "func (f *StringSliceFlag) ApplyInputSourceValue(cCtx *cli.Context, isc InputSourceContext) error {\n\tif f.set == nil || cCtx.IsSet(f.Name) || isEnvVarSet(f.EnvVars) {\n\t\treturn nil\n\t}\n\tfor _, name := range f.StringSliceFlag.Names() {\n\t\tif !isc.isSet(name) {\n\t\t\tcontinue\n\t\t}\n\t\tvalue, err := isc.StringSlice(name)\n\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n\t\tif value == nil {\n\t\t\tcontinue\n\t\t}\n\t\tvar sliceValue = *(cli.NewStringSlice(value...))\n\t\tfor _, n := range f.Names() {\n\t\t\tunderlyingFlag := f.set.Lookup(n)\n\t\t\tif underlyingFlag == nil {\n\t\t\t\tcontinue\n\t\t\t}\n\t\t\tunderlyingFlag.Value = &sliceValue\n\t\t}\n\t\tif f.Destination != nil {\n\t\t\tf.Destination.Set(sliceValue.Serialize())\n\t\t}\n\t}\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "a7b71ab09fdc20353734e85c",
+        "revision": "0a0546f0683b7fd2f189a0bcbc8d16e1b96a77ac",
+        "path": "altsrc/flag.go",
+        "start_byte": 3718,
+        "text": "func (f *IntSliceFlag) ApplyInputSourceValue(cCtx *cli.Context, isc InputSourceContext) error {\n\tif f.set == nil || cCtx.IsSet(f.Name) || isEnvVarSet(f.EnvVars) {\n\t\treturn nil\n\t}\n\tfor _, name := range f.IntSliceFlag.Names() {\n\t\tif !isc.isSet(name) {\n\t\t\tcontinue\n\t\t}\n\t\tvalue, err := isc.IntSlice(name)\n\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n\t\tif value == nil {\n\t\t\tcontinue\n\t\t}\n\t\tvar sliceValue = *(cli.NewIntSlice(value...))\n\t\tfor _, n := range f.Names() {\n\t\t\tunderlyingFlag := f.set.Lookup(n)\n\t\t\tif underlyingFlag == nil {\n\t\t\t\tcontinue\n\t\t\t}\n\t\t\tunderlyingFlag.Value = &sliceValue\n\t\t}\n\t\tif f.Destination != nil {\n\t\t\tf.Destination.Set(sliceValue.Serialize())\n\t\t}\n\t}\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "4b3ff42c66112b9a61716158",
+        "revision": "0a0546f0683b7fd2f189a0bcbc8d16e1b96a77ac",
+        "path": "altsrc/flag.go",
+        "start_byte": 4466,
+        "text": "func (f *BoolFlag) ApplyInputSourceValue(cCtx *cli.Context, isc InputSourceContext) error {\n\tif f.set == nil || cCtx.IsSet(f.Name) || isEnvVarSet(f.EnvVars) {\n\t\treturn nil\n\t}\n\tfor _, name := range f.BoolFlag.Names() {\n\t\tif !isc.isSet(name) {\n\t\t\tcontinue\n\t\t}\n\t\tvalue, err := isc.Bool(name)\n\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n\t\tfor _, n := range f.Names() {\n\t\t\t_ = f.set.Set(n, strconv.FormatBool(value))\n\t\t}\n\t}\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "9ab9bb575dfb526760808068",
+        "revision": "0a0546f0683b7fd2f189a0bcbc8d16e1b96a77ac",
+        "path": "altsrc/flag.go",
+        "start_byte": 4967,
+        "text": "func (f *StringFlag) ApplyInputSourceValue(cCtx *cli.Context, isc InputSourceContext) error {\n\tif f.set == nil || cCtx.IsSet(f.Name) || isEnvVarSet(f.EnvVars) {\n\t\treturn nil\n\t}\n\tfor _, name := range f.StringFlag.Names() {\n\t\tif !isc.isSet(name) {\n\t\t\tcontinue\n\t\t}\n\t\tvalue, err := isc.String(name)\n\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n\t\tfor _, n := range f.Names() {\n\t\t\t_ = f.set.Set(n, value)\n\t\t}\n\t}\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "667eff61702502d36502c373",
+        "revision": "0a0546f0683b7fd2f189a0bcbc8d16e1b96a77ac",
+        "path": "altsrc/flag.go",
+        "start_byte": 5452,
+        "text": "func (f *PathFlag) ApplyInputSourceValue(cCtx *cli.Context, isc InputSourceContext) error {\n\tif f.set == nil || cCtx.IsSet(f.Name) || isEnvVarSet(f.EnvVars) {\n\t\treturn nil\n\t}\n\tfor _, name := range f.PathFlag.Names() {\n\t\tif !isc.isSet(name) {\n\t\t\tcontinue\n\t\t}\n\t\tvalue, err := isc.String(name)\n\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n\t\tif value == \"\" {\n\t\t\tcontinue\n\t\t}\n\t\tfor _, n := range f.Names() {\n\t\t\tif !filepath.IsAbs(value) && isc.Source() != \"\" {\n\t\t\t\tbasePathAbs, err := filepath.Abs(isc.Source())\n\t\t\t\tif err != nil {\n\t\t\t\t\treturn err\n\t\t\t\t}\n\t\t\t\tvalue = filepath.Join(filepath.Dir(basePathAbs), value)\n\t\t\t}\n\t\t\t_ = f.set.Set(n, value)\n\t\t}\n\t}\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "42e89cda45e9423010394269",
+        "revision": "0a0546f0683b7fd2f189a0bcbc8d16e1b96a77ac",
+        "path": "altsrc/flag.go",
+        "start_byte": 6178,
+        "text": "func (f *IntFlag) ApplyInputSourceValue(cCtx *cli.Context, isc InputSourceContext) error {\n\tif f.set == nil || cCtx.IsSet(f.Name) || isEnvVarSet(f.EnvVars) {\n\t\treturn nil\n\t}\n\tfor _, name := range f.IntFlag.Names() {\n\t\tif !isc.isSet(name) {\n\t\t\tcontinue\n\t\t}\n\t\tvalue, err := isc.Int(name)\n\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n\t\tfor _, n := range f.Names() {\n\t\t\t_ = f.set.Set(n, strconv.FormatInt(int64(value), 10))\n\t\t}\n\t}\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "1b2d69d1d47fb181877c3f22",
+        "revision": "0a0546f0683b7fd2f189a0bcbc8d16e1b96a77ac",
+        "path": "altsrc/flag.go",
+        "start_byte": 6688,
+        "text": "func (f *DurationFlag) ApplyInputSourceValue(cCtx *cli.Context, isc InputSourceContext) error {\n\tif f.set == nil || cCtx.IsSet(f.Name) || isEnvVarSet(f.EnvVars) {\n\t\treturn nil\n\t}\n\tfor _, name := range f.DurationFlag.Names() {\n\t\tif !isc.isSet(name) {\n\t\t\tcontinue\n\t\t}\n\t\tvalue, err := isc.Duration(name)\n\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n\t\tfor _, n := range f.Names() {\n\t\t\t_ = f.set.Set(n, value.String())\n\t\t}\n\t}\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "9befcdba8d1f8d347137fa07",
+        "revision": "0a0546f0683b7fd2f189a0bcbc8d16e1b96a77ac",
+        "path": "altsrc/flag.go",
+        "start_byte": 7191,
+        "text": "func (f *Float64Flag) ApplyInputSourceValue(cCtx *cli.Context, isc InputSourceContext) error {\n\tif f.set == nil || cCtx.IsSet(f.Name) || isEnvVarSet(f.EnvVars) {\n\t\treturn nil\n\t}\n\tfor _, name := range f.Float64Flag.Names() {\n\t\tif !isc.isSet(name) {\n\t\t\tcontinue\n\t\t}\n\t\tvalue, err := isc.Float64(name)\n\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n\t\tfloatStr := float64ToString(value)\n\t\tfor _, n := range f.Names() {\n\t\t\t_ = f.set.Set(n, floatStr)\n\t\t}\n\t}\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "dc2c02992d944056f7c81578",
+        "revision": "0a0546f0683b7fd2f189a0bcbc8d16e1b96a77ac",
+        "path": "altsrc/flag.go",
+        "start_byte": 7646,
+        "text": "func isEnvVarSet(envVars []string) bool {\n\tfor _, envVar := range envVars {\n\t\tif _, ok := syscall.Getenv(envVar); ok {\n\t\t\t// TODO: Can't use this for bools as\n\t\t\t// set means that it was true or false based on\n\t\t\t// Bool flag type, should work for other types\n\t\t\treturn true\n\t\t}\n\t}\n\n\treturn false\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "6f5947dd802a847e18c2190f",
+        "revision": "0a0546f0683b7fd2f189a0bcbc8d16e1b96a77ac",
+        "path": "altsrc/flag.go",
+        "start_byte": 7946,
+        "text": "func float64ToString(f float64) string {\n\treturn fmt.Sprintf(\"%v\", f)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "a2e755f81f26c0cdf5230dcd",
+        "revision": "0a0546f0683b7fd2f189a0bcbc8d16e1b96a77ac",
+        "path": "altsrc/input_source_context.go",
+        "start_byte": 287,
+        "text": "type InputSourceContext interface {\n\tSource() string\n\n\tInt(name string) (int, error)\n\tDuration(name string) (time.Duration, error)\n\tFloat64(name string) (float64, error)\n\tString(name string) (string, error)\n\tStringSlice(name string) ([]string, error)\n\tIntSlice(name string) ([]int, error)\n\tGeneric(name string) (cli.Generic, error)\n\tBool(name string) (bool, error)\n\n\tisSet(name string) bool\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "e5ce513d052c2dad7be835cb",
+        "revision": "0a0546f0683b7fd2f189a0bcbc8d16e1b96a77ac",
+        "path": "altsrc/json_source_context.go",
+        "start_byte": 351,
+        "text": "func NewJSONSourceFromFlagFunc(flag string) func(c *cli.Context) (InputSourceContext, error) {\n\treturn func(cCtx *cli.Context) (InputSourceContext, error) {\n\t\tif cCtx.IsSet(flag) {\n\t\t\treturn NewJSONSourceFromFile(cCtx.String(flag))\n\t\t}\n\n\t\treturn defaultInputSource()\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "7fbc862297cd7010b67bf6b6",
+        "revision": "0a0546f0683b7fd2f189a0bcbc8d16e1b96a77ac",
+        "path": "altsrc/json_source_context.go",
+        "start_byte": 769,
+        "text": "func NewJSONSourceFromFile(f string) (InputSourceContext, error) {\n\tdata, err := loadDataFrom(f)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\n\treturn NewJSONSource(data)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "a0900954932f36a5039dd794",
+        "revision": "0a0546f0683b7fd2f189a0bcbc8d16e1b96a77ac",
+        "path": "altsrc/json_source_context.go",
+        "start_byte": 1079,
+        "text": "func NewJSONSourceFromReader(r io.Reader) (InputSourceContext, error) {\n\tdata, err := ioutil.ReadAll(r)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\treturn NewJSONSource(data)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "47463948e8a767afb374fc24",
+        "revision": "0a0546f0683b7fd2f189a0bcbc8d16e1b96a77ac",
+        "path": "altsrc/json_source_context.go",
+        "start_byte": 1363,
+        "text": "func NewJSONSource(data []byte) (InputSourceContext, error) {\n\tvar deserialized map[string]interface{}\n\tif err := json.Unmarshal(data, &deserialized); err != nil {\n\t\treturn nil, err\n\t}\n\treturn &jsonSource{deserialized: deserialized}, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "31b8dd9d54e2c0747eca5535",
+        "revision": "0a0546f0683b7fd2f189a0bcbc8d16e1b96a77ac",
+        "path": "altsrc/json_source_context.go",
+        "start_byte": 1426,
+        "text": "var deserialized map[string]interface{}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "ec37e93d869ffb8074ccde4d",
+        "revision": "0a0546f0683b7fd2f189a0bcbc8d16e1b96a77ac",
+        "path": "altsrc/json_source_context.go",
+        "start_byte": 1604,
+        "text": "func (x *jsonSource) Source() string {\n\treturn x.file\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "e826319644f885f48a2ba3ac",
+        "revision": "0a0546f0683b7fd2f189a0bcbc8d16e1b96a77ac",
+        "path": "altsrc/json_source_context.go",
+        "start_byte": 1661,
+        "text": "func (x *jsonSource) Int(name string) (int, error) {\n\ti, err := x.getValue(name)\n\tif err != nil {\n\t\treturn 0, err\n\t}\n\tswitch v := i.(type) {\n\tdefault:\n\t\treturn 0, fmt.Errorf(\"unexpected type %T for %q\", i, name)\n\tcase int:\n\t\treturn v, nil\n\tcase float32:\n\t\treturn int(v), nil\n\tcase float64:\n\t\treturn int(v), nil\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "c644a7499f72408b6763f501",
+        "revision": "0a0546f0683b7fd2f189a0bcbc8d16e1b96a77ac",
+        "path": "altsrc/json_source_context.go",
+        "start_byte": 1978,
+        "text": "func (x *jsonSource) Duration(name string) (time.Duration, error) {\n\ti, err := x.getValue(name)\n\tif err != nil {\n\t\treturn 0, err\n\t}\n\tv, ok := i.(time.Duration)\n\tif !ok {\n\t\treturn 0, fmt.Errorf(\"unexpected type %T for %q\", i, name)\n\t}\n\treturn v, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "20e4ae94fc7a62e1fcd0fde4",
+        "revision": "0a0546f0683b7fd2f189a0bcbc8d16e1b96a77ac",
+        "path": "altsrc/json_source_context.go",
+        "start_byte": 2230,
+        "text": "func (x *jsonSource) Float64(name string) (float64, error) {\n\ti, err := x.getValue(name)\n\tif err != nil {\n\t\treturn 0, err\n\t}\n\tv, ok := i.(float64)\n\tif !ok {\n\t\treturn 0, fmt.Errorf(\"unexpected type %T for %q\", i, name)\n\t}\n\treturn v, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "c1104dc9ff194b9c556eca36",
+        "revision": "0a0546f0683b7fd2f189a0bcbc8d16e1b96a77ac",
+        "path": "altsrc/json_source_context.go",
+        "start_byte": 2469,
+        "text": "func (x *jsonSource) String(name string) (string, error) {\n\ti, err := x.getValue(name)\n\tif err != nil {\n\t\treturn \"\", err\n\t}\n\tv, ok := i.(string)\n\tif !ok {\n\t\treturn \"\", fmt.Errorf(\"unexpected type %T for %q\", i, name)\n\t}\n\treturn v, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "0c57861a77bdd8ae485e9bf4",
+        "revision": "0a0546f0683b7fd2f189a0bcbc8d16e1b96a77ac",
+        "path": "altsrc/json_source_context.go",
+        "start_byte": 2707,
+        "text": "func (x *jsonSource) StringSlice(name string) ([]string, error) {\n\ti, err := x.getValue(name)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\tswitch v := i.(type) {\n\tdefault:\n\t\treturn nil, fmt.Errorf(\"unexpected type %T for %q\", i, name)\n\tcase []string:\n\t\treturn v, nil\n\tcase []interface{}:\n\t\tc := []string{}\n\t\tfor _, s := range v {\n\t\t\tif str, ok := s.(string); ok {\n\t\t\t\tc = append(c, str)\n\t\t\t} else {\n\t\t\t\treturn c, fmt.Errorf(\"unexpected item type %T in %T for %q\", s, c, name)\n\t\t\t}\n\t\t}\n\t\treturn c, nil\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "e9ae2bede09404e896fecd7e",
+        "revision": "0a0546f0683b7fd2f189a0bcbc8d16e1b96a77ac",
+        "path": "altsrc/json_source_context.go",
+        "start_byte": 3208,
+        "text": "func (x *jsonSource) IntSlice(name string) ([]int, error) {\n\ti, err := x.getValue(name)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\tswitch v := i.(type) {\n\tdefault:\n\t\treturn nil, fmt.Errorf(\"unexpected type %T for %q\", i, name)\n\tcase []int:\n\t\treturn v, nil\n\tcase []interface{}:\n\t\tc := []int{}\n\t\tfor _, s := range v {\n\t\t\tif i2, ok := s.(int); ok {\n\t\t\t\tc = append(c, i2)\n\t\t\t} else {\n\t\t\t\treturn c, fmt.Errorf(\"unexpected item type %T in %T for %q\", s, c, name)\n\t\t\t}\n\t\t}\n\t\treturn c, nil\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "683b7040af5b9ea5a438faf9",
+        "revision": "0a0546f0683b7fd2f189a0bcbc8d16e1b96a77ac",
+        "path": "altsrc/json_source_context.go",
+        "start_byte": 3692,
+        "text": "func (x *jsonSource) Generic(name string) (cli.Generic, error) {\n\ti, err := x.getValue(name)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\tv, ok := i.(cli.Generic)\n\tif !ok {\n\t\treturn nil, fmt.Errorf(\"unexpected type %T for %q\", i, name)\n\t}\n\treturn v, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "f0b8c3d2df8475815bd131a1",
+        "revision": "0a0546f0683b7fd2f189a0bcbc8d16e1b96a77ac",
+        "path": "altsrc/json_source_context.go",
+        "start_byte": 3943,
+        "text": "func (x *jsonSource) Bool(name string) (bool, error) {\n\ti, err := x.getValue(name)\n\tif err != nil {\n\t\treturn false, err\n\t}\n\tv, ok := i.(bool)\n\tif !ok {\n\t\treturn false, fmt.Errorf(\"unexpected type %T for %q\", i, name)\n\t}\n\treturn v, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "b7db00800f97526834417c2d",
+        "revision": "0a0546f0683b7fd2f189a0bcbc8d16e1b96a77ac",
+        "path": "altsrc/json_source_context.go",
+        "start_byte": 4181,
+        "text": "func (x *jsonSource) isSet(name string) bool {\n\t_, err := x.getValue(name)\n\treturn err == nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "1d353bb76b15e97775ae4f1d",
+        "revision": "0a0546f0683b7fd2f189a0bcbc8d16e1b96a77ac",
+        "path": "altsrc/json_source_context.go",
+        "start_byte": 4278,
+        "text": "func (x *jsonSource) getValue(key string) (interface{}, error) {\n\treturn jsonGetValue(key, x.deserialized)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "685328d3f3757d94cf96cbc5",
+        "revision": "0a0546f0683b7fd2f189a0bcbc8d16e1b96a77ac",
+        "path": "altsrc/json_source_context.go",
+        "start_byte": 4388,
+        "text": "func jsonGetValue(key string, m map[string]interface{}) (interface{}, error) {\n\tvar ret interface{}\n\tvar ok bool\n\tworking := m\n\tkeys := strings.Split(key, \".\")\n\tfor ix, k := range keys {\n\t\tif ret, ok = working[k]; !ok {\n\t\t\treturn ret, fmt.Errorf(\"missing key %q\", key)\n\t\t}\n\t\tif working, ok = ret.(map[string]interface{}); !ok {\n\t\t\tif ix < len(keys)-1 {\n\t\t\t\treturn ret, fmt.Errorf(\"unexpected intermediate value at %q segment of %q: %T\", k, key, ret)\n\t\t\t}\n\t\t}\n\t}\n\treturn ret, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "ec4dbf0556730acac48e9782",
+        "revision": "0a0546f0683b7fd2f189a0bcbc8d16e1b96a77ac",
+        "path": "altsrc/json_source_context.go",
+        "start_byte": 4870,
+        "text": "type jsonSource struct {\n\tfile         string\n\tdeserialized map[string]interface{}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "019fc51fb33d927db9392ce8",
+        "revision": "0a0546f0683b7fd2f189a0bcbc8d16e1b96a77ac",
+        "path": "altsrc/map_input_source.go",
+        "start_byte": 189,
+        "text": "type MapInputSource struct {\n\tfile     string\n\tvalueMap map[interface{}]interface{}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "f5b8fcdd7033baf1d734a209",
+        "revision": "0a0546f0683b7fd2f189a0bcbc8d16e1b96a77ac",
+        "path": "altsrc/map_input_source.go",
+        "start_byte": 365,
+        "text": "func NewMapInputSource(file string, valueMap map[interface{}]interface{}) *MapInputSource {\n\treturn &MapInputSource{file: file, valueMap: valueMap}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "e6fc27903c02789855495ee0",
+        "revision": "0a0546f0683b7fd2f189a0bcbc8d16e1b96a77ac",
+        "path": "altsrc/map_input_source.go",
+        "start_byte": 677,
+        "text": "func nestedVal(name string, tree map[interface{}]interface{}) (interface{}, bool) {\n\tif sections := strings.Split(name, \".\"); len(sections) > 1 {\n\t\tnode := tree\n\t\tfor _, section := range sections[:len(sections)-1] {\n\t\t\tchild, ok := node[section]\n\t\t\tif !ok {\n\t\t\t\treturn nil, false\n\t\t\t}\n\n\t\t\tswitch child := child.(type) {\n\t\t\tcase map[string]interface{}:\n\t\t\t\tnode = make(map[interface{}]interface{}, len(child))\n\t\t\t\tfor k, v := range child {\n\t\t\t\t\tnode[k] = v\n\t\t\t\t}\n\t\t\tcase map[interface{}]interface{}:\n\t\t\t\tnode = child\n\t\t\tdefault:\n\t\t\t\treturn nil, false\n\t\t\t}\n\t\t}\n\t\tif val, ok := node[sections[len(sections)-1]]; ok {\n\t\t\treturn val, true\n\t\t}\n\t}\n\treturn nil, false\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "cfb165f42e4b5e5457af7ede",
+        "revision": "0a0546f0683b7fd2f189a0bcbc8d16e1b96a77ac",
+        "path": "altsrc/map_input_source.go",
+        "start_byte": 1385,
+        "text": "func (fsm *MapInputSource) Source() string {\n\treturn fsm.file\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "29434ba8cd74e5d0b112b6b5",
+        "revision": "0a0546f0683b7fd2f189a0bcbc8d16e1b96a77ac",
+        "path": "altsrc/map_input_source.go",
+        "start_byte": 1518,
+        "text": "func (fsm *MapInputSource) Int(name string) (int, error) {\n\totherGenericValue, exists := fsm.valueMap[name]\n\tif exists {\n\t\totherValue, isType := otherGenericValue.(int)\n\t\tif !isType {\n\t\t\treturn 0, incorrectTypeForFlagError(name, \"int\", otherGenericValue)\n\t\t}\n\t\treturn otherValue, nil\n\t}\n\tnestedGenericValue, exists := nestedVal(name, fsm.valueMap)\n\tif exists {\n\t\totherValue, isType := nestedGenericValue.(int)\n\t\tif !isType {\n\t\t\treturn 0, incorrectTypeForFlagError(name, \"int\", nestedGenericValue)\n\t\t}\n\t\treturn otherValue, nil\n\t}\n\n\treturn 0, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "403651ea1d8e85dc3d6827e2",
+        "revision": "0a0546f0683b7fd2f189a0bcbc8d16e1b96a77ac",
+        "path": "altsrc/map_input_source.go",
+        "start_byte": 2143,
+        "text": "func (fsm *MapInputSource) Duration(name string) (time.Duration, error) {\n\totherGenericValue, exists := fsm.valueMap[name]\n\tif exists {\n\t\treturn castDuration(name, otherGenericValue)\n\t}\n\tnestedGenericValue, exists := nestedVal(name, fsm.valueMap)\n\tif exists {\n\t\treturn castDuration(name, nestedGenericValue)\n\t}\n\n\treturn 0, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "71542372d45e0d3cd87d9504",
+        "revision": "0a0546f0683b7fd2f189a0bcbc8d16e1b96a77ac",
+        "path": "altsrc/map_input_source.go",
+        "start_byte": 2473,
+        "text": "func castDuration(name string, value interface{}) (time.Duration, error) {\n\tif otherValue, isType := value.(time.Duration); isType {\n\t\treturn otherValue, nil\n\t}\n\totherStringValue, isType := value.(string)\n\tparsedValue, err := time.ParseDuration(otherStringValue)\n\tif !isType || err != nil {\n\t\treturn 0, incorrectTypeForFlagError(name, \"duration\", value)\n\t}\n\treturn parsedValue, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "61ad89d827cbef8842332a8a",
+        "revision": "0a0546f0683b7fd2f189a0bcbc8d16e1b96a77ac",
+        "path": "altsrc/map_input_source.go",
+        "start_byte": 2934,
+        "text": "func (fsm *MapInputSource) Float64(name string) (float64, error) {\n\totherGenericValue, exists := fsm.valueMap[name]\n\tif exists {\n\t\totherValue, isType := otherGenericValue.(float64)\n\t\tif !isType {\n\t\t\treturn 0, incorrectTypeForFlagError(name, \"float64\", otherGenericValue)\n\t\t}\n\t\treturn otherValue, nil\n\t}\n\tnestedGenericValue, exists := nestedVal(name, fsm.valueMap)\n\tif exists {\n\t\totherValue, isType := nestedGenericValue.(float64)\n\t\tif !isType {\n\t\t\treturn 0, incorrectTypeForFlagError(name, \"float64\", nestedGenericValue)\n\t\t}\n\t\treturn otherValue, nil\n\t}\n\n\treturn 0, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "f78ab36bf7715626f7c90a98",
+        "revision": "0a0546f0683b7fd2f189a0bcbc8d16e1b96a77ac",
+        "path": "altsrc/map_input_source.go",
+        "start_byte": 3593,
+        "text": "func (fsm *MapInputSource) String(name string) (string, error) {\n\totherGenericValue, exists := fsm.valueMap[name]\n\tif exists {\n\t\totherValue, isType := otherGenericValue.(string)\n\t\tif !isType {\n\t\t\treturn \"\", incorrectTypeForFlagError(name, \"string\", otherGenericValue)\n\t\t}\n\t\treturn otherValue, nil\n\t}\n\tnestedGenericValue, exists := nestedVal(name, fsm.valueMap)\n\tif exists {\n\t\totherValue, isType := nestedGenericValue.(string)\n\t\tif !isType {\n\t\t\treturn \"\", incorrectTypeForFlagError(name, \"string\", nestedGenericValue)\n\t\t}\n\t\treturn otherValue, nil\n\t}\n\n\treturn \"\", nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "1f351c8cb70e8b07fe26474a",
+        "revision": "0a0546f0683b7fd2f189a0bcbc8d16e1b96a77ac",
+        "path": "altsrc/map_input_source.go",
+        "start_byte": 4245,
+        "text": "func (fsm *MapInputSource) StringSlice(name string) ([]string, error) {\n\totherGenericValue, exists := fsm.valueMap[name]\n\tif !exists {\n\t\totherGenericValue, exists = nestedVal(name, fsm.valueMap)\n\t\tif !exists {\n\t\t\treturn nil, nil\n\t\t}\n\t}\n\n\totherValue, isType := otherGenericValue.([]interface{})\n\tif !isType {\n\t\treturn nil, incorrectTypeForFlagError(name, \"[]interface{}\", otherGenericValue)\n\t}\n\n\tvar stringSlice = make([]string, 0, len(otherValue))\n\tfor i, v := range otherValue {\n\t\tstringValue, isType := v.(string)\n\n\t\tif !isType {\n\t\t\treturn nil, incorrectTypeForFlagError(fmt.Sprintf(\"%s[%d]\", name, i), \"string\", v)\n\t\t}\n\n\t\tstringSlice = append(stringSlice, stringValue)\n\t}\n\n\treturn stringSlice, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "c889c9416b4d27240d86843f",
+        "revision": "0a0546f0683b7fd2f189a0bcbc8d16e1b96a77ac",
+        "path": "altsrc/map_input_source.go",
+        "start_byte": 4640,
+        "text": "var stringSlice = make([]string, 0, len(otherValue))",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "8d4f7de8d5f2faffac3c3052",
+        "revision": "0a0546f0683b7fd2f189a0bcbc8d16e1b96a77ac",
+        "path": "altsrc/map_input_source.go",
+        "start_byte": 5026,
+        "text": "func (fsm *MapInputSource) IntSlice(name string) ([]int, error) {\n\totherGenericValue, exists := fsm.valueMap[name]\n\tif !exists {\n\t\totherGenericValue, exists = nestedVal(name, fsm.valueMap)\n\t\tif !exists {\n\t\t\treturn nil, nil\n\t\t}\n\t}\n\n\totherValue, isType := otherGenericValue.([]interface{})\n\tif !isType {\n\t\treturn nil, incorrectTypeForFlagError(name, \"[]interface{}\", otherGenericValue)\n\t}\n\n\tvar intSlice = make([]int, 0, len(otherValue))\n\tfor i, v := range otherValue {\n\t\tintValue, isType := v.(int)\n\n\t\tif !isType {\n\t\t\treturn nil, incorrectTypeForFlagError(fmt.Sprintf(\"%s[%d]\", name, i), \"int\", v)\n\t\t}\n\n\t\tintSlice = append(intSlice, intValue)\n\t}\n\n\treturn intSlice, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "898647290da5348b2be3673a",
+        "revision": "0a0546f0683b7fd2f189a0bcbc8d16e1b96a77ac",
+        "path": "altsrc/map_input_source.go",
+        "start_byte": 5415,
+        "text": "var intSlice = make([]int, 0, len(otherValue))",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "2501927adab82ef71377d137",
+        "revision": "0a0546f0683b7fd2f189a0bcbc8d16e1b96a77ac",
+        "path": "altsrc/map_input_source.go",
+        "start_byte": 5779,
+        "text": "func (fsm *MapInputSource) Generic(name string) (cli.Generic, error) {\n\totherGenericValue, exists := fsm.valueMap[name]\n\tif exists {\n\t\totherValue, isType := otherGenericValue.(cli.Generic)\n\t\tif !isType {\n\t\t\treturn nil, incorrectTypeForFlagError(name, \"cli.Generic\", otherGenericValue)\n\t\t}\n\t\treturn otherValue, nil\n\t}\n\tnestedGenericValue, exists := nestedVal(name, fsm.valueMap)\n\tif exists {\n\t\totherValue, isType := nestedGenericValue.(cli.Generic)\n\t\tif !isType {\n\t\t\treturn nil, incorrectTypeForFlagError(name, \"cli.Generic\", nestedGenericValue)\n\t\t}\n\t\treturn otherValue, nil\n\t}\n\n\treturn nil, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "f2cec54332c0230941d69d84",
+        "revision": "0a0546f0683b7fd2f189a0bcbc8d16e1b96a77ac",
+        "path": "altsrc/map_input_source.go",
+        "start_byte": 6438,
+        "text": "func (fsm *MapInputSource) Bool(name string) (bool, error) {\n\totherGenericValue, exists := fsm.valueMap[name]\n\tif exists {\n\t\totherValue, isType := otherGenericValue.(bool)\n\t\tif !isType {\n\t\t\treturn false, incorrectTypeForFlagError(name, \"bool\", otherGenericValue)\n\t\t}\n\t\treturn otherValue, nil\n\t}\n\tnestedGenericValue, exists := nestedVal(name, fsm.valueMap)\n\tif exists {\n\t\totherValue, isType :=",
+        "rank": 2,
+        "truncated": true
+      }
+    ]
+  },
+  "retrieval": {
+    "unresolved": [
+      {
+        "side": "ours",
+        "identifier": "ShowCommandHelp",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "ctx",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "command",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "string",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "error",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Writer",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "HideHelpCommand",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "len",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Subcommands",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "append",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "HideHelp",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "flagCategories",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "templ",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "CustomHelpTemplate",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "CommandNotFound",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "errMsg",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "fmt",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Sprintf",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Suggest",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "suggestion",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "SuggestCommand",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "ShowCommandHelp",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "ctx",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "command",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "string",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "error",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Writer",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "HideHelpCommand",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "len",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Subcommands",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "append",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "HideHelp",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "appendFlag",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "app.go",
+            "start": 15195
+          },
+          {
+            "path": "command.go",
+            "start": 7668
+          }
+        ]
+      },
+      {
+        "side": "theirs",
+        "identifier": "templ",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "CustomHelpTemplate",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "CommandNotFound",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "errMsg",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "fmt",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Sprintf",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Suggest",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "suggestion",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "SuggestCommand",
+        "reason": "no-unique-declaration-established"
+      }
+    ],
+    "method": "syntax-ranges-and-identifier-candidates/3",
+    "budget_bytes": 32768,
+    "libraries": {
+      "C": "cbbd4827ee02cd5c018ab41f10d8404ff8741159054b352d9a6d763c506ba3c7",
+      "Go": "1612f8fd958ba1ec981bf4b91e2ff399f1e54d26a9da68e5b60b0d7cd00616fc"
+    }
+  }
+}

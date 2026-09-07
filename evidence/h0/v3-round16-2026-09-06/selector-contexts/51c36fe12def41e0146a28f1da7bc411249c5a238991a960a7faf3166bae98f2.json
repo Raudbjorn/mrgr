@@ -1,0 +1,3756 @@
+{
+  "id": "51c36fe12def41e0146a28f1da7bc411249c5a238991a960a7faf3166bae98f2",
+  "source_protocol_sha256": "86ffe38086e217acf6e1a4aa4162e226862463d1bde3160478f9a6f4d2b968ce",
+  "repair_module_sha256": "b6a7cf123b0ac50001e1498cdf64964b8ac56e8e6a68cbbc6dcc01c8517b4a20",
+  "contexts": {
+    "local-context": [
+      {
+        "id": "5adab7a8921dd319b4cfe81e",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/vxlan.go",
+        "start_byte": 0,
+        "text": "// Copyright 2016 Robert Clark. All rights reserved.\n//\n// Use of this source code is governed by a BSD-style license\n// that can be found in the LICENSE file in the root of the source\n// tree.\n\npackage layers\n\nimport (\n\t\"encoding/binary\"\n\t\"github.com/google/gopacket\"\n)\n\n//  VXLAN is specifed in RFC 7348 https://tools.ietf.org/html/rfc7348\n//  G, D, A, Group Policy ID from https://tools.ietf.org/html/draft-smith-vxlan-group-policy-00\n//  0                   1                   2                   3\n//  0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1\n//  0             8               16              24              32\n// +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+\n// |G|R|R|R|I|R|R|R|R|D|R|R|A|R|R|R|       Group Policy ID         |\n// +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+\n// |     24 bit VXLAN Network Identifier           |   Reserved    |\n// +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+\n\n// VXLAN is a VXLAN packet header\ntype VXLAN struct {\n\tBaseLayer\n\tValidIDFlag      bool   // 'I' bit per RFC 7348\n\tVNI              uint32 // 'VXLAN Network Identifier' 24 bits per RFC 7348\n\tGBPExtension     bool   // 'G' bit per Group Policy https://tools.ietf.org/html/draft-smith-vxlan-group-policy-00\n\tGBPDontLearn     bool   // 'D' bit per Group Policy\n\tGBPApplied       bool   // 'A' bit per Group Policy\n\tGBPGroupPolicyID uint16 // 'Group Policy ID' 16 bits per Group Policy\n}\n\n// LayerType returns LayerTypeVXLAN\nfunc (vx *VXLAN) LayerType() gopacket.LayerType { return LayerTypeVXLAN }\n\nfunc decodeVXLAN(data []byte, p gopacket.PacketBuilder) error {\n\tvx := &VXLAN{}\n\n\t// 'I' bit per RFC7348\n\tif (data[0] & 0x08) > 0 {\n\t\tvx.ValidIDFlag = true\n\t}\n\n\t// VNI - VXLAN Network Identifier per RFC7348\n\tvx.VNI = binary.BigEndian.Uint32(append([]byte{0x0}, data[4:7]...)) //Uint32 wants 4 bytes in a slice\n\n\t// 'G' bit per the group policy draft\n\tif (data[0] & 0x80) > 0 {\n\t\tvx.GBPExtension = true\n\t}\n\n\t// 'D' bit - the egress VTEP MUST NOT learn the source address of the encapsulated frame.\n\tif (data[1] & 0x40) > 0 {\n\t\tvx.GBPDontLearn = true\n\t}\n\n\t// 'A' bit - indicates that the group policy has already been applied to this packet.\n\tif (data[1] & 0x80) > 0 {\n\t\tvx.GBPApplied = true\n\t}\n\n\t// Policy ID as per the group policy draft\n\tvx.GBPGroupPolicyID = binary.BigEndian.Uint16(data[2:4])\n\n\tvxlanLength := 8\n\tvx.Contents = data[:vxlanLength]\n\tvx.Payload = data[vxlanLength:]\n\n\tp.AddLayer(vx)\n\treturn p.NextDecoder(LinkType(1))\n}\n",
+        "rank": 0,
+        "truncated": false
+      },
+      {
+        "id": "7d4ed8548f58cb339c9372b8",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/vxlan.go",
+        "start_byte": 0,
+        "text": "// Copyright 2016 Robert Clark. All rights reserved.\n//\n// Use of this source code is governed by a BSD-style license\n// that can be found in the LICENSE file in the root of the source\n// tree.\n\npackage layers\n\nimport (\n\t\"encoding/binary\"\n\t\"github.com/google/gopacket\"\n)\n\n// VXLAN is specifed in RFC 7348\n//  0                   1                   2                   3\n//  0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1\n//  0             8               16              24              32\n// +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+\n// |R|R|R|R|I|R|R|R|           24 bit Reserved                     |\n// +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+\n// |     24 bit VXLAN Network Identifier           |   Reserved    |\n// +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+\n\n// VXLAN is a VXLAN packet header\ntype VXLAN struct {\n\tBaseLayer\n\tValidIDFlag      bool   // The 'I' flag from https://tools.ietf.org/html/rfc7348#page-10\n\tVNI              uint32 //24 bits / 3 bytes\n\tGBPExtension     bool   //https://tools.ietf.org/html/draft-smith-vxlan-group-policy-00\n\tGBPDontLearn     bool\n\tGBPApplied       bool //Funnily enough, this means the policy has already been applied\n\tGBPGroupPolicyID uint16\n}\n\n// LayerType returns LayerTypeVXLAN\nfunc (vx *VXLAN) LayerType() gopacket.LayerType { return LayerTypeVXLAN }\n\nfunc decodeVXLAN(data []byte, p gopacket.PacketBuilder) error {\n\tvx := &VXLAN{}\n\n\t//Bits 0-3 and 5-7 are reserved and should be ignored by receivers however GBP is also a thing\n\tif (data[0] & 0x08) > 0 {\n\t\tvx.ValidIDFlag = true\n\t}\n\tvx.VNI = binary.BigEndian.Uint32(append([]byte{0x0}, data[4:7]...)) //Uint32 wants 4 bytes in a slice\n\n\t//'G' bit per the group policy RFC draft\n\tif (data[0] & 0x80) > 0 {\n\t\tvx.GBPExtension = true\n\t}\n\n\t//'D' bit - the egress VTEP MUST NOT learn the source address of the encapsulated frame.\n\tif (data[1] & 0x40) > 0 {\n\t\tvx.GBPDontLearn = true\n\t}\n\n\t//'A' bit - indicates that the group policy has already been applied to this packet.\n\tif (data[1] & 0x80) > 0 {\n\t\tvx.GBPApplied = true\n\t}\n\n\tvx.GBPGroupPolicyID = binary.BigEndian.Uint16(data[2:4])\n\n\tvxlanLength := 8\n\tvx.Contents = data[:vxlanLength]\n\tvx.Payload = data[vxlanLength:]\n\tp.AddLayer(vx)\n\treturn p.NextDecoder(LinkType(1))\n}\n",
+        "rank": 0,
+        "truncated": false
+      }
+    ],
+    "selected": [
+      {
+        "id": "3728413aa460e221aec50e36",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "base.go",
+        "start_byte": 1236,
+        "text": "type Payload []byte",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "5123c9e1844ddbc720cbf7d0",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "base.go",
+        "start_byte": 1295,
+        "text": "func (p Payload) LayerType() LayerType     { return LayerTypePayload }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "433d6fa75e949ac96530a55b",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "base.go",
+        "start_byte": 1488,
+        "text": "func (p Payload) Payload() []byte          { return []byte(p) }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "51120055dd6482cec882693c",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "base.go",
+        "start_byte": 2846,
+        "text": "func (p *Fragment) LayerType() LayerType     { return LayerTypeFragment }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "383c6e32226aadde5dd8fae4",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "base.go",
+        "start_byte": 3047,
+        "text": "func (p *Fragment) Payload() []byte          { return []byte(*p) }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "1408279646cbb6b896b8438e",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "decode.go",
+        "start_byte": 1271,
+        "text": "type PacketBuilder interface {\n\tDecodeFeedback\n\t// AddLayer should be called by a decoder immediately upon successful\n\t// decoding of a layer.\n\tAddLayer(l Layer)\n\t// The following functions set the various specific layers in the final\n\t// packet.  Note that if many layers call SetX, the first call is kept and all\n\t// other calls are ignored.\n\tSetLinkLayer(LinkLayer)\n\tSetNetworkLayer(NetworkLayer)\n\tSetTransportLayer(TransportLayer)\n\tSetApplicationLayer(ApplicationLayer)\n\tSetErrorLayer(ErrorLayer)\n\t// NextDecoder should be called by a decoder when they're done decoding a\n\t// packet layer but not done with decoding the entire packet.  The next\n\t// decoder will be called to decode the last AddLayer's LayerPayload.\n\t// Because of this, NextDecoder must only be called once all other\n\t// PacketBuilder calls have been made.  Set*Layer and AddLayer calls after\n\t// NextDecoder calls will behave incorrectly.\n\tNextDecoder(next Decoder) error\n\t// DumpPacketData is used solely for decoding.  If you come across an error\n\t// you need to diagnose while processing a packet, call this and your packet's\n\t// data will be dumped to stderr so you can create a test.  This should never\n\t// be called from a production decoder.\n\tDumpPacketData()\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "c37b122332772cd5a589db32",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "decode.go",
+        "start_byte": 5516,
+        "text": "func (d *DecodeFailure) LayerType() LayerType { return LayerTypeDecodeFailure }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "550e1476c4e8245d1d37d2ef",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/arp.go",
+        "start_byte": 721,
+        "text": "func (arp *ARP) LayerType() gopacket.LayerType { return LayerTypeARP }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "7d37c3644a5e81bbed0b36ac",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/base.go",
+        "start_byte": 374,
+        "text": "type BaseLayer struct {\n\t// Contents is the set of bytes that make up this layer.  IE: for an\n\t// Ethernet packet, this would be the set of bytes making up the\n\t// Ethernet frame.\n\tContents []byte\n\t// Payload is the set of bytes contained by (but not part of) this\n\t// Layer.  Again, to take Ethernet as an example, this would be the\n\t// set of bytes encapsulated by the Ethernet protocol.\n\tPayload []byte\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "3fc5e9b7cd74c86570c4da2f",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/cdp.go",
+        "start_byte": 5669,
+        "text": "func (c *CiscoDiscovery) LayerType() gopacket.LayerType {\n\treturn LayerTypeCiscoDiscovery\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "058f3e0663f2b063e010cdb9",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/cdp.go",
+        "start_byte": 6360,
+        "text": "func (c *CiscoDiscoveryInfo) LayerType() gopacket.LayerType {\n\treturn LayerTypeCiscoDiscoveryInfo\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "31c2d1117279747c09aa7cd2",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/ctp.go",
+        "start_byte": 926,
+        "text": "func (c *EthernetCTP) LayerType() gopacket.LayerType {\n\treturn LayerTypeEthernetCTP\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "e0b937db3ff9c01623c99943",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/ctp.go",
+        "start_byte": 1302,
+        "text": "func (c *EthernetCTPForwardData) LayerType() gopacket.LayerType {\n\treturn LayerTypeEthernetCTPForwardData\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "14671299efd32d702529ed74",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/ctp.go",
+        "start_byte": 1912,
+        "text": "func (c *EthernetCTPReply) LayerType() gopacket.LayerType {\n\treturn LayerTypeEthernetCTPReply\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "5bc6b5d5a69aa9e5055ca9e8",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/ctp.go",
+        "start_byte": 2064,
+        "text": "func (c *EthernetCTPReply) Payload() []byte { return c.Data }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "41eb182834383142e55fc40e",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/dns.go",
+        "start_byte": 7144,
+        "text": "func (d *DNS) LayerType() gopacket.LayerType { return LayerTypeDNS }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "e7cad2d33b8048ec5ef005cc",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/dns.go",
+        "start_byte": 10885,
+        "text": "func (d *DNS) Payload() []byte {\n\treturn nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "f2eb7a9fe17d33c19f3b4ef9",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/dot11.go",
+        "start_byte": 10296,
+        "text": "func (m *Dot11) LayerType() gopacket.LayerType  { return LayerTypeDot11 }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "4b8301cfe3c2c0d75613ec7f",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/dot11.go",
+        "start_byte": 13041,
+        "text": "func (m *Dot11Ctrl) LayerType() gopacket.LayerType  { return LayerTypeDot11Ctrl }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "660da9477b7fece4e3b44a3d",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/dot11.go",
+        "start_byte": 13623,
+        "text": "func (m *Dot11WEP) LayerType() gopacket.LayerType  { return LayerTypeDot11WEP }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "d9095ad9eac445904fdb460f",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/dot11.go",
+        "start_byte": 14204,
+        "text": "func (m *Dot11Data) LayerType() gopacket.LayerType  { return LayerTypeDot11Data }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "8a400a0cd5f3923bf8ad8bbe",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/dot11.go",
+        "start_byte": 14801,
+        "text": "func (m *Dot11DataCFAck) LayerType() gopacket.LayerType  { return LayerTypeDot11DataCFAck }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "586c33f86e48790c77b94a25",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/dot11.go",
+        "start_byte": 15311,
+        "text": "func (m *Dot11DataCFPoll) LayerType() gopacket.LayerType  { return LayerTypeDot11DataCFPoll }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "bc57eb6f3cbd4443c75c5503",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/dot11.go",
+        "start_byte": 15835,
+        "text": "func (m *Dot11DataCFAckPoll) LayerType() gopacket.LayerType  { return LayerTypeDot11DataCFAckPoll }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "bfb6cf4d412a7e32dde71b7b",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/dot11.go",
+        "start_byte": 16359,
+        "text": "func (m *Dot11DataNull) LayerType() gopacket.LayerType  { return LayerTypeDot11DataNull }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "6795ee6134c0872e72a0167b",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/dot11.go",
+        "start_byte": 16879,
+        "text": "func (m *Dot11DataCFAckNoData) LayerType() gopacket.LayerType  { return LayerTypeDot11DataCFAckNoData }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "7805163b6152d540d1882095",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/dot11.go",
+        "start_byte": 17437,
+        "text": "func (m *Dot11DataCFPollNoData) LayerType() gopacket.LayerType  { return LayerTypeDot11DataCFPollNoData }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "06a031aee6a9e66d59338575",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/dot11.go",
+        "start_byte": 18009,
+        "text": "func (m *Dot11DataCFAckPollNoData) LayerType() gopacket.LayerType {\n\treturn LayerTypeDot11DataCFAckPollNoData\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "b1ce7930b52d8c9bb83440de",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/dot11.go",
+        "start_byte": 19234,
+        "text": "func (m *Dot11DataQOSData) LayerType() gopacket.LayerType  { return LayerTypeDot11DataQOSData }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "ef7a47db71197b4bc4c38b39",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/dot11.go",
+        "start_byte": 19729,
+        "text": "func (m *Dot11DataQOSDataCFAck) LayerType() gopacket.LayerType     { return LayerTypeDot11DataQOSDataCFAck }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "4863692ae16a0048f8b3f6d0",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/dot11.go",
+        "start_byte": 20261,
+        "text": "func (m *Dot11DataQOSDataCFPoll) LayerType() gopacket.LayerType {\n\treturn LayerTypeDot11DataQOSDataCFPoll\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "6b90b1ff54f4522622dc4e16",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/dot11.go",
+        "start_byte": 20803,
+        "text": "func (m *Dot11DataQOSDataCFAckPoll) LayerType() gopacket.LayerType {\n\treturn LayerTypeDot11DataQOSDataCFAckPoll\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "069579cb0cda636be8379158",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/dot11.go",
+        "start_byte": 21337,
+        "text": "func (m *Dot11DataQOSNull) LayerType() gopacket.LayerType     { return LayerTypeDot11DataQOSNull }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "e58fd165fbdb14c5d0ae2a71",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/dot11.go",
+        "start_byte": 21849,
+        "text": "func (m *Dot11DataQOSCFPollNoData) LayerType() gopacket.LayerType {\n\treturn LayerTypeDot11DataQOSCFPollNoData\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "483bf4c0e295f049cccb9909",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/dot11.go",
+        "start_byte": 22414,
+        "text": "func (m *Dot11DataQOSCFAckPollNoData) LayerType() gopacket.LayerType {\n\treturn LayerTypeDot11DataQOSCFAckPollNoData\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "029ecce67fc47b767034b9cb",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/dot11.go",
+        "start_byte": 22901,
+        "text": "func (m *Dot11InformationElement) LayerType() gopacket.LayerType {\n\treturn LayerTypeDot11InformationElement\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "de83ea091c3d55afdbcc1b95",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/dot11.go",
+        "start_byte": 25463,
+        "text": "func (m *Dot11CtrlCTS) LayerType() gopacket.LayerType {\n\treturn LayerTypeDot11CtrlCTS\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "5d3602e51bbd1af2d34d45ef",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/dot11.go",
+        "start_byte": 25955,
+        "text": "func (m *Dot11CtrlRTS) LayerType() gopacket.LayerType {\n\treturn LayerTypeDot11CtrlRTS\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "484de397e9969eafdd6fe3ab",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/dot11.go",
+        "start_byte": 26471,
+        "text": "func (m *Dot11CtrlBlockAckReq) LayerType() gopacket.LayerType {\n\treturn LayerTypeDot11CtrlBlockAckReq\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "7e9da7a7aa1241842ebadaaf",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/dot11.go",
+        "start_byte": 27018,
+        "text": "func (m *Dot11CtrlBlockAck) LayerType() gopacket.LayerType  { return LayerTypeDot11CtrlBlockAck }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "e33adde046b07ede437974d9",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/dot11.go",
+        "start_byte": 27564,
+        "text": "func (m *Dot11CtrlPowersavePoll) LayerType() gopacket.LayerType {\n\treturn LayerTypeDot11CtrlPowersavePoll\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "99c0d13d374fa4a8226467e6",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/dot11.go",
+        "start_byte": 28106,
+        "text": "func (m *Dot11CtrlAck) LayerType() gopacket.LayerType  { return LayerTypeDot11CtrlAck }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "7ee12e6e4354112000e8cce2",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/dot11.go",
+        "start_byte": 28603,
+        "text": "func (m *Dot11CtrlCFEnd) LayerType() gopacket.LayerType {\n\treturn LayerTypeDot11CtrlCFEnd\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "7eecafc30177779f48f8f6a9",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/dot11.go",
+        "start_byte": 29120,
+        "text": "func (m *Dot11CtrlCFEndAck) LayerType() gopacket.LayerType {\n\treturn LayerTypeDot11CtrlCFEndAck\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "33566299b509dfe4fa8b34d0",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/dot11.go",
+        "start_byte": 29716,
+        "text": "func (m *Dot11MgmtAssociationReq) LayerType() gopacket.LayerType {\n\treturn LayerTypeDot11MgmtAssociationReq\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "869a89f007385a8908bb963e",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/dot11.go",
+        "start_byte": 30875,
+        "text": "func (m *Dot11MgmtAssociationResp) LayerType() gopacket.LayerType {\n\treturn LayerTypeDot11MgmtAssociationResp\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "6337c856361faf23006bac5e",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/dot11.go",
+        "start_byte": 31881,
+        "text": "func (m *Dot11MgmtReassociationReq) LayerType() gopacket.LayerType {\n\treturn LayerTypeDot11MgmtReassociationReq\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "20ff396c632d9ed5a705516f",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/dot11.go",
+        "start_byte": 32927,
+        "text": "func (m *Dot11MgmtReassociationResp) LayerType() gopacket.LayerType {\n\treturn LayerTypeDot11MgmtReassociationResp\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "da0daab71e94cc4f96f4a133",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/dot11.go",
+        "start_byte": 33471,
+        "text": "func (m *Dot11MgmtProbeReq) LayerType() gopacket.LayerType  { return LayerTypeDot11MgmtProbeReq }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "1b18815b4c23cad9ea856b3b",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/dot11.go",
+        "start_byte": 33972,
+        "text": "func (m *Dot11MgmtProbeResp) LayerType() gopacket.LayerType  { return LayerTypeDot11MgmtProbeResp }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "a8742eed1ac7bd9356204152",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/dot11.go",
+        "start_byte": 34499,
+        "text": "func (m *Dot11MgmtMeasurementPilot) LayerType() gopacket.LayerType {\n\treturn LayerTypeDot11MgmtMeasurementPilot\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "e7646cb52647d4f05d6cded5",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/dot11.go",
+        "start_byte": 34970,
+        "text": "func (m *Dot11MgmtBeacon) LayerType() gopacket.LayerType  { return LayerTypeDot11MgmtBeacon }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "94e77a1a7d51663f4baa8f04",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/dot11.go",
+        "start_byte": 35896,
+        "text": "func (m *Dot11MgmtATIM) LayerType() gopacket.LayerType  { return LayerTypeDot11MgmtATIM }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "f8027ea38fed0eda96d546fc",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/dot11.go",
+        "start_byte": 36308,
+        "text": "func (m *Dot11MgmtDisassociation) LayerType() gopacket.LayerType {\n\treturn LayerTypeDot11MgmtDisassociation\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "d063760aba94c4874a613f43",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/dot11.go",
+        "start_byte": 37155,
+        "text": "func (m *Dot11MgmtAuthentication) LayerType() gopacket.LayerType {\n\treturn LayerTypeDot11MgmtAuthentication\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "46936cd607c0a759440406a7",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/dot11.go",
+        "start_byte": 38218,
+        "text": "func (m *Dot11MgmtDeauthentication) LayerType() gopacket.LayerType {\n\treturn LayerTypeDot11MgmtDeauthentication\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "965a92f52e86eb0d69cde0fa",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/dot11.go",
+        "start_byte": 38986,
+        "text": "func (m *Dot11MgmtAction) LayerType() gopacket.LayerType  { return LayerTypeDot11MgmtAction }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "8cf144f56e84c890c04266f5",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/dot11.go",
+        "start_byte": 39377,
+        "text": "func (m *Dot11MgmtActionNoAck) LayerType() gopacket.LayerType  { return LayerTypeDot11MgmtActionNoAck }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "b84972ae84e16d2a3482b0a9",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/dot11.go",
+        "start_byte": 39782,
+        "text": "func (m *Dot11MgmtArubaWLAN) LayerType() gopacket.LayerType  { return LayerTypeDot11MgmtArubaWLAN }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "bee70ed5c47d6669e1a56876",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/dot1q.go",
+        "start_byte": 569,
+        "text": "func (d *Dot1Q) LayerType() gopacket.LayerType { return LayerTypeDot1Q }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "92c1ba73908004ef4c7d9bc6",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/eap.go",
+        "start_byte": 976,
+        "text": "func (e *EAP) LayerType() gopacket.LayerType { return LayerTypeEAP }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "c72a463bbdfafd4f8952c117",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/eapol.go",
+        "start_byte": 406,
+        "text": "func (e *EAPOL) LayerType() gopacket.LayerType { return LayerTypeEAPOL }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "a4f07a3139a8a7099dbb0c6e",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/enums.go",
+        "start_byte": 3449,
+        "text": "type LinkType uint8",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "2e4bbec1403e00b47e0d4912",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/enums.go",
+        "start_byte": 10914,
+        "text": "func (a EthernetType) LayerType() gopacket.LayerType {\n\treturn EthernetTypeMetadata[a].LayerType\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "1cef24747f57b8d8fa56b481",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/enums.go",
+        "start_byte": 11221,
+        "text": "func (a IPProtocol) LayerType() gopacket.LayerType {\n\treturn IPProtocolMetadata[a].LayerType\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "85241f986805fdc002215bd2",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/enums.go",
+        "start_byte": 12572,
+        "text": "func (a EAPOLType) LayerType() gopacket.LayerType {\n\treturn EAPOLTypeMetadata[a].LayerType\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "33af9b193d893ce5c9a46fda",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/enums.go",
+        "start_byte": 12889,
+        "text": "func (a ProtocolFamily) LayerType() gopacket.LayerType {\n\treturn ProtocolFamilyMetadata[a].LayerType\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "0bf70f033f8d4d84f80aec13",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/enums.go",
+        "start_byte": 13196,
+        "text": "func (a Dot11Type) LayerType() gopacket.LayerType {\n\treturn Dot11TypeMetadata[a].LayerType\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "f0436b6204337b027bc054ef",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/etherip.go",
+        "start_byte": 458,
+        "text": "func (e *EtherIP) LayerType() gopacket.LayerType { return LayerTypeEtherIP }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "939a3b64c56a7687b5a61ce4",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/ethernet.go",
+        "start_byte": 1086,
+        "text": "func (e *Ethernet) LayerType() gopacket.LayerType { return LayerTypeEthernet }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "786dfad51a8bfefa1900b4aa",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/fddi.go",
+        "start_byte": 461,
+        "text": "func (f *FDDI) LayerType() gopacket.LayerType { return LayerTypeFDDI }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "ed5d43e7327b6a30f5bd8886",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/gre.go",
+        "start_byte": 1064,
+        "text": "func (g *GRE) LayerType() gopacket.LayerType { return LayerTypeGRE }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "6485c72b4d6ef9643402b2b9",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/icmp4.go",
+        "start_byte": 6478,
+        "text": "func (i *ICMPv4) LayerType() gopacket.LayerType { return LayerTypeICMPv4 }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "5ca0f490709aa4f826ada15e",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/icmp6.go",
+        "start_byte": 5087,
+        "text": "func (i *ICMPv6) LayerType() gopacket.LayerType { return LayerTypeICMPv6 }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "548cfd4a782dd64018b9c10f",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/igmp.go",
+        "start_byte": 770,
+        "text": "func (i *IGMP) LayerType() gopacket.LayerType { return LayerTypeIGMP }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "5f75dbc39a3921adc81a8b45",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/ip4.go",
+        "start_byte": 1171,
+        "text": "func (i *IPv4) LayerType() gopacket.LayerType { return LayerTypeIPv4 }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "afbd7d794df6d633be39ba4d",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/ip6.go",
+        "start_byte": 890,
+        "text": "func (i *IPv6) LayerType() gopacket.LayerType { return LayerTypeIPv6 }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "e361c3dc53c0d583e7073ad2",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/ip6.go",
+        "start_byte": 10894,
+        "text": "func (i *IPv6HopByHop) LayerType() gopacket.LayerType { return LayerTypeIPv6HopByHop }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "8189288913cdfce82159176a",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/ip6.go",
+        "start_byte": 13063,
+        "text": "func (i *IPv6Routing) LayerType() gopacket.LayerType { return LayerTypeIPv6Routing }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "aded98585e08487760ba352f",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/ip6.go",
+        "start_byte": 14296,
+        "text": "func (i *IPv6Fragment) LayerType() gopacket.LayerType { return LayerTypeIPv6Fragment }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "70db21a9b6f7916cc8592ea2",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/ip6.go",
+        "start_byte": 15177,
+        "text": "func (i *IPv6Destination) LayerType() gopacket.LayerType { return LayerTypeIPv6Destination }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "1c7044627d3526c261340b1e",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/ipsec.go",
+        "start_byte": 721,
+        "text": "func (i *IPSecAH) LayerType() gopacket.LayerType { return LayerTypeIPSecAH }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "16d1ce3fa2766b9a302a36a0",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/ipsec.go",
+        "start_byte": 1635,
+        "text": "func (i *IPSecESP) LayerType() gopacket.LayerType { return LayerTypeIPSecESP }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "21d3317efc2c8606cd10b3f3",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/linux_sll.go",
+        "start_byte": 1542,
+        "text": "func (sll *LinuxSLL) LayerType() gopacket.LayerType { return LayerTypeLinuxSLL }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "e1ce4e1cfdef02847e3fa189",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/llc.go",
+        "start_byte": 649,
+        "text": "func (l *LLC) LayerType() gopacket.LayerType { return LayerTypeLLC }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "2a3948d79e29ebb00ce8661e",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/llc.go",
+        "start_byte": 1234,
+        "text": "func (s *SNAP) LayerType() gopacket.LayerType { return LayerTypeSNAP }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "d302a3b8148466fd0b0181c2",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/lldp.go",
+        "start_byte": 21905,
+        "text": "func (c *LinkLayerDiscovery) LayerType() gopacket.LayerType {\n\treturn LayerTypeLinkLayerDiscovery\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "dad0ba3ed02f324904568800",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/lldp.go",
+        "start_byte": 36567,
+        "text": "func (c *LinkLayerDiscoveryInfo) LayerType() gopacket.LayerType {\n\treturn LayerTypeLinkLayerDiscoveryInfo\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "520fda6ac2dafc8d39241416",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/loopback.go",
+        "start_byte": 560,
+        "text": "func (l *Loopback) LayerType() gopacket.LayerType { return LayerTypeLoopback }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "1576f98498df388c7373dfb9",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/mpls.go",
+        "start_byte": 474,
+        "text": "func (m *MPLS) LayerType() gopacket.LayerType { return LayerTypeMPLS }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "0f2d45cfb53c1a751214c661",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/ndp.go",
+        "start_byte": 13869,
+        "text": "func (c *NortelDiscovery) LayerType() gopacket.LayerType {\n\treturn LayerTypeNortelDiscovery\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "0107e58cb988f21d3252a46d",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/pflog.go",
+        "start_byte": 1760,
+        "text": "func (pf *PFLog) LayerType() gopacket.LayerType { return LayerTypePFLog }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "4e8c916f52e2bf197a129ca1",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/ports.go",
+        "start_byte": 1702,
+        "text": "func (a UDPPort) LayerType() gopacket.LayerType {\n\tswitch a {\n\tcase 53:\n\t\treturn LayerTypeDNS\n\tcase 4789:\n\t\treturn LayerTypeVXLAN\n\tcase 6343:\n\t\treturn LayerTypeSFlow\n\tdefault:\n\t\treturn gopacket.LayerTypePayload\n\t}\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "dcf024ce2dedd2fbb65fa1bf",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/ppp.go",
+        "start_byte": 908,
+        "text": "func (p *PPP) LayerType() gopacket.LayerType { return LayerTypePPP }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "20cae0b5c415f656ac63846f",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/pppoe.go",
+        "start_byte": 497,
+        "text": "func (p *PPPoE) LayerType() gopacket.LayerType {\n\treturn LayerTypePPPoE\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "1a49ca826ca4233ec979fe2c",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/prism.go",
+        "start_byte": 3704,
+        "text": "func (m *PrismHeader) LayerType() gopacket.LayerType { return LayerTypePrismHeader }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "8b270eef012439347d31b47c",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/radiotap.go",
+        "start_byte": 21331,
+        "text": "func (m *RadioTap) LayerType() gopacket.LayerType { return LayerTypeRadioTap }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "4e3b7831025509cf10be2b52",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/rudp.go",
+        "start_byte": 952,
+        "text": "func (r *RUDP) LayerType() gopacket.LayerType { return LayerTypeRUDP }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "865638617e3bac013095d3c0",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/sctp.go",
+        "start_byte": 536,
+        "text": "func (s *SCTP) LayerType() gopacket.LayerType { return LayerTypeSCTP }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "53eb552ebee5381cd0bb69f7",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/sctp.go",
+        "start_byte": 4928,
+        "text": "func (s *SCTPUnknownChunkType) LayerType() gopacket.LayerType { return LayerTypeSCTPUnknownChunkType }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "3de61084e163b6ef335b608e",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/sctp.go",
+        "start_byte": 5127,
+        "text": "func (s *SCTPUnknownChunkType) Payload() []byte { return s.bytes }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "731553daa93a1c4d5ebac308",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/sctp.go",
+        "start_byte": 5759,
+        "text": "func (s *SCTPData) LayerType() gopacket.LayerType { return LayerTypeSCTPData }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "1a338a3f73d0f5206cef2040",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/sctp.go",
+        "start_byte": 5899,
+        "text": "func (s *SCTPData) Payload() []byte {\n\treturn s.PayloadData\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "f1d6e20151c145cf6ac1e90e",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/sctp.go",
+        "start_byte": 7984,
+        "text": "func (sc *SCTPInit) LayerType() gopacket.LayerType {\n\tif sc.Type == SCTPChunkTypeInitAck {\n\t\treturn LayerTypeSCTPInitAck\n\t}\n\t// sc.Type == SCTPChunkTypeInit\n\treturn LayerTypeSCTPInit\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "8c42870d39484309cf8e6bff",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/sctp.go",
+        "start_byte": 10149,
+        "text": "func (sc *SCTPSack) LayerType() gopacket.LayerType {\n\treturn LayerTypeSCTPSack\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "a2cf438264853236791e1aaf",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/sctp.go",
+        "start_byte": 13125,
+        "text": "func (sc *SCTPHeartbeat) LayerType() gopacket.LayerType {\n\tif sc.Type == SCTPChunkTypeHeartbeatAck {\n\t\treturn LayerTypeSCTPHeartbeatAck\n\t}\n\t// sc.Type == SCTPChunkTypeHeartbeat\n\treturn LayerTypeSCTPHeartbeat\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "bd68464d3fc698a4c549ba2e",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/sctp.go",
+        "start_byte": 14630,
+        "text": "func (sc *SCTPError) LayerType() gopacket.LayerType {\n\tif sc.Type == SCTPChunkTypeAbort {\n\t\treturn LayerTypeSCTPAbort\n\t}\n\t// sc.Type == SCTPChunkTypeError\n\treturn LayerTypeSCTPError\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "ca2e76c0dc7bbc3d4c4010d5",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/sctp.go",
+        "start_byte": 15985,
+        "text": "func (sc *SCTPShutdown) LayerType() gopacket.LayerType { return LayerTypeSCTPShutdown }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "3cd17636096cc0bc1405e44d",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/sctp.go",
+        "start_byte": 16895,
+        "text": "func (sc *SCTPShutdownAck) LayerType() gopacket.LayerType { return LayerTypeSCTPShutdownAck }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "86e62de4552f913502f6e52c",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/sctp.go",
+        "start_byte": 17711,
+        "text": "func (sc *SCTPCookieEcho) LayerType() gopacket.LayerType { return LayerTypeSCTPCookieEcho }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "f0ce637df5a170c937642d23",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/sctp.go",
+        "start_byte": 18721,
+        "text": "func (sc *SCTPEmptyLayer) LayerType() gopacket.LayerType {\n\tif sc.Type == SCTPChunkTypeShutdownComplete {\n\t\treturn LayerTypeSCTPShutdownComplete\n\t}\n\t// sc.Type == SCTPChunkTypeCookieAck\n\treturn LayerTypeSCTPCookieAck\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "36c6c2d3b94a3c7c8de113f6",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/sflow.go",
+        "start_byte": 7539,
+        "text": "func (s *SFlowDatagram) LayerType() gopacket.LayerType { return LayerTypeSFlow }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "34652a2765637f13ad4aa3b5",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/sflow.go",
+        "start_byte": 7621,
+        "text": "func (d *SFlowDatagram) Payload() []byte { return nil }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "2e2f2c009d3f8bfef7f17295",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/tcp.go",
+        "start_byte": 1520,
+        "text": "func (t *TCP) LayerType() gopacket.LayerType { return LayerTypeTCP }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "a0d9b93b9c9668c5dafc8924",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/udp.go",
+        "start_byte": 569,
+        "text": "func (u *UDP) LayerType() gopacket.LayerType { return LayerTypeUDP }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "fe2d0073453194d47f22ee02",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/udplite.go",
+        "start_byte": 579,
+        "text": "func (u *UDPLite) LayerType() gopacket.LayerType { return LayerTypeUDPLite }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "de283065190792030bd94a8c",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/usb.go",
+        "start_byte": 3048,
+        "text": "func (a USBTransportType) LayerType() gopacket.LayerType {\n\treturn USBTypeMetadata[a].LayerType\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "e3b37f41d32d73a5dc5ff127",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/usb.go",
+        "start_byte": 4446,
+        "text": "func (u *USB) LayerType() gopacket.LayerType { return LayerTypeUSB }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "38adcfbf998aec269550932b",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/usb.go",
+        "start_byte": 6404,
+        "text": "func (u *USBRequestBlockSetup) LayerType() gopacket.LayerType { return LayerTypeUSBRequestBlockSetup }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "d0c0952cc181bf7288023a85",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/usb.go",
+        "start_byte": 7184,
+        "text": "func (u *USBControl) LayerType() gopacket.LayerType { return LayerTypeUSBControl }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "44649e70b2a5ad1573e8538b",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/usb.go",
+        "start_byte": 7657,
+        "text": "func (u *USBInterrupt) LayerType() gopacket.LayerType { return LayerTypeUSBInterrupt }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "9ab4e229b9cfc320867fd298",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/usb.go",
+        "start_byte": 8137,
+        "text": "func (u *USBBulk) LayerType() gopacket.LayerType { return LayerTypeUSBBulk }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "34a47b4f5c00c220a8138b66",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/vxlan.go",
+        "start_byte": 1021,
+        "text": "type VXLAN struct {\n\tBaseLayer\n\tValidIDFlag      bool   // 'I' bit per RFC 7348\n\tVNI              uint32 // 'VXLAN Network Identifier' 24 bits per RFC 7348\n\tGBPExtension     bool   // 'G' bit per Group Policy https://tools.ietf.org/html/draft-smith-vxlan-group-policy-00\n\tGBPDontLearn     bool   // 'D' bit per Group Policy\n\tGBPApplied       bool   // 'A' bit per Group Policy\n\tGBPGroupPolicyID uint16 // 'Group Policy ID' 16 bits per Group Policy\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "1213515f3b29600616c91e59",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/vxlan.go",
+        "start_byte": 1508,
+        "text": "func (vx *VXLAN) LayerType() gopacket.LayerType { return LayerTypeVXLAN }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "6da67e24bb9e0b82a95e9f2a",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layers/vxlan.go",
+        "start_byte": 1583,
+        "text": "func decodeVXLAN(data []byte, p gopacket.PacketBuilder) error {\n\tvx := &VXLAN{}\n\n\t// 'I' bit per RFC7348\n\tif (data[0] & 0x08) > 0 {\n\t\tvx.ValidIDFlag = true\n\t}\n\n\t// VNI - VXLAN Network Identifier per RFC7348\n\tvx.VNI = binary.BigEndian.Uint32(append([]byte{0x0}, data[4:7]...)) //Uint32 wants 4 bytes in a slice\n\n\t// 'G' bit per the group policy draft\n\tif (data[0] & 0x80) > 0 {\n\t\tvx.GBPExtension = true\n\t}\n\n\t// 'D' bit - the egress VTEP MUST NOT learn the source address of the encapsulated frame.\n\tif (data[1] & 0x40) > 0 {\n\t\tvx.GBPDontLearn = true\n\t}\n\n\t// 'A' bit - indicates that the group policy has already been applied to this packet.\n\tif (data[1] & 0x80) > 0 {\n\t\tvx.GBPApplied = true\n\t}\n\n\t// Policy ID as per the group policy draft\n\tvx.GBPGroupPolicyID = binary.BigEndian.Uint16(data[2:4])\n\n\tvxlanLength := 8\n\tvx.Contents = data[:vxlanLength]\n\tvx.Payload = data[vxlanLength:]\n\n\tp.AddLayer(vx)\n\treturn p.NextDecoder(LinkType(1))\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "20d79d1d160f1fda6fdb0d81",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "layertype.go",
+        "start_byte": 629,
+        "text": "type LayerType int64",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "779f8d2c2bc681d044ac7c5e",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "packet.go",
+        "start_byte": 5163,
+        "text": "func (p *packet) AddLayer(l Layer) {\n\tp.layers = append(p.layers, l)\n\tp.last = l\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "279a3fed89aa89a99ae2a78a",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "packet.go",
+        "start_byte": 12834,
+        "text": "func (p *eagerPacket) NextDecoder(next Decoder) error {\n\tif next == nil {\n\t\treturn nilDecoderError\n\t}\n\tif p.last == nil {\n\t\treturn errors.New(\"NextDecoder called, but no layers added yet\")\n\t}\n\td := p.last.LayerPayload()\n\tif len(d) == 0 {\n\t\treturn nil\n\t}\n\t// Since we're eager, immediately call the next decoder.\n\treturn next.Decode(d, p)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "ca85417101ba3f3e645e3e7f",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "packet.go",
+        "start_byte": 14514,
+        "text": "func (p *lazyPacket) NextDecoder(next Decoder) error {\n\tif next == nil {\n\t\treturn nilDecoderError\n\t}\n\tp.next = next\n\treturn nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "704293a9d002381e70f5fa7c",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "pcap/pcap.go",
+        "start_byte": 18189,
+        "text": "func (p *Handle) LinkType() layers.LinkType {\n\treturn layers.LinkType(C.pcap_datalink(p.cptr))\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "dbd1abfc4d4e254f0a7139ed",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "pcapgo/read.go",
+        "start_byte": 3695,
+        "text": "func (r *Reader) LinkType() layers.LinkType {\n\treturn r.linkType\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "0fedea2c7e79f51486a0dd51",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "base.go",
+        "start_byte": 1236,
+        "text": "type Payload []byte",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "e993eed3701a0650a423f042",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "base.go",
+        "start_byte": 1295,
+        "text": "func (p Payload) LayerType() LayerType     { return LayerTypePayload }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "80396b9994d078e032351e4f",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "base.go",
+        "start_byte": 1488,
+        "text": "func (p Payload) Payload() []byte          { return []byte(p) }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "d6ef0bd501df45dcd269cba4",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "base.go",
+        "start_byte": 2846,
+        "text": "func (p *Fragment) LayerType() LayerType     { return LayerTypeFragment }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "dc41af39b38dbfe2d1c82519",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "base.go",
+        "start_byte": 3047,
+        "text": "func (p *Fragment) Payload() []byte          { return []byte(*p) }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "bf4fd78f7c82c3f889fd7143",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "decode.go",
+        "start_byte": 1271,
+        "text": "type PacketBuilder interface {\n\tDecodeFeedback\n\t// AddLayer should be called by a decoder immediately upon successful\n\t// decoding of a layer.\n\tAddLayer(l Layer)\n\t// The following functions set the various specific layers in the final\n\t// packet.  Note that if many layers call SetX, the first call is kept and all\n\t// other calls are ignored.\n\tSetLinkLayer(LinkLayer)\n\tSetNetworkLayer(NetworkLayer)\n\tSetTransportLayer(TransportLayer)\n\tSetApplicationLayer(ApplicationLayer)\n\tSetErrorLayer(ErrorLayer)\n\t// NextDecoder should be called by a decoder when they're done decoding a\n\t// packet layer but not done with decoding the entire packet.  The next\n\t// decoder will be called to decode the last AddLayer's LayerPayload.\n\t// Because of this, NextDecoder must only be called once all other\n\t// PacketBuilder calls have been made.  Set*Layer and AddLayer calls after\n\t// NextDecoder calls will behave incorrectly.\n\tNextDecoder(next Decoder) error\n\t// DumpPacketData is used solely for decoding.  If you come across an error\n\t// you need to diagnose while processing a packet, call this and your packet's\n\t// data will be dumped to stderr so you can create a test.  This should never\n\t// be called from a production decoder.\n\tDumpPacketData()\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "ed9777510d54afabe0131cd7",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "decode.go",
+        "start_byte": 5516,
+        "text": "func (d *DecodeFailure) LayerType() LayerType { return LayerTypeDecodeFailure }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "7765998f7cadf7303bd41a3b",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/arp.go",
+        "start_byte": 721,
+        "text": "func (arp *ARP) LayerType() gopacket.LayerType { return LayerTypeARP }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "749b03ea4ceb1f799e99feea",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/base.go",
+        "start_byte": 374,
+        "text": "type BaseLayer struct {\n\t// Contents is the set of bytes that make up this layer.  IE: for an\n\t// Ethernet packet, this would be the set of bytes making up the\n\t// Ethernet frame.\n\tContents []byte\n\t// Payload is the set of bytes contained by (but not part of) this\n\t// Layer.  Again, to take Ethernet as an example, this would be the\n\t// set of bytes encapsulated by the Ethernet protocol.\n\tPayload []byte\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "247c1438cf4dc602da0df16e",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/cdp.go",
+        "start_byte": 5669,
+        "text": "func (c *CiscoDiscovery) LayerType() gopacket.LayerType {\n\treturn LayerTypeCiscoDiscovery\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "41c12a4f4d63b4f4bedd2bd9",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/cdp.go",
+        "start_byte": 6360,
+        "text": "func (c *CiscoDiscoveryInfo) LayerType() gopacket.LayerType {\n\treturn LayerTypeCiscoDiscoveryInfo\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "3a34473fad5c6f5666680d3e",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/ctp.go",
+        "start_byte": 926,
+        "text": "func (c *EthernetCTP) LayerType() gopacket.LayerType {\n\treturn LayerTypeEthernetCTP\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "33d247d948f7a8ae182561d1",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/ctp.go",
+        "start_byte": 1302,
+        "text": "func (c *EthernetCTPForwardData) LayerType() gopacket.LayerType {\n\treturn LayerTypeEthernetCTPForwardData\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "1ea1e774e0d614365628b022",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/ctp.go",
+        "start_byte": 1912,
+        "text": "func (c *EthernetCTPReply) LayerType() gopacket.LayerType {\n\treturn LayerTypeEthernetCTPReply\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "ae982d25a9783e49de034940",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/ctp.go",
+        "start_byte": 2064,
+        "text": "func (c *EthernetCTPReply) Payload() []byte { return c.Data }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "c3f3b580a69d4cd7abe12e23",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/dns.go",
+        "start_byte": 7144,
+        "text": "func (d *DNS) LayerType() gopacket.LayerType { return LayerTypeDNS }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "bcacda340a2a520a369a330c",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/dns.go",
+        "start_byte": 10885,
+        "text": "func (d *DNS) Payload() []byte {\n\treturn nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "4035f2edc870c76a4057c15f",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/dot11.go",
+        "start_byte": 10296,
+        "text": "func (m *Dot11) LayerType() gopacket.LayerType  { return LayerTypeDot11 }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "1867f592be0b320b3422fc2b",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/dot11.go",
+        "start_byte": 13041,
+        "text": "func (m *Dot11Ctrl) LayerType() gopacket.LayerType  { return LayerTypeDot11Ctrl }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "7065404f581c14ed3f63eb5d",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/dot11.go",
+        "start_byte": 13623,
+        "text": "func (m *Dot11WEP) LayerType() gopacket.LayerType  { return LayerTypeDot11WEP }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "4cde00ebd09f266e8d6e77c0",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/dot11.go",
+        "start_byte": 14204,
+        "text": "func (m *Dot11Data) LayerType() gopacket.LayerType  { return LayerTypeDot11Data }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "db464a0f2d8c05a9ac8a4386",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/dot11.go",
+        "start_byte": 14801,
+        "text": "func (m *Dot11DataCFAck) LayerType() gopacket.LayerType  { return LayerTypeDot11DataCFAck }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "f381f067388dfd52263c52d4",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/dot11.go",
+        "start_byte": 15311,
+        "text": "func (m *Dot11DataCFPoll) LayerType() gopacket.LayerType  { return LayerTypeDot11DataCFPoll }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "7ecabcb15ca3c21c46fac3ab",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/dot11.go",
+        "start_byte": 15835,
+        "text": "func (m *Dot11DataCFAckPoll) LayerType() gopacket.LayerType  { return LayerTypeDot11DataCFAckPoll }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "4c11f78a67bedb67ca8bfb52",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/dot11.go",
+        "start_byte": 16359,
+        "text": "func (m *Dot11DataNull) LayerType() gopacket.LayerType  { return LayerTypeDot11DataNull }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "c9e5796e6252afa58931158f",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/dot11.go",
+        "start_byte": 16879,
+        "text": "func (m *Dot11DataCFAckNoData) LayerType() gopacket.LayerType  { return LayerTypeDot11DataCFAckNoData }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "b532bb409bdf2743ab1820aa",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/dot11.go",
+        "start_byte": 17437,
+        "text": "func (m *Dot11DataCFPollNoData) LayerType() gopacket.LayerType  { return LayerTypeDot11DataCFPollNoData }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "48f72fa98bb6e96c31020d0a",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/dot11.go",
+        "start_byte": 18009,
+        "text": "func (m *Dot11DataCFAckPollNoData) LayerType() gopacket.LayerType {\n\treturn LayerTypeDot11DataCFAckPollNoData\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "7fbbd668469ba1b57baf06d8",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/dot11.go",
+        "start_byte": 19234,
+        "text": "func (m *Dot11DataQOSData) LayerType() gopacket.LayerType  { return LayerTypeDot11DataQOSData }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "184d07a8f5943d9012002905",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/dot11.go",
+        "start_byte": 19729,
+        "text": "func (m *Dot11DataQOSDataCFAck) LayerType() gopacket.LayerType     { return LayerTypeDot11DataQOSDataCFAck }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "8dae0b64f7ec989f0dbf9fcf",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/dot11.go",
+        "start_byte": 20261,
+        "text": "func (m *Dot11DataQOSDataCFPoll) LayerType() gopacket.LayerType {\n\treturn LayerTypeDot11DataQOSDataCFPoll\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "cd25a67ffbb5b6a228594013",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/dot11.go",
+        "start_byte": 20803,
+        "text": "func (m *Dot11DataQOSDataCFAckPoll) LayerType() gopacket.LayerType {\n\treturn LayerTypeDot11DataQOSDataCFAckPoll\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "73e6444c2f19298e4654cb40",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/dot11.go",
+        "start_byte": 21337,
+        "text": "func (m *Dot11DataQOSNull) LayerType() gopacket.LayerType     { return LayerTypeDot11DataQOSNull }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "904bc4514bc54cb56ad4129a",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/dot11.go",
+        "start_byte": 21849,
+        "text": "func (m *Dot11DataQOSCFPollNoData) LayerType() gopacket.LayerType {\n\treturn LayerTypeDot11DataQOSCFPollNoData\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "5dd2454ff3c0c2b064bbaa95",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/dot11.go",
+        "start_byte": 22414,
+        "text": "func (m *Dot11DataQOSCFAckPollNoData) LayerType() gopacket.LayerType {\n\treturn LayerTypeDot11DataQOSCFAckPollNoData\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "3b9e9ec870c879d841542ae9",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/dot11.go",
+        "start_byte": 22901,
+        "text": "func (m *Dot11InformationElement) LayerType() gopacket.LayerType {\n\treturn LayerTypeDot11InformationElement\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "60f75698add162d7aedcb0ec",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/dot11.go",
+        "start_byte": 25463,
+        "text": "func (m *Dot11CtrlCTS) LayerType() gopacket.LayerType {\n\treturn LayerTypeDot11CtrlCTS\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "3f9aa247fd02086703bb4649",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/dot11.go",
+        "start_byte": 25955,
+        "text": "func (m *Dot11CtrlRTS) LayerType() gopacket.LayerType {\n\treturn LayerTypeDot11CtrlRTS\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "b6b10ed65463077341402ebd",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/dot11.go",
+        "start_byte": 26471,
+        "text": "func (m *Dot11CtrlBlockAckReq) LayerType() gopacket.LayerType {\n\treturn LayerTypeDot11CtrlBlockAckReq\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "3efbbd91cff01081c288cd05",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/dot11.go",
+        "start_byte": 27018,
+        "text": "func (m *Dot11CtrlBlockAck) LayerType() gopacket.LayerType  { return LayerTypeDot11CtrlBlockAck }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "15866e7df1c5e0ccf5bbe00b",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/dot11.go",
+        "start_byte": 27564,
+        "text": "func (m *Dot11CtrlPowersavePoll) LayerType() gopacket.LayerType {\n\treturn LayerTypeDot11CtrlPowersavePoll\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "ee746c5339477635978874c4",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/dot11.go",
+        "start_byte": 28106,
+        "text": "func (m *Dot11CtrlAck) LayerType() gopacket.LayerType  { return LayerTypeDot11CtrlAck }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "7e72385d5e0905042e285828",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/dot11.go",
+        "start_byte": 28603,
+        "text": "func (m *Dot11CtrlCFEnd) LayerType() gopacket.LayerType {\n\treturn LayerTypeDot11CtrlCFEnd\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "afed07e0d1369d50ec73b4c9",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/dot11.go",
+        "start_byte": 29120,
+        "text": "func (m *Dot11CtrlCFEndAck) LayerType() gopacket.LayerType {\n\treturn LayerTypeDot11CtrlCFEndAck\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "a28a370d77b860a1ab1bbbe2",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/dot11.go",
+        "start_byte": 29716,
+        "text": "func (m *Dot11MgmtAssociationReq) LayerType() gopacket.LayerType {\n\treturn LayerTypeDot11MgmtAssociationReq\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "8f40aa6da0d52c8f77899b22",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/dot11.go",
+        "start_byte": 30875,
+        "text": "func (m *Dot11MgmtAssociationResp) LayerType() gopacket.LayerType {\n\treturn LayerTypeDot11MgmtAssociationResp\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "587de212dac2412ecead62a3",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/dot11.go",
+        "start_byte": 31881,
+        "text": "func (m *Dot11MgmtReassociationReq) LayerType() gopacket.LayerType {\n\treturn LayerTypeDot11MgmtReassociationReq\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "b9f14b2007140aeab84d75cb",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/dot11.go",
+        "start_byte": 32927,
+        "text": "func (m *Dot11MgmtReassociationResp) LayerType() gopacket.LayerType {\n\treturn LayerTypeDot11MgmtReassociationResp\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "1d29d05f1304597d76a38957",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/dot11.go",
+        "start_byte": 33471,
+        "text": "func (m *Dot11MgmtProbeReq) LayerType() gopacket.LayerType  { return LayerTypeDot11MgmtProbeReq }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "f597337fba7aced8ffebc604",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/dot11.go",
+        "start_byte": 33972,
+        "text": "func (m *Dot11MgmtProbeResp) LayerType() gopacket.LayerType  { return LayerTypeDot11MgmtProbeResp }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "34ac0cc7e0629aa8118658bb",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/dot11.go",
+        "start_byte": 34499,
+        "text": "func (m *Dot11MgmtMeasurementPilot) LayerType() gopacket.LayerType {\n\treturn LayerTypeDot11MgmtMeasurementPilot\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "6842df03b760dbe8b966d817",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/dot11.go",
+        "start_byte": 34970,
+        "text": "func (m *Dot11MgmtBeacon) LayerType() gopacket.LayerType  { return LayerTypeDot11MgmtBeacon }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "eabe3263aac703394ab2a471",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/dot11.go",
+        "start_byte": 35896,
+        "text": "func (m *Dot11MgmtATIM) LayerType() gopacket.LayerType  { return LayerTypeDot11MgmtATIM }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "8e7598c8cffc7b94aba6a617",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/dot11.go",
+        "start_byte": 36308,
+        "text": "func (m *Dot11MgmtDisassociation) LayerType() gopacket.LayerType {\n\treturn LayerTypeDot11MgmtDisassociation\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "36ede04f23ba35c6fb230c42",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/dot11.go",
+        "start_byte": 37155,
+        "text": "func (m *Dot11MgmtAuthentication) LayerType() gopacket.LayerType {\n\treturn LayerTypeDot11MgmtAuthentication\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "a79a4aa9adcbf9e7c3c1d9a0",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/dot11.go",
+        "start_byte": 38218,
+        "text": "func (m *Dot11MgmtDeauthentication) LayerType() gopacket.LayerType {\n\treturn LayerTypeDot11MgmtDeauthentication\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "899138149b302c7321dca628",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/dot11.go",
+        "start_byte": 38986,
+        "text": "func (m *Dot11MgmtAction) LayerType() gopacket.LayerType  { return LayerTypeDot11MgmtAction }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "86272b04e74ad05e71fd304f",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/dot11.go",
+        "start_byte": 39377,
+        "text": "func (m *Dot11MgmtActionNoAck) LayerType() gopacket.LayerType  { return LayerTypeDot11MgmtActionNoAck }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "24c8557a75709e56b0f87067",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/dot11.go",
+        "start_byte": 39782,
+        "text": "func (m *Dot11MgmtArubaWLAN) LayerType() gopacket.LayerType  { return LayerTypeDot11MgmtArubaWLAN }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "eaa5268fb595759c87fb6027",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/dot1q.go",
+        "start_byte": 569,
+        "text": "func (d *Dot1Q) LayerType() gopacket.LayerType { return LayerTypeDot1Q }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "399588b281de9a3f2e787996",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/eap.go",
+        "start_byte": 976,
+        "text": "func (e *EAP) LayerType() gopacket.LayerType { return LayerTypeEAP }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "28e6206a06474b14635fc1e3",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/eapol.go",
+        "start_byte": 406,
+        "text": "func (e *EAPOL) LayerType() gopacket.LayerType { return LayerTypeEAPOL }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "2123483586b39c8b0d51efff",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/enums.go",
+        "start_byte": 3449,
+        "text": "type LinkType uint8",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "0b53004e73acfc2d2d7b1968",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/enums.go",
+        "start_byte": 10914,
+        "text": "func (a EthernetType) LayerType() gopacket.LayerType {\n\treturn EthernetTypeMetadata[a].LayerType\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "605ae9714559597f664c7d4f",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/enums.go",
+        "start_byte": 11221,
+        "text": "func (a IPProtocol) LayerType() gopacket.LayerType {\n\treturn IPProtocolMetadata[a].LayerType\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "39ac061cdf9ac24d77c3edca",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/enums.go",
+        "start_byte": 12572,
+        "text": "func (a EAPOLType) LayerType() gopacket.LayerType {\n\treturn EAPOLTypeMetadata[a].LayerType\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "7b790f3c91f227481b2ea805",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/enums.go",
+        "start_byte": 12889,
+        "text": "func (a ProtocolFamily) LayerType() gopacket.LayerType {\n\treturn ProtocolFamilyMetadata[a].LayerType\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "56c70310fa9fc4f712ddf790",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/enums.go",
+        "start_byte": 13196,
+        "text": "func (a Dot11Type) LayerType() gopacket.LayerType {\n\treturn Dot11TypeMetadata[a].LayerType\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "e262345fab57487076bae1bf",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/etherip.go",
+        "start_byte": 458,
+        "text": "func (e *EtherIP) LayerType() gopacket.LayerType { return LayerTypeEtherIP }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "ab3b77c2a9a255d67ea027b0",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/ethernet.go",
+        "start_byte": 1086,
+        "text": "func (e *Ethernet) LayerType() gopacket.LayerType { return LayerTypeEthernet }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "886eb678ae7b05c905a9ea22",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/fddi.go",
+        "start_byte": 461,
+        "text": "func (f *FDDI) LayerType() gopacket.LayerType { return LayerTypeFDDI }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "affecb0f8670627ed201b0ee",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/gre.go",
+        "start_byte": 1064,
+        "text": "func (g *GRE) LayerType() gopacket.LayerType { return LayerTypeGRE }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "814e86881c9ccbb549d41a78",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/icmp4.go",
+        "start_byte": 6478,
+        "text": "func (i *ICMPv4) LayerType() gopacket.LayerType { return LayerTypeICMPv4 }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "6943c2fd97e33ef43a720bc4",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/icmp6.go",
+        "start_byte": 5087,
+        "text": "func (i *ICMPv6) LayerType() gopacket.LayerType { return LayerTypeICMPv6 }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "a4fc53f71a9b736ef97278de",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/igmp.go",
+        "start_byte": 770,
+        "text": "func (i *IGMP) LayerType() gopacket.LayerType { return LayerTypeIGMP }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "e6851a63321515b2c8a12ebd",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/ip4.go",
+        "start_byte": 1171,
+        "text": "func (i *IPv4) LayerType() gopacket.LayerType { return LayerTypeIPv4 }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "9640bca04a5d1626fdac351d",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/ip6.go",
+        "start_byte": 890,
+        "text": "func (i *IPv6) LayerType() gopacket.LayerType { return LayerTypeIPv6 }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "ec91347cb93a09044db43db3",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/ip6.go",
+        "start_byte": 10894,
+        "text": "func (i *IPv6HopByHop) LayerType() gopacket.LayerType { return LayerTypeIPv6HopByHop }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "d1cccea1cdfb5d3898d48ed2",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/ip6.go",
+        "start_byte": 13063,
+        "text": "func (i *IPv6Routing) LayerType() gopacket.LayerType { return LayerTypeIPv6Routing }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "394b810b287f1df644db3a57",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/ip6.go",
+        "start_byte": 14296,
+        "text": "func (i *IPv6Fragment) LayerType() gopacket.LayerType { return LayerTypeIPv6Fragment }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "62c1ba6309ff4520c42e3433",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/ip6.go",
+        "start_byte": 15177,
+        "text": "func (i *IPv6Destination) LayerType() gopacket.LayerType { return LayerTypeIPv6Destination }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "963c8beea44a28ead665bf6f",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/ipsec.go",
+        "start_byte": 721,
+        "text": "func (i *IPSecAH) LayerType() gopacket.LayerType { return LayerTypeIPSecAH }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "250eaa86dd387278137358d2",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/ipsec.go",
+        "start_byte": 1635,
+        "text": "func (i *IPSecESP) LayerType() gopacket.LayerType { return LayerTypeIPSecESP }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "ca9d6316c1de9c5cd7f516b6",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/linux_sll.go",
+        "start_byte": 1542,
+        "text": "func (sll *LinuxSLL) LayerType() gopacket.LayerType { return LayerTypeLinuxSLL }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "d901dbbbed58bcb0b29b2d12",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/llc.go",
+        "start_byte": 649,
+        "text": "func (l *LLC) LayerType() gopacket.LayerType { return LayerTypeLLC }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "4f3efb44f20f168f4770712c",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/llc.go",
+        "start_byte": 1234,
+        "text": "func (s *SNAP) LayerType() gopacket.LayerType { return LayerTypeSNAP }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "2a65ef6d4f098ba87cac9458",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/lldp.go",
+        "start_byte": 21905,
+        "text": "func (c *LinkLayerDiscovery) LayerType() gopacket.LayerType {\n\treturn LayerTypeLinkLayerDiscovery\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "d8358b368ecb395f0e35f459",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/lldp.go",
+        "start_byte": 36567,
+        "text": "func (c *LinkLayerDiscoveryInfo) LayerType() gopacket.LayerType {\n\treturn LayerTypeLinkLayerDiscoveryInfo\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "4fa714bd7fa31592a7fda9d2",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/loopback.go",
+        "start_byte": 560,
+        "text": "func (l *Loopback) LayerType() gopacket.LayerType { return LayerTypeLoopback }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "2cbd4c7d29657b2dc097f4ab",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/mpls.go",
+        "start_byte": 474,
+        "text": "func (m *MPLS) LayerType() gopacket.LayerType { return LayerTypeMPLS }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "d394d35f67ccf4b8122c5a8d",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/ndp.go",
+        "start_byte": 13869,
+        "text": "func (c *NortelDiscovery) LayerType() gopacket.LayerType {\n\treturn LayerTypeNortelDiscovery\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "b1cb3ab34c0aa342efb9c370",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/pflog.go",
+        "start_byte": 1760,
+        "text": "func (pf *PFLog) LayerType() gopacket.LayerType { return LayerTypePFLog }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "b0b6ea4048e774d8ab15674a",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/ports.go",
+        "start_byte": 1702,
+        "text": "func (a UDPPort) LayerType() gopacket.LayerType {\n\tswitch a {\n\tcase 53:\n\t\treturn LayerTypeDNS\n\tcase 4789:\n\t\treturn LayerTypeVXLAN\n\tcase 6343:\n\t\treturn LayerTypeSFlow\n\tdefault:\n\t\treturn gopacket.LayerTypePayload\n\t}\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "158e9743e381a561f2c1d84f",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/ppp.go",
+        "start_byte": 908,
+        "text": "func (p *PPP) LayerType() gopacket.LayerType { return LayerTypePPP }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "42ee174d8a3a8d28c624a3ae",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/pppoe.go",
+        "start_byte": 497,
+        "text": "func (p *PPPoE) LayerType() gopacket.LayerType {\n\treturn LayerTypePPPoE\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "0af041659c49c0615ae24b8d",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/prism.go",
+        "start_byte": 3704,
+        "text": "func (m *PrismHeader) LayerType() gopacket.LayerType { return LayerTypePrismHeader }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "660878ba0fbed9ae071a58f9",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/radiotap.go",
+        "start_byte": 21331,
+        "text": "func (m *RadioTap) LayerType() gopacket.LayerType { return LayerTypeRadioTap }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "b4fed801805c4a7fb8f76fe3",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/rudp.go",
+        "start_byte": 952,
+        "text": "func (r *RUDP) LayerType() gopacket.LayerType { return LayerTypeRUDP }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "1c7b31dbfb0537761ad74b73",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/sctp.go",
+        "start_byte": 536,
+        "text": "func (s *SCTP) LayerType() gopacket.LayerType { return LayerTypeSCTP }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "5997fdda8d1add0e673e7481",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/sctp.go",
+        "start_byte": 4928,
+        "text": "func (s *SCTPUnknownChunkType) LayerType() gopacket.LayerType { return LayerTypeSCTPUnknownChunkType }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "401ae075b5f4285bc510a92a",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/sctp.go",
+        "start_byte": 5127,
+        "text": "func (s *SCTPUnknownChunkType) Payload() []byte { return s.bytes }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "b80571925367a2913df9914f",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/sctp.go",
+        "start_byte": 5759,
+        "text": "func (s *SCTPData) LayerType() gopacket.LayerType { return LayerTypeSCTPData }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "ec451062a359fc205c1f6b8a",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/sctp.go",
+        "start_byte": 5899,
+        "text": "func (s *SCTPData) Payload() []byte {\n\treturn s.PayloadData\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "4fef1afcc0a772b6168dd1cf",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/sctp.go",
+        "start_byte": 7984,
+        "text": "func (sc *SCTPInit) LayerType() gopacket.LayerType {\n\tif sc.Type == SCTPChunkTypeInitAck {\n\t\treturn LayerTypeSCTPInitAck\n\t}\n\t// sc.Type == SCTPChunkTypeInit\n\treturn LayerTypeSCTPInit\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "60c594e63dae4addc1045849",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/sctp.go",
+        "start_byte": 10149,
+        "text": "func (sc *SCTPSack) LayerType() gopacket.LayerType {\n\treturn LayerTypeSCTPSack\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "162bb1c1671aa88ceaa78173",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/sctp.go",
+        "start_byte": 13125,
+        "text": "func (sc *SCTPHeartbeat) LayerType() gopacket.LayerType {\n\tif sc.Type == SCTPChunkTypeHeartbeatAck {\n\t\treturn LayerTypeSCTPHeartbeatAck\n\t}\n\t// sc.Type == SCTPChunkTypeHeartbeat\n\treturn LayerTypeSCTPHeartbeat\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "e96f055148518a2cb9a62df6",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/sctp.go",
+        "start_byte": 14630,
+        "text": "func (sc *SCTPError) LayerType() gopacket.LayerType {\n\tif sc.Type == SCTPChunkTypeAbort {\n\t\treturn LayerTypeSCTPAbort\n\t}\n\t// sc.Type == SCTPChunkTypeError\n\treturn LayerTypeSCTPError\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "36eb2b721a51861ba4590005",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/sctp.go",
+        "start_byte": 15985,
+        "text": "func (sc *SCTPShutdown) LayerType() gopacket.LayerType { return LayerTypeSCTPShutdown }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "7751c133989dc8c0a374ddd0",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/sctp.go",
+        "start_byte": 16895,
+        "text": "func (sc *SCTPShutdownAck) LayerType() gopacket.LayerType { return LayerTypeSCTPShutdownAck }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "2778f918e812575f0aa482ed",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/sctp.go",
+        "start_byte": 17711,
+        "text": "func (sc *SCTPCookieEcho) LayerType() gopacket.LayerType { return LayerTypeSCTPCookieEcho }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "d6db08b16d92d5872807995b",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/sctp.go",
+        "start_byte": 18721,
+        "text": "func (sc *SCTPEmptyLayer) LayerType() gopacket.LayerType {\n\tif sc.Type == SCTPChunkTypeShutdownComplete {\n\t\treturn LayerTypeSCTPShutdownComplete\n\t}\n\t// sc.Type == SCTPChunkTypeCookieAck\n\treturn LayerTypeSCTPCookieAck\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "3eb0a56bfcb203752fac50fd",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/sflow.go",
+        "start_byte": 7539,
+        "text": "func (s *SFlowDatagram) LayerType() gopacket.LayerType { return LayerTypeSFlow }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "3c84307a26e2df4c825f1271",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/sflow.go",
+        "start_byte": 7621,
+        "text": "func (d *SFlowDatagram) Payload() []byte { return nil }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "ab50a7ee3e6ce9bfd762093a",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/tcp.go",
+        "start_byte": 1520,
+        "text": "func (t *TCP) LayerType() gopacket.LayerType { return LayerTypeTCP }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "44539054865992f29607d65b",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/udp.go",
+        "start_byte": 569,
+        "text": "func (u *UDP) LayerType() gopacket.LayerType { return LayerTypeUDP }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "3e01d982050cd09b87db5a80",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/udplite.go",
+        "start_byte": 579,
+        "text": "func (u *UDPLite) LayerType() gopacket.LayerType { return LayerTypeUDPLite }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "5abf0275da262755557f01a8",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/usb.go",
+        "start_byte": 3048,
+        "text": "func (a USBTransportType) LayerType() gopacket.LayerType {\n\treturn USBTypeMetadata[a].LayerType\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "f91c494a142e7c1cb237619b",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/usb.go",
+        "start_byte": 4446,
+        "text": "func (u *USB) LayerType() gopacket.LayerType { return LayerTypeUSB }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "ef1ebccc5563a6edc72375bc",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/usb.go",
+        "start_byte": 6404,
+        "text": "func (u *USBRequestBlockSetup) LayerType() gopacket.LayerType { return LayerTypeUSBRequestBlockSetup }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "b6459755a4dbb692fc364ad1",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/usb.go",
+        "start_byte": 7184,
+        "text": "func (u *USBControl) LayerType() gopacket.LayerType { return LayerTypeUSBControl }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "0e2a2e50169bdf89c997b34a",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/usb.go",
+        "start_byte": 7657,
+        "text": "func (u *USBInterrupt) LayerType() gopacket.LayerType { return LayerTypeUSBInterrupt }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "96d2a460a3b7310bbf170e27",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/usb.go",
+        "start_byte": 8137,
+        "text": "func (u *USBBulk) LayerType() gopacket.LayerType { return LayerTypeUSBBulk }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "2b709e6261518e5ca6cd9502",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/vxlan.go",
+        "start_byte": 888,
+        "text": "type VXLAN struct {\n\tBaseLayer\n\tValidIDFlag      bool   // The 'I' flag from https://tools.ietf.org/html/rfc7348#page-10\n\tVNI              uint32 //24 bits / 3 bytes\n\tGBPExtension     bool   //https://tools.ietf.org/html/draft-smith-vxlan-group-policy-00\n\tGBPDontLearn     bool\n\tGBPApplied       bool //Funnily enough, this means the policy has already been applied\n\tGBPGroupPolicyID uint16\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "454a70adab9d5984f21e7f92",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/vxlan.go",
+        "start_byte": 1318,
+        "text": "func (vx *VXLAN) LayerType() gopacket.LayerType { return LayerTypeVXLAN }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "10142bd64de00150b690eb49",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layers/vxlan.go",
+        "start_byte": 1393,
+        "text": "func decodeVXLAN(data []byte, p gopacket.PacketBuilder) error {\n\tvx := &VXLAN{}\n\n\t//Bits 0-3 and 5-7 are reserved and should be ignored by receivers however GBP is also a thing\n\tif (data[0] & 0x08) > 0 {\n\t\tvx.ValidIDFlag = true\n\t}\n\tvx.VNI = binary.BigEndian.Uint32(append([]byte{0x0}, data[4:7]...)) //Uint32 wants 4 bytes in a slice\n\n\t//'G' bit per the group policy RFC draft\n\tif (data[0] & 0x80) > 0 {\n\t\tvx.GBPExtension = true\n\t}\n\n\t//'D' bit - the egress VTEP MUST NOT learn the source address of the encapsulated frame.\n\tif (data[1] & 0x40) > 0 {\n\t\tvx.GBPDontLearn = true\n\t}\n\n\t//'A' bit - indicates that the group policy has already been applied to this packet.\n\tif (data[1] & 0x80) > 0 {\n\t\tvx.GBPApplied = true\n\t}\n\n\tvx.GBPGroupPolicyID = binary.BigEndian.Uint16(data[2:4])\n\n\tvxlanLength := 8\n\tvx.Contents = data[:vxlanLength]\n\tvx.Payload = data[vxlanLength:]\n\tp.AddLayer(vx)\n\treturn p.NextDecoder(LinkType(1))\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "6929062bc663d977ae18b044",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "layertype.go",
+        "start_byte": 629,
+        "text": "type LayerType int64",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "b34b54de01c41f22827f710b",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "packet.go",
+        "start_byte": 5163,
+        "text": "func (p *packet) AddLayer(l Layer) {\n\tp.layers = append(p.layers, l)\n\tp.last = l\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "921bb17c4f9996b8b8675a19",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "packet.go",
+        "start_byte": 12834,
+        "text": "func (p *eagerPacket) NextDecoder(next Decoder) error {\n\tif next == nil {\n\t\treturn nilDecoderError\n\t}\n\tif p.last == nil {\n\t\treturn errors.New(\"NextDecoder called, but no layers added yet\")\n\t}\n\td := p.last.LayerPayload()\n\tif len(d) == 0 {\n\t\treturn nil\n\t}\n\t// Since we're eager, immediately call the next decoder.\n\treturn next.Decode(d, p)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "170e35150c7af2583a556643",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "packet.go",
+        "start_byte": 14514,
+        "text": "func (p *lazyPacket) NextDecoder(next Decoder) error {\n\tif next == nil {\n\t\treturn nilDecoderError\n\t}\n\tp.next = next\n\treturn nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "4b95b4eccf17aace8af3449e",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "pcap/pcap.go",
+        "start_byte": 18189,
+        "text": "func (p *Handle) LinkType() layers.LinkType {\n\treturn layers.LinkType(C.pcap_datalink(p.cptr))\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "dc2728dc31dea7c48951b5b2",
+        "revision": "7470812178fa236f364b76395de296f9c23a6e5e",
+        "path": "pcapgo/read.go",
+        "start_byte": 3695,
+        "text": "func (r *Reader) LinkType() layers.LinkType {\n\treturn r.linkType\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "54eb9e1c99a5ead970dc1e5b",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "afpacket/afpacket.go",
+        "start_byte": 1608,
+        "text": "type TPacket struct {\n\t// fd is the C file descriptor.\n\tfd C.int\n\t// ring points to the memory space of the ring buffer shared by tpacket and the kernel.\n\tring unsafe.Pointer\n\t// opts contains read-only options for the TPacket object.\n\topts options\n\tmu   sync.Mutex // guards below\n\t// offset is the offset into the ring of the current header.\n\toffset int\n\t// current is the current header.\n\tcurrent header\n\t// pollset is used by TPacket for its poll() call.\n\tpollset C.struct_pollfd\n\t// shouldReleasePacket is set to true whenever we return packet data, to make sure we remember to release that data back to the kernel.\n\tshouldReleasePacket bool\n\t// stats is simple statistics on TPacket's run.\n\tstats Stats\n\t// socketStats contains stats from the socket\n\tsocketStats SocketStats\n\t// same as socketStats, but with an extra field freeze_q_cnt\n\tsocketStatsV3 SocketStatsV3\n\t// tpVersion is the version of TPacket actually in use, set by setRequestedTPacketVersion.\n\ttpVersion OptTPacketVersion\n\t// Hackity hack hack hack.  We need to return a pointer to the header with\n\t// getTPacketHeader, and we don't want to allocate a v3wrapper every time,\n\t// so we leave it in the TPacket object and return a pointer to it.\n\tv3 v3wrapper\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "65d163a9e152737617031364",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "afpacket/afpacket.go",
+        "start_byte": 2916,
+        "text": "func (h *TPacket) bindToInterface(ifaceName string) error {\n\tiface, err := net.InterfaceByName(ifaceName)\n\tif err != nil {\n\t\treturn fmt.Errorf(\"InterfaceByName: %v\", err)\n\t}\n\tvar ll C.struct_sockaddr_ll\n\tll.sll_family = C.AF_PACKET\n\tll.sll_protocol = C.__be16(C.htons(C.ETH_P_ALL))\n\tll.sll_ifindex = C.int(iface.Index)\n\tif _, err := C.bind(h.fd, (*C.struct_sockaddr)(unsafe.Pointer(&ll)), C.socklen_t(unsafe.Sizeof(ll))); err != nil {\n\t\treturn fmt.Errorf(\"bindToInterface: %v\", err)\n\t}\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "e6d1873d7f8964a4d0eeae11",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "afpacket/afpacket.go",
+        "start_byte": 3527,
+        "text": "func (h *TPacket) setTPacketVersion(version OptTPacketVersion) error {\n\tval := C.int(version)\n\t_, err := C.setsockopt(h.fd, C.SOL_PACKET, C.PACKET_VERSION, unsafe.Pointer(&val), C.socklen_t(unsafe.Sizeof(val)))\n\tif err != nil {\n\t\treturn fmt.Errorf(\"setsockopt packet_version: %v\", err)\n\t}\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "8ff97a5efc1d8c73f20354c5",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "afpacket/afpacket.go",
+        "start_byte": 3920,
+        "text": "func (h *TPacket) setRequestedTPacketVersion() error {\n\tswitch {\n\tcase (h.opts.version == TPacketVersionHighestAvailable || h.opts.version == TPacketVersion3) && h.setTPacketVersion(TPacketVersion3) == nil:\n\t\th.tpVersion = TPacketVersion3\n\tcase (h.opts.version == TPacketVersionHighestAvailable || h.opts.version == TPacketVersion2) && h.setTPacketVersion(TPacketVersion2) == nil:\n\t\th.tpVersion = TPacketVersion2\n\tcase (h.opts.version == TPacketVersionHighestAvailable || h.opts.version == TPacketVersion1) && h.setTPacketVersion(TPacketVersion1) == nil:\n\t\th.tpVersion = TPacketVersion1\n\tdefault:\n\t\treturn errors.New(\"no known tpacket versions work on this machine\")\n\t}\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "aeb0b17942b3b4342764185b",
+        "revision": "213bcd6aade432963fed4bbdbaea824c00ce982a",
+        "path": "afpacket/afpacket.go",
+        "start_byte": 4697,
+        "text": "func (h *TPacket) setUpRing() (err error) {\n\ttotalSize := C.uint(h.opts.framesPerBlock * h.opts.numBlocks * h.opts.frameSize)\n\tswitch h.tpVersion {\n\tcase TPacketVersion1, TPacketVersion2:\n\t\tvar tp C.struct_tpacket_req\n\t\ttp.tp_block_size = C.uint(h.opts.blockSize)\n\t\ttp.tp_block_nr = C.uint(h.opts.numBlocks)\n\t\ttp.tp_frame_size = C.uint(h.opts.frameSize)\n\t\ttp.tp_frame_nr = C.uint(h.opts.framesPerBlock * h.opts.numBlocks)\n\t\tif _, err := C.setsockopt(h.fd, C.SOL_PACKET, C.PACKET_RX_RING, unsafe.Pointer(&tp), C.socklen_t(unsafe.Sizeof(tp))); err != nil {\n\t\t\treturn fmt.Errorf(\"setsockopt packet_rx_ring: %v\", err)\n\t\t}\n\tcase TPacketVersion3:\n\t\tvar tp C.struct_tpacket_req3\n\t\ttp.tp_block_size = C.uint(h.opts.blockSize)\n\t\ttp.tp_block_nr = C.uint(h.opts.numBlocks)\n\t\ttp.tp_fram",
+        "rank": 2,
+        "truncated": true
+      }
+    ]
+  },
+  "retrieval": {
+    "unresolved": [
+      {
+        "side": "ours",
+        "path": "macs/valid_mac_prefixes.go",
+        "reason": "parse-failed"
+      },
+      {
+        "side": "ours",
+        "identifier": "layers",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "ValidIDFlag",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "bool",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "VNI",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "uint32",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "GBPExtension",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "GBPDontLearn",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "GBPApplied",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "GBPGroupPolicyID",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "uint16",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "vx",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "LayerType",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "base.go",
+            "start": 1295
+          },
+          {
+            "path": "base.go",
+            "start": 2846
+          },
+          {
+            "path": "decode.go",
+            "start": 5516
+          },
+          {
+            "path": "layers/arp.go",
+            "start": 721
+          },
+          {
+            "path": "layers/cdp.go",
+            "start": 5669
+          },
+          {
+            "path": "layers/cdp.go",
+            "start": 6360
+          },
+          {
+            "path": "layers/ctp.go",
+            "start": 926
+          },
+          {
+            "path": "layers/ctp.go",
+            "start": 1302
+          },
+          {
+            "path": "layers/ctp.go",
+            "start": 1912
+          },
+          {
+            "path": "layers/dns.go",
+            "start": 7144
+          },
+          {
+            "path": "layers/dot11.go",
+            "start": 10296
+          },
+          {
+            "path": "layers/dot11.go",
+            "start": 13041
+          },
+          {
+            "path": "layers/dot11.go",
+            "start": 13623
+          },
+          {
+            "path": "layers/dot11.go",
+            "start": 14204
+          },
+          {
+            "path": "layers/dot11.go",
+            "start": 14801
+          },
+          {
+            "path": "layers/dot11.go",
+            "start": 15311
+          },
+          {
+            "path": "layers/dot11.go",
+            "start": 15835
+          },
+          {
+            "path": "layers/dot11.go",
+            "start": 16359
+          },
+          {
+            "path": "layers/dot11.go",
+            "start": 16879
+          },
+          {
+            "path": "layers/dot11.go",
+            "start": 17437
+          },
+          {
+            "path": "layers/dot11.go",
+            "start": 18009
+          },
+          {
+            "path": "layers/dot11.go",
+            "start": 19234
+          },
+          {
+            "path": "layers/dot11.go",
+            "start": 19729
+          },
+          {
+            "path": "layers/dot11.go",
+            "start": 20261
+          },
+          {
+            "path": "layers/dot11.go",
+            "start": 20803
+          },
+          {
+            "path": "layers/dot11.go",
+            "start": 21337
+          },
+          {
+            "path": "layers/dot11.go",
+            "start": 21849
+          },
+          {
+            "path": "layers/dot11.go",
+            "start": 22414
+          },
+          {
+            "path": "layers/dot11.go",
+            "start": 22901
+          },
+          {
+            "path": "layers/dot11.go",
+            "start": 25463
+          },
+          {
+            "path": "layers/dot11.go",
+            "start": 25955
+          },
+          {
+            "path": "layers/dot11.go",
+            "start": 26471
+          },
+          {
+            "path": "layers/dot11.go",
+            "start": 27018
+          },
+          {
+            "path": "layers/dot11.go",
+            "start": 27564
+          },
+          {
+            "path": "layers/dot11.go",
+            "start": 28106
+          },
+          {
+            "path": "layers/dot11.go",
+            "start": 28603
+          },
+          {
+            "path": "layers/dot11.go",
+            "start": 29120
+          },
+          {
+            "path": "layers/dot11.go",
+            "start": 29716
+          },
+          {
+            "path": "layers/dot11.go",
+            "start": 30875
+          },
+          {
+            "path": "layers/dot11.go",
+            "start": 31881
+          },
+          {
+            "path": "layers/dot11.go",
+            "start": 32927
+          },
+          {
+            "path": "layers/dot11.go",
+            "start": 33471
+          },
+          {
+            "path": "layers/dot11.go",
+            "start": 33972
+          },
+          {
+            "path": "layers/dot11.go",
+            "start": 34499
+          },
+          {
+            "path": "layers/dot11.go",
+            "start": 34970
+          },
+          {
+            "path": "layers/dot11.go",
+            "start": 35896
+          },
+          {
+            "path": "layers/dot11.go",
+            "start": 36308
+          },
+          {
+            "path": "layers/dot11.go",
+            "start": 37155
+          },
+          {
+            "path": "layers/dot11.go",
+            "start": 38218
+          },
+          {
+            "path": "layers/dot11.go",
+            "start": 38986
+          },
+          {
+            "path": "layers/dot11.go",
+            "start": 39377
+          },
+          {
+            "path": "layers/dot11.go",
+            "start": 39782
+          },
+          {
+            "path": "layers/dot1q.go",
+            "start": 569
+          },
+          {
+            "path": "layers/eap.go",
+            "start": 976
+          },
+          {
+            "path": "layers/eapol.go",
+            "start": 406
+          },
+          {
+            "path": "layers/enums.go",
+            "start": 10914
+          },
+          {
+            "path": "layers/enums.go",
+            "start": 11221
+          },
+          {
+            "path": "layers/enums.go",
+            "start": 12572
+          },
+          {
+            "path": "layers/enums.go",
+            "start": 12889
+          },
+          {
+            "path": "layers/enums.go",
+            "start": 13196
+          },
+          {
+            "path": "layers/etherip.go",
+            "start": 458
+          },
+          {
+            "path": "layers/ethernet.go",
+            "start": 1086
+          },
+          {
+            "path": "layers/fddi.go",
+            "start": 461
+          },
+          {
+            "path": "layers/gre.go",
+            "start": 1064
+          },
+          {
+            "path": "layers/icmp4.go",
+            "start": 6478
+          },
+          {
+            "path": "layers/icmp6.go",
+            "start": 5087
+          },
+          {
+            "path": "layers/igmp.go",
+            "start": 770
+          },
+          {
+            "path": "layers/ip4.go",
+            "start": 1171
+          },
+          {
+            "path": "layers/ip6.go",
+            "start": 890
+          },
+          {
+            "path": "layers/ip6.go",
+            "start": 10894
+          },
+          {
+            "path": "layers/ip6.go",
+            "start": 13063
+          },
+          {
+            "path": "layers/ip6.go",
+            "start": 14296
+          },
+          {
+            "path": "layers/ip6.go",
+            "start": 15177
+          },
+          {
+            "path": "layers/ipsec.go",
+            "start": 721
+          },
+          {
+            "path": "layers/ipsec.go",
+            "start": 1635
+          },
+          {
+            "path": "layers/linux_sll.go",
+            "start": 1542
+          },
+          {
+            "path": "layers/llc.go",
+            "start": 649
+          },
+          {
+            "path": "layers/llc.go",
+            "start": 1234
+          },
+          {
+            "path": "layers/lldp.go",
+            "start": 21905
+          },
+          {
+            "path": "layers/lldp.go",
+            "start": 36567
+          },
+          {
+            "path": "layers/loopback.go",
+            "start": 560
+          },
+          {
+            "path": "layers/mpls.go",
+            "start": 474
+          },
+          {
+            "path": "layers/ndp.go",
+            "start": 13869
+          },
+          {
+            "path": "layers/pflog.go",
+            "start": 1760
+          },
+          {
+            "path": "layers/ports.go",
+            "start": 1702
+          },
+          {
+            "path": "layers/ppp.go",
+            "start": 908
+          },
+          {
+            "path": "layers/pppoe.go",
+            "start": 497
+          },
+          {
+            "path": "layers/prism.go",
+            "start": 3704
+          },
+          {
+            "path": "layers/radiotap.go",
+            "start": 21331
+          },
+          {
+            "path": "layers/rudp.go",
+            "start": 952
+          },
+          {
+            "path": "layers/sctp.go",
+            "start": 536
+          },
+          {
+            "path": "layers/sctp.go",
+            "start": 4928
+          },
+          {
+            "path": "layers/sctp.go",
+            "start": 5759
+          },
+          {
+            "path": "layers/sctp.go",
+            "start": 7984
+          },
+          {
+            "path": "layers/sctp.go",
+            "start": 10149
+          },
+          {
+            "path": "layers/sctp.go",
+            "start": 13125
+          },
+          {
+            "path": "layers/sctp.go",
+            "start": 14630
+          },
+          {
+            "path": "layers/sctp.go",
+            "start": 15985
+          },
+          {
+            "path": "layers/sctp.go",
+            "start": 16895
+          },
+          {
+            "path": "layers/sctp.go",
+            "start": 17711
+          },
+          {
+            "path": "layers/sctp.go",
+            "start": 18721
+          },
+          {
+            "path": "layers/sflow.go",
+            "start": 7539
+          },
+          {
+            "path": "layers/tcp.go",
+            "start": 1520
+          },
+          {
+            "path": "layers/udp.go",
+            "start": 569
+          },
+          {
+            "path": "layers/udplite.go",
+            "start": 579
+          },
+          {
+            "path": "layers/usb.go",
+            "start": 3048
+          },
+          {
+            "path": "layers/usb.go",
+            "start": 4446
+          },
+          {
+            "path": "layers/usb.go",
+            "start": 6404
+          },
+          {
+            "path": "layers/usb.go",
+            "start": 7184
+          },
+          {
+            "path": "layers/usb.go",
+            "start": 7657
+          },
+          {
+            "path": "layers/usb.go",
+            "start": 8137
+          },
+          {
+            "path": "layers/vxlan.go",
+            "start": 1508
+          },
+          {
+            "path": "layertype.go",
+            "start": 629
+          }
+        ]
+      },
+      {
+        "side": "ours",
+        "identifier": "gopacket",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "LayerTypeVXLAN",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "data",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "byte",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "p",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "error",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "binary",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "BigEndian",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Uint32",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "append",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Uint16",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "vxlanLength",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Contents",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Payload",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "base.go",
+            "start": 1236
+          },
+          {
+            "path": "base.go",
+            "start": 1488
+          },
+          {
+            "path": "base.go",
+            "start": 3047
+          },
+          {
+            "path": "layers/ctp.go",
+            "start": 2064
+          },
+          {
+            "path": "layers/dns.go",
+            "start": 10885
+          },
+          {
+            "path": "layers/sctp.go",
+            "start": 5127
+          },
+          {
+            "path": "layers/sctp.go",
+            "start": 5899
+          },
+          {
+            "path": "layers/sflow.go",
+            "start": 7621
+          }
+        ]
+      },
+      {
+        "side": "ours",
+        "identifier": "NextDecoder",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "packet.go",
+            "start": 12834
+          },
+          {
+            "path": "packet.go",
+            "start": 14514
+          }
+        ]
+      },
+      {
+        "side": "ours",
+        "identifier": "LinkType",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "layers/enums.go",
+            "start": 3449
+          },
+          {
+            "path": "pcap/pcap.go",
+            "start": 18189
+          },
+          {
+            "path": "pcapgo/read.go",
+            "start": 3695
+          }
+        ]
+      },
+      {
+        "side": "theirs",
+        "path": "macs/valid_mac_prefixes.go",
+        "reason": "parse-failed"
+      },
+      {
+        "side": "theirs",
+        "identifier": "layers",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "ValidIDFlag",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "bool",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "VNI",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "uint32",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "GBPExtension",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "GBPDontLearn",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "GBPApplied",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "GBPGroupPolicyID",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "uint16",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "vx",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "LayerType",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "base.go",
+            "start": 1295
+          },
+          {
+            "path": "base.go",
+            "start": 2846
+          },
+          {
+            "path": "decode.go",
+            "start": 5516
+          },
+          {
+            "path": "layers/arp.go",
+            "start": 721
+          },
+          {
+            "path": "layers/cdp.go",
+            "start": 5669
+          },
+          {
+            "path": "layers/cdp.go",
+            "start": 6360
+          },
+          {
+            "path": "layers/ctp.go",
+            "start": 926
+          },
+          {
+            "path": "layers/ctp.go",
+            "start": 1302
+          },
+          {
+            "path": "layers/ctp.go",
+            "start": 1912
+          },
+          {
+            "path": "layers/dns.go",
+            "start": 7144
+          },
+          {
+            "path": "layers/dot11.go",
+            "start": 10296
+          },
+          {
+            "path": "layers/dot11.go",
+            "start": 13041
+          },
+          {
+            "path": "layers/dot11.go",
+            "start": 13623
+          },
+          {
+            "path": "layers/dot11.go",
+            "start": 14204
+          },
+          {
+            "path": "layers/dot11.go",
+            "start": 14801
+          },
+          {
+            "path": "layers/dot11.go",
+            "start": 15311
+          },
+          {
+            "path": "layers/dot11.go",
+            "start": 15835
+          },
+          {
+            "path": "layers/dot11.go",
+            "start": 16359
+          },
+          {
+            "path": "layers/dot11.go",
+            "start": 16879
+          },
+          {
+            "path": "layers/dot11.go",
+            "start": 17437
+          },
+          {
+            "path": "layers/dot11.go",
+            "start": 18009
+          },
+          {
+            "path": "layers/dot11.go",
+            "start": 19234
+          },
+          {
+            "path": "layers/dot11.go",
+            "start": 19729
+          },
+          {
+            "path": "layers/dot11.go",
+            "start": 20261
+          },
+          {
+            "path": "layers/dot11.go",
+            "start": 20803
+          },
+          {
+            "path": "layers/dot11.go",
+            "start": 21337
+          },
+          {
+            "path": "layers/dot11.go",
+            "start": 21849
+          },
+          {
+            "path": "layers/dot11.go",
+            "start": 22414
+          },
+          {
+            "path": "layers/dot11.go",
+            "start": 22901
+          },
+          {
+            "path": "layers/dot11.go",
+            "start": 25463
+          },
+          {
+            "path": "layers/dot11.go",
+            "start": 25955
+          },
+          {
+            "path": "layers/dot11.go",
+            "start": 26471
+          },
+          {
+            "path": "layers/dot11.go",
+            "start": 27018
+          },
+          {
+            "path": "layers/dot11.go",
+            "start": 27564
+          },
+          {
+            "path": "layers/dot11.go",
+            "start": 28106
+          },
+          {
+            "path": "layers/dot11.go",
+            "start": 28603
+          },
+          {
+            "path": "layers/dot11.go",
+            "start": 29120
+          },
+          {
+            "path": "layers/dot11.go",
+            "start": 29716
+          },
+          {
+            "path": "layers/dot11.go",
+            "start": 30875
+          },
+          {
+            "path": "layers/dot11.go",
+            "start": 31881
+          },
+          {
+            "path": "layers/dot11.go",
+            "start": 32927
+          },
+          {
+            "path": "layers/dot11.go",
+            "start": 33471
+          },
+          {
+            "path": "layers/dot11.go",
+            "start": 33972
+          },
+          {
+            "path": "layers/dot11.go",
+            "start": 34499
+          },
+          {
+            "path": "layers/dot11.go",
+            "start": 34970
+          },
+          {
+            "path": "layers/dot11.go",
+            "start": 35896
+          },
+          {
+            "path": "layers/dot11.go",
+            "start": 36308
+          },
+          {
+            "path": "layers/dot11.go",
+            "start": 37155
+          },
+          {
+            "path": "layers/dot11.go",
+            "start": 38218
+          },
+          {
+            "path": "layers/dot11.go",
+            "start": 38986
+          },
+          {
+            "path": "layers/dot11.go",
+            "start": 39377
+          },
+          {
+            "path": "layers/dot11.go",
+            "start": 39782
+          },
+          {
+            "path": "layers/dot1q.go",
+            "start": 569
+          },
+          {
+            "path": "layers/eap.go",
+            "start": 976
+          },
+          {
+            "path": "layers/eapol.go",
+            "start": 406
+          },
+          {
+            "path": "layers/enums.go",
+            "start": 10914
+          },
+          {
+            "path": "layers/enums.go",
+            "start": 11221
+          },
+          {
+            "path": "layers/enums.go",
+            "start": 12572
+          },
+          {
+            "path": "layers/enums.go",
+            "start": 12889
+          },
+          {
+            "path": "layers/enums.go",
+            "start": 13196
+          },
+          {
+            "path": "layers/etherip.go",
+            "start": 458
+          },
+          {
+            "path": "layers/ethernet.go",
+            "start": 1086
+          },
+          {
+            "path": "layers/fddi.go",
+            "start": 461
+          },
+          {
+            "path": "layers/gre.go",
+            "start": 1064
+          },
+          {
+            "path": "layers/icmp4.go",
+            "start": 6478
+          },
+          {
+            "path": "layers/icmp6.go",
+            "start": 5087
+          },
+          {
+            "path": "layers/igmp.go",
+            "start": 770
+          },
+          {
+            "path": "layers/ip4.go",
+            "start": 1171
+          },
+          {
+            "path": "layers/ip6.go",
+            "start": 890
+          },
+          {
+            "path": "layers/ip6.go",
+            "start": 10894
+          },
+          {
+            "path": "layers/ip6.go",
+            "start": 13063
+          },
+          {
+            "path": "layers/ip6.go",
+            "start": 14296
+          },
+          {
+            "path": "layers/ip6.go",
+            "start": 15177
+          },
+          {
+            "path": "layers/ipsec.go",
+            "start": 721
+          },
+          {
+            "path": "layers/ipsec.go",
+            "start": 1635
+          },
+          {
+            "path": "layers/linux_sll.go",
+            "start": 1542
+          },
+          {
+            "path": "layers/llc.go",
+            "start": 649
+          },
+          {
+            "path": "layers/llc.go",
+            "start": 1234
+          },
+          {
+            "path": "layers/lldp.go",
+            "start": 21905
+          },
+          {
+            "path": "layers/lldp.go",
+            "start": 36567
+          },
+          {
+            "path": "layers/loopback.go",
+            "start": 560
+          },
+          {
+            "path": "layers/mpls.go",
+            "start": 474
+          },
+          {
+            "path": "layers/ndp.go",
+            "start": 13869
+          },
+          {
+            "path": "layers/pflog.go",
+            "start": 1760
+          },
+          {
+            "path": "layers/ports.go",
+            "start": 1702
+          },
+          {
+            "path": "layers/ppp.go",
+            "start": 908
+          },
+          {
+            "path": "layers/pppoe.go",
+            "start": 497
+          },
+          {
+            "path": "layers/prism.go",
+            "start": 3704
+          },
+          {
+            "path": "layers/radiotap.go",
+            "start": 21331
+          },
+          {
+            "path": "layers/rudp.go",
+            "start": 952
+          },
+          {
+            "path": "layers/sctp.go",
+            "start": 536
+          },
+          {
+            "path": "layers/sctp.go",
+            "start": 4928
+          },
+          {
+            "path": "layers/sctp.go",
+            "start": 5759
+          },
+          {
+            "path": "layers/sctp.go",
+            "start": 7984
+          },
+          {
+            "path": "layers/sctp.go",
+            "start": 10149
+          },
+          {
+            "path": "layers/sctp.go",
+            "start": 13125
+          },
+          {
+            "path": "layers/sctp.go",
+            "start": 14630
+          },
+          {
+            "path": "layers/sctp.go",
+            "start": 15985
+          },
+          {
+            "path": "layers/sctp.go",
+            "start": 16895
+          },
+          {
+            "path": "layers/sctp.go",
+            "start": 17711
+          },
+          {
+            "path": "layers/sctp.go",
+            "start": 18721
+          },
+          {
+            "path": "layers/sflow.go",
+            "start": 7539
+          },
+          {
+            "path": "layers/tcp.go",
+            "start": 1520
+          },
+          {
+            "path": "layers/udp.go",
+            "start": 569
+          },
+          {
+            "path": "layers/udplite.go",
+            "start": 579
+          },
+          {
+            "path": "layers/usb.go",
+            "start": 3048
+          },
+          {
+            "path": "layers/usb.go",
+            "start": 4446
+          },
+          {
+            "path": "layers/usb.go",
+            "start": 6404
+          },
+          {
+            "path": "layers/usb.go",
+            "start": 7184
+          },
+          {
+            "path": "layers/usb.go",
+            "start": 7657
+          },
+          {
+            "path": "layers/usb.go",
+            "start": 8137
+          },
+          {
+            "path": "layers/vxlan.go",
+            "start": 1318
+          },
+          {
+            "path": "layertype.go",
+            "start": 629
+          }
+        ]
+      },
+      {
+        "side": "theirs",
+        "identifier": "gopacket",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "LayerTypeVXLAN",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "data",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "byte",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "p",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "error",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "binary",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "BigEndian",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Uint32",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "append",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Uint16",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "vxlanLength",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Contents",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Payload",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "base.go",
+            "start": 1236
+          },
+          {
+            "path": "base.go",
+            "start": 1488
+          },
+          {
+            "path": "base.go",
+            "start": 3047
+          },
+          {
+            "path": "layers/ctp.go",
+            "start": 2064
+          },
+          {
+            "path": "layers/dns.go",
+            "start": 10885
+          },
+          {
+            "path": "layers/sctp.go",
+            "start": 5127
+          },
+          {
+            "path": "layers/sctp.go",
+            "start": 5899
+          },
+          {
+            "path": "layers/sflow.go",
+            "start": 7621
+          }
+        ]
+      },
+      {
+        "side": "theirs",
+        "identifier": "NextDecoder",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "packet.go",
+            "start": 12834
+          },
+          {
+            "path": "packet.go",
+            "start": 14514
+          }
+        ]
+      },
+      {
+        "side": "theirs",
+        "identifier": "LinkType",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "layers/enums.go",
+            "start": 3449
+          },
+          {
+            "path": "pcap/pcap.go",
+            "start": 18189
+          },
+          {
+            "path": "pcapgo/read.go",
+            "start": 3695
+          }
+        ]
+      }
+    ],
+    "method": "syntax-ranges-and-identifier-candidates/3",
+    "budget_bytes": 32768,
+    "libraries": {
+      "C": "cbbd4827ee02cd5c018ab41f10d8404ff8741159054b352d9a6d763c506ba3c7",
+      "Go": "1612f8fd958ba1ec981bf4b91e2ff399f1e54d26a9da68e5b60b0d7cd00616fc"
+    }
+  }
+}

@@ -1,0 +1,1132 @@
+{
+  "id": "af7bb3d72f0ba78efc2aad5303804a99ad99b55df240e061df3f1ddf4e0d7ae1",
+  "source_protocol_sha256": "86ffe38086e217acf6e1a4aa4162e226862463d1bde3160478f9a6f4d2b968ce",
+  "repair_module_sha256": "b6a7cf123b0ac50001e1498cdf64964b8ac56e8e6a68cbbc6dcc01c8517b4a20",
+  "contexts": {
+    "local-context": [
+      {
+        "id": "12378215598dfc0da8e15ddc",
+        "revision": "9577ba267af053f761c82281ae424e5f134316dc",
+        "path": "command_setup.go",
+        "start_byte": 0,
+        "text": "package cli\n\nimport (\n\t\"flag\"\n\t\"os\"\n\t\"path/filepath\"\n\t\"sort\"\n\t\"strings\"\n)\n\nfunc (cmd *Command) setupDefaults(osArgs []string) {\n\tif cmd.didSetupDefaults {\n\t\ttracef(\"already did setup (cmd=%[1]q)\", cmd.Name)\n\t\treturn\n\t}\n\n\tcmd.didSetupDefaults = true\n\n\tisRoot := cmd.parent == nil\n\ttracef(\"isRoot? %[1]v (cmd=%[2]q)\", isRoot, cmd.Name)\n\n\tif cmd.ShellComplete == nil {\n\t\ttracef(\"setting default ShellComplete (cmd=%[1]q)\", cmd.Name)\n\t\tcmd.ShellComplete = DefaultCompleteWithFlags\n\t}\n\n\tif cmd.Name == \"\" && isRoot {\n\t\tname := filepath.Base(osArgs[0])\n\t\ttracef(\"setting cmd.Name from first arg basename (cmd=%[1]q)\", name)\n\t\tcmd.Name = name\n\t}\n\n\tif cmd.Usage == \"\" && isRoot {\n\t\ttracef(\"setting default Usage (cmd=%[1]q)\", cmd.Name)\n\t\tcmd.Usage = \"A new cli application\"\n\t}\n\n\tif cmd.Version == \"\" {\n\t\ttracef(\"setting HideVersion=true due to empty Version (cmd=%[1]q)\", cmd.Name)\n\t\tcmd.HideVersion = true\n\t}\n\n\tif cmd.Action == nil {\n\t\ttracef(\"setting default Action as help command action (cmd=%[1]q)\", cmd.Name)\n\t\tcmd.Action = helpCommandAction\n\t}\n\n\tif cmd.Reader == nil {\n\t\ttracef(\"setting default Reader as os.Stdin (cmd=%[1]q)\", cmd.Name)\n\t\tcmd.Reader = os.Stdin\n\t}\n\n\tif cmd.Writer == nil {\n\t\ttracef(\"setting default Writer as os.Stdout (cmd=%[1]q)\", cmd.Name)\n\t\tcmd.Writer = os.Stdout\n\t}\n\n\tif cmd.ErrWriter == nil {\n\t\ttracef(\"setting default ErrWriter as os.Stderr (cmd=%[1]q)\", cmd.Name)\n\t\tcmd.ErrWriter = os.Stderr\n\t}\n\n\tif cmd.AllowExtFlags {\n\t\ttracef(\"visiting all flags given AllowExtFlags=true (cmd=%[1]q)\", cmd.Name)\n\t\t// add global flags added by other packages\n\t\tflag.VisitAll(func(f *flag.Flag) {\n\t\t\t// skip test flags\n\t\t\tif !strings.HasPrefix(f.Name, ignoreFlagPrefix) {\n\t\t\t\tcmd.Flags = append(cmd.Flags, &extFlag{f})\n\t\t\t}\n\t\t})\n\t}\n\n\tfor _, subCmd := range cmd.Commands {\n\t\ttracef(\"setting sub-command (cmd=%[1]q) parent as self (cmd=%[2]q)\", subCmd.Name, cmd.Name)\n\t\tsubCmd.parent = cmd\n\t}\n\n\tcmd.ensureHelp()\n\n\tif !cmd.HideVersion && isRoot {\n\t\ttracef(\"appending version flag (cmd=%[1]q)\", cmd.Name)\n\t\tcmd.appendFlag(VersionFlag)\n\t}\n\n\tif cmd.PrefixMatchCommands && cmd.SuggestCommandFunc == nil {\n\t\ttracef(\"setting default SuggestCommandFunc (cmd=%[1]q)\", cmd.Name)\n\t\tcmd.SuggestCommandFunc = suggestCommand\n\t}\n\n\tif cmd.EnableShellCompletion || cmd.Root().shellCompletion {\n\t\tcompletionCommand := BuildCompletionCommand(cmd.Name)\n\n\t\tif cmd.ShellCompletionCommandName != \"\" {\n\t\t\ttracef(\n\t\t\t\t\"setting completion command name (%[1]q) from \"+\n\t\t\t\t\t\"cmd.ShellCompletionCommandName (cmd=%[2]q)\",\n\t\t\t\tcmd.ShellCompletionCommandName, cmd.Name,\n\t\t\t)\n\t\t\tcompletionCommand.Name = cmd.ShellCompletionCommandName\n\t\t}\n\n\t\ttracef(\"appending completionCommand (cmd=%[1]q)\", cmd.Name)\n\t\tcmd.appendCommand(completionCommand)\n\t}\n\n\ttracef(\"setting command categories (cmd=%[1]q)\", cmd.Name)\n\tcmd.categories = newCommandCategories()\n\n\tfor _, subCmd := range cmd.Commands {\n\t\tcmd.categories.AddCommand(subCmd.Category, subCmd)\n\t}\n\n\ttracef(\"sorting command categories (cmd=%[1]q)\", cmd.Name)\n\tsort.Sort(cmd.categories.(*commandCategories))\n\n\ttracef(\"setting category on mutually exclusive flags (cmd=%[1]q)\", cmd.Name)\n\tfor _, grp := range cmd.MutuallyExclusiveFlags {\n\t\tgrp.propagateCategory()\n\t}\n\n\ttracef(\"setting flag categories (cmd=%[1]q)\", cmd.Name)\n\tcmd.flagCategories = newFlagCategoriesFromFlags(cmd.allFlags())\n\n\tif cmd.Metadata == nil {\n\t\ttracef(\"setting default Metadata (cmd=%[1]q)\", cmd.Name)\n\t\tcmd.Metadata = map[string]any{}\n\t}\n\n\tif len(cmd.SliceFlagSeparator) != 0 {\n\t\ttracef(\"setting defaultSliceFlagSeparator from cmd.SliceFlagSeparator (cmd=%[1]q)\", cmd.Name)\n\t\tdefaultSliceFlagSeparator = cmd.SliceFlagSeparator\n\t}\n\n\ttracef(\"setting disableSliceFlagSeparator from cmd.DisableSliceFlagSeparator (cmd=%[1]q)\", cmd.Name)\n\tdisableSliceFlagSeparator = cmd.DisableSliceFlagSeparator\n\n\tcmd.setFlags = map[Flag]struct{}{}\n}\n\nfunc (cmd *Command) setupCommandGraph() {\n\ttracef(\"setting up command graph (cmd=%[1]q)\", cmd.Name)\n\n\tfor _, subCmd := range cmd.Commands {\n\t\tsubCmd.parent = cmd\n\t\tsubCmd.setupSubcommand()\n\t\tsubCmd.setupCommandGraph()\n\t}\n}\n\nfunc (cmd *Command) setupSubcommand() {\n\ttracef(\"setting up self as sub-command (cmd=%[1]q)\", cmd.Name)\n\n\tcmd.ensureHelp()\n\n\ttracef(\"setting command categories (cmd=%[1]q)\", cmd.Name)\n\tcmd.categories = newCommandCategories()\n\n\tfor _, subCmd := range cmd.Commands {\n\t\tcmd.categories.AddCommand(subCmd.Category, subCmd)\n\t}\n\n\ttracef(\"sorting command categories (cmd=%[1]q)\", cmd.Name)\n\tsort.Sort(cmd.categories.(*commandCategories))\n\n\ttracef(\"setting category on mutually exclusive flags (cmd=%[1]q)\", cmd.Name)\n\tfor _, grp := range cmd.MutuallyExclusiveFlags {\n\t\tgrp.propagateCategory()\n\t}\n\n\ttracef(\"setting flag categories (cmd=%[1]q)\", cmd.Name)\n\tcmd.flagCategories = newFlagCategoriesFromFlags(cmd.allFlags())\n}\n\nfunc (cmd *Command) hideHelp() bool {\n\ttracef(\"hide help (cmd=%[1]q)\", cmd.Name)\n\tfor c := cmd; c != nil; c = c.parent {\n\t\tif c.HideHelp {\n\t\t\treturn true\n\t\t}\n\t}\n\n\treturn false\n}\n\nfunc (cmd *Command) ensureHelp() {\n\ttracef(\"ensuring help (cmd=%[1]q)\", cmd.Name)\n\n\thelpCommand := buildHelpCommand(true)\n\n\tif !cmd.hideHelp() {\n\t\tif cmd.Command(helpCommand.Name) == nil {\n\t\t\tif !cmd.HideHelpCommand {\n\t\t\t\ttracef(\"appending helpCommand (cmd=%[1]q)\", cmd.Name)\n\t\t\t\tcmd.appendCommand(helpCommand)\n\t\t\t}\n\t\t}\n\n\t\tif HelpFlag != nil {\n\t\t\t// TODO need to remove hack\n\t\t\tif hf, ok := HelpFlag.(*BoolFlag); ok {\n\t\t\t\thf.applied = false\n\t\t\t\thf.hasBeenSet = false\n\t\t\t\thf.Value = false\n\t\t\t\thf.value = nil\n\t\t\t}\n\t\t\ttracef(\"appending HelpFlag (cmd=%[1]q)\", cmd.Name)\n\t\t\tcmd.appendFlag(HelpFlag)\n\t\t}\n\t}\n}\n",
+        "rank": 0,
+        "truncated": false
+      },
+      {
+        "id": "eaad8c477e0692dd84c205f7",
+        "revision": "65c6366e4295e29b56d4824b3866800b8cb2d910",
+        "path": "command_setup.go",
+        "start_byte": 0,
+        "text": "package cli\n\nimport (\n\t\"flag\"\n\t\"os\"\n\t\"path/filepath\"\n\t\"sort\"\n\t\"strings\"\n)\n\nfunc (cmd *Command) setupDefaults(osArgs []string) {\n\tif cmd.didSetupDefaults {\n\t\ttracef(\"already did setup (cmd=%[1]q)\", cmd.Name)\n\t\treturn\n\t}\n\n\tcmd.didSetupDefaults = true\n\n\tisRoot := cmd.parent == nil\n\ttracef(\"isRoot? %[1]v (cmd=%[2]q)\", isRoot, cmd.Name)\n\n\tif cmd.ShellComplete == nil {\n\t\ttracef(\"setting default ShellComplete (cmd=%[1]q)\", cmd.Name)\n\t\tcmd.ShellComplete = DefaultCompleteWithFlags\n\t}\n\n\tif cmd.Name == \"\" && isRoot {\n\t\tname := filepath.Base(osArgs[0])\n\t\ttracef(\"setting cmd.Name from first arg basename (cmd=%[1]q)\", name)\n\t\tcmd.Name = name\n\t}\n\n\tif cmd.Usage == \"\" && isRoot {\n\t\ttracef(\"setting default Usage (cmd=%[1]q)\", cmd.Name)\n\t\tcmd.Usage = \"A new cli application\"\n\t}\n\n\tif cmd.Version == \"\" {\n\t\ttracef(\"setting HideVersion=true due to empty Version (cmd=%[1]q)\", cmd.Name)\n\t\tcmd.HideVersion = true\n\t}\n\n\tif cmd.Action == nil {\n\t\ttracef(\"setting default Action as help command action (cmd=%[1]q)\", cmd.Name)\n\t\tcmd.Action = helpCommandAction\n\t}\n\n\tif cmd.Reader == nil {\n\t\ttracef(\"setting default Reader as os.Stdin (cmd=%[1]q)\", cmd.Name)\n\t\tcmd.Reader = os.Stdin\n\t}\n\n\tif cmd.Writer == nil {\n\t\ttracef(\"setting default Writer as os.Stdout (cmd=%[1]q)\", cmd.Name)\n\t\tcmd.Writer = os.Stdout\n\t}\n\n\tif cmd.ErrWriter == nil {\n\t\ttracef(\"setting default ErrWriter as os.Stderr (cmd=%[1]q)\", cmd.Name)\n\t\tcmd.ErrWriter = os.Stderr\n\t}\n\n\tif cmd.AllowExtFlags {\n\t\ttracef(\"visiting all flags given AllowExtFlags=true (cmd=%[1]q)\", cmd.Name)\n\t\t// add global flags added by other packages\n\t\tflag.VisitAll(func(f *flag.Flag) {\n\t\t\t// skip test flags\n\t\t\tif !strings.HasPrefix(f.Name, ignoreFlagPrefix) {\n\t\t\t\tcmd.Flags = append(cmd.Flags, &extFlag{f})\n\t\t\t}\n\t\t})\n\t}\n\n\tfor _, subCmd := range cmd.Commands {\n\t\ttracef(\"setting sub-command (cmd=%[1]q) parent as self (cmd=%[2]q)\", subCmd.Name, cmd.Name)\n\t\tsubCmd.parent = cmd\n\t}\n\n\tcmd.ensureHelp()\n\n\tif !cmd.HideVersion && isRoot {\n\t\ttracef(\"appending version flag (cmd=%[1]q)\", cmd.Name)\n\t\tcmd.appendFlag(VersionFlag)\n\t}\n\n\tif cmd.PrefixMatchCommands && cmd.SuggestCommandFunc == nil {\n\t\ttracef(\"setting default SuggestCommandFunc (cmd=%[1]q)\", cmd.Name)\n\t\tcmd.SuggestCommandFunc = suggestCommand\n\t}\n\n\tif isRoot && cmd.EnableShellCompletion {\n\t\tcompletionCommand := buildCompletionCommand(cmd.Name)\n\n\t\tif cmd.ShellCompletionCommandName != \"\" {\n\t\t\ttracef(\n\t\t\t\t\"setting completion command name (%[1]q) from \"+\n\t\t\t\t\t\"cmd.ShellCompletionCommandName (cmd=%[2]q)\",\n\t\t\t\tcmd.ShellCompletionCommandName, cmd.Name,\n\t\t\t)\n\t\t\tcompletionCommand.Name = cmd.ShellCompletionCommandName\n\t\t}\n\n\t\ttracef(\"appending completionCommand (cmd=%[1]q)\", cmd.Name)\n\t\tcmd.appendCommand(completionCommand)\n\t}\n\n\ttracef(\"setting command categories (cmd=%[1]q)\", cmd.Name)\n\tcmd.categories = newCommandCategories()\n\n\tfor _, subCmd := range cmd.Commands {\n\t\tcmd.categories.AddCommand(subCmd.Category, subCmd)\n\t}\n\n\ttracef(\"sorting command categories (cmd=%[1]q)\", cmd.Name)\n\tsort.Sort(cmd.categories.(*commandCategories))\n\n\ttracef(\"setting category on mutually exclusive flags (cmd=%[1]q)\", cmd.Name)\n\tfor _, grp := range cmd.MutuallyExclusiveFlags {\n\t\tgrp.propagateCategory()\n\t}\n\n\ttracef(\"setting flag categories (cmd=%[1]q)\", cmd.Name)\n\tcmd.flagCategories = newFlagCategoriesFromFlags(cmd.allFlags())\n\n\tif cmd.Metadata == nil {\n\t\ttracef(\"setting default Metadata (cmd=%[1]q)\", cmd.Name)\n\t\tcmd.Metadata = map[string]any{}\n\t}\n\n\tif len(cmd.SliceFlagSeparator) != 0 {\n\t\ttracef(\"setting defaultSliceFlagSeparator from cmd.SliceFlagSeparator (cmd=%[1]q)\", cmd.Name)\n\t\tdefaultSliceFlagSeparator = cmd.SliceFlagSeparator\n\t}\n\n\ttracef(\"setting disableSliceFlagSeparator from cmd.DisableSliceFlagSeparator (cmd=%[1]q)\", cmd.Name)\n\tdisableSliceFlagSeparator = cmd.DisableSliceFlagSeparator\n\n\tcmd.setFlags = map[Flag]struct{}{}\n}\n\nfunc (cmd *Command) setupCommandGraph() {\n\ttracef(\"setting up command graph (cmd=%[1]q)\", cmd.Name)\n\n\tfor _, subCmd := range cmd.Commands {\n\t\tsubCmd.parent = cmd\n\t\tsubCmd.setupSubcommand()\n\t\tsubCmd.setupCommandGraph()\n\t}\n}\n\nfunc (cmd *Command) setupSubcommand() {\n\ttracef(\"setting up self as sub-command (cmd=%[1]q)\", cmd.Name)\n\n\tcmd.ensureHelp()\n\n\ttracef(\"setting command categories (cmd=%[1]q)\", cmd.Name)\n\tcmd.categories = newCommandCategories()\n\n\tfor _, subCmd := range cmd.Commands {\n\t\tcmd.categories.AddCommand(subCmd.Category, subCmd)\n\t}\n\n\ttracef(\"sorting command categories (cmd=%[1]q)\", cmd.Name)\n\tsort.Sort(cmd.categories.(*commandCategories))\n\n\ttracef(\"setting category on mutually exclusive flags (cmd=%[1]q)\", cmd.Name)\n\tfor _, grp := range cmd.MutuallyExclusiveFlags {\n\t\tgrp.propagateCategory()\n\t}\n\n\ttracef(\"setting flag categories (cmd=%[1]q)\", cmd.Name)\n\tcmd.flagCategories = newFlagCategoriesFromFlags(cmd.allFlags())\n}\n\nfunc (cmd *Command) hideHelp() bool {\n\ttracef(\"hide help (cmd=%[1]q)\", cmd.Name)\n\tfor c := cmd; c != nil; c = c.parent {\n\t\tif c.HideHelp {\n\t\t\treturn true\n\t\t}\n\t}\n\n\treturn false\n}\n\nfunc (cmd *Command) ensureHelp() {\n\ttracef(\"ensuring help (cmd=%[1]q)\", cmd.Name)\n\n\thelpCommand := buildHelpCommand(true)\n\n\tif !cmd.hideHelp() {\n\t\tif cmd.Command(helpCommand.Name) == nil {\n\t\t\tif !cmd.HideHelpCommand {\n\t\t\t\ttracef(\"appending helpCommand (cmd=%[1]q)\", cmd.Name)\n\t\t\t\tcmd.appendCommand(helpCommand)\n\t\t\t}\n\t\t}\n\n\t\tif HelpFlag != nil {\n\t\t\t// TODO need to remove hack\n\t\t\tif hf, ok := HelpFlag.(*BoolFlag); ok {\n\t\t\t\thf.applied = false\n\t\t\t\thf.hasBeenSet = false\n\t\t\t\thf.Value = false\n\t\t\t\thf.value = nil\n\t\t\t}\n\t\t\ttracef(\"appending HelpFlag (cmd=%[1]q)\", cmd.Name)\n\t\t\tcmd.appendFlag(HelpFlag)\n\t\t}\n\t}\n}\n",
+        "rank": 0,
+        "truncated": false
+      }
+    ],
+    "selected": [
+      {
+        "id": "0d102889acdc1580aef44b52",
+        "revision": "65c6366e4295e29b56d4824b3866800b8cb2d910",
+        "path": "command_setup.go",
+        "start_byte": 75,
+        "text": "func (cmd *Command) setupDefaults(osArgs []string) {\n\tif cmd.didSetupDefaults {\n\t\ttracef(\"already did setup (cmd=%[1]q)\", cmd.Name)\n\t\treturn\n\t}\n\n\tcmd.didSetupDefaults = true\n\n\tisRoot := cmd.parent == nil\n\ttracef(\"isRoot? %[1]v (cmd=%[2]q)\", isRoot, cmd.Name)\n\n\tif cmd.ShellComplete == nil {\n\t\ttracef(\"setting default ShellComplete (cmd=%[1]q)\", cmd.Name)\n\t\tcmd.ShellComplete = DefaultCompleteWithFlags\n\t}\n\n\tif cmd.Name == \"\" && isRoot {\n\t\tname := filepath.Base(osArgs[0])\n\t\ttracef(\"setting cmd.Name from first arg basename (cmd=%[1]q)\", name)\n\t\tcmd.Name = name\n\t}\n\n\tif cmd.Usage == \"\" && isRoot {\n\t\ttracef(\"setting default Usage (cmd=%[1]q)\", cmd.Name)\n\t\tcmd.Usage = \"A new cli application\"\n\t}\n\n\tif cmd.Version == \"\" {\n\t\ttracef(\"setting HideVersion=true due to empty Version (cmd=%[1]q)\", cmd.Name)\n\t\tcmd.HideVersion = true\n\t}\n\n\tif cmd.Action == nil {\n\t\ttracef(\"setting default Action as help command action (cmd=%[1]q)\", cmd.Name)\n\t\tcmd.Action = helpCommandAction\n\t}\n\n\tif cmd.Reader == nil {\n\t\ttracef(\"setting default Reader as os.Stdin (cmd=%[1]q)\", cmd.Name)\n\t\tcmd.Reader = os.Stdin\n\t}\n\n\tif cmd.Writer == nil {\n\t\ttracef(\"setting default Writer as os.Stdout (cmd=%[1]q)\", cmd.Name)\n\t\tcmd.Writer = os.Stdout\n\t}\n\n\tif cmd.ErrWriter == nil {\n\t\ttracef(\"setting default ErrWriter as os.Stderr (cmd=%[1]q)\", cmd.Name)\n\t\tcmd.ErrWriter = os.Stderr\n\t}\n\n\tif cmd.AllowExtFlags {\n\t\ttracef(\"visiting all flags given AllowExtFlags=true (cmd=%[1]q)\", cmd.Name)\n\t\t// add global flags added by other packages\n\t\tflag.VisitAll(func(f *flag.Flag) {\n\t\t\t// skip test flags\n\t\t\tif !strings.HasPrefix(f.Name, ignoreFlagPrefix) {\n\t\t\t\tcmd.Flags = append(cmd.Flags, &extFlag{f})\n\t\t\t}\n\t\t})\n\t}\n\n\tfor _, subCmd := range cmd.Commands {\n\t\ttracef(\"setting sub-command (cmd=%[1]q) parent as self (cmd=%[2]q)\", subCmd.Name, cmd.Name)\n\t\tsubCmd.parent = cmd\n\t}\n\n\tcmd.ensureHelp()\n\n\tif !cmd.HideVersion && isRoot {\n\t\ttracef(\"appending version flag (cmd=%[1]q)\", cmd.Name)\n\t\tcmd.appendFlag(VersionFlag)\n\t}\n\n\tif cmd.PrefixMatchCommands && cmd.SuggestCommandFunc == nil {\n\t\ttracef(\"setting default SuggestCommandFunc (cmd=%[1]q)\", cmd.Name)\n\t\tcmd.SuggestCommandFunc = suggestCommand\n\t}\n\n\tif isRoot && cmd.EnableShellCompletion {\n\t\tcompletionCommand := buildCompletionCommand(cmd.Name)\n\n\t\tif cmd.ShellCompletionCommandName != \"\" {\n\t\t\ttracef(\n\t\t\t\t\"setting completion command name (%[1]q) from \"+\n\t\t\t\t\t\"cmd.ShellCompletionCommandName (cmd=%[2]q)\",\n\t\t\t\tcmd.ShellCompletionCommandName, cmd.Name,\n\t\t\t)\n\t\t\tcompletionCommand.Name = cmd.ShellCompletionCommandName\n\t\t}\n\n\t\ttracef(\"appending completionCommand (cmd=%[1]q)\", cmd.Name)\n\t\tcmd.appendCommand(completionCommand)\n\t}\n\n\ttracef(\"setting command categories (cmd=%[1]q)\", cmd.Name)\n\tcmd.categories = newCommandCategories()\n\n\tfor _, subCmd := range cmd.Commands {\n\t\tcmd.categories.AddCommand(subCmd.Category, subCmd)\n\t}\n\n\ttracef(\"sorting command categories (cmd=%[1]q)\", cmd.Name)\n\tsort.Sort(cmd.categories.(*commandCategories))\n\n\ttracef(\"setting category on mutually exclusive flags (cmd=%[1]q)\", cmd.Name)\n\tfor _, grp := range cmd.MutuallyExclusiveFlags {\n\t\tgrp.propagateCategory()\n\t}\n\n\ttracef(\"setting flag categories (cmd=%[1]q)\", cmd.Name)\n\tcmd.flagCategories = newFlagCategoriesFromFlags(cmd.allFlags())\n\n\tif cmd.Metadata == nil {\n\t\ttracef(\"setting default Metadata (cmd=%[1]q)\", cmd.Name)\n\t\tcmd.Metadata = map[string]any{}\n\t}\n\n\tif len(cmd.SliceFlagSeparator) != 0 {\n\t\ttracef(\"setting defaultSliceFlagSeparator from cmd.SliceFlagSeparator (cmd=%[1]q)\", cmd.Name)\n\t\tdefaultSliceFlagSeparator = cmd.SliceFlagSeparator\n\t}\n\n\ttracef(\"setting disableSliceFlagSeparator from cmd.DisableSliceFlagSeparator (cmd=%[1]q)\", cmd.Name)\n\tdisableSliceFlagSeparator = cmd.DisableSliceFlagSeparator\n\n\tcmd.setFlags = map[Flag]struct{}{}\n}",
+        "rank": 0,
+        "truncated": false
+      },
+      {
+        "id": "9ef96a4e2e10d3c6f3bfe31b",
+        "revision": "9577ba267af053f761c82281ae424e5f134316dc",
+        "path": "command_setup.go",
+        "start_byte": 75,
+        "text": "func (cmd *Command) setupDefaults(osArgs []string) {\n\tif cmd.didSetupDefaults {\n\t\ttracef(\"already did setup (cmd=%[1]q)\", cmd.Name)\n\t\treturn\n\t}\n\n\tcmd.didSetupDefaults = true\n\n\tisRoot := cmd.parent == nil\n\ttracef(\"isRoot? %[1]v (cmd=%[2]q)\", isRoot, cmd.Name)\n\n\tif cmd.ShellComplete == nil {\n\t\ttracef(\"setting default ShellComplete (cmd=%[1]q)\", cmd.Name)\n\t\tcmd.ShellComplete = DefaultCompleteWithFlags\n\t}\n\n\tif cmd.Name == \"\" && isRoot {\n\t\tname := filepath.Base(osArgs[0])\n\t\ttracef(\"setting cmd.Name from first arg basename (cmd=%[1]q)\", name)\n\t\tcmd.Name = name\n\t}\n\n\tif cmd.Usage == \"\" && isRoot {\n\t\ttracef(\"setting default Usage (cmd=%[1]q)\", cmd.Name)\n\t\tcmd.Usage = \"A new cli application\"\n\t}\n\n\tif cmd.Version == \"\" {\n\t\ttracef(\"setting HideVersion=true due to empty Version (cmd=%[1]q)\", cmd.Name)\n\t\tcmd.HideVersion = true\n\t}\n\n\tif cmd.Action == nil {\n\t\ttracef(\"setting default Action as help command action (cmd=%[1]q)\", cmd.Name)\n\t\tcmd.Action = helpCommandAction\n\t}\n\n\tif cmd.Reader == nil {\n\t\ttracef(\"setting default Reader as os.Stdin (cmd=%[1]q)\", cmd.Name)\n\t\tcmd.Reader = os.Stdin\n\t}\n\n\tif cmd.Writer == nil {\n\t\ttracef(\"setting default Writer as os.Stdout (cmd=%[1]q)\", cmd.Name)\n\t\tcmd.Writer = os.Stdout\n\t}\n\n\tif cmd.ErrWriter == nil {\n\t\ttracef(\"setting default ErrWriter as os.Stderr (cmd=%[1]q)\", cmd.Name)\n\t\tcmd.ErrWriter = os.Stderr\n\t}\n\n\tif cmd.AllowExtFlags {\n\t\ttracef(\"visiting all flags given AllowExtFlags=true (cmd=%[1]q)\", cmd.Name)\n\t\t// add global flags added by other packages\n\t\tflag.VisitAll(func(f *flag.Flag) {\n\t\t\t// skip test flags\n\t\t\tif !strings.HasPrefix(f.Name, ignoreFlagPrefix) {\n\t\t\t\tcmd.Flags = append(cmd.Flags, &extFlag{f})\n\t\t\t}\n\t\t})\n\t}\n\n\tfor _, subCmd := range cmd.Commands {\n\t\ttracef(\"setting sub-command (cmd=%[1]q) parent as self (cmd=%[2]q)\", subCmd.Name, cmd.Name)\n\t\tsubCmd.parent = cmd\n\t}\n\n\tcmd.ensureHelp()\n\n\tif !cmd.HideVersion && isRoot {\n\t\ttracef(\"appending version flag (cmd=%[1]q)\", cmd.Name)\n\t\tcmd.appendFlag(VersionFlag)\n\t}\n\n\tif cmd.PrefixMatchCommands && cmd.SuggestCommandFunc == nil {\n\t\ttracef(\"setting default SuggestCommandFunc (cmd=%[1]q)\", cmd.Name)\n\t\tcmd.SuggestCommandFunc = suggestCommand\n\t}\n\n\tif cmd.EnableShellCompletion || cmd.Root().shellCompletion {\n\t\tcompletionCommand := BuildCompletionCommand(cmd.Name)\n\n\t\tif cmd.ShellCompletionCommandName != \"\" {\n\t\t\ttracef(\n\t\t\t\t\"setting completion command name (%[1]q) from \"+\n\t\t\t\t\t\"cmd.ShellCompletionCommandName (cmd=%[2]q)\",\n\t\t\t\tcmd.ShellCompletionCommandName, cmd.Name,\n\t\t\t)\n\t\t\tcompletionCommand.Name = cmd.ShellCompletionCommandName\n\t\t}\n\n\t\ttracef(\"appending completionCommand (cmd=%[1]q)\", cmd.Name)\n\t\tcmd.appendCommand(completionCommand)\n\t}\n\n\ttracef(\"setting command categories (cmd=%[1]q)\", cmd.Name)\n\tcmd.categories = newCommandCategories()\n\n\tfor _, subCmd := range cmd.Commands {\n\t\tcmd.categories.AddCommand(subCmd.Category, subCmd)\n\t}\n\n\ttracef(\"sorting command categories (cmd=%[1]q)\", cmd.Name)\n\tsort.Sort(cmd.categories.(*commandCategories))\n\n\ttracef(\"setting category on mutually exclusive flags (cmd=%[1]q)\", cmd.Name)\n\tfor _, grp := range cmd.MutuallyExclusiveFlags {\n\t\tgrp.propagateCategory()\n\t}\n\n\ttracef(\"setting flag categories (cmd=%[1]q)\", cmd.Name)\n\tcmd.flagCategories = newFlagCategoriesFromFlags(cmd.allFlags())\n\n\tif cmd.Metadata == nil {\n\t\ttracef(\"setting default Metadata (cmd=%[1]q)\", cmd.Name)\n\t\tcmd.Metadata = map[string]any{}\n\t}\n\n\tif len(cmd.SliceFlagSeparator) != 0 {\n\t\ttracef(\"setting defaultSliceFlagSeparator from cmd.SliceFlagSeparator (cmd=%[1]q)\", cmd.Name)\n\t\tdefaultSliceFlagSeparator = cmd.SliceFlagSeparator\n\t}\n\n\ttracef(\"setting disableSliceFlagSeparator from cmd.DisableSliceFlagSeparator (cmd=%[1]q)\", cmd.Name)\n\tdisableSliceFlagSeparator = cmd.DisableSliceFlagSeparator\n\n\tcmd.setFlags = map[Flag]struct{}{}\n}",
+        "rank": 0,
+        "truncated": false
+      },
+      {
+        "id": "769426c0424d97a724dca4b6",
+        "revision": "65c6366e4295e29b56d4824b3866800b8cb2d910",
+        "path": "args.go",
+        "start_byte": 2203,
+        "text": "func (a *ArgumentBase[T, C, VC]) Usage() string {\n\tif a.UsageText != \"\" {\n\t\treturn a.UsageText\n\t}\n\n\tusageFormat := \"%[1]s\"\n\treturn fmt.Sprintf(usageFormat, a.Name)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "2bdb3f753ff8a6b20d79b8e7",
+        "revision": "65c6366e4295e29b56d4824b3866800b8cb2d910",
+        "path": "args.go",
+        "start_byte": 3838,
+        "text": "func (a *ArgumentsBase[T, C, VC]) Usage() string {\n\tif a.UsageText != \"\" {\n\t\treturn a.UsageText\n\t}\n\n\tusageFormat := \"\"\n\tif a.Min == 0 {\n\t\tif a.Max == 1 {\n\t\t\tusageFormat = \"[%[1]s]\"\n\t\t} else {\n\t\t\tusageFormat = \"[%[1]s ...]\"\n\t\t}\n\t} else {\n\t\tusageFormat = \"%[1]s [%[1]s ...]\"\n\t}\n\treturn fmt.Sprintf(usageFormat, a.Name)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "5ca3289ec9e9cdb731bcf6b6",
+        "revision": "65c6366e4295e29b56d4824b3866800b8cb2d910",
+        "path": "category.go",
+        "start_byte": 352,
+        "text": "type commandCategories []*commandCategory",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "919039b8bc51cb8cdc2b64f1",
+        "revision": "65c6366e4295e29b56d4824b3866800b8cb2d910",
+        "path": "category.go",
+        "start_byte": 395,
+        "text": "func newCommandCategories() CommandCategories {\n\tret := commandCategories([]*commandCategory{})\n\treturn &ret\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "25d2626f573686cec716f1e8",
+        "revision": "65c6366e4295e29b56d4824b3866800b8cb2d910",
+        "path": "category.go",
+        "start_byte": 762,
+        "text": "func (c *commandCategories) AddCommand(category string, command *Command) {\n\tfor _, commandCategory := range []*commandCategory(*c) {\n\t\tif commandCategory.name == category {\n\t\t\tcommandCategory.commands = append(commandCategory.commands, command)\n\t\t\treturn\n\t\t}\n\t}\n\tnewVal := append(*c,\n\t\t&commandCategory{name: category, commands: []*Command{command}})\n\t*c = newVal\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "7b902bc4fafc3cc6f99c0722",
+        "revision": "65c6366e4295e29b56d4824b3866800b8cb2d910",
+        "path": "category.go",
+        "start_byte": 1609,
+        "text": "func (c *commandCategory) Name() string {\n\treturn c.name\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "65a3d686641020670c28c2c2",
+        "revision": "65c6366e4295e29b56d4824b3866800b8cb2d910",
+        "path": "category.go",
+        "start_byte": 2455,
+        "text": "func newFlagCategoriesFromFlags(fs []Flag) FlagCategories {\n\tfc := newFlagCategories()\n\n\tvar categorized bool\n\n\tfor _, fl := range fs {\n\t\tif cf, ok := fl.(CategorizableFlag); ok {\n\t\t\tvisible := false\n\t\t\tif vf, ok := fl.(VisibleFlag); ok {\n\t\t\t\tvisible = vf.IsVisible()\n\t\t\t}\n\t\t\tif cat := cf.GetCategory(); cat != \"\" && visible {\n\t\t\t\tfc.AddFlag(cat, fl)\n\t\t\t\tcategorized = true\n\t\t\t}\n\t\t}\n\t}\n\n\tif categorized {\n\t\tfor _, fl := range fs {\n\t\t\tif cf, ok := fl.(CategorizableFlag); ok {\n\t\t\t\tvisible := false\n\t\t\t\tif vf, ok := fl.(VisibleFlag); ok {\n\t\t\t\t\tvisible = vf.IsVisible()\n\t\t\t\t}\n\t\t\t\tif cf.GetCategory() == \"\" && visible {\n\t\t\t\t\tfc.AddFlag(\"\", fl)\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t}\n\n\treturn fc\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "98f2085374769622a4db756b",
+        "revision": "65c6366e4295e29b56d4824b3866800b8cb2d910",
+        "path": "category.go",
+        "start_byte": 3973,
+        "text": "func (fc *defaultVisibleFlagCategory) Name() string {\n\treturn fc.name\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "74bbbe46c45fdc1a1f96bc77",
+        "revision": "65c6366e4295e29b56d4824b3866800b8cb2d910",
+        "path": "category.go",
+        "start_byte": 4046,
+        "text": "func (fc *defaultVisibleFlagCategory) Flags() []Flag {\n\tvfNames := []string{}\n\tfor flName, fl := range fc.m {\n\t\tif vf, ok := fl.(VisibleFlag); ok {\n\t\t\tif vf.IsVisible() {\n\t\t\t\tvfNames = append(vfNames, flName)\n\t\t\t}\n\t\t}\n\t}\n\n\tsort.Strings(vfNames)\n\n\tret := make([]Flag, len(vfNames))\n\tfor i, flName := range vfNames {\n\t\tret[i] = fc.m[flName]\n\t}\n\n\treturn ret\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "a240c057b1166340368fd15c",
+        "revision": "65c6366e4295e29b56d4824b3866800b8cb2d910",
+        "path": "cli.go",
+        "start_byte": 774,
+        "text": "func tracef(format string, a ...any) {\n\tif !isTracingOn {\n\t\treturn\n\t}\n\n\tif !strings.HasSuffix(format, \"\\n\") {\n\t\tformat = format + \"\\n\"\n\t}\n\n\tpc, file, line, _ := runtime.Caller(1)\n\tcf := runtime.FuncForPC(pc)\n\n\tfmt.Fprintf(\n\t\tos.Stderr,\n\t\tstrings.Join([]string{\n\t\t\t\"## URFAVE CLI TRACE \",\n\t\t\tfile,\n\t\t\t\":\",\n\t\t\tfmt.Sprintf(\"%v\", line),\n\t\t\t\" \",\n\t\t\tfmt.Sprintf(\"(%s)\", cf.Name()),\n\t\t\t\" \",\n\t\t\tformat,\n\t\t}, \"\"),\n\t\ta...,\n\t)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "153cf4a9eb46f0b76b205275",
+        "revision": "65c6366e4295e29b56d4824b3866800b8cb2d910",
+        "path": "command_run.go",
+        "start_byte": 5532,
+        "text": "var subCmd *Command",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "eeefc5af7e102113ae6c10d7",
+        "revision": "65c6366e4295e29b56d4824b3866800b8cb2d910",
+        "path": "command_setup.go",
+        "start_byte": 4920,
+        "text": "func (cmd *Command) ensureHelp() {\n\ttracef(\"ensuring help (cmd=%[1]q)\", cmd.Name)\n\n\thelpCommand := buildHelpCommand(true)\n\n\tif !cmd.hideHelp() {\n\t\tif cmd.Command(helpCommand.Name) == nil {\n\t\t\tif !cmd.HideHelpCommand {\n\t\t\t\ttracef(\"appending helpCommand (cmd=%[1]q)\", cmd.Name)\n\t\t\t\tcmd.appendCommand(helpCommand)\n\t\t\t}\n\t\t}\n\n\t\tif HelpFlag != nil {\n\t\t\t// TODO need to remove hack\n\t\t\tif hf, ok := HelpFlag.(*BoolFlag); ok {\n\t\t\t\thf.applied = false\n\t\t\t\thf.hasBeenSet = false\n\t\t\t\thf.Value = false\n\t\t\t\thf.value = nil\n\t\t\t}\n\t\t\ttracef(\"appending HelpFlag (cmd=%[1]q)\", cmd.Name)\n\t\t\tcmd.appendFlag(HelpFlag)\n\t\t}\n\t}\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "6fbef2e4519f7305ededd2e7",
+        "revision": "65c6366e4295e29b56d4824b3866800b8cb2d910",
+        "path": "command.go",
+        "start_byte": 70,
+        "text": "const (\n\t// ignoreFlagPrefix is to ignore test flags when adding flags from other packages\n\tignoreFlagPrefix = \"test.\"\n\n\tcommandContextKey = contextKey(\"cli.context\")\n)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "f361a2e12588af4e7c381cb6",
+        "revision": "65c6366e4295e29b56d4824b3866800b8cb2d910",
+        "path": "command.go",
+        "start_byte": 452,
+        "text": "type Command struct {\n\t// The name of the command\n\tName string `json:\"name\"`\n\t// A list of aliases for the command\n\tAliases []string `json:\"aliases\"`\n\t// A short description of the usage of this command\n\tUsage string `json:\"usage\"`\n\t// Text to override the USAGE section of help\n\tUsageText string `json:\"usageText\"`\n\t// A short description of the arguments of this command\n\tArgsUsage string `json:\"argsUsage\"`\n\t// Version of the command\n\tVersion string `json:\"version\"`\n\t// Longer explanation of how the command works\n\tDescription string `json:\"description\"`\n\t// DefaultCommand is the (optional) name of a command\n\t// to run if no command names are passed as CLI arguments.\n\tDefaultCommand string `json:\"defaultCommand\"`\n\t// The category the command is part of\n\tCategory string `json:\"category\"`\n\t// List of child commands\n\tCommands []*Command `json:\"commands\"`\n\t// List of flags to parse\n\tFlags []Flag `json:\"flags\"`\n\t// Boolean to hide built-in help command and help flag\n\tHideHelp bool `json:\"hideHelp\"`\n\t// Ignored if HideHelp is true.\n\tHideHelpCommand bool `json:\"hideHelpCommand\"`\n\t// Boolean to hide built-in version flag and the VERSION section of help\n\tHideVersion bool `json:\"hideVersion\"`\n\t// Boolean to enable shell completion commands\n\tEnableShellCompletion bool `json:\"-\"`\n\t// Shell Completion generation command name\n\tShellCompletionCommandName string `json:\"-\"`\n\t// The function to call when checking for shell command completions\n\tShellComplete ShellCompleteFunc `json:\"-\"`\n\t// An action to execute before any subcommands are run, but after the context is ready\n\t// If a non-nil error is returned, no subcommands are run\n\tBefore BeforeFunc `json:\"-\"`\n\t// An action to execute after any subcommands are run, but after the subcommand has finished\n\t// It is run even if Action() panics\n\tAfter AfterFunc `json:\"-\"`\n\t// The function to call when this command is invoked\n\tAction ActionFunc `json:\"-\"`\n\t// Execute this function if the proper command cannot be found\n\tCommandNotFound CommandNotFoundFunc `json:\"-\"`\n\t// Execute this function if a usage error occurs.\n\tOnUsageError OnUsageErrorFunc `json:\"-\"`\n\t// Execute this function when an invalid flag is accessed from the context\n\tInvalidFlagAccessHandler InvalidFlagAccessFunc `json:\"-\"`\n\t// Boolean to hide this command from help or completion\n\tHidden bool `json:\"hidden\"`\n\t// List of all authors who contributed (string or fmt.Stringer)\n\t// TODO: ~string | fmt.Stringer when interface unions are available\n\tAuthors []any `json:\"authors\"`\n\t// Copyright of the binary if any\n\tCopyright string `json:\"copyright\"`\n\t// Reader reader to write input to (useful for tests)\n\tReader io.Reader `json:\"-\"`\n\t// Writer writer to write output to\n\tWriter io.Writer `json:\"-\"`\n\t// ErrWriter writes error output\n\tErrWriter io.Writer `json:\"-\"`\n\t// ExitErrHandler processes any error encountered while running an App before\n\t// it is returned to the caller. If no function is provided, HandleExitCoder\n\t// is used as the default behavior.\n\tExitErrHandler ExitErrHandlerFunc `json:\"-\"`\n\t// Other custom info\n\tMetadata map[string]interface{} `json:\"metadata\"`\n\t// Carries a function which returns app specific info.\n\tExtraInfo func() map[string]string `json:\"-\"`\n\t// CustomRootCommandHelpTemplate the text template for app help topic.\n\t// cli.go uses text/template to render templates. You can\n\t// render custom help text by setting this variable.\n\tCustomRootCommandHelpTemplate string `json:\"-\"`\n\t// SliceFlagSeparator is used to customize the separator for SliceFlag, the default is \",\"\n\tSliceFlagSeparator string `json:\"sliceFlagSeparator\"`\n\t// DisableSliceFlagSeparator is used to disable SliceFlagSeparator, the default is false\n\tDisableSliceFlagSeparator bool `json:\"disableSliceFlagSeparator\"`\n\t// Boolean to enable short-option handling so user can combine several\n\t// single-character bool arguments into one\n\t// i.e. foobar -o -v -> foobar -ov\n\tUseShortOptionHandling bool `json:\"useShortOptionHandling\"`\n\t// Enable suggestions for commands and flags\n\tSuggest bool `json:\"suggest\"`\n\t// Allows global flags set by libraries which use flag.XXXVar(...) directly\n\t// to be parsed through this library\n\tAllowExtFlags bool `json:\"allowExtFlags\"`\n\t// Treat all flags as normal arguments if true\n\tSkipFlagParsing bool `json:\"skipFlagParsing\"`\n\t// CustomHelpTemplate the text template for the command help topic.\n\t// cli.go uses text/template to render templates. You can\n\t// render custom help text by setting this variable.\n\tCustomHelpTemplate string `json:\"-\"`\n\t// Use longest prefix match for commands\n\tPrefixMatchCommands bool `json:\"prefixMatchCommands\"`\n\t// Custom suggest command for matching\n\tSuggestCommandFunc SuggestCommandFunc `json:\"-\"`\n\t// Flag exclusion group\n\tMutuallyExclusiveFlags []MutuallyExclusiveFlags `json:\"mutuallyExclusiveFlags\"`\n\t// Arguments to parse for this command\n\tArguments []Argument `json:\"arguments\"`\n\t// Whether to read arguments from stdin\n\t// applicable to root command only\n\tReadArgsFromStdin bool `json:\"readArgsFromStdin\"`\n\n\t// categories contains the categorized commands and is populated on app startup\n\tcategories CommandCategories\n\t// flagCategories contains the categorized flags and is populated on app startup\n\tflagCategories FlagCategories\n\t// flags that have been applied in current parse\n\tappliedFlags []Flag\n\t// flags that have been set\n\tsetFlags map[Flag]struct{}\n\t// The parent of this command. This value will be nil for the\n\t// command at the root of the graph.\n\tparent *Command\n\t// parsed args\n\tparsedArgs Args\n\t// track state of error handling\n\tisInError bool\n\t// track state of defaults\n\tdidSetupDefaults bool\n\t// whether in shell completion mode\n\tshellCompletion bool\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "fd58fedfe710f234fc2ae592",
+        "revision": "65c6366e4295e29b56d4824b3866800b8cb2d910",
+        "path": "command.go",
+        "start_byte": 6484,
+        "text": "func (cmd *Command) Command(name string) *Command {\n\tfor _, subCmd := range cmd.Commands {\n\t\tif subCmd.HasName(name) {\n\t\t\treturn subCmd\n\t\t}\n\t}\n\n\treturn nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "570dd4694d753678a4dd75e3",
+        "revision": "65c6366e4295e29b56d4824b3866800b8cb2d910",
+        "path": "command.go",
+        "start_byte": 6821,
+        "text": "func (cmd *Command) allFlags() []Flag {\n\tvar flags []Flag\n\tflags = append(flags, cmd.Flags...)\n\tfor _, grpf := range cmd.MutuallyExclusiveFlags {\n\t\tfor _, f1 := range grpf.Flags {\n\t\t\tflags = append(flags, f1...)\n\t\t}\n\t}\n\treturn flags\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "e5ff6472484be44846b249f7",
+        "revision": "65c6366e4295e29b56d4824b3866800b8cb2d910",
+        "path": "command.go",
+        "start_byte": 9393,
+        "text": "func (cmd *Command) appendFlag(fl Flag) {\n\tif !hasFlag(cmd.Flags, fl) {\n\t\tcmd.Flags = append(cmd.Flags, fl)\n\t}\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "fb3cf98e912c02ed672752fc",
+        "revision": "65c6366e4295e29b56d4824b3866800b8cb2d910",
+        "path": "command.go",
+        "start_byte": 9848,
+        "text": "func (cmd *Command) appendCommand(aCmd *Command) {\n\tif !slices.Contains(cmd.Commands, aCmd) {\n\t\taCmd.parent = cmd\n\t\tcmd.Commands = append(cmd.Commands, aCmd)\n\t}\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "f0e9e6d649e8480fa97a74ca",
+        "revision": "65c6366e4295e29b56d4824b3866800b8cb2d910",
+        "path": "completion.go",
+        "start_byte": 1096,
+        "text": "func buildCompletionCommand(appName string) *Command {\n\treturn &Command{\n\t\tName:   completionCommandName,\n\t\tHidden: true,\n\t\tAction: func(ctx context.Context, cmd *Command) error {\n\t\t\treturn printShellCompletion(ctx, cmd, appName)\n\t\t},\n\t}\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "0e47f4cac50ce4728c4afa6a",
+        "revision": "65c6366e4295e29b56d4824b3866800b8cb2d910",
+        "path": "errors.go",
+        "start_byte": 302,
+        "text": "var ErrWriter io.Writer = os.Stderr",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "0a7ab73f9b7dc7d83ea83e0d",
+        "revision": "65c6366e4295e29b56d4824b3866800b8cb2d910",
+        "path": "fish.go",
+        "start_byte": 584,
+        "text": "const name = \"cli\"",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "147d797015037a4bedc947f7",
+        "revision": "65c6366e4295e29b56d4824b3866800b8cb2d910",
+        "path": "flag_ext.go",
+        "start_byte": 28,
+        "text": "type extFlag struct {\n\tf *flag.Flag\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "40988bd1d25ea133bec4dfe8",
+        "revision": "65c6366e4295e29b56d4824b3866800b8cb2d910",
+        "path": "flag_mutex.go",
+        "start_byte": 246,
+        "text": "type MutuallyExclusiveFlags struct {\n\t// Flag list\n\tFlags [][]Flag\n\n\t// whether this group is required\n\tRequired bool\n\n\t// Category to apply to all flags within group\n\tCategory string\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "d1bb2f9e3b15fe73b85204fe",
+        "revision": "65c6366e4295e29b56d4824b3866800b8cb2d910",
+        "path": "flag_mutex.go",
+        "start_byte": 898,
+        "text": "func (grp MutuallyExclusiveFlags) propagateCategory() {\n\tfor _, grpf := range grp.Flags {\n\t\tfor _, f := range grpf {\n\t\t\tif cf, ok := f.(CategorizableFlag); ok {\n\t\t\t\tcf.SetCategory(grp.Category)\n\t\t\t}\n\t\t}\n\t}\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "121e026f45417effd8a69044",
+        "revision": "65c6366e4295e29b56d4824b3866800b8cb2d910",
+        "path": "flag_timestamp.go",
+        "start_byte": 666,
+        "text": "var _ ValueCreator[time.Time, TimestampConfig] = timestampValue{}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "33b921949b19aad49656d35f",
+        "revision": "65c6366e4295e29b56d4824b3866800b8cb2d910",
+        "path": "flag.go",
+        "start_byte": 108,
+        "text": "var (\n\tdefaultSliceFlagSeparator       = \",\"\n\tdefaultMapFlagKeyValueSeparator = \"=\"\n\tdisableSliceFlagSeparator       = false\n)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "ac59f2b1297a471722ce44ac",
+        "revision": "65c6366e4295e29b56d4824b3866800b8cb2d910",
+        "path": "flag.go",
+        "start_byte": 575,
+        "text": "var VersionFlag Flag = &BoolFlag{\n\tName:        \"version\",\n\tAliases:     []string{\"v\"},\n\tUsage:       \"print the version\",\n\tHideDefault: true,\n\tLocal:       true,\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "f3c43df558ec84ffc84b33ad",
+        "revision": "65c6366e4295e29b56d4824b3866800b8cb2d910",
+        "path": "flag.go",
+        "start_byte": 2624,
+        "text": "type Flag interface {\n\tfmt.Stringer\n\n\t// Retrieve the value of the Flag\n\tGet() any\n\n\t// Lifecycle methods.\n\t// flag callback prior to parsing\n\tPreParse() error\n\n\t// flag callback post parsing\n\tPostParse() error\n\n\t// Apply Flag settings to the given flag set\n\tSet(string, string) error\n\n\t// All possible names for this flag\n\tNames() []string\n\n\t// Whether the flag has been set or not\n\tIsSet() bool\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "4ea4f84e197ba7e6dd5429e3",
+        "revision": "65c6366e4295e29b56d4824b3866800b8cb2d910",
+        "path": "help.go",
+        "start_byte": 1826,
+        "text": "func helpCommandAction(ctx context.Context, cmd *Command) error {\n\targs := cmd.Args()\n\tfirstArg := args.First()\n\n\ttracef(\"doing help for cmd %[1]q with args %[2]q\", cmd, args)\n\n\t// This action can be triggered by a \"default\" action of a command\n\t// or via cmd.Run when cmd == helpCmd. So we have following possibilities\n\t//\n\t// 1 $ app\n\t// 2 $ app help\n\t// 3 $ app foo\n\t// 4 $ app help foo\n\t// 5 $ app foo help\n\n\t// Case 4. when executing a help command set the context to parent\n\t// to allow resolution of subsequent args. This will transform\n\t// $ app help foo\n\t//     to\n\t// $ app foo\n\t// which will then be handled as case 3\n\tif cmd.parent != nil && (cmd.HasName(helpName) || cmd.HasName(helpAlias)) {\n\t\ttracef(\"setting cmd to cmd.parent\")\n\t\tcmd = cmd.parent\n\t}\n\n\t// Case 4. $ app help foo\n\t// foo is the command for which help needs to be shown\n\tif firstArg != \"\" {\n\t\t/*\tif firstArg == \"--\" {\n\t\t\treturn nil\n\t\t}*/\n\t\ttracef(\"returning ShowCommandHelp with %[1]q\", firstArg)\n\t\treturn ShowCommandHelp(ctx, cmd, firstArg)\n\t}\n\n\t// Case 1 & 2\n\t// Special case when running help on main app itself as opposed to individual\n\t// commands/subcommands\n\tif cmd.parent == nil {\n\t\ttracef(\"returning ShowAppHelp\")\n\t\t_ = ShowAppHelp(cmd)\n\t\treturn nil\n\t}\n\n\t// Case 3, 5\n\tif (len(cmd.Commands) == 1 && !cmd.HideHelp) ||\n\t\t(len(cmd.Commands) == 0 && cmd.HideHelp) {\n\n\t\ttmpl := cmd.CustomHelpTemplate\n\t\tif tmpl == \"\" {\n\t\t\ttmpl = CommandHelpTemplate\n\t\t}\n\n\t\ttracef(\"running HelpPrinter with command %[1]q\", cmd.Name)\n\t\tHelpPrinter(cmd.Root().Writer, tmpl, cmd)\n\n\t\treturn nil\n\t}\n\n\ttracef(\"running ShowSubcommandHelp\")\n\treturn ShowSubcommandHelp(cmd)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "390dd92dbd9da10c9c95898c",
+        "revision": "65c6366e4295e29b56d4824b3866800b8cb2d910",
+        "path": "help.go",
+        "start_byte": 6375,
+        "text": "func DefaultCompleteWithFlags(ctx context.Context, cmd *Command) {\n\targs := os.Args\n\tif cmd != nil && cmd.parent != nil {\n\t\targs = cmd.Args().Slice()\n\t\ttracef(\"running default complete with flags[%v] on command %[2]q\", args, cmd.Name)\n\t} else {\n\t\ttracef(\"running default complete with os.Args flags[%v]\", args)\n\t}\n\targsLen := len(args)\n\tlastArg := \"\"\n\t// parent command will have --generate-shell-completion so we need\n\t// to account for that\n\tif argsLen > 1 {\n\t\tlastArg = args[argsLen-2]\n\t} else if argsLen > 0 {\n\t\tlastArg = args[argsLen-1]\n\t}\n\n\tif lastArg == \"--\" {\n\t\ttracef(\"No completions due to termination\")\n\t\treturn\n\t}\n\n\tif lastArg == completionFlag {\n\t\tlastArg = \"\"\n\t}\n\n\tif strings.HasPrefix(lastArg, \"-\") {\n\t\ttracef(\"printing flag suggestion for flag[%v] on command %[1]q\", lastArg, cmd.Name)\n\t\tprintFlagSuggestions(lastArg, cmd.Flags, cmd.Root().Writer)\n\t\treturn\n\t}\n\n\tif cmd != nil {\n\t\ttracef(\"printing command suggestions on command %[1]q\", cmd.Name)\n\t\tprintCommandSuggestions(cmd.Commands, cmd.Root().Writer)\n\t\treturn\n\t}\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "750ae4ebb7f2aa993622882d",
+        "revision": "65c6366e4295e29b56d4824b3866800b8cb2d910",
+        "path": "suggestions.go",
+        "start_byte": 373,
+        "text": "type SuggestCommandFunc func(commands []*Command, provided string) string",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "455cb43e6195d47c6a7170ff",
+        "revision": "65c6366e4295e29b56d4824b3866800b8cb2d910",
+        "path": "suggestions.go",
+        "start_byte": 3074,
+        "text": "func suggestCommand(commands []*Command, provided string) (suggestion string) {\n\tdistance := 0.0\n\tfor _, command := range commands {\n\t\tfor _, name := range append(command.Names(), helpName, helpAlias) {\n\t\t\tnewDistance := jaroWinkler(name, provided)\n\t\t\tif newDistance > distance {\n\t\t\t\tdistance = newDistance\n\t\t\t\tsuggestion = name\n\t\t\t}\n\t\t}\n\t}\n\n\treturn suggestion\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "c1afa575b4641a504a3e46aa",
+        "revision": "9577ba267af053f761c82281ae424e5f134316dc",
+        "path": "args.go",
+        "start_byte": 2203,
+        "text": "func (a *ArgumentBase[T, C, VC]) Usage() string {\n\tif a.UsageText != \"\" {\n\t\treturn a.UsageText\n\t}\n\n\tusageFormat := \"%[1]s\"\n\treturn fmt.Sprintf(usageFormat, a.Name)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "a555c977aca99a1b951eaac7",
+        "revision": "9577ba267af053f761c82281ae424e5f134316dc",
+        "path": "args.go",
+        "start_byte": 3838,
+        "text": "func (a *ArgumentsBase[T, C, VC]) Usage() string {\n\tif a.UsageText != \"\" {\n\t\treturn a.UsageText\n\t}\n\n\tusageFormat := \"\"\n\tif a.Min == 0 {\n\t\tif a.Max == 1 {\n\t\t\tusageFormat = \"[%[1]s]\"\n\t\t} else {\n\t\t\tusageFormat = \"[%[1]s ...]\"\n\t\t}\n\t} else {\n\t\tusageFormat = \"%[1]s [%[1]s ...]\"\n\t}\n\treturn fmt.Sprintf(usageFormat, a.Name)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "cc50859662e21188edbfcf57",
+        "revision": "9577ba267af053f761c82281ae424e5f134316dc",
+        "path": "category.go",
+        "start_byte": 352,
+        "text": "type commandCategories []*commandCategory",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "ce172eeec9f215a33f1d72db",
+        "revision": "9577ba267af053f761c82281ae424e5f134316dc",
+        "path": "category.go",
+        "start_byte": 395,
+        "text": "func newCommandCategories() CommandCategories {\n\tret := commandCategories([]*commandCategory{})\n\treturn &ret\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "011e926b528c96cd571cc772",
+        "revision": "9577ba267af053f761c82281ae424e5f134316dc",
+        "path": "category.go",
+        "start_byte": 762,
+        "text": "func (c *commandCategories) AddCommand(category string, command *Command) {\n\tfor _, commandCategory := range []*commandCategory(*c) {\n\t\tif commandCategory.name == category {\n\t\t\tcommandCategory.commands = append(commandCategory.commands, command)\n\t\t\treturn\n\t\t}\n\t}\n\tnewVal := append(*c,\n\t\t&commandCategory{name: category, commands: []*Command{command}})\n\t*c = newVal\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "9b84551e13e9299e45a86900",
+        "revision": "9577ba267af053f761c82281ae424e5f134316dc",
+        "path": "category.go",
+        "start_byte": 1609,
+        "text": "func (c *commandCategory) Name() string {\n\treturn c.name\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "abc60f35f66ffa5e7af9b1f6",
+        "revision": "9577ba267af053f761c82281ae424e5f134316dc",
+        "path": "category.go",
+        "start_byte": 2455,
+        "text": "func newFlagCategoriesFromFlags(fs []Flag) FlagCategories {\n\tfc := newFlagCategories()\n\n\tvar categorized bool\n\n\tfor _, fl := range fs {\n\t\tif cf, ok := fl.(CategorizableFlag); ok {\n\t\t\tvisible := false\n\t\t\tif vf, ok := fl.(VisibleFlag); ok {\n\t\t\t\tvisible = vf.IsVisible()\n\t\t\t}\n\t\t\tif cat := cf.GetCategory(); cat != \"\" && visible {\n\t\t\t\tfc.AddFlag(cat, fl)\n\t\t\t\tcategorized = true\n\t\t\t}\n\t\t}\n\t}\n\n\tif categorized {\n\t\tfor _, fl := range fs {\n\t\t\tif cf, ok := fl.(CategorizableFlag); ok {\n\t\t\t\tvisible := false\n\t\t\t\tif vf, ok := fl.(VisibleFlag); ok {\n\t\t\t\t\tvisible = vf.IsVisible()\n\t\t\t\t}\n\t\t\t\tif cf.GetCategory() == \"\" && visible {\n\t\t\t\t\tfc.AddFlag(\"\", fl)\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t}\n\n\treturn fc\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "12b10b3a10509e882428607d",
+        "revision": "9577ba267af053f761c82281ae424e5f134316dc",
+        "path": "category.go",
+        "start_byte": 3973,
+        "text": "func (fc *defaultVisibleFlagCategory) Name() string {\n\treturn fc.name\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "1a88b5e5af1e12e2b6f0cbce",
+        "revision": "9577ba267af053f761c82281ae424e5f134316dc",
+        "path": "category.go",
+        "start_byte": 4046,
+        "text": "func (fc *defaultVisibleFlagCategory) Flags() []Flag {\n\tvfNames := []string{}\n\tfor flName, fl := range fc.m {\n\t\tif vf, ok := fl.(VisibleFlag); ok {\n\t\t\tif vf.IsVisible() {\n\t\t\t\tvfNames = append(vfNames, flName)\n\t\t\t}\n\t\t}\n\t}\n\n\tsort.Strings(vfNames)\n\n\tret := make([]Flag, len(vfNames))\n\tfor i, flName := range vfNames {\n\t\tret[i] = fc.m[flName]\n\t}\n\n\treturn ret\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "f1c6e6320453026243c72ca6",
+        "revision": "9577ba267af053f761c82281ae424e5f134316dc",
+        "path": "cli.go",
+        "start_byte": 774,
+        "text": "func tracef(format string, a ...any) {\n\tif !isTracingOn {\n\t\treturn\n\t}\n\n\tif !strings.HasSuffix(format, \"\\n\") {\n\t\tformat = format + \"\\n\"\n\t}\n\n\tpc, file, line, _ := runtime.Caller(1)\n\tcf := runtime.FuncForPC(pc)\n\n\tfmt.Fprintf(\n\t\tos.Stderr,\n\t\tstrings.Join([]string{\n\t\t\t\"## URFAVE CLI TRACE \",\n\t\t\tfile,\n\t\t\t\":\",\n\t\t\tfmt.Sprintf(\"%v\", line),\n\t\t\t\" \",\n\t\t\tfmt.Sprintf(\"(%s)\", cf.Name()),\n\t\t\t\" \",\n\t\t\tformat,\n\t\t}, \"\"),\n\t\ta...,\n\t)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "b4bb2aeaccdc656b7b2f2f29",
+        "revision": "9577ba267af053f761c82281ae424e5f134316dc",
+        "path": "command_run.go",
+        "start_byte": 5532,
+        "text": "var subCmd *Command",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "ac2fb49df33c7fa443001b1b",
+        "revision": "9577ba267af053f761c82281ae424e5f134316dc",
+        "path": "command_setup.go",
+        "start_byte": 4940,
+        "text": "func (cmd *Command) ensureHelp() {\n\ttracef(\"ensuring help (cmd=%[1]q)\", cmd.Name)\n\n\thelpCommand := buildHelpCommand(true)\n\n\tif !cmd.hideHelp() {\n\t\tif cmd.Command(helpCommand.Name) == nil {\n\t\t\tif !cmd.HideHelpCommand {\n\t\t\t\ttracef(\"appending helpCommand (cmd=%[1]q)\", cmd.Name)\n\t\t\t\tcmd.appendCommand(helpCommand)\n\t\t\t}\n\t\t}\n\n\t\tif HelpFlag != nil {\n\t\t\t// TODO need to remove hack\n\t\t\tif hf, ok := HelpFlag.(*BoolFlag); ok {\n\t\t\t\thf.applied = false\n\t\t\t\thf.hasBeenSet = false\n\t\t\t\thf.Value = false\n\t\t\t\thf.value = nil\n\t\t\t}\n\t\t\ttracef(\"appending HelpFlag (cmd=%[1]q)\", cmd.Name)\n\t\t\tcmd.appendFlag(HelpFlag)\n\t\t}\n\t}\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "beb42337a8658ef56e666a4e",
+        "revision": "9577ba267af053f761c82281ae424e5f134316dc",
+        "path": "command.go",
+        "start_byte": 70,
+        "text": "const (\n\t// ignoreFlagPrefix is to ignore test flags when adding flags from other packages\n\tignoreFlagPrefix = \"test.\"\n\n\tcommandContextKey = contextKey(\"cli.context\")\n)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "8dbd7986f7cd1832369e799c",
+        "revision": "9577ba267af053f761c82281ae424e5f134316dc",
+        "path": "command.go",
+        "start_byte": 452,
+        "text": "type Command struct {\n\t// The name of the command\n\tName string `json:\"name\"`\n\t// A list of aliases for the command\n\tAliases []string `json:\"aliases\"`\n\t// A short description of the usage of this command\n\tUsage string `json:\"usage\"`\n\t// Text to override the USAGE section of help\n\tUsageText string `json:\"usageText\"`\n\t// A short description of the arguments of this command\n\tArgsUsage string `json:\"argsUsage\"`\n\t// Version of the command\n\tVersion string `json:\"version\"`\n\t// Longer explanation of how the command works\n\tDescription string `json:\"description\"`\n\t// DefaultCommand is the (optional) name of a command\n\t// to run if no command names are passed as CLI arguments.\n\tDefaultCommand string `json:\"defaultCommand\"`\n\t// The category the command is part of\n\tCategory string `json:\"category\"`\n\t// List of child commands\n\tCommands []*Command `json:\"commands\"`\n\t// List of flags to parse\n\tFlags []Flag `json:\"flags\"`\n\t// Boolean to hide built-in help command and help flag\n\tHideHelp bool `json:\"hideHelp\"`\n\t// Ignored if HideHelp is true.\n\tHideHelpCommand bool `json:\"hideHelpCommand\"`\n\t// Boolean to hide built-in version flag and the VERSION section of help\n\tHideVersion bool `json:\"hideVersion\"`\n\t// Boolean to enable shell completion commands\n\tEnableShellCompletion bool `json:\"-\"`\n\t// Shell Completion generation command name\n\tShellCompletionCommandName string `json:\"-\"`\n\t// The function to call when checking for shell command completions\n\tShellComplete ShellCompleteFunc `json:\"-\"`\n\t// An action to execute before any subcommands are run, but after the context is ready\n\t// If a non-nil error is returned, no subcommands are run\n\tBefore BeforeFunc `json:\"-\"`\n\t// An action to execute after any subcommands are run, but after the subcommand has finished\n\t// It is run even if Action() panics\n\tAfter AfterFunc `json:\"-\"`\n\t// The function to call when this command is invoked\n\tAction ActionFunc `json:\"-\"`\n\t// Execute this function if the proper command cannot be found\n\tCommandNotFound CommandNotFoundFunc `json:\"-\"`\n\t// Execute this function if a usage error occurs.\n\tOnUsageError OnUsageErrorFunc `json:\"-\"`\n\t// Execute this function when an invalid flag is accessed from the context\n\tInvalidFlagAccessHandler InvalidFlagAccessFunc `json:\"-\"`\n\t// Boolean to hide this command from help or completion\n\tHidden bool `json:\"hidden\"`\n\t// List of all authors who contributed (string or fmt.Stringer)\n\t// TODO: ~string | fmt.Stringer when interface unions are available\n\tAuthors []any `json:\"authors\"`\n\t// Copyright of the binary if any\n\tCopyright string `json:\"copyright\"`\n\t// Reader reader to write input to (useful for tests)\n\tReader io.Reader `json:\"-\"`\n\t// Writer writer to write output to\n\tWriter io.Writer `json:\"-\"`\n\t// ErrWriter writes error output\n\tErrWriter io.Writer `json:\"-\"`\n\t// ExitErrHandler processes any error encountered while running an App before\n\t// it is returned to the caller. If no function is provided, HandleExitCoder\n\t// is used as the default behavior.\n\tExitErrHandler ExitErrHandlerFunc `json:\"-\"`\n\t// Other custom info\n\tMetadata map[string]interface{} `json:\"metadata\"`\n\t// Carries a function which returns app specific info.\n\tExtraInfo func() map[string]string `json:\"-\"`\n\t// CustomRootCommandHelpTemplate the text template for app help topic.\n\t// cli.go uses text/template to render templates. You can\n\t// render custom help text by setting this variable.\n\tCustomRootCommandHelpTemplate string `json:\"-\"`\n\t// SliceFlagSeparator is used to customize the separator for SliceFlag, the default is \",\"\n\tSliceFlagSeparator string `json:\"sliceFlagSeparator\"`\n\t// DisableSliceFlagSeparator is used to disable SliceFlagSeparator, the default is false\n\tDisableSliceFlagSeparator bool `json:\"disableSliceFlagSeparator\"`\n\t// Boolean to enable short-option handling so user can combine several\n\t// single-character bool arguments into one\n\t// i.e. foobar -o -v -> foobar -ov\n\tUseShortOptionHandling bool `json:\"useShortOptionHandling\"`\n\t// Enable suggestions for commands and flags\n\tSuggest bool `json:\"suggest\"`\n\t// Allows global flags set by libraries which use flag.XXXVar(...) directly\n\t// to be parsed through this library\n\tAllowExtFlags bool `json:\"allowExtFlags\"`\n\t// Treat all flags as normal arguments if true\n\tSkipFlagParsing bool `json:\"skipFlagParsing\"`\n\t// CustomHelpTemplate the text template for the command help topic.\n\t// cli.go uses text/template to render templates. You can\n\t// render custom help text by setting this variable.\n\tCustomHelpTemplate string `json:\"-\"`\n\t// Use longest prefix match for commands\n\tPrefixMatchCommands bool `json:\"prefixMatchCommands\"`\n\t// Custom suggest command for matching\n\tSuggestCommandFunc SuggestCommandFunc `json:\"-\"`\n\t// Flag exclusion group\n\tMutuallyExclusiveFlags []MutuallyExclusiveFlags `json:\"mutuallyExclusiveFlags\"`\n\t// Arguments to parse for this command\n\tArguments []Argument `json:\"arguments\"`\n\t// Whether to read arguments from stdin\n\t// applicable to root command only\n\tReadArgsFromStdin bool `json:\"readArgsFromStdin\"`\n\n\t// categories contains the categorized commands and is populated on app startup\n\tcategories CommandCategories\n\t// flagCategories contains the categorized flags and is populated on app startup\n\tflagCategories FlagCategories\n\t// flags that have been applied in current parse\n\tappliedFlags []Flag\n\t// flags that have been set\n\tsetFlags map[Flag]struct{}\n\t// The parent of this command. This value will be nil for the\n\t// command at the root of the graph.\n\tparent *Command\n\t// parsed args\n\tparsedArgs Args\n\t// track state of error handling\n\tisInError bool\n\t// track state of defaults\n\tdidSetupDefaults bool\n\t// whether in shell completion mode\n\tshellCompletion bool\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "d9caf3b0ec782a587506c99c",
+        "revision": "9577ba267af053f761c82281ae424e5f134316dc",
+        "path": "command.go",
+        "start_byte": 6484,
+        "text": "func (cmd *Command) Command(name string) *Command {\n\tfor _, subCmd := range cmd.Commands {\n\t\tif subCmd.HasName(name) {\n\t\t\treturn subCmd\n\t\t}\n\t}\n\n\treturn nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "e1823d3584ee4b46f3eab801",
+        "revision": "9577ba267af053f761c82281ae424e5f134316dc",
+        "path": "command.go",
+        "start_byte": 6821,
+        "text": "func (cmd *Command) allFlags() []Flag {\n\tvar flags []Flag\n\tflags = append(flags, cmd.Flags...)\n\tfor _, grpf := range cmd.MutuallyExclusiveFlags {\n\t\tfor _, f1 := range grpf.Flags {\n\t\t\tflags = append(flags, f1...)\n\t\t}\n\t}\n\treturn flags\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "cdfa56ccbe6da5958c22eb1f",
+        "revision": "9577ba267af053f761c82281ae424e5f134316dc",
+        "path": "command.go",
+        "start_byte": 9393,
+        "text": "func (cmd *Command) appendFlag(fl Flag) {\n\tif !hasFlag(cmd.Flags, fl) {\n\t\tcmd.Flags = append(cmd.Flags, fl)\n\t}\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "097501c04b5edde554d13407",
+        "revision": "9577ba267af053f761c82281ae424e5f134316dc",
+        "path": "command.go",
+        "start_byte": 9848,
+        "text": "func (cmd *Command) appendCommand(aCmd *Command) {\n\tif !slices.Contains(cmd.Commands, aCmd) {\n\t\taCmd.parent = cmd\n\t\tcmd.Commands = append(cmd.Commands, aCmd)\n\t}\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "2e498f92c78a36f6d3ab339e",
+        "revision": "9577ba267af053f761c82281ae424e5f134316dc",
+        "path": "command.go",
+        "start_byte": 10585,
+        "text": "func (cmd *Command) Root() *Command {\n\tif cmd.parent == nil {\n\t\treturn cmd\n\t}\n\n\treturn cmd.parent.Root()\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "02eb1a4b1c2adfa81d90dd66",
+        "revision": "9577ba267af053f761c82281ae424e5f134316dc",
+        "path": "completion.go",
+        "start_byte": 1487,
+        "text": "func BuildCompletionCommand(appName string) *Command {\n\treturn &Command{\n\t\tName:        completionCommandName,\n\t\tHidden:      true,\n\t\tUsage:       \"Output shell completion script for bash, zsh, fish, or Powershell\",\n\t\tDescription: strings.ReplaceAll(completionDescription, \"$COMMAND\", appName),\n\t\tAction: func(ctx context.Context, cmd *Command) error {\n\t\t\treturn printShellCompletion(ctx, cmd, appName)\n\t\t},\n\t}\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "c593dfddc49428fd60cdae60",
+        "revision": "9577ba267af053f761c82281ae424e5f134316dc",
+        "path": "errors.go",
+        "start_byte": 302,
+        "text": "var ErrWriter io.Writer = os.Stderr",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "318c60cbccabda8c1754968f",
+        "revision": "9577ba267af053f761c82281ae424e5f134316dc",
+        "path": "fish.go",
+        "start_byte": 584,
+        "text": "const name = \"cli\"",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "af8310778ba4aa02d9cb85ff",
+        "revision": "9577ba267af053f761c82281ae424e5f134316dc",
+        "path": "flag_ext.go",
+        "start_byte": 28,
+        "text": "type extFlag struct {\n\tf *flag.Flag\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "19970031361c8e138e74129c",
+        "revision": "9577ba267af053f761c82281ae424e5f134316dc",
+        "path": "flag_mutex.go",
+        "start_byte": 246,
+        "text": "type MutuallyExclusiveFlags struct {\n\t// Flag list\n\tFlags [][]Flag\n\n\t// whether this group is required\n\tRequired bool\n\n\t// Category to apply to all flags within group\n\tCategory string\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "7f56836c95f0c57576328f20",
+        "revision": "9577ba267af053f761c82281ae424e5f134316dc",
+        "path": "flag_mutex.go",
+        "start_byte": 898,
+        "text": "func (grp MutuallyExclusiveFlags) propagateCategory() {\n\tfor _, grpf := range grp.Flags {\n\t\tfor _, f := range grpf {\n\t\t\tif cf, ok := f.(CategorizableFlag); ok {\n\t\t\t\tcf.SetCategory(grp.Category)\n\t\t\t}\n\t\t}\n\t}\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "f562c41b5fc5274b4b1547c6",
+        "revision": "9577ba267af053f761c82281ae424e5f134316dc",
+        "path": "flag_timestamp.go",
+        "start_byte": 666,
+        "text": "var _ ValueCreator[time.Time, TimestampConfig] = timestampValue{}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "21dccc7b5c17dbbc1acec759",
+        "revision": "9577ba267af053f761c82281ae424e5f134316dc",
+        "path": "flag.go",
+        "start_byte": 108,
+        "text": "var (\n\tdefaultSliceFlagSeparator       = \",\"\n\tdefaultMapFlagKeyValueSeparator = \"=\"\n\tdisableSliceFlagSeparator       = false\n)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "5dc4e3d4dfcc723f3ac8d856",
+        "revision": "9577ba267af053f761c82281ae424e5f134316dc",
+        "path": "flag.go",
+        "start_byte": 575,
+        "text": "var VersionFlag Flag = &BoolFlag{\n\tName:        \"version\",\n\tAliases:     []string{\"v\"},\n\tUsage:       \"print the version\",",
+        "rank": 1,
+        "truncated": true
+      }
+    ]
+  },
+  "retrieval": {
+    "unresolved": [
+      {
+        "side": "ours",
+        "identifier": "cmd",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Command",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "command.go",
+            "start": 452
+          },
+          {
+            "path": "command.go",
+            "start": 6484
+          }
+        ]
+      },
+      {
+        "side": "ours",
+        "identifier": "setupDefaults",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "osArgs",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "string",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "didSetupDefaults",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Name",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "category.go",
+            "start": 1609
+          },
+          {
+            "path": "category.go",
+            "start": 3973
+          }
+        ]
+      },
+      {
+        "side": "ours",
+        "identifier": "isRoot",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "parent",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "ShellComplete",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "filepath",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Base",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Usage",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "args.go",
+            "start": 2203
+          },
+          {
+            "path": "args.go",
+            "start": 3838
+          }
+        ]
+      },
+      {
+        "side": "ours",
+        "identifier": "Version",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "HideVersion",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Action",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Reader",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "os",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Stdin",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Writer",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Stdout",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Stderr",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "AllowExtFlags",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "flag",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "VisitAll",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "f",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "strings",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "HasPrefix",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "append",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Commands",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "PrefixMatchCommands",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "EnableShellCompletion",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "shellCompletion",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "completionCommand",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "ShellCompletionCommandName",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "categories",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Category",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "sort",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Sort",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "grp",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "flagCategories",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Metadata",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "any",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "len",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "SliceFlagSeparator",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "disableSliceFlagSeparator",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "DisableSliceFlagSeparator",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "setFlags",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "cmd",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Command",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "command.go",
+            "start": 452
+          },
+          {
+            "path": "command.go",
+            "start": 6484
+          }
+        ]
+      },
+      {
+        "side": "theirs",
+        "identifier": "setupDefaults",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "osArgs",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "string",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "didSetupDefaults",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Name",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "category.go",
+            "start": 1609
+          },
+          {
+            "path": "category.go",
+            "start": 3973
+          }
+        ]
+      },
+      {
+        "side": "theirs",
+        "identifier": "isRoot",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "parent",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "ShellComplete",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "filepath",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Base",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Usage",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "args.go",
+            "start": 2203
+          },
+          {
+            "path": "args.go",
+            "start": 3838
+          }
+        ]
+      },
+      {
+        "side": "theirs",
+        "identifier": "Version",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "HideVersion",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Action",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Reader",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "os",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Stdin",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Writer",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Stdout",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Stderr",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "AllowExtFlags",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "flag",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "VisitAll",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "f",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "strings",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "HasPrefix",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "append",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Commands",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "PrefixMatchCommands",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "EnableShellCompletion",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "completionCommand",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "ShellCompletionCommandName",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "categories",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Category",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "sort",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Sort",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "grp",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "flagCategories",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Metadata",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "any",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "len",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "SliceFlagSeparator",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "disableSliceFlagSeparator",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "DisableSliceFlagSeparator",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "setFlags",
+        "reason": "no-unique-declaration-established"
+      }
+    ],
+    "method": "syntax-ranges-and-identifier-candidates/3",
+    "budget_bytes": 32768,
+    "libraries": {
+      "C": "cbbd4827ee02cd5c018ab41f10d8404ff8741159054b352d9a6d763c506ba3c7",
+      "Go": "1612f8fd958ba1ec981bf4b91e2ff399f1e54d26a9da68e5b60b0d7cd00616fc"
+    }
+  }
+}

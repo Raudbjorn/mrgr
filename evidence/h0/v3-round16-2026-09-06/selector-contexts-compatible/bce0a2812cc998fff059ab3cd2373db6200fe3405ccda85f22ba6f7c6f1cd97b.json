@@ -1,0 +1,1185 @@
+{
+  "id": "bce0a2812cc998fff059ab3cd2373db6200fe3405ccda85f22ba6f7c6f1cd97b",
+  "source_protocol_sha256": "86ffe38086e217acf6e1a4aa4162e226862463d1bde3160478f9a6f4d2b968ce",
+  "repair_module_sha256": "475070c72aaadf08fe1cbd1ec90cde5210664924e6b0589d61d2226e86f3da7f",
+  "contexts": {
+    "local-context": [
+      {
+        "id": "7ad6c4b6c86202295884ff08",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "proxy/router/planbuilder.go",
+        "start_byte": 0,
+        "text": "// Copyright 2016 The kingshard Authors. All rights reserved.\n//\n// Licensed under the Apache License, Version 2.0 (the \"License\"): you may\n// not use this file except in compliance with the License. You may obtain\n// a copy of the License at\n//\n//     http://www.apache.org/licenses/LICENSE-2.0\n//\n// Unless required by applicable law or agreed to in writing, software\n// distributed under the License is distributed on an \"AS IS\" BASIS, WITHOUT\n// WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the\n// License for the specific language governing permissions and limitations\n// under the License.\n\npackage router\n\nimport (\n\t\"sort\"\n\t\"strconv\"\n\n\t\"github.com/flike/kingshard/core/errors\"\n\t\"github.com/flike/kingshard/core/golog\"\n\t\"github.com/flike/kingshard/sqlparser\"\n\t\"strings\"\n)\n\nconst (\n\tEID_NODE = iota\n\tVALUE_NODE\n\tLIST_NODE\n\tOTHER_NODE\n)\n\ntype Plan struct {\n\tRule *Rule\n\n\tCriteria sqlparser.SQLNode\n\tKeyIndex int //used for insert/replace to find shard key idx\n\t//used for insert/replace values,key is table index,and value is\n\t//the rows for insert or replace.\n\tRows map[int]sqlparser.Values\n\n\tSubTableValueGroups map[int]sqlparser.ValTuple //按照tableIndex存放ValueExpr\n\tInRightToReplace    *sqlparser.ComparisonExpr  //记录in的右边Expr,用来动态替换不同table in的值\n\tRouteTableIndexs    []int\n\tRouteNodeIndexs     []int\n\tRewrittenSqls       map[string][]string\n}\n\nfunc (plan *Plan) rewriteWhereIn(tableIndex int) (sqlparser.ValExpr, error) {\n\tvar oldright sqlparser.ValExpr\n\tif plan.InRightToReplace != nil && plan.SubTableValueGroups[tableIndex] != nil {\n\t\t//assign corresponding values to different table index\n\t\toldright = plan.InRightToReplace.Right\n\t\tplan.InRightToReplace.Right = plan.SubTableValueGroups[tableIndex]\n\t}\n\treturn oldright, nil\n}\n\nfunc (plan *Plan) notList(l []int) []int {\n\treturn differentList(plan.Rule.SubTableIndexs, l)\n}\n\nfunc (plan *Plan) getTableIndexs(expr sqlparser.BoolExpr) ([]int, error) {\n\tswitch plan.Rule.Type {\n\tcase HashRuleType:\n\t\treturn plan.getHashShardTableIndex(expr)\n\tcase RangeRuleType:\n\t\treturn plan.getRangeShardTableIndex(expr)\n\tcase DateYearRuleType, DateMonthRuleType, DateDayRuleType:\n\t\treturn plan.getDateShardTableIndex(expr)\n\tdefault:\n\t\treturn plan.Rule.SubTableIndexs, nil\n\t}\n\treturn nil, nil\n}\n\n//Get the table index of hash shard type\nfunc (plan *Plan) getHashShardTableIndex(expr sqlparser.BoolExpr) ([]int, error) {\n\tvar index int\n\tvar err error\n\tswitch criteria := expr.(type) {\n\tcase *sqlparser.ComparisonExpr:\n\t\tswitch criteria.Operator {\n\t\tcase \"=\", \"<=>\": //=对应的分片\n\t\t\tif plan.getValueType(criteria.Left) == EID_NODE {\n\t\t\t\tindex, err = plan.getTableIndexByValue(criteria.Right)\n\t\t\t} else {\n\t\t\t\tindex, err = plan.getTableIndexByValue(criteria.Left)\n\t\t\t}\n\t\t\tif err != nil {\n\t\t\t\treturn nil, err\n\t\t\t}\n\t\t\treturn []int{index}, nil\n\t\tcase \"<\", \"<=\", \">\", \">=\":\n\t\t\treturn plan.Rule.SubTableIndexs, nil\n\t\tcase \"in\":\n\t\t\treturn plan.getTableIndexsByTuple(criteria.Right)\n\t\tcase \"not in\":\n\t\t\tl, err := plan.getTableIndexsByTuple(criteria.Right)\n\t\t\tif err != nil {\n\t\t\t\treturn nil, err\n\t\t\t}\n\t\t\treturn plan.notList(l), nil\n\t\t}\n\tcase *sqlparser.RangeCond: //between ... and ...\n\t\treturn plan.Rule.SubTableIndexs, nil\n\tdefault:\n\t\treturn plan.Rule.SubTableIndexs, nil\n\t}\n\n\treturn plan.RouteTableIndexs, nil\n}\n\n//Get the table index of range shard type\nfunc (plan *Plan) getRangeShardTableIndex(expr sqlparser.BoolExpr) ([]int, error) {\n\tvar index int\n\tvar err error\n\tswitch criteria := expr.(type) {\n\tcase *sqlparser.ComparisonExpr:\n\t\tswitch criteria.Operator {\n\t\tcase \"=\", \"<=>\": //=对应的分片\n\t\t\tif plan.getValueType(criteria.Left) == EID_NODE {\n\t\t\t\tindex, err = plan.getTableIndexByValue(criteria.Right)\n\t\t\t} else {\n\t\t\t\tindex, err = plan.getTableIndexByValue(criteria.Left)\n\t\t\t}\n\t\t\tif err != nil {\n\t\t\t\treturn nil, err\n\t\t\t}\n\t\t\treturn []int{index}, nil\n\t\tcase \"<\", \"<=\":\n\t\t\tif plan.getValueType(criteria.Left) == EID_NODE {\n\t\t\t\tindex, err = plan.getTableIndexByValue(criteria.Right)\n\t\t\t\tif err != nil {\n\t\t\t\t\treturn nil, err\n\t\t\t\t}\n\t\t\t\tif criteria.Operator == \"<\" {\n\t\t\t\t\t//调整边界值，当shard[index].start等于criteria.Right 则index--\n\t\t\t\t\tindex = plan.adjustShardIndex(criteria.Right, index)\n\t\t\t\t}\n\n\t\t\t\treturn makeList(0, index+1), nil\n\t\t\t} else {\n\t\t\t\tindex, err = plan.getTableIndexByValue(criteria.Left)\n\t\t\t\tif err != nil {\n\t\t\t\t\treturn nil, err\n\t\t\t\t}\n\t\t\t\treturn makeList(index, len(plan.Rule.SubTableIndexs)), nil\n\t\t\t}\n\t\tcase \">\", \">=\":\n\t\t\tif plan.getValueType(criteria.Left) == EID_NODE {\n\t\t\t\tindex, err = plan.getTableIndexByValue(criteria.Right)\n\t\t\t\tif err != nil {\n\t\t\t\t\treturn nil, err\n\t\t\t\t}\n\t\t\t\treturn makeList(index, len(plan.Rule.SubTableIndexs)), nil\n\t\t\t} else { // 10 > id，这种情况\n\t\t\t\tindex, err = plan.getTableIndexByValue(criteria.Left)\n\t\t\t\tif err != nil {\n\t\t\t\t\treturn nil, err\n\t\t\t\t}\n\t\t\t\tif criteria.Operator == \">\" {\n\t\t\t\t\tindex = plan.adjustShardIndex(criteria.Left, index)\n\t\t\t\t}\n\t\t\t\treturn makeList(0, index+1), nil\n\t\t\t}\n\t\tcase \"in\":\n\t\t\treturn plan.getTableIndexsByTuple(criteria.Right)\n\t\tcase \"not in\":\n\t\t\treturn plan.Rule.SubTableIndexs, nil\n\t\t}\n\tcase *sqlparser.RangeCond:\n\t\tvar start, last int\n\t\tstart, err = plan.getTableIndexByValue(criteria.From)\n\t\tif err != nil {\n\t\t\treturn nil, err\n\t\t}\n\t\tlast, err = plan.getTableIndexByValue(criteria.To)\n\t\tif err != nil {\n\t\t\treturn nil, err\n\t\t}\n\t\tif criteria.Operator == \"between\" { //对应between ...and ...\n\t\t\tif last < start {\n\t\t\t\tstart, last = last, start\n\t\t\t}\n\t\t\treturn makeList(start, last+1), nil\n\t\t} else { //对应not between ....and\n\t\t\tif last < start {\n\t\t\t\tstart, last = last, start\n\t\t\t\tstart = plan.adjustShardIndex(criteria.To, start)\n\t\t\t} else {\n\t\t\t\tstart = plan.adjustShardIndex(criteria.From, start)\n\t\t\t}\n\n\t\t\tl1 := makeList(0, start+1)\n\t\t\tl2 := makeList(last, len(plan.Rule.SubTableIndexs))\n\t\t\treturn unionList(l1, l2), nil\n\t\t}\n\tdefault:\n\t\treturn plan.Rule.SubTableIndexs, nil\n\t}\n\n\treturn plan.RouteTableIndexs, nil\n}\n\n//Get the table index of date shard type(date_year,date_month,date_day).\nfunc (plan *Plan) getDateShardTableIndex(expr sqlparser.BoolExpr) ([]int, error) {\n\tvar index int\n\tvar err error\n\tswitch criteria := expr.(type) {\n\tcase *sqlparser.ComparisonExpr:\n\t\tswitch criteria.Operator {\n\t\tcase \"=\", \"<=>\": //=对应的分片\n\t\t\tif plan.getValueType(criteria.Left) == EID_NODE {\n\t\t\t\tindex, err = plan.getTableIndexByValue(criteria.Right)\n\t\t\t} else {\n\t\t\t\tindex, err = plan.getTableIndexByValue(criteria.Left)\n\t\t\t}\n\t\t\tif err != nil {\n\t\t\t\treturn nil, err\n\t\t\t}\n\t\t\treturn []int{index}, nil\n\t\tcase \"<\", \"<=\":\n\t\t\tif plan.getValueType(criteria.Left) == EID_NODE {\n\t\t\t\tindex, err = plan.getTableIndexByValue(criteria.Right)\n\t\t\t\tif err != nil {\n\t\t\t\t\treturn nil, err\n\t\t\t\t}\n\t\t\t\treturn makeLeList(index, plan.Rule.SubTableIndexs), nil\n\t\t\t} else {\n\t\t\t\tindex, err = plan.getTableIndexByValue(criteria.Left)\n\t\t\t\tif err != nil {\n\t\t\t\t\treturn nil, err\n\t\t\t\t}\n\t\t\t\treturn makeGeList(index, plan.Rule.SubTableIndexs), nil\n\t\t\t}\n\t\tcase \">\", \">=\":\n\t\t\tif plan.getValueType(criteria.Left) == EID_NODE {\n\t\t\t\tindex, err = plan.getTableIndexByValue(criteria.Right)\n\t\t\t\tif err != nil {\n\t\t\t\t\treturn nil, err\n\t\t\t\t}\n\t\t\t\treturn makeGeList(index, plan.Rule.SubTableIndexs), nil\n\t\t\t} else { // 10 > id，这种情况\n\t\t\t\tindex, err = plan.getTableIndexByValue(criteria.Left)\n\t\t\t\tif err != nil {\n\t\t\t\t\treturn nil, err\n\t\t\t\t}\n\t\t\t\treturn makeLeList(index, plan.Rule.SubTableIndexs), nil\n\t\t\t}\n\t\tcase \"in\":\n\t\t\treturn plan.getTableIndexsByTuple(criteria.Right)\n\t\tcase \"not in\":\n\t\t\tl, err := plan.getTableIndexsByTuple(criteria.Right)\n\t\t\tif err != nil {\n\t\t\t\treturn nil, err\n\t\t\t}\n\t\t\treturn plan.notList(l), nil\n\t\t}\n\tcase *sqlparser.RangeCond:\n\t\tvar start, last int\n\t\tstart, err = plan.getTableIndexByValue(criteria.From)\n\t\tif err != nil {\n\t\t\treturn nil, err\n\t\t}\n\t\tlast, err = plan.getTableIndexByValue(criteria.To)\n\t\tif err != nil {\n\t\t\treturn nil, err\n\t\t}\n\t\tif last < start {\n\t\t\tstart, last = last, start\n\t\t}\n\t\tif criteria.Operator == \"between\" { //对应between ...and ...\n\t\t\treturn makeBetweenList(start, last, plan.Rule.SubTableIndexs), nil\n\t\t} else { //对应not between ....and\n\t\t\tl := makeBetweenList(start, last, plan.Rule.SubTableIndexs)\n\t\t\treturn plan.notList(l), nil\n\t\t}\n\tdefault:\n\t\treturn plan.Rule.SubTableIndexs, nil\n\t}\n\n\treturn plan.RouteTableIndexs, nil\n}\n\n//计算表下标和node下标\nfunc (plan *Plan) calRouteIndexs() error {\n\tvar err error\n\tnodesCount := len(plan.Rule.Nodes)\n\n\tif plan.Rule.Type == DefaultRuleType {\n\t\tplan.RouteNodeIndexs = []int{0}\n\t\treturn nil\n\t}\n\tif plan.Criteria == nil { //如果没有分表条件，则是全子表扫描\n\t\tif plan.Rule.Type != DefaultRuleType {\n\t\t\tgolog.Error(\"Plan\", \"calRouteIndexs\", \"plan have no criteria\", 0,\n\t\t\t\t\"type\", plan.Rule.Type)\n\t\t\treturn errors.ErrNoCriteria\n\t\t}\n\t}\n\n\tswitch criteria := plan.Criteria.(type) {\n\tcase sqlparser.Values: //代表insert中values\n\t\tplan.RouteTableIndexs, err = plan.getInsertTableIndex(criteria)\n\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n\t\tplan.RouteNodeIndexs = plan.TindexsToNindexs(plan.RouteTableIndexs)\n\t\treturn nil\n\tcase sqlparser.BoolExpr:\n\t\tplan.RouteTableIndexs, err = plan.getTableIndexByBoolExpr(criteria)\n\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n\t\tplan.RouteNodeIndexs = plan.TindexsToNindexs(plan.RouteTableIndexs)\n\t\treturn nil\n\tdefault:\n\t\tplan.RouteTableIndexs = plan.Rule.SubTableIndexs\n\t\tplan.RouteNodeIndexs = makeList(0, nodesCount)\n\t\treturn nil\n\t}\n}\n\nfunc (plan *Plan) checkValuesType(vals sqlparser.Values) sqlparser.Values {\n\t// Analyze first value of every item in the list\n\tfor i := 0; i < len(vals); i++ {\n\t\tswitch tuple := vals[i].(type) {\n\t\tcase sqlparser.ValTuple:\n\t\t\tresult := plan.getValueType(tuple[0])\n\t\t\tif result != VALUE_NODE {\n\t\t\t\tpanic(sqlparser.NewParserError(\"insert is too complex\"))\n\t\t\t}\n\t\tdefault:\n\t\t\tpanic(sqlparser.NewParserError(\"insert is too complex\"))\n\t\t}\n\t}\n\treturn vals\n}\n\n/*返回valExpr表达式对应的类型*/\nfunc (plan *Plan) getValueType(valExpr sqlparser.ValExpr) int {\n\tswitch node := valExpr.(type) {\n\tcase *sqlparser.ColName:\n\t\t//remove table name\n\t\tif string(node.Qualifier) == plan.Rule.Table {\n\t\t\tnode.Qualifier = nil\n\t\t}\n\t\tif string(node.Name) == plan.Rule.Key {\n\t\t\treturn EID_NODE //表示这是分片id对应的node\n\t\t}\n\tcase sqlparser.ValTuple:\n\t\tfor _, n := range node {\n\t\t\tif plan.getValueType(n) != VALUE_NODE {\n\t\t\t\treturn OTHER_NODE\n\t\t\t}\n\t\t}\n\t\treturn LIST_NODE //列表节点\n\tcase sqlparser.StrVal, sqlparser.NumVal, sqlparser.ValArg: //普通的值节点，字符串值，绑定变量参数\n\t\treturn VALUE_NODE\n\t}\n\treturn OTHER_NODE\n}\n\nfunc (plan *Plan) getTableIndexByBoolExpr(node sqlparser.BoolExpr) ([]int, error) {\n\tswitch node := node.(type) {\n\tcase *sqlparser.AndExpr:\n\t\tleft, err := plan.getTableIndexByBoolExpr(node.Left)\n\t\tif err != nil {\n\t\t\treturn nil, err\n\t\t}\n\t\tright, err := plan.getTableIndexByBoolExpr(node.Right)\n\t\tif err != nil {\n\t\t\treturn nil, err\n\t\t}\n\t\treturn interList(left, right), nil\n\tcase *sqlparser.OrExpr:\n\t\tleft, err := plan.getTableIndexByBoolExpr(node.Left)\n\t\tif err != nil {\n\t\t\treturn nil, err\n\t\t}\n\t\tright, err := plan.getTableIndexByBoolExpr(node.Right)\n\t\tif err != nil {\n\t\t\treturn nil, err\n\t\t}\n\t\treturn unionList(left, right), nil\n\tcase *sqlparser.ParenBoolExpr: //加上括号的BoolExpr，node.Expr去掉了括号\n\t\treturn plan.getTableIndexByBoolExpr(node.Expr)\n\tcase *sqlparser.ComparisonExpr:\n\t\tswitch {\n\t\tcase sqlparser.StringIn(node.Operator, \"=\", \"<\", \">\", \"<=\", \">=\", \"<=>\"):\n\t\t\tleft := plan.getValueType(node.Left)\n\t\t\tright := plan.getValueType(node.Right)\n\t\t\tif (left == EID_NODE && right == VALUE_NODE) || (left == VALUE_NODE && right == EID_NODE) {\n\t\t\t\treturn plan.getTableIndexs(node)\n\t\t\t}\n\t\tcase sqlparser.StringIn(node.Operator, \"in\", \"not in\"):\n\t\t\tleft := plan.getValueType(node.Left)\n\t\t\tright := plan.getValueType(node.Right)\n\t\t\tif left == EID_NODE && right == LIST_NODE {\n\t\t\t\tif strings.EqualFold(node.Operator, \"in\") { //only deal with in expr, it's impossible to process not in here.\n\t\t\t\t\tplan.InRightToReplace = node\n\t\t\t\t}\n\t\t\t\treturn plan.getTableIndexs(node)\n\t\t\t}\n\t\t}\n\tcase *sqlparser.RangeCond:\n\t\tleft := plan.getValueType(node.Left)\n\t\tfrom := plan.getValueType(node.From)\n\t\tto := plan.getValueType(node.To)\n\t\tif left == EID_NODE && from == VALUE_NODE && to == VALUE_NODE {\n\t\t\treturn plan.getTableIndexs(node)\n\t\t}\n\t}\n\treturn plan.Rule.SubTableIndexs, nil\n}\n\n//获得(12,14,23)对应的table index\nfunc (plan *Plan) getTableIndexsByTuple(valExpr sqlparser.ValExpr) ([]int, error) {\n\tshardset := make(map[int]sqlparser.ValTuple)\n\tswitch node := valExpr.(type) {\n\tcase sqlparser.ValTuple:\n\t\tfor _, n := range node {\n\t\t\t//n.Format()\n\t\t\tindex, err := plan.getTableIndexByValue(n)\n\n\t\t\tif err != nil {\n\t\t\t\treturn nil, err\n\t\t\t}\n\t\t\tvalExprs := shardset[index]\n\n\t\t\tif valExprs == nil {\n\t\t\t\tvalExprs = make([]sqlparser.ValExpr, 0)\n\t\t\t}\n\t\t\tvalExprs = append(valExprs, n)\n\t\t\tshardset[index] = valExprs\n\t\t}\n\t}\n\tplan.SubTableValueGroups = shardset\n\tshardlist := make([]int, len(shardset))\n\tindex := 0\n\tfor k := range shardset {\n\t\tshardlist[index] = k\n\t\tindex++\n\t}\n\n\tsort.Ints(shardlist)\n\treturn shardlist, nil\n}\n\n//get the insert table index and set plan.Rows\nfunc (plan *Plan) getInsertTableIndex(vals sqlparser.Values) ([]int, error) {\n\ttableIndexs := make([]int, 0, len(vals))\n\trowsToTindex := make(map[int][]sqlparser.Tuple)\n\tfor i := 0; i < len(vals); i++ {\n\t\tvalueExpression := vals[i].(sqlparser.ValTuple)\n\t\tif len(valueExpression) < (plan.KeyIndex + 1) {\n\t\t\treturn nil, errors.ErrColsLenNotMatch\n\t\t}\n\n\t\ttableIndex, err := plan.getTableIndexByValue(valueExpression[plan.KeyIndex])\n\t\tif err != nil {\n\t\t\treturn nil, err\n\t\t}\n\n\t\ttableIndexs = append(tableIndexs, tableIndex)\n\t\t//get the rows insert into this table\n\t\trowsToTindex[tableIndex] = append(rowsToTindex[tableIndex], valueExpression)\n\t}\n\tfor k, v := range rowsToTindex {\n\t\tplan.Rows[k] = (sqlparser.Values)(v)\n\t}\n\n\treturn cleanList(tableIndexs), nil\n}\n\n// find shard key index in insert or replace SQL\n// plan.Rule cols must not nil\nfunc (plan *Plan) GetIRKeyIndex(cols sqlparser.Columns) error {\n\tif plan.Rule == nil {\n\t\treturn errors.ErrNoPlanRule\n\t}\n\tplan.KeyIndex = -1\n\tfor i, _ := range cols {\n\t\tcolname := string(cols[i].(*sqlparser.NonStarExpr).Expr.(*sqlparser.ColName).Name)\n\n\t\tif colname == plan.Rule.Key {\n\t\t\tplan.KeyIndex = i\n\t\t\tbreak\n\t\t}\n\t}\n\tif plan.KeyIndex == -1 {\n\t\treturn errors.ErrIRNoShardingKey\n\t}\n\treturn nil\n}\n\nfunc (plan *Plan) getTableIndexByValue(valExpr sqlparser.ValExpr) (int, error) {\n\tvalue := plan.getBoundValue(valExpr)\n\treturn plan.Rule.FindTableIndex(value)\n}\n\nfunc (plan *Plan) adjustShardIndex(valExpr sqlparser.ValExpr, index int) int {\n\tvalue := plan.getBoundValue(valExpr)\n\t//生成一个范围的接口,[100,120)\n\ts, ok := plan.Rule.Shard.(RangeShard)\n\tif !ok {\n\t\treturn index\n\t}\n\t//value是否和shard[index].Start相等\n\tif s.EqualStart(value, index) {\n\t\tindex--\n\t\tif index < 0 {\n\t\t\tpanic(sqlparser.NewParserError(\"invalid range sharding\"))\n\t\t}\n\t}\n\treturn index\n}\n\n/*获得valExpr对应的值*/\nfunc (plan *Plan) getBoundValue(valExpr sqlparser.ValExpr) interface{} {\n\tswitch node := valExpr.(type) {\n\tcase sqlparser.ValTuple: //ValTuple可以是一个slice\n\t\tif len(node) != 1 {\n\t\t\tpanic(sqlparser.NewParserError(\"tuples not allowed as insert values\"))\n\t\t}\n\t\t// TODO: Change parser to create single value tuples into non-tuples.\n\t\treturn plan.getBoundValue(node[0])\n\tcase sqlparser.StrVal:\n\t\treturn string(node)\n\tcase sqlparser.NumVal:\n\t\tval, err := strconv.ParseInt(string(node), 10, 64)\n\t\tif err != nil {\n\t\t\tpanic(sqlparser.NewParserError(\"%s\", err.Error()))\n\t\t}\n\t\treturn val\n\tcase sqlparser.ValArg:\n\t\tpanic(\"Unexpected token\")\n\t}\n\tpanic(\"Unexpected token\")\n}\n\n/*2,5 ==> [2,3,4]*/\nfunc makeList(start, end int) []int {\n\tlist := make([]int, end-start)\n\tfor i := start; i < end; i++ {\n\t\tlist[i-start] = i\n\t}\n\treturn list\n}\n\n//if value is 2016, and indexs is [2015,2016,2017]\n//the result is [2015,2016]\nfunc makeLeList(value int, indexs []int) []int {\n\tsort.Ints(indexs)\n\tfor k, v := range indexs {\n\t\tif v == value {\n\t\t\treturn indexs[:k+1]\n\t\t}\n\t}\n\treturn nil\n}\n\n//if value is 2016, and indexs is [2015,2016,2017,2018]\n//the result is [2016,2017,2018]\nfunc makeGeList(value int, indexs []int) []int {\n\tsort.Ints(indexs)\n\tfor k, v := range indexs {\n\t\tif v == value {\n\t\t\treturn indexs[k:]\n\t\t}\n\t}\n\treturn nil\n}\n\n//if value is 2016, and indexs is [2015,2016,2017,2018]\n//the result is [2015]\nfunc makeLtList(value int, indexs []int) []int {\n\tsort.Ints(indexs)\n\tfor k, v := range indexs {\n\t\tif v == value {\n\t\t\tr",
+        "rank": 0,
+        "truncated": false
+      },
+      {
+        "id": "e1c483d9eefb7a66be4e3d2e",
+        "revision": "a5dab6822a6238cb2021fe169a4d77a441e314d3",
+        "path": "proxy/router/planbuilder.go",
+        "start_byte": 0,
+        "text": "// Copyright 2016 The kingshard Authors. All rights reserved.\n//\n// Licensed under the Apache License, Version 2.0 (the \"License\"): you may\n// not use this file except in compliance with the License. You may obtain\n// a copy of the License at\n//\n//     http://www.apache.org/licenses/LICENSE-2.0\n//\n// Unless required by applicable law or agreed to in writing, software\n// distributed under the License is distributed on an \"AS IS\" BASIS, WITHOUT\n// WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the\n// License for the specific language governing permissions and limitations\n// under the License.\n\npackage router\n\nimport (\n\t\"sort\"\n\t\"strconv\"\n\n\t\"github.com/flike/kingshard/core/errors\"\n\t\"github.com/flike/kingshard/core/golog\"\n\t\"github.com/flike/kingshard/sqlparser\"\n)\n\nconst (\n\tEID_NODE = iota\n\tVALUE_NODE\n\tLIST_NODE\n\tOTHER_NODE\n)\n\ntype Plan struct {\n\tRule *Rule\n\n\tCriteria sqlparser.SQLNode\n\tKeyIndex int //used for insert/replace to find shard key idx\n\t//used for insert/replace values,key is table index,and value is\n\t//the rows for insert or replace.\n\tRows map[int]sqlparser.Values\n\n\tSubTableValueGroups map[int]sqlparser.ValTuple //按照tableIndex存放ValueExpr\n\tInRightToReplace    *sqlparser.ComparisonExpr  //记录in的右边Expr,用来动态替换不同table in的值\n\tRouteTableIndexs    []int\n\tRouteNodeIndexs     []int\n\tRewrittenSqls       map[string][]string\n}\n\nfunc (plan *Plan) notList(l []int) []int {\n\treturn differentList(plan.Rule.SubTableIndexs, l)\n}\n\nfunc (plan *Plan) getTableIndexs(expr sqlparser.BoolExpr) ([]int, error) {\n\tswitch plan.Rule.Type {\n\tcase HashRuleType:\n\t\treturn plan.getHashShardTableIndex(expr)\n\tcase RangeRuleType:\n\t\treturn plan.getRangeShardTableIndex(expr)\n\tcase DateYearRuleType, DateMonthRuleType, DateDayRuleType:\n\t\treturn plan.getDateShardTableIndex(expr)\n\tdefault:\n\t\treturn plan.Rule.SubTableIndexs, nil\n\t}\n\treturn nil, nil\n}\n\n//Get the table index of hash shard type\nfunc (plan *Plan) getHashShardTableIndex(expr sqlparser.BoolExpr) ([]int, error) {\n\tvar index int\n\tvar err error\n\tswitch criteria := expr.(type) {\n\tcase *sqlparser.ComparisonExpr:\n\t\tswitch criteria.Operator {\n\t\tcase \"=\", \"<=>\": //=对应的分片\n\t\t\tif plan.getValueType(criteria.Left) == EID_NODE {\n\t\t\t\tindex, err = plan.getTableIndexByValue(criteria.Right)\n\t\t\t} else {\n\t\t\t\tindex, err = plan.getTableIndexByValue(criteria.Left)\n\t\t\t}\n\t\t\tif err != nil {\n\t\t\t\treturn nil, err\n\t\t\t}\n\t\t\treturn []int{index}, nil\n\t\tcase \"<\", \"<=\", \">\", \">=\":\n\t\t\treturn plan.Rule.SubTableIndexs, nil\n\t\tcase \"in\":\n\t\t\treturn plan.getTableIndexsByTuple(criteria.Right)\n\t\tcase \"not in\":\n\t\t\tl, err := plan.getTableIndexsByTuple(criteria.Right)\n\t\t\tif err != nil {\n\t\t\t\treturn nil, err\n\t\t\t}\n\t\t\treturn plan.notList(l), nil\n\t\t}\n\tcase *sqlparser.RangeCond: //between ... and ...\n\t\treturn plan.Rule.SubTableIndexs, nil\n\tdefault:\n\t\treturn plan.Rule.SubTableIndexs, nil\n\t}\n\n\treturn plan.RouteTableIndexs, nil\n}\n\n//Get the table index of range shard type\nfunc (plan *Plan) getRangeShardTableIndex(expr sqlparser.BoolExpr) ([]int, error) {\n\tvar index int\n\tvar err error\n\tswitch criteria := expr.(type) {\n\tcase *sqlparser.ComparisonExpr:\n\t\tswitch criteria.Operator {\n\t\tcase \"=\", \"<=>\": //=对应的分片\n\t\t\tif plan.getValueType(criteria.Left) == EID_NODE {\n\t\t\t\tindex, err = plan.getTableIndexByValue(criteria.Right)\n\t\t\t} else {\n\t\t\t\tindex, err = plan.getTableIndexByValue(criteria.Left)\n\t\t\t}\n\t\t\tif err != nil {\n\t\t\t\treturn nil, err\n\t\t\t}\n\t\t\treturn []int{index}, nil\n\t\tcase \"<\", \"<=\":\n\t\t\tif plan.getValueType(criteria.Left) == EID_NODE {\n\t\t\t\tindex, err = plan.getTableIndexByValue(criteria.Right)\n\t\t\t\tif err != nil {\n\t\t\t\t\treturn nil, err\n\t\t\t\t}\n\t\t\t\tif criteria.Operator == \"<\" {\n\t\t\t\t\t//调整边界值，当shard[index].start等于criteria.Right 则index--\n\t\t\t\t\tindex = plan.adjustShardIndex(criteria.Right, index)\n\t\t\t\t}\n\n\t\t\t\treturn makeList(0, index+1), nil\n\t\t\t} else {\n\t\t\t\tindex, err = plan.getTableIndexByValue(criteria.Left)\n\t\t\t\tif err != nil {\n\t\t\t\t\treturn nil, err\n\t\t\t\t}\n\t\t\t\treturn makeList(index, len(plan.Rule.SubTableIndexs)), nil\n\t\t\t}\n\t\tcase \">\", \">=\":\n\t\t\tif plan.getValueType(criteria.Left) == EID_NODE {\n\t\t\t\tindex, err = plan.getTableIndexByValue(criteria.Right)\n\t\t\t\tif err != nil {\n\t\t\t\t\treturn nil, err\n\t\t\t\t}\n\t\t\t\treturn makeList(index, len(plan.Rule.SubTableIndexs)), nil\n\t\t\t} else { // 10 > id，这种情况\n\t\t\t\tindex, err = plan.getTableIndexByValue(criteria.Left)\n\t\t\t\tif err != nil {\n\t\t\t\t\treturn nil, err\n\t\t\t\t}\n\t\t\t\tif criteria.Operator == \">\" {\n\t\t\t\t\tindex = plan.adjustShardIndex(criteria.Left, index)\n\t\t\t\t}\n\t\t\t\treturn makeList(0, index+1), nil\n\t\t\t}\n\t\tcase \"in\":\n\t\t\treturn plan.getTableIndexsByTuple(criteria.Right)\n\t\tcase \"not in\":\n\t\t\treturn plan.Rule.SubTableIndexs, nil\n\t\t}\n\tcase *sqlparser.RangeCond:\n\t\tvar start, last int\n\t\tstart, err = plan.getTableIndexByValue(criteria.From)\n\t\tif err != nil {\n\t\t\treturn nil, err\n\t\t}\n\t\tlast, err = plan.getTableIndexByValue(criteria.To)\n\t\tif err != nil {\n\t\t\treturn nil, err\n\t\t}\n\t\tif criteria.Operator == \"between\" { //对应between ...and ...\n\t\t\tif last < start {\n\t\t\t\tstart, last = last, start\n\t\t\t}\n\t\t\treturn makeList(start, last+1), nil\n\t\t} else { //对应not between ....and\n\t\t\tif last < start {\n\t\t\t\tstart, last = last, start\n\t\t\t\tstart = plan.adjustShardIndex(criteria.To, start)\n\t\t\t} else {\n\t\t\t\tstart = plan.adjustShardIndex(criteria.From, start)\n\t\t\t}\n\n\t\t\tl1 := makeList(0, start+1)\n\t\t\tl2 := makeList(last, len(plan.Rule.SubTableIndexs))\n\t\t\treturn unionList(l1, l2), nil\n\t\t}\n\tdefault:\n\t\treturn plan.Rule.SubTableIndexs, nil\n\t}\n\n\treturn plan.RouteTableIndexs, nil\n}\n\n//Get the table index of date shard type(date_year,date_month,date_day).\nfunc (plan *Plan) getDateShardTableIndex(expr sqlparser.BoolExpr) ([]int, error) {\n\tvar index int\n\tvar err error\n\tswitch criteria := expr.(type) {\n\tcase *sqlparser.ComparisonExpr:\n\t\tswitch criteria.Operator {\n\t\tcase \"=\", \"<=>\": //=对应的分片\n\t\t\tif plan.getValueType(criteria.Left) == EID_NODE {\n\t\t\t\tindex, err = plan.getTableIndexByValue(criteria.Right)\n\t\t\t} else {\n\t\t\t\tindex, err = plan.getTableIndexByValue(criteria.Left)\n\t\t\t}\n\t\t\tif err != nil {\n\t\t\t\treturn nil, err\n\t\t\t}\n\t\t\treturn []int{index}, nil\n\t\tcase \"<\", \"<=\":\n\t\t\tif plan.getValueType(criteria.Left) == EID_NODE {\n\t\t\t\tindex, err = plan.getTableIndexByValue(criteria.Right)\n\t\t\t\tif err != nil {\n\t\t\t\t\treturn nil, err\n\t\t\t\t}\n\t\t\t\treturn makeLeList(index, plan.Rule.SubTableIndexs), nil\n\t\t\t} else {\n\t\t\t\tindex, err = plan.getTableIndexByValue(criteria.Left)\n\t\t\t\tif err != nil {\n\t\t\t\t\treturn nil, err\n\t\t\t\t}\n\t\t\t\treturn makeGeList(index, plan.Rule.SubTableIndexs), nil\n\t\t\t}\n\t\tcase \">\", \">=\":\n\t\t\tif plan.getValueType(criteria.Left) == EID_NODE {\n\t\t\t\tindex, err = plan.getTableIndexByValue(criteria.Right)\n\t\t\t\tif err != nil {\n\t\t\t\t\treturn nil, err\n\t\t\t\t}\n\t\t\t\treturn makeGeList(index, plan.Rule.SubTableIndexs), nil\n\t\t\t} else { // 10 > id，这种情况\n\t\t\t\tindex, err = plan.getTableIndexByValue(criteria.Left)\n\t\t\t\tif err != nil {\n\t\t\t\t\treturn nil, err\n\t\t\t\t}\n\t\t\t\treturn makeLeList(index, plan.Rule.SubTableIndexs), nil\n\t\t\t}\n\t\tcase \"in\":\n\t\t\treturn plan.getTableIndexsByTuple(criteria.Right)\n\t\tcase \"not in\":\n\t\t\tl, err := plan.getTableIndexsByTuple(criteria.Right)\n\t\t\tif err != nil {\n\t\t\t\treturn nil, err\n\t\t\t}\n\t\t\treturn plan.notList(l), nil\n\t\t}\n\tcase *sqlparser.RangeCond:\n\t\tvar start, last int\n\t\tstart, err = plan.getTableIndexByValue(criteria.From)\n\t\tif err != nil {\n\t\t\treturn nil, err\n\t\t}\n\t\tlast, err = plan.getTableIndexByValue(criteria.To)\n\t\tif err != nil {\n\t\t\treturn nil, err\n\t\t}\n\t\tif last < start {\n\t\t\tstart, last = last, start\n\t\t}\n\t\tif criteria.Operator == \"between\" { //对应between ...and ...\n\t\t\treturn makeBetweenList(start, last, plan.Rule.SubTableIndexs), nil\n\t\t} else { //对应not between ....and\n\t\t\tl := makeBetweenList(start, last, plan.Rule.SubTableIndexs)\n\t\t\treturn plan.notList(l), nil\n\t\t}\n\tdefault:\n\t\treturn plan.Rule.SubTableIndexs, nil\n\t}\n\n\treturn plan.RouteTableIndexs, nil\n}\n\n//计算表下标和node下标\nfunc (plan *Plan) calRouteIndexs() error {\n\tvar err error\n\tnodesCount := len(plan.Rule.Nodes)\n\n\tif plan.Rule.Type == DefaultRuleType {\n\t\tplan.RouteNodeIndexs = []int{0}\n\t\treturn nil\n\t}\n\tif plan.Criteria == nil { //如果没有分表条件，则是全子表扫描\n\t\tif plan.Rule.Type != DefaultRuleType {\n\t\t\tgolog.Error(\"Plan\", \"calRouteIndexs\", \"plan have no criteria\", 0,\n\t\t\t\t\"type\", plan.Rule.Type)\n\t\t\treturn errors.ErrNoCriteria\n\t\t}\n\t}\n\n\tswitch criteria := plan.Criteria.(type) {\n\tcase sqlparser.Values: //代表insert中values\n\t\tplan.RouteTableIndexs, err = plan.getInsertTableIndex(criteria)\n\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n\t\tplan.RouteNodeIndexs = plan.TindexsToNindexs(plan.RouteTableIndexs)\n\t\treturn nil\n\tcase sqlparser.BoolExpr:\n\t\tplan.RouteTableIndexs, err = plan.getTableIndexByBoolExpr(criteria)\n\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n\t\tplan.RouteNodeIndexs = plan.TindexsToNindexs(plan.RouteTableIndexs)\n\t\treturn nil\n\tdefault:\n\t\tplan.RouteTableIndexs = plan.Rule.SubTableIndexs\n\t\tplan.RouteNodeIndexs = makeList(0, nodesCount)\n\t\treturn nil\n\t}\n}\n\nfunc (plan *Plan) checkValuesType(vals sqlparser.Values) sqlparser.Values {\n\t// Analyze first value of every item in the list\n\tfor i := 0; i < len(vals); i++ {\n\t\tswitch tuple := vals[i].(type) {\n\t\tcase sqlparser.ValTuple:\n\t\t\tresult := plan.getValueType(tuple[0])\n\t\t\tif result != VALUE_NODE {\n\t\t\t\tpanic(sqlparser.NewParserError(\"insert is too complex\"))\n\t\t\t}\n\t\tdefault:\n\t\t\tpanic(sqlparser.NewParserError(\"insert is too complex\"))\n\t\t}\n\t}\n\treturn vals\n}\n\n/*返回valExpr表达式对应的类型*/\nfunc (plan *Plan) getValueType(valExpr sqlparser.ValExpr) int {\n\tswitch node := valExpr.(type) {\n\tcase *sqlparser.ColName:\n\t\t//remove table name\n\t\tif string(node.Qualifier) == plan.Rule.Table {\n\t\t\tnode.Qualifier = nil\n\t\t}\n\t\tif string(node.Name) == plan.Rule.Key {\n\t\t\treturn EID_NODE //表示这是分片id对应的node\n\t\t}\n\tcase sqlparser.ValTuple:\n\t\tfor _, n := range node {\n\t\t\tif plan.getValueType(n) != VALUE_NODE {\n\t\t\t\treturn OTHER_NODE\n\t\t\t}\n\t\t}\n\t\treturn LIST_NODE //列表节点\n\tcase sqlparser.StrVal, sqlparser.NumVal, sqlparser.ValArg: //普通的值节点，字符串值，绑定变量参数\n\t\treturn VALUE_NODE\n\t}\n\treturn OTHER_NODE\n}\n\nfunc (plan *Plan) getTableIndexByBoolExpr(node sqlparser.BoolExpr) ([]int, error) {\n\tswitch node := node.(type) {\n\tcase *sqlparser.AndExpr:\n\t\tleft, err := plan.getTableIndexByBoolExpr(node.Left)\n\t\tif err != nil {\n\t\t\treturn nil, err\n\t\t}\n\t\tright, err := plan.getTableIndexByBoolExpr(node.Right)\n\t\tif err != nil {\n\t\t\treturn nil, err\n\t\t}\n\t\treturn interList(left, right), nil\n\tcase *sqlparser.OrExpr:\n\t\tleft, err := plan.getTableIndexByBoolExpr(node.Left)\n\t\tif err != nil {\n\t\t\treturn nil, err\n\t\t}\n\t\tright, err := plan.getTableIndexByBoolExpr(node.Right)\n\t\tif err != nil {\n\t\t\treturn nil, err\n\t\t}\n\t\treturn unionList(left, right), nil\n\tcase *sqlparser.ParenBoolExpr: //加上括号的BoolExpr，node.Expr去掉了括号\n\t\treturn plan.getTableIndexByBoolExpr(node.Expr)\n\tcase *sqlparser.ComparisonExpr:\n\t\tswitch {\n\t\tcase sqlparser.StringIn(node.Operator, \"=\", \"<\", \">\", \"<=\", \">=\", \"<=>\"):\n\t\t\tleft := plan.getValueType(node.Left)\n\t\t\tright := plan.getValueType(node.Right)\n\t\t\tif (left == EID_NODE && right == VALUE_NODE) || (left == VALUE_NODE && right == EID_NODE) {\n\t\t\t\treturn plan.getTableIndexs(node)\n\t\t\t}\n\t\tcase sqlparser.StringIn(node.Operator, \"in\", \"not in\"):\n\t\t\tleft := plan.getValueType(node.Left)\n\t\t\tright := plan.getValueType(node.Right)\n\t\t\tif left == EID_NODE && right == LIST_NODE {\n\t\t\t\t//save the node of in operation,will replace in\n\t\t\t\tplan.InRightToReplace = node\n\t\t\t\treturn plan.getTableIndexs(node)\n\t\t\t}\n\t\t}\n\tcase *sqlparser.RangeCond:\n\t\tleft := plan.getValueType(node.Left)\n\t\tfrom := plan.getValueType(node.From)\n\t\tto := plan.getValueType(node.To)\n\t\tif left == EID_NODE && from == VALUE_NODE && to == VALUE_NODE {\n\t\t\treturn plan.getTableIndexs(node)\n\t\t}\n\t}\n\treturn plan.Rule.SubTableIndexs, nil\n}\n\n//获得(12,14,23)对应的table index\nfunc (plan *Plan) getTableIndexsByTuple(valExpr sqlparser.ValExpr) ([]int, error) {\n\tshardset := make(map[int]sqlparser.ValTuple)\n\tswitch node := valExpr.(type) {\n\tcase sqlparser.ValTuple:\n\t\tfor _, n := range node {\n\t\t\t//n.Format()\n\t\t\tindex, err := plan.getTableIndexByValue(n)\n\t\t\tif err != nil {\n\t\t\t\treturn nil, err\n\t\t\t}\n\t\t\tvalExprs := shardset[index]\n\t\t\tif valExprs == nil {\n\t\t\t\tvalExprs = make([]sqlparser.ValExpr, 0)\n\t\t\t}\n\t\t\tvalExprs = append(valExprs, n)\n\t\t\tshardset[index] = valExprs\n\t\t}\n\t}\n\tplan.SubTableValueGroups = shardset\n\tshardlist := make([]int, len(shardset))\n\tindex := 0\n\tfor k := range shardset {\n\t\tshardlist[index] = k\n\t\tindex++\n\t}\n\n\tsort.Ints(shardlist)\n\treturn shardlist, nil\n}\n\n//get the insert table index and set plan.Rows\nfunc (plan *Plan) getInsertTableIndex(vals sqlparser.Values) ([]int, error) {\n\ttableIndexs := make([]int, 0, len(vals))\n\trowsToTindex := make(map[int][]sqlparser.Tuple)\n\tfor i := 0; i < len(vals); i++ {\n\t\tvalueExpression := vals[i].(sqlparser.ValTuple)\n\t\tif len(valueExpression) < (plan.KeyIndex + 1) {\n\t\t\treturn nil, errors.ErrColsLenNotMatch\n\t\t}\n\n\t\ttableIndex, err := plan.getTableIndexByValue(valueExpression[plan.KeyIndex])\n\t\tif err != nil {\n\t\t\treturn nil, err\n\t\t}\n\n\t\ttableIndexs = append(tableIndexs, tableIndex)\n\t\t//get the rows insert into this table\n\t\trowsToTindex[tableIndex] = append(rowsToTindex[tableIndex], valueExpression)\n\t}\n\tfor k, v := range rowsToTindex {\n\t\tplan.Rows[k] = (sqlparser.Values)(v)\n\t}\n\n\treturn cleanList(tableIndexs), nil\n}\n\n// find shard key index in insert or replace SQL\n// plan.Rule cols must not nil\nfunc (plan *Plan) GetIRKeyIndex(cols sqlparser.Columns) error {\n\tif plan.Rule == nil {\n\t\treturn errors.ErrNoPlanRule\n\t}\n\tplan.KeyIndex = -1\n\tfor i, _ := range cols {\n\t\tcolname := string(cols[i].(*sqlparser.NonStarExpr).Expr.(*sqlparser.ColName).Name)\n\n\t\tif colname == plan.Rule.Key {\n\t\t\tplan.KeyIndex = i\n\t\t\tbreak\n\t\t}\n\t}\n\tif plan.KeyIndex == -1 {\n\t\treturn errors.ErrIRNoShardingKey\n\t}\n\treturn nil\n}\n\nfunc (plan *Plan) getTableIndexByValue(valExpr sqlparser.ValExpr) (int, error) {\n\tvalue := plan.getBoundValue(valExpr)\n\treturn plan.Rule.FindTableIndex(value)\n}\n\nfunc (plan *Plan) adjustShardIndex(valExpr sqlparser.ValExpr, index int) int {\n\tvalue := plan.getBoundValue(valExpr)\n\t//生成一个范围的接口,[100,120)\n\ts, ok := plan.Rule.Shard.(RangeShard)\n\tif !ok {\n\t\treturn index\n\t}\n\t//value是否和shard[index].Start相等\n\tif s.EqualStart(value, index) {\n\t\tindex--\n\t\tif index < 0 {\n\t\t\tpanic(sqlparser.NewParserError(\"invalid range sharding\"))\n\t\t}\n\t}\n\treturn index\n}\n\n/*获得valExpr对应的值*/\nfunc (plan *Plan) getBoundValue(valExpr sqlparser.ValExpr) interface{} {\n\tswitch node := valExpr.(type) {\n\tcase sqlparser.ValTuple: //ValTuple可以是一个slice\n\t\tif len(node) != 1 {\n\t\t\tpanic(sqlparser.NewParserError(\"tuples not allowed as insert values\"))\n\t\t}\n\t\t// TODO: Change parser to create single value tuples into non-tuples.\n\t\treturn plan.getBoundValue(node[0])\n\tcase sqlparser.StrVal:\n\t\treturn string(node)\n\tcase sqlparser.NumVal:\n\t\tval, err := strconv.ParseInt(string(node), 10, 64)\n\t\tif err != nil {\n\t\t\tpanic(sqlparser.NewParserError(\"%s\", err.Error()))\n\t\t}\n\t\treturn val\n\tcase sqlparser.ValArg:\n\t\tpanic(\"Unexpected token\")\n\t}\n\tpanic(\"Unexpected token\")\n}\n\n/*2,5 ==> [2,3,4]*/\nfunc makeList(start, end int) []int {\n\tlist := make([]int, end-start)\n\tfor i := start; i < end; i++ {\n\t\tlist[i-start] = i\n\t}\n\treturn list\n}\n\n//if value is 2016, and indexs is [2015,2016,2017]\n//the result is [2015,2016]\nfunc makeLeList(value int, indexs []int) []int {\n\tsort.Ints(indexs)\n\tfor k, v := range indexs {\n\t\tif v == value {\n\t\t\treturn indexs[:k+1]\n\t\t}\n\t}\n\treturn nil\n}\n\n//if value is 2016, and indexs is [2015,2016,2017,2018]\n//the result is [2016,2017,2018]\nfunc makeGeList(value int, indexs []int) []int {\n\tsort.Ints(indexs)\n\tfor k, v := range indexs {\n\t\tif v == value {\n\t\t\treturn indexs[k:]\n\t\t}\n\t}\n\treturn nil\n}\n\n//if value is 2016, and indexs is [2015,2016,2017,2018]\n//the result is [2015]\nfunc makeLtList(value int, indexs []int) []int {\n\tsort.Ints(indexs)\n\tfor k, v := range indexs {\n\t\tif v == value {\n\t\t\treturn indexs[:k]\n\t\t}\n\t}\n\treturn nil\n}\n\n//if value is 2016, and indexs is [2015,2016,2017,2018]\n//the result is [2017,2018]\nfunc makeGtList(value int, indexs []int) []int {\n\tsort.Ints(indexs)\n\tfor k, v := range indexs {\n\t\tif v == value {\n\t\t\treturn indexs[k+1:]\n\t\t}\n\t}\n\treturn nil\n}\n\n//if start is 2016, end is 2017. indexs is [2015,2016,2017,2018]\n//the result is [2016,2017]\nfunc makeBetweenList(start, end int, indexs []int) []int {\n\tvar startIndex, endIndex int\n\tvar ",
+        "rank": 0,
+        "truncated": false
+      }
+    ],
+    "selected": [
+      {
+        "id": "77a1c0c1569e3729d151f9da",
+        "revision": "a5dab6822a6238cb2021fe169a4d77a441e314d3",
+        "path": "proxy/router/planbuilder.go",
+        "start_byte": 855,
+        "text": "type Plan struct {\n\tRule *Rule\n\n\tCriteria sqlparser.SQLNode\n\tKeyIndex int //used for insert/replace to find shard key idx\n\t//used for insert/replace values,key is table index,and value is\n\t//the rows for insert or replace.\n\tRows map[int]sqlparser.Values\n\n\tSubTableValueGroups map[int]sqlparser.ValTuple //按照tableIndex存放ValueExpr\n\tInRightToReplace    *sqlparser.ComparisonExpr  //记录in的右边Expr,用来动态替换不同table in的值\n\tRouteTableIndexs    []int\n\tRouteNodeIndexs     []int\n\tRewrittenSqls       map[string][]string\n}",
+        "rank": 0,
+        "truncated": false
+      },
+      {
+        "id": "2a826e509772a955a5ffbdee",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "proxy/router/planbuilder.go",
+        "start_byte": 866,
+        "text": "type Plan struct {\n\tRule *Rule\n\n\tCriteria sqlparser.SQLNode\n\tKeyIndex int //used for insert/replace to find shard key idx\n\t//used for insert/replace values,key is table index,and value is\n\t//the rows for insert or replace.\n\tRows map[int]sqlparser.Values\n\n\tSubTableValueGroups map[int]sqlparser.ValTuple //按照tableIndex存放ValueExpr\n\tInRightToReplace    *sqlparser.ComparisonExpr  //记录in的右边Expr,用来动态替换不同table in的值\n\tRouteTableIndexs    []int\n\tRouteNodeIndexs     []int\n\tRewrittenSqls       map[string][]string\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "ac8e505bed6634193756b98d",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "proxy/router/planbuilder.go",
+        "start_byte": 1412,
+        "text": "func (plan *Plan) rewriteWhereIn(tableIndex int) (sqlparser.ValExpr, error) {\n\tvar oldright sqlparser.ValExpr\n\tif plan.InRightToReplace != nil && plan.SubTableValueGroups[tableIndex] != nil {\n\t\t//assign corresponding values to different table index\n\t\toldright = plan.InRightToReplace.Right\n\t\tplan.InRightToReplace.Right = plan.SubTableValueGroups[tableIndex]\n\t}\n\treturn oldright, nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "550b9b66ae7b55503fd476df",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "proxy/router/planbuilder.go",
+        "start_byte": 1491,
+        "text": "var oldright sqlparser.ValExpr",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "36ad2f2d1a4e32e80014ed8a",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "sqlparser/ast.go",
+        "start_byte": 12229,
+        "text": "type ComparisonExpr struct {\n\tOperator    string\n\tLeft, Right ValExpr\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "5793c53e4fdcf4b1b4e928cf",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "sqlparser/ast.go",
+        "start_byte": 13634,
+        "text": "type ValExpr interface {\n\tIValExpr()\n\tExpr\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "c0f2c777b0797f3ba2edc0e2",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "sqlparser/ast.go",
+        "start_byte": 15243,
+        "text": "type ValTuple ValExprs",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "e80d1add929ee64e36a81e36",
+        "revision": "a5dab6822a6238cb2021fe169a4d77a441e314d3",
+        "path": "proxy/router/router.go",
+        "start_byte": 1096,
+        "text": "type Rule struct {\n\tDB    string\n\tTable string\n\tKey   string\n\n\tType           string\n\tNodes          []string\n\tSubTableIndexs []int       //SubTableIndexs store all the index of sharding sub-table\n\tTableToNode    map[int]int //key is table index, and value is node index\n\tShard          Shard\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "1d4471d5e5f9872dccebd6e6",
+        "revision": "a5dab6822a6238cb2021fe169a4d77a441e314d3",
+        "path": "sqlparser/ast.go",
+        "start_byte": 1841,
+        "text": "type SQLNode interface {\n\tFormat(buf *TrackedBuffer)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "8b5ce989c7b4686a28d7f831",
+        "revision": "a5dab6822a6238cb2021fe169a4d77a441e314d3",
+        "path": "sqlparser/ast.go",
+        "start_byte": 12229,
+        "text": "type ComparisonExpr struct {\n\tOperator    string\n\tLeft, Right ValExpr\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "5f14cbd9e02d28cddc01e001",
+        "revision": "a5dab6822a6238cb2021fe169a4d77a441e314d3",
+        "path": "sqlparser/ast.go",
+        "start_byte": 15243,
+        "text": "type ValTuple ValExprs",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "941692d632e5153be6f7818e",
+        "revision": "a5dab6822a6238cb2021fe169a4d77a441e314d3",
+        "path": "sqlparser/ast.go",
+        "start_byte": 17457,
+        "text": "type Values []Tuple",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "f4e3c0d7c8cd46778aab1d93",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/backend_conn.go",
+        "start_byte": 830,
+        "text": "type Conn struct {\n\tconn net.Conn\n\n\tpkg *mysql.PacketIO\n\n\taddr     string\n\tuser     string\n\tpassword string\n\tdb       string\n\n\tcapability uint32\n\n\tstatus uint16\n\n\tcollation mysql.CollationId\n\tcharset   string\n\tsalt      []byte\n\n\tpushTimestamp int64\n\tpkgErr        error\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "45dde30889a80d3e029c168c",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/backend_conn.go",
+        "start_byte": 1103,
+        "text": "func (c *Conn) Connect(addr string, user string, password string, db string) error {\n\tc.addr = addr\n\tc.user = user\n\tc.password = password\n\tc.db = db\n\n\t//use utf8\n\tc.collation = mysql.DEFAULT_COLLATION_ID\n\tc.charset = mysql.DEFAULT_CHARSET\n\n\treturn c.ReConnect()\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "4e729a9084588f5baf285162",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/backend_conn.go",
+        "start_byte": 1368,
+        "text": "func (c *Conn) ReConnect() error {\n\tif c.conn != nil {\n\t\tc.conn.Close()\n\t}\n\n\tn := \"tcp\"\n\tif strings.Contains(c.addr, \"/\") {\n\t\tn = \"unix\"\n\t}\n\n\tnetConn, err := net.Dial(n, c.addr)\n\tif err != nil {\n\t\treturn err\n\t}\n\n\ttcpConn := netConn.(*net.TCPConn)\n\n\t//SetNoDelay controls whether the operating system should delay packet transmission\n\t// in hopes of sending fewer packets (Nagle's algorithm).\n\t// The default is true (no delay),\n\t// meaning that data is sent as soon as possible after a Write.\n\t//I set this option false.\n\ttcpConn.SetNoDelay(false)\n\ttcpConn.SetKeepAlive(true)\n\tc.conn = tcpConn\n\tc.pkg = mysql.NewPacketIO(tcpConn)\n\n\tif err := c.readInitialHandshake(); err != nil {\n\t\tc.conn.Close()\n\t\treturn err\n\t}\n\n\tif err := c.writeAuthHandshake(); err != nil {\n\t\tc.conn.Close()\n\n\t\treturn err\n\t}\n\n\tif _, err := c.readOK(); err != nil {\n\t\tc.conn.Close()\n\n\t\treturn err\n\t}\n\n\t//we must always use autocommit\n\tif !c.IsAutoCommit() {\n\t\tif _, err := c.exec(\"set autocommit = 1\"); err != nil {\n\t\t\tc.conn.Close()\n\n\t\t\treturn err\n\t\t}\n\t}\n\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "01bc6c61eedb3e679b2dc213",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/backend_conn.go",
+        "start_byte": 2411,
+        "text": "func (c *Conn) Close() error {\n\tif c.conn != nil {\n\t\tc.conn.Close()\n\t\tc.conn = nil\n\t\tc.salt = nil\n\t\tc.pkgErr = nil\n\t}\n\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "69f56215a8558802ffe26938",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/backend_conn.go",
+        "start_byte": 2545,
+        "text": "func (c *Conn) readPacket() ([]byte, error) {\n\td, err := c.pkg.ReadPacket()\n\tc.pkgErr = err\n\treturn d, err\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "707b317b5d7dc3e877fdaf13",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/backend_conn.go",
+        "start_byte": 2655,
+        "text": "func (c *Conn) writePacket(data []byte) error {\n\terr := c.pkg.WritePacket(data)\n\tc.pkgErr = err\n\treturn err\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "bead8fbc9c51c24e29fc4831",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/backend_conn.go",
+        "start_byte": 2766,
+        "text": "func (c *Conn) readInitialHandshake() error {\n\tdata, err := c.readPacket()\n\tif err != nil {\n\t\treturn err\n\t}\n\n\tif data[0] == mysql.ERR_HEADER {\n\t\treturn errors.New(\"read initial handshake error\")\n\t}\n\n\tif data[0] < mysql.MinProtocolVersion {\n\t\treturn fmt.Errorf(\"invalid protocol version %d, must >= 10\", data[0])\n\t}\n\n\t//skip mysql version and connection id\n\t//mysql version end with 0x00\n\t//connection id length is 4\n\tpos := 1 + bytes.IndexByte(data[1:], 0x00) + 1 + 4\n\n\tc.salt = append(c.salt, data[pos:pos+8]...)\n\n\t//skip filter\n\tpos += 8 + 1\n\n\t//capability lower 2 bytes\n\tc.capability = uint32(binary.LittleEndian.Uint16(data[pos : pos+2]))\n\n\tpos += 2\n\n\tif len(data) > pos {\n\t\t//skip server charset\n\t\t//c.charset = data[pos]\n\t\tpos += 1\n\n\t\tc.status = binary.LittleEndian.Uint16(data[pos : pos+2])\n\t\tpos += 2\n\n\t\tc.capability = uint32(binary.LittleEndian.Uint16(data[pos:pos+2]))<<16 | c.capability\n\n\t\tpos += 2\n\n\t\t//skip auth data len or [00]\n\t\t//skip reserved (all [00])\n\t\tpos += 10 + 1\n\n\t\t// The documentation is ambiguous about the length.\n\t\t// The official Python library uses the fixed length 12\n\t\t// mysql-proxy also use 12\n\t\t// which is not documented but seems to work.\n\t\tc.salt = append(c.salt, data[pos:pos+12]...)\n\t}\n\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "0f30b472e07c0ebdbf3f18b2",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/backend_conn.go",
+        "start_byte": 4009,
+        "text": "func (c *Conn) writeAuthHandshake() error {\n\t// Adjust client capability flags based on server support\n\tcapability := mysql.CLIENT_PROTOCOL_41 | mysql.CLIENT_SECURE_CONNECTION |\n\t\tmysql.CLIENT_LONG_PASSWORD | mysql.CLIENT_TRANSACTIONS | mysql.CLIENT_LONG_FLAG\n\n\tcapability &= c.capability\n\n\t//packet length\n\t//capbility 4\n\t//max-packet size 4\n\t//charset 1\n\t//reserved all[0] 23\n\tlength := 4 + 4 + 1 + 23\n\n\t//username\n\tlength += len(c.user) + 1\n\n\t//we only support secure connection\n\tauth := mysql.CalcPassword(c.salt, []byte(c.password))\n\n\tlength += 1 + len(auth)\n\n\tif len(c.db) > 0 {\n\t\tcapability |= mysql.CLIENT_CONNECT_WITH_DB\n\n\t\tlength += len(c.db) + 1\n\t}\n\n\tc.capability = capability\n\n\tdata := make([]byte, length+4)\n\n\t//capability [32 bit]\n\tdata[4] = byte(capability)\n\tdata[5] = byte(capability >> 8)\n\tdata[6] = byte(capability >> 16)\n\tdata[7] = byte(capability >> 24)\n\n\t//MaxPacketSize [32 bit] (none)\n\t//data[8] = 0x00\n\t//data[9] = 0x00\n\t//data[10] = 0x00\n\t//data[11] = 0x00\n\n\t//Charset [1 byte]\n\tdata[12] = byte(c.collation)\n\n\t//Filler [23 bytes] (all 0x00)\n\tpos := 13 + 23\n\n\t//User [null terminated string]\n\tif len(c.user) > 0 {\n\t\tpos += copy(data[pos:], c.user)\n\t}\n\t//data[pos] = 0x00\n\tpos++\n\n\t// auth [length encoded integer]\n\tdata[pos] = byte(len(auth))\n\tpos += 1 + copy(data[pos+1:], auth)\n\n\t// db [null terminated string]\n\tif len(c.db) > 0 {\n\t\tpos += copy(data[pos:], c.db)\n\t\t//data[pos] = 0x00\n\t}\n\n\treturn c.writePacket(data)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "b4b8a8671bcf3e923dc74ac4",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/backend_conn.go",
+        "start_byte": 5453,
+        "text": "func (c *Conn) writeCommand(command byte) error {\n\tc.pkg.Sequence = 0\n\n\treturn c.writePacket([]byte{\n\t\t0x01, //1 bytes long\n\t\t0x00,\n\t\t0x00,\n\t\t0x00, //sequence\n\t\tcommand,\n\t})\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "184963c94cd50e0551ffa2f8",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/backend_conn.go",
+        "start_byte": 5630,
+        "text": "func (c *Conn) writeCommandBuf(command byte, arg []byte) error {\n\tc.pkg.Sequence = 0\n\n\tlength := len(arg) + 1\n\n\tdata := make([]byte, length+4)\n\n\tdata[4] = command\n\n\tcopy(data[5:], arg)\n\n\treturn c.writePacket(data)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "c77bb36e4ca9875cddd26b5d",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/backend_conn.go",
+        "start_byte": 5847,
+        "text": "func (c *Conn) writeCommandStr(command byte, arg string) error {\n\tc.pkg.Sequence = 0\n\n\tlength := len(arg) + 1\n\n\tdata := make([]byte, length+4)\n\n\tdata[4] = command\n\n\tcopy(data[5:], arg)\n\n\treturn c.writePacket(data)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "9001d2bd15671a173f8d8b80",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/backend_conn.go",
+        "start_byte": 6064,
+        "text": "func (c *Conn) writeCommandUint32(command byte, arg uint32) error {\n\tc.pkg.Sequence = 0\n\n\treturn c.writePacket([]byte{\n\t\t0x05, //5 bytes long\n\t\t0x00,\n\t\t0x00,\n\t\t0x00, //sequence\n\n\t\tcommand,\n\n\t\tbyte(arg),\n\t\tbyte(arg >> 8),\n\t\tbyte(arg >> 16),\n\t\tbyte(arg >> 24),\n\t})\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "41a1d7fdcb1e93583f84a20a",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/backend_conn.go",
+        "start_byte": 6330,
+        "text": "func (c *Conn) writeCommandStrStr(command byte, arg1 string, arg2 string) error {\n\tc.pkg.Sequence = 0\n\n\tdata := make([]byte, 4, 6+len(arg1)+len(arg2))\n\n\tdata = append(data, command)\n\tdata = append(data, arg1...)\n\tdata = append(data, 0)\n\tdata = append(data, arg2...)\n\n\treturn c.writePacket(data)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "2b33e07a49fbec0a99c1177e",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/backend_conn.go",
+        "start_byte": 6628,
+        "text": "func (c *Conn) Ping() error {\n\tif err := c.writeCommand(mysql.COM_PING); err != nil {\n\t\treturn err\n\t}\n\n\tif _, err := c.readOK(); err != nil {\n\t\treturn err\n\t}\n\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "bacab789c154f00994c16b9b",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/backend_conn.go",
+        "start_byte": 6802,
+        "text": "func (c *Conn) UseDB(dbName string) error {\n\tif c.db == dbName || len(dbName) == 0 {\n\t\treturn nil\n\t}\n\n\tif err := c.writeCommandStr(mysql.COM_INIT_DB, dbName); err != nil {\n\t\treturn err\n\t}\n\n\tif _, err := c.readOK(); err != nil {\n\t\treturn err\n\t}\n\n\tc.db = dbName\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "64172de2a76f8ed95cc47100",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/backend_conn.go",
+        "start_byte": 7077,
+        "text": "func (c *Conn) GetDB() string {\n\treturn c.db\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "7ba17dc2adbea0cd874f235c",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/backend_conn.go",
+        "start_byte": 7125,
+        "text": "func (c *Conn) GetAddr() string {\n\treturn c.addr\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "33854aedc81bb7461ad66422",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/backend_conn.go",
+        "start_byte": 7177,
+        "text": "func (c *Conn) Execute(command string, args ...interface{}) (*mysql.Result, error) {\n\tif len(args) == 0 {\n\t\treturn c.exec(command)\n\t} else {\n\t\tif s, err := c.Prepare(command); err != nil {\n\t\t\treturn nil, err\n\t\t} else {\n\t\t\tvar r *mysql.Result\n\t\t\tr, err = s.Execute(args...)\n\t\t\ts.Close()\n\t\t\treturn r, err\n\t\t}\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "7e08dc1147879f147bec9eed",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/backend_conn.go",
+        "start_byte": 7490,
+        "text": "func (c *Conn) ClosePrepare(id uint32) error {\n\treturn c.writeCommandUint32(mysql.COM_STMT_CLOSE, id)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "b6a268a54f754a1a388e9711",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/backend_conn.go",
+        "start_byte": 7595,
+        "text": "func (c *Conn) Begin() error {\n\t_, err := c.exec(\"begin\")\n\treturn err\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "f7589b0b0da703052c719d06",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/backend_conn.go",
+        "start_byte": 7668,
+        "text": "func (c *Conn) Commit() error {\n\t_, err := c.exec(\"commit\")\n\treturn err\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "9ccf9cd8e2ce8a371f1429dc",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/backend_conn.go",
+        "start_byte": 7743,
+        "text": "func (c *Conn) Rollback() error {\n\t_, err := c.exec(\"rollback\")\n\treturn err\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "05abcb041df15d976e52d87e",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/backend_conn.go",
+        "start_byte": 7822,
+        "text": "func (c *Conn) SetAutoCommit(n uint8) error {\n\tif n == 0 {\n\t\tif _, err := c.exec(\"set autocommit = 0\"); err != nil {\n\t\t\tc.conn.Close()\n\n\t\t\treturn err\n\t\t}\n\t} else {\n\t\tif _, err := c.exec(\"set autocommit = 1\"); err != nil {\n\t\t\tc.conn.Close()\n\n\t\t\treturn err\n\t\t}\n\t}\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "7bd098f829799fa58a9705ee",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/backend_conn.go",
+        "start_byte": 8099,
+        "text": "func (c *Conn) SetCharset(charset string) error {\n\tcharset = strings.Trim(charset, \"\\\"'`\")\n\tif c.charset == charset {\n\t\treturn nil\n\t}\n\n\tcid, ok := mysql.CharsetIds[charset]\n\tif !ok {\n\t\treturn fmt.Errorf(\"invalid charset %s\", charset)\n\t}\n\n\tif _, err := c.exec(fmt.Sprintf(\"set names %s\", charset)); err != nil {\n\t\treturn err\n\t} else {\n\t\tc.collation = cid\n\t\tc.charset = charset\n\t\treturn nil\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "849c3fd547592004447e5009",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/backend_conn.go",
+        "start_byte": 8494,
+        "text": "func (c *Conn) FieldList(table string, wildcard string) ([]*mysql.Field, error) {\n\tif err := c.writeCommandStrStr(mysql.COM_FIELD_LIST, table, wildcard); err != nil {\n\t\treturn nil, err\n\t}\n\n\tdata, err := c.readPacket()\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\n\tfs := make([]*mysql.Field, 0, 4)\n\tvar f *mysql.Field\n\tif data[0] == mysql.ERR_HEADER {\n\t\treturn nil, c.handleErrorPacket(data)\n\t} else {\n\t\tfor {\n\t\t\tif data, err = c.readPacket(); err != nil {\n\t\t\t\treturn nil, err\n\t\t\t}\n\n\t\t\t// EOF Packet\n\t\t\tif c.isEOFPacket(data) {\n\t\t\t\treturn fs, nil\n\t\t\t}\n\n\t\t\tif f, err = mysql.FieldData(data).Parse(); err != nil {\n\t\t\t\treturn nil, err\n\t\t\t}\n\t\t\tfs = append(fs, f)\n\t\t}\n\t}\n\treturn nil, fmt.Errorf(\"field list error\")\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "08bccd6e986bd8828167b727",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/backend_conn.go",
+        "start_byte": 9200,
+        "text": "func (c *Conn) exec(query string) (*mysql.Result, error) {\n\tif err := c.writeCommandStr(mysql.COM_QUERY, query); err != nil {\n\t\treturn nil, err\n\t}\n\n\treturn c.readResult(false)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "f1d999a4e94b68c18c6c0216",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/backend_conn.go",
+        "start_byte": 9379,
+        "text": "func (c *Conn) readResultset(data []byte, binary bool) (*mysql.Result, error) {\n\tresult := &mysql.Result{\n\t\tStatus:       0,\n\t\tInsertId:     0,\n\t\tAffectedRows: 0,\n\n\t\tResultset: &mysql.Resultset{},\n\t}\n\n\t// column count\n\tcount, _, n := mysql.LengthEncodedInt(data)\n\n\tif n-len(data) != 0 {\n\t\treturn nil, mysql.ErrMalformPacket\n\t}\n\n\tresult.Fields = make([]*mysql.Field, count)\n\tresult.FieldNames = make(map[string]int, count)\n\n\tif err := c.readResultColumns(result); err != nil {\n\t\treturn nil, err\n\t}\n\n\tif err := c.readResultRows(result, binary); err != nil {\n\t\treturn nil, err\n\t}\n\n\treturn result, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "dcff98d036efadd020f01cc7",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/backend_conn.go",
+        "start_byte": 9980,
+        "text": "func (c *Conn) readResultColumns(result *mysql.Result) (err error) {\n\tvar i int = 0\n\tvar data []byte\n\n\tfor {\n\t\tdata, err = c.readPacket()\n\t\tif err != nil {\n\t\t\treturn\n\t\t}\n\n\t\t// EOF Packet\n\t\tif c.isEOFPacket(data) {\n\t\t\tif c.capability&mysql.CLIENT_PROTOCOL_41 > 0 {\n\t\t\t\t//result.Warnings = binary.LittleEndian.Uint16(data[1:])\n\t\t\t\t//todo add strict_mode, warning will be treat as error\n\t\t\t\tresult.Status = binary.LittleEndian.Uint16(data[3:])\n\t\t\t\tc.status = result.Status\n\t\t\t}\n\n\t\t\tif i != len(result.Fields) {\n\t\t\t\terr = mysql.ErrMalformPacket\n\t\t\t}\n\n\t\t\treturn\n\t\t}\n\n\t\tresult.Fields[i], err = mysql.FieldData(data).Parse()\n\t\tif err != nil {\n\t\t\treturn\n\t\t}\n\n\t\tresult.FieldNames[string(result.Fields[i].Name)] = i\n\n\t\ti++\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "ca83f13245cf932f5129b35d",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/backend_conn.go",
+        "start_byte": 10050,
+        "text": "var i int = 0",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "4cf62b25cad86c5ae32cf131",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/backend_conn.go",
+        "start_byte": 10699,
+        "text": "func (c *Conn) readResultRows(result *mysql.Result, isBinary bool) (err error) {\n\tvar data []byte\n\n\tfor {\n\t\tdata, err = c.readPacket()\n\n\t\tif err != nil {\n\t\t\treturn\n\t\t}\n\n\t\t// EOF Packet\n\t\tif c.isEOFPacket(data) {\n\t\t\tif c.capability&mysql.CLIENT_PROTOCOL_41 > 0 {\n\t\t\t\t//result.Warnings = binary.LittleEndian.Uint16(data[1:])\n\t\t\t\t//todo add strict_mode, warning will be treat as error\n\t\t\t\tresult.Status = binary.LittleEndian.Uint16(data[3:])\n\t\t\t\tc.status = result.Status\n\t\t\t}\n\n\t\t\tbreak\n\t\t}\n\n\t\tresult.RowDatas = append(result.RowDatas, data)\n\t}\n\n\tresult.Values = make([][]interface{}, len(result.RowDatas))\n\n\tfor i := range result.Values {\n\t\tresult.Values[i], err = result.RowDatas[i].Parse(result.Fields, isBinary)\n\n\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n\t}\n\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "5ea50c29ff4666eae86ba902",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/backend_conn.go",
+        "start_byte": 11467,
+        "text": "func (c *Conn) readUntilEOF() (err error) {\n\tvar data []byte\n\n\tfor {\n\t\tdata, err = c.readPacket()\n\n\t\tif err != nil {\n\t\t\treturn\n\t\t}\n\n\t\t// EOF Packet\n\t\tif c.isEOFPacket(data) {\n\t\t\treturn\n\t\t}\n\t}\n\treturn\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "007b853c17f886359a385e64",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/backend_conn.go",
+        "start_byte": 11774,
+        "text": "func (c *Conn) handleOKPacket(data []byte) (*mysql.Result, error) {\n\tvar n int\n\tvar pos int = 1\n\n\tr := new(mysql.Result)\n\n\tr.AffectedRows, _, n = mysql.LengthEncodedInt(data[pos:])\n\tpos += n\n\tr.InsertId, _, n = mysql.LengthEncodedInt(data[pos:])\n\tpos += n\n\n\tif c.capability&mysql.CLIENT_PROTOCOL_41 > 0 {\n\t\tr.Status = binary.LittleEndian.Uint16(data[pos:])\n\t\tc.status = r.Status\n\t\tpos += 2\n\n\t\t//todo:strict_mode, check warnings as error\n\t\t//Warnings := binary.LittleEndian.Uint16(data[pos:])\n\t\t//pos += 2\n\t} else if c.capability&mysql.CLIENT_TRANSACTIONS > 0 {\n\t\tr.Status = binary.LittleEndian.Uint16(data[pos:])\n\t\tc.status = r.Status\n\t\tpos += 2\n\t}\n\n\t//info\n\treturn r, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "e8cb98c05ddac84164a51a5f",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/backend_conn.go",
+        "start_byte": 11843,
+        "text": "var n int",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "2292278808aae1468a9bb7eb",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/backend_conn.go",
+        "start_byte": 11854,
+        "text": "var pos int = 1",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "91ae47d31317d5d33431d6fc",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/backend_conn.go",
+        "start_byte": 12450,
+        "text": "func (c *Conn) handleErrorPacket(data []byte) error {\n\te := new(mysql.SqlError)\n\n\tvar pos int = 1\n\n\te.Code = binary.LittleEndian.Uint16(data[pos:])\n\tpos += 2\n\n\tif c.capability&mysql.CLIENT_PROTOCOL_41 > 0 {\n\t\t//skip '#'\n\t\tpos++\n\t\te.State = string(data[pos : pos+5])\n\t\tpos += 5\n\t}\n\n\te.Message = string(data[pos:])\n\n\treturn e\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "c96e94431b1bd2e63ff4526f",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/backend_conn.go",
+        "start_byte": 12532,
+        "text": "var pos int = 1",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "e5fbd318471c1c4089be22b6",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/backend_conn.go",
+        "start_byte": 12777,
+        "text": "func (c *Conn) readOK() (*mysql.Result, error) {\n\tdata, err := c.readPacket()\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\n\tif data[0] == mysql.OK_HEADER {\n\t\treturn c.handleOKPacket(data)\n\t} else if data[0] == mysql.ERR_HEADER {\n\t\treturn nil, c.handleErrorPacket(data)\n\t} else {\n\t\treturn nil, errors.New(\"invalid ok packet\")\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "6ef85bc4c140fbec19435d18",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/backend_conn.go",
+        "start_byte": 13102,
+        "text": "func (c *Conn) readResult(binary bool) (*mysql.Result, error) {\n\tdata, err := c.readPacket()\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\n\tif data[0] == mysql.OK_HEADER {\n\t\treturn c.handleOKPacket(data)\n\t} else if data[0] == mysql.ERR_HEADER {\n\t\treturn nil, c.handleErrorPacket(data)\n\t} else if data[0] == mysql.LocalInFile_HEADER {\n\t\treturn nil, mysql.ErrMalformPacket\n\t}\n\n\treturn c.readResultset(data, binary)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "5795c39d446ebc919fce1601",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/backend_conn.go",
+        "start_byte": 13696,
+        "text": "func (c *Conn) GetCharset() string {\n\treturn c.charset\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "87623db6afd732ff5aee74f7",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/balancer.go",
+        "start_byte": 714,
+        "text": "func Gcd(ary []int) int {\n\tvar i int\n\tmin := ary[0]\n\tlength := len(ary)\n\tfor i = 0; i < length; i++ {\n\t\tif ary[i] < min {\n\t\t\tmin = ary[i]\n\t\t}\n\t}\n\n\tfor {\n\t\tisCommon := true\n\t\tfor i = 0; i < length; i++ {\n\t\t\tif ary[i]%min != 0 {\n\t\t\t\tisCommon = false\n\t\t\t\tbreak\n\t\t\t}\n\t\t}\n\t\tif isCommon {\n\t\t\tbreak\n\t\t}\n\t\tmin--\n\t\tif min < 1 {\n\t\t\tbreak\n\t\t}\n\t}\n\treturn min\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "1fa7981821b8cce343f1b55b",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/balancer.go",
+        "start_byte": 741,
+        "text": "var i int",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "571e215f9e36cc5aa37830a7",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/balancer.go",
+        "start_byte": 1064,
+        "text": "func (n *Node) InitBalancer() {\n\tvar sum int\n\tn.LastSlaveIndex = 0\n\tgcd := Gcd(n.SlaveWeights)\n\n\tfor _, weight := range n.SlaveWeights {\n\t\tsum += weight / gcd\n\t}\n\n\tn.RoundRobinQ = make([]int, 0, sum)\n\tfor index, weight := range n.SlaveWeights {\n\t\tfor j := 0; j < weight/gcd; j++ {\n\t\t\tn.RoundRobinQ = append(n.RoundRobinQ, index)\n\t\t}\n\t}\n\n\t//random order\n\tif 1 < len(n.SlaveWeights) {\n\t\tr := rand.New(rand.NewSource(time.Now().UnixNano()))\n\t\tfor i := 0; i < sum; i++ {\n\t\t\tx := r.Intn(sum)\n\t\t\ttemp := n.RoundRobinQ[x]\n\t\t\tother := sum % (x + 1)\n\t\t\tn.RoundRobinQ[x] = n.RoundRobinQ[other]\n\t\t\tn.RoundRobinQ[other] = temp\n\t\t}\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "1229733f274a373176fcdcd3",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/balancer.go",
+        "start_byte": 1097,
+        "text": "var sum int",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "0795dd0bc52a958387596ce7",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/balancer.go",
+        "start_byte": 1689,
+        "text": "func (n *Node) GetNextSlave() (*DB, error) {\n\tvar index int\n\tqueueLen := len(n.RoundRobinQ)\n\tif queueLen == 0 {\n\t\treturn nil, errors.ErrNoDatabase\n\t}\n\tif queueLen == 1 {\n\t\tindex = n.RoundRobinQ[0]\n\t\treturn n.Slave[index], nil\n\t}\n\n\tn.LastSlaveIndex = n.LastSlaveIndex % queueLen\n\tindex = n.RoundRobinQ[n.LastSlaveIndex]\n\tif len(n.Slave) <= index {\n\t\treturn nil, errors.ErrNoDatabase\n\t}\n\tdb := n.Slave[index]\n\tn.LastSlaveIndex++\n\tn.LastSlaveIndex = n.LastSlaveIndex % queueLen\n\treturn db, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "5330d1db2576ea48a298faaa",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/balancer.go",
+        "start_byte": 1735,
+        "text": "var index int",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "78aca023500f004e7b015cf1",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/db.go",
+        "start_byte": 901,
+        "text": "type DB struct {\n\tsync.RWMutex\n\n\taddr     string\n\tuser     string\n\tpassword string\n\tdb       string\n\tstate    int32\n\n\tmaxConnNum  int\n\tInitConnNum int\n\tidleConns   chan *Conn\n\tcacheConns  chan *Conn\n\tcheckConn   *Conn\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "630eebd7cd01348790f9959d",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/db.go",
+        "start_byte": 1122,
+        "text": "func Open(addr string, user string, password string, dbName string, maxConnNum int) (*DB, error) {\n\tvar err error\n\tdb := new(DB)\n\tdb.addr = addr\n\tdb.user = user\n\tdb.password = password\n\tdb.db = dbName\n\n\tif 0 < maxConnNum {\n\t\tdb.maxConnNum = maxConnNum\n\t\tif db.maxConnNum < 16 {\n\t\t\tdb.InitConnNum = db.maxConnNum\n\t\t} else {\n\t\t\tdb.InitConnNum = db.maxConnNum / 4\n\t\t}\n\t} else {\n\t\tdb.maxConnNum = DefaultMaxConnNum\n\t\tdb.InitConnNum = InitConnCount\n\t}\n\t//check connection\n\tdb.checkConn, err = db.newConn()\n\tif err != nil {\n\t\tdb.Close()\n\t\treturn nil, err\n\t}\n\n\tdb.idleConns = make(chan *Conn, db.maxConnNum)\n\tdb.cacheConns = make(chan *Conn, db.maxConnNum)\n\tatomic.StoreInt32(&(db.state), Unknown)\n\n\tfor i := 0; i < db.maxConnNum; i++ {\n\t\tif i < db.InitConnNum {\n\t\t\tconn, err := db.newConn()\n\t\t\tif err != nil {\n\t\t\t\tdb.Close()\n\t\t\t\treturn nil, err\n\t\t\t}\n\t\t\tconn.pushTimestamp = time.Now().Unix()\n\t\t\tdb.cacheConns <- conn\n\t\t} else {\n\t\t\tconn := new(Conn)\n\t\t\tdb.idleConns <- conn\n\t\t}\n\t}\n\n\treturn db, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "f79f778dfdf6a4910d527c3d",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/db.go",
+        "start_byte": 1222,
+        "text": "var err error",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "b8ae8eb8df4492ac2940bfec",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/db.go",
+        "start_byte": 2116,
+        "text": "func (db *DB) Addr() string {\n\treturn db.addr\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "fe178fbb3161f9cbb9bd011c",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/db.go",
+        "start_byte": 2165,
+        "text": "func (db *DB) State() string {\n\tvar state string\n\tswitch db.state {\n\tcase Up:\n\t\tstate = \"up\"\n\tcase Down, ManualDown:\n\t\tstate = \"down\"\n\tcase Unknown:\n\t\tstate = \"unknow\"\n\t}\n\treturn state\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "d5494f94a93e47c348d74f62",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/db.go",
+        "start_byte": 2197,
+        "text": "var state string",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "e3591bbef57a9dd3c16eae54",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/db.go",
+        "start_byte": 2353,
+        "text": "func (db *DB) IdleConnCount() int {\n\tdb.RLock()\n\tdefer db.RUnlock()\n\treturn len(db.cacheConns)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "97f9623d98047ea0db285673",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/db.go",
+        "start_byte": 2451,
+        "text": "func (db *DB) Close() error {\n\tdb.Lock()\n\tidleChannel := db.idleConns\n\tcacheChannel := db.cacheConns\n\tdb.cacheConns = nil\n\tdb.idleConns = nil\n\tdb.Unlock()\n\tif cacheChannel == nil || idleChannel == nil {\n\t\treturn nil\n\t}\n\n\tclose(cacheChannel)\n\tfor conn := range cacheChannel {\n\t\tdb.closeConn(conn)\n\t}\n\tclose(idleChannel)\n\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "c6e2b871f4d82b98360048b3",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/db.go",
+        "start_byte": 3171,
+        "text": "func (db *DB) Ping() error {\n\tvar err error\n\tif db.checkConn == nil {\n\t\tdb.checkConn, err = db.newConn()\n\t\tif err != nil {\n\t\t\tdb.closeConn(db.checkConn)\n\t\t\tdb.checkConn = nil\n\t\t\treturn err\n\t\t}\n\t}\n\terr = db.checkConn.Ping()\n\tif err != nil {\n\t\tdb.closeConn(db.checkConn)\n\t\tdb.checkConn = nil\n\t\treturn err\n\t}\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "0360acad6fc68dbd78c0d330",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/db.go",
+        "start_byte": 3201,
+        "text": "var err error",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "09305ef219b60e1f96547eea",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/db.go",
+        "start_byte": 3492,
+        "text": "func (db *DB) newConn() (*Conn, error) {\n\tco := new(Conn)\n\n\tif err := co.Connect(db.addr, db.user, db.password, db.db); err != nil {\n\t\treturn nil, err\n\t}\n\n\treturn co, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "5078e38fd8a1664a9fbd4e0d",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/db.go",
+        "start_byte": 3666,
+        "text": "func (db *DB) closeConn(co *Conn) error {\n\tif co != nil {\n\t\tco.Close()\n\t\tconns := db.getIdleConns()\n\t\tif conns != nil {\n\t\t\tselect {\n\t\t\tcase conns <- co:\n\t\t\t\treturn nil\n\t\t\tdefault:\n\t\t\t\treturn nil\n\t\t\t}\n\t\t}\n\t}\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "7aec05237caad69af6265961",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/db.go",
+        "start_byte": 3888,
+        "text": "func (db *DB) tryReuse(co *Conn) error {\n\tvar err error\n\t//reuse Connection\n\tif co.IsInTransaction() {\n\t\t//we can not reuse a connection in transaction status\n\t\terr = co.Rollback()\n\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n\t}\n\n\tif !co.IsAutoCommit() {\n\t\t//we can not  reuse a connection not in autocomit\n\t\t_, err = co.exec(\"set autocommit = 1\")\n\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n\t}\n\n\t//connection may be set names early\n\t//we must use default utf8\n\tif co.GetCharset() != mysql.DEFAULT_CHARSET {\n\t\terr = co.SetCharset(mysql.DEFAULT_CHARSET)\n\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n\t}\n\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "aedfd87bd8510c911e976d38",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/db.go",
+        "start_byte": 3930,
+        "text": "var err error",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "337f7ebe8c841b695fafa810",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/db.go",
+        "start_byte": 4479,
+        "text": "func (db *DB) PopConn() (*Conn, error) {\n\tvar co *Conn\n\tvar err error\n\n\tcacheConns, idleConns := db.getConns()\n\tif cacheConns == nil || idleConns == nil {\n\t\treturn nil, errors.ErrDatabaseClose\n\t}\n\tco = db.GetConnFromCache(cacheConns)\n\tif co == nil {\n\t\tco, err = db.GetConnFromIdle(cacheConns, idleConns)\n\t\tif err != nil {\n\t\t\treturn nil, err\n\t\t}\n\t}\n\n\terr = db.tryReuse(co)\n\tif err != nil {\n\t\tdb.closeConn(co)\n\t\treturn nil, err\n\t}\n\n\treturn co, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "70a147d8a1533ed1364a8897",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/db.go",
+        "start_byte": 4535,
+        "text": "var err error",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "b00d2828a2d8fcfa57288d03",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/db.go",
+        "start_byte": 4928,
+        "text": "func (db *DB) GetConnFromCache(cacheConns chan *Conn) *Conn {\n\tvar co *Conn\n\tvar err error\n\tfor 0 < len(cacheConns) {\n\t\tco = <-cacheConns\n\t\tif co != nil && PingPeroid < time.Now().Unix()-co.pushTimestamp {\n\t\t\terr = co.Ping()\n\t\t\tif err != nil {\n\t\t\t\tdb.closeConn(co)\n\t\t\t\tco = nil\n\t\t\t}\n\t\t}\n\t\tif co != nil {\n\t\t\tbreak\n\t\t}\n\t}\n\treturn co\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "77914ede9a33610749c09b46",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/db.go",
+        "start_byte": 5005,
+        "text": "var err error",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "485d2121572bd9bd0a562f43",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/db.go",
+        "start_byte": 5262,
+        "text": "func (db *DB) GetConnFromIdle(cacheConns, idleConns chan *Conn) (*Conn, error) {\n\tvar co *Conn\n\tvar err error\n\tselect {\n\tcase co = <-idleConns:\n\t\terr = co.Connect(db.addr, db.user, db.password, db.db)\n\t\tif err != nil {\n\t\t\tdb.closeConn(co)\n\t\t\treturn nil, err\n\t\t}\n\t\treturn co, nil\n\tcase co = <-cacheConns:\n\t\tif co == nil {\n\t\t\treturn nil, errors.ErrConnIsNil\n\t\t}\n\t\tif co != nil && PingPeroid < time.Now().Unix()-co.pushTimestamp {\n\t\t\terr = co.Ping()\n\t\t\tif err != nil {\n\t\t\t\tdb.closeConn(co)\n\t\t\t\treturn nil, errors.ErrBadConn\n\t\t\t}\n\t\t}\n\t}\n\treturn co, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "2b85436967263ba45b36ec7b",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/db.go",
+        "start_byte": 5358,
+        "text": "var err error",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "4a357bc48097fe7401199ae9",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/db.go",
+        "start_byte": 5814,
+        "text": "func (db *DB) PushConn(co *Conn, err error) {\n\tif co == nil {\n\t\treturn\n\t}\n\tconns := db.getCacheConns()\n\tif conns == nil {\n\t\tco.Close()\n\t\treturn\n\t}\n\tif err != nil {\n\t\tdb.closeConn(co)\n\t\treturn\n\t}\n\tco.pushTimestamp = time.Now().Unix()\n\tselect {\n\tcase conns <- co:\n\t\treturn\n\tdefault:\n\t\tdb.closeConn(co)\n\t\treturn\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "c0a2963756bb57510638eb9c",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/db.go",
+        "start_byte": 6357,
+        "text": "func (db *DB) GetConn() (*BackendConn, error) {\n\tc, err := db.PopConn()\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\treturn &BackendConn{c, db}, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "1fdf84e81274fe9f7e1b9dfa",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/node.go",
+        "start_byte": 920,
+        "text": "type Node struct {\n\tCfg config.NodeConfig\n\n\tsync.RWMutex\n\tMaster *DB\n\n\tSlave          []*DB\n\tLastSlaveIndex int\n\tRoundRobinQ    []int\n\tSlaveWeights   []int\n\n\tDownAfterNoAlive time.Duration\n\n\tLastMasterPing int64\n\tLastSlavePing  int64\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "056aa5199e0d25fb7fdb24d2",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/node.go",
+        "start_byte": 1449,
+        "text": "func (n *Node) String() string {\n\treturn n.Cfg.Name\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "cd39ce47eb06a9eb7d6dfebc",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/node.go",
+        "start_byte": 1504,
+        "text": "func (n *Node) GetMasterConn() (*BackendConn, error) {\n\tdb := n.Master\n\tif db == nil {\n\t\treturn nil, errors.ErrNoMasterConn\n\t}\n\tif atomic.LoadInt32(&(db.state)) == Down {\n\t\treturn nil, errors.ErrMasterDown\n\t}\n\n\treturn db.GetConn()\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "7ba869fcde2dfa7eabe94d51",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/node.go",
+        "start_byte": 1738,
+        "text": "func (n *Node) GetSlaveConn() (*BackendConn, error) {\n\tn.Lock()\n\tdb, err := n.GetNextSlave()\n\tn.Unlock()\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\n\tif db == nil {\n\t\treturn nil, errors.ErrNoSlaveDB\n\t}\n\tif atomic.LoadInt32(&(db.state)) == Down {\n\t\treturn nil, errors.ErrSlaveDown\n\t}\n\n\treturn db.GetConn()\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "cddbc9d86952fdbd6ed7259f",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/node.go",
+        "start_byte": 3961,
+        "text": "func (n *Node) AddSlave(addr string) error {\n\tvar db *DB\n\tvar weight int\n\tvar err error\n\tif len(addr) == 0 {\n\t\treturn errors.ErrAddressNull\n\t}\n\tn.Lock()\n\tdefer n.Unlock()\n\tfor _, v := range n.Slave {\n\t\tif v.addr == addr {\n\t\t\treturn errors.ErrSlaveExist\n\t\t}\n\t}\n\taddrAndWeight := strings.Split(addr, WeightSplit)\n\tif len(addrAndWeight) == 2 {\n\t\tweight, err = strconv.Atoi(addrAndWeight[1])\n\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n\t} else {\n\t\tweight = 1\n\t}\n\tn.SlaveWeights = append(n.SlaveWeights, weight)\n\tif db, err = n.OpenDB(addrAndWeight[0]); err != nil {\n\t\treturn err\n\t} else {\n\t\tn.Slave = append(n.Slave, db)\n\t\tn.InitBalancer()\n\t\treturn nil\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "79bbcab36bbbf9c7f9dbeda1",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/node.go",
+        "start_byte": 4019,
+        "text": "var weight int",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "601cc96c3e1ec6f63016c17a",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/node.go",
+        "start_byte": 4035,
+        "text": "var err error",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "f20101097b794999b5ef9767",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/node.go",
+        "start_byte": 4608,
+        "text": "func (n *Node) DeleteSlave(addr string) error {\n\tvar i int\n\tn.Lock()\n\tdefer n.Unlock()\n\tslaveCount := len(n.Slave)\n\tif slaveCount == 0 {\n\t\treturn errors.ErrNoSlaveDB\n\t}\n\tfor i = 0; i < slaveCount; i++ {\n\t\tif n.Slave[i].addr == addr {\n\t\t\tbreak\n\t\t}\n\t}\n\tif i == slaveCount {\n\t\treturn errors.ErrSlaveNotExist\n\t}\n\tif slaveCount == 1 {\n\t\tn.Slave = nil\n\t\tn.SlaveWeights = nil\n\t\tn.RoundRobinQ = nil\n\t\treturn nil\n\t}\n\n\ts := make([]*DB, 0, slaveCount-1)\n\tsw := make([]int, 0, slaveCount-1)\n\tfor i = 0; i < slaveCount; i++ {\n\t\tif n.Slave[i].addr != addr {\n\t\t\ts = append(s, n.Slave[i])\n\t\t\tsw = append(sw, n.SlaveWeights[i])\n\t\t}\n\t}\n\n\tn.Slave = s\n\tn.SlaveWeights = sw\n\tn.InitBalancer()\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "428aa63570fde760ce4a6da5",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/node.go",
+        "start_byte": 4657,
+        "text": "var i int",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "d1249257f9efbe5cc2ece2e2",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/node.go",
+        "start_byte": 5294,
+        "text": "func (n *Node) OpenDB(addr string) (*DB, error) {\n\tdb, err := Open(addr, n.Cfg.User, n.Cfg.Password, \"\", n.Cfg.MaxConnNum)\n\treturn db, err\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "5a8bab737aaf3b5d93fbf0d1",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/node.go",
+        "start_byte": 5436,
+        "text": "func (n *Node) UpDB(addr string) (*DB, error) {\n\tdb, err := n.OpenDB(addr)\n\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\n\tif err := db.Ping(); err != nil {\n\t\tdb.Close()\n\t\tatomic.StoreInt32(&(db.state), Down)\n\t\treturn nil, err\n\t}\n\tatomic.StoreInt32(&(db.state), Up)\n\treturn db, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "a0fe87d44e7181e4e53f85fe",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/node.go",
+        "start_byte": 5714,
+        "text": "func (n *Node) UpMaster(addr string) error {\n\tdb, err := n.UpDB(addr)\n\tif err != nil {\n\t\tgolog.Error(\"Node\", \"UpMaster\", err.Error(), 0)\n\t}\n\tn.Master = db\n\treturn err\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "e6001525281e1b5f6f4eed64",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/node.go",
+        "start_byte": 5884,
+        "text": "func (n *Node) UpSlave(addr string) error {\n\tdb, err := n.UpDB(addr)\n\tif err != nil {\n\t\tgolog.Error(\"Node\", \"UpSlave\", err.Error(), 0)\n\t}\n\n\tn.Lock()\n\tfor k, slave := range n.Slave {\n\t\tif slave.addr == addr {\n\t\t\tn.Slave[k] = db\n\t\t\tn.Unlock()\n\t\t\treturn nil\n\t\t}\n\t}\n\tn.Slave = append(n.Slave, db)\n\tn.Unlock()\n\n\treturn err\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "b7fabfdd0a2dc7577204925d",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/node.go",
+        "start_byte": 6205,
+        "text": "func (n *Node) DownMaster(addr string, state int32) error {\n\tdb := n.Master\n\tif db == nil || db.addr != addr {\n\t\treturn errors.ErrNoMasterDB\n\t}\n\n\tdb.Close()\n\tatomic.StoreInt32(&(db.state), state)\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "171d61220e2d7c3011504510",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/node.go",
+        "start_byte": 6416,
+        "text": "func (n *Node) DownSlave(addr string, state int32) error {\n\tn.RLock()\n\tif n.Slave == nil {\n\t\tn.RUnlock()\n\t\treturn errors.ErrNoSlaveDB\n\t}\n\tslaves := make([]*DB, len(n.Slave))\n\tcopy(slaves, n.Slave)\n\tn.RUnlock()\n\n\t//slave is *DB\n\tfor _, slave := range slaves {\n\t\tif slave.addr == addr {\n\t\t\tslave.Close()\n\t\t\tatomic.StoreInt32(&(slave.state), state)\n\t\t\tbreak\n\t\t}\n\t}\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "ecdd185a8186ab66b0a0be85",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/node.go",
+        "start_byte": 6793,
+        "text": "func (n *Node) ParseMaster(masterStr string) error {\n\tvar err error\n\tif len(masterStr) == 0 {\n\t\treturn errors.ErrNoMasterDB\n\t}\n\n\tn.Master, err = n.OpenDB(masterStr)\n\treturn err\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "0b8d035c147c127c802528b0",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/node.go",
+        "start_byte": 6847,
+        "text": "var err error",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "66fbffcaf2f8cc29219ae1d5",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/node.go",
+        "start_byte": 7022,
+        "text": "func (n *Node) ParseSlave(slaveStr string) error {\n\tvar db *DB\n\tvar weight int\n\tvar err error\n\n\tif len(slaveStr) == 0 {\n\t\treturn nil\n\t}\n\tslaveStr = strings.Trim(slaveStr, SlaveSplit)\n\tslaveArray := strings.Split(slaveStr, SlaveSplit)\n\tcount := len(slaveArray)\n\tn.Slave = make([]*DB, 0, count)\n\tn.SlaveWeights = make([]int, 0, count)\n\n\t//parse addr and weight\n\tfor i := 0; i < count; i++ {\n\t\taddrAndWeight := strings.Split(slaveArray[i], WeightSplit)\n\t\tif len(addrAndWeight) == 2 {\n\t\t\tweight, err = strconv.Atoi(addrAndWeight[1])\n\t\t\tif err != nil {\n\t\t\t\treturn err\n\t\t\t}\n\t\t} else {\n\t\t\tweight = 1\n\t\t}\n\t\tn.SlaveWeights = append(n.SlaveWeights, weight)\n\t\tif db, err = n.OpenDB(addrAndWeight[0]); err != nil {\n\t\t\treturn err\n\t\t}\n\t\tn.Slave = append(n.Slave, db)\n\t}\n\tn.InitBalancer()\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "d4da1a61372914265dfc3db0",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/node.go",
+        "start_byte": 7086,
+        "text": "var weight int",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "10f584a33025c650df1babf4",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/node.go",
+        "start_byte": 7102,
+        "text": "var err error",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "3676a1320dcdc591b4c36b53",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/stmt.go",
+        "start_byte": 721,
+        "text": "type Stmt struct {\n\tconn  *Conn\n\tid    uint32\n\tquery string\n\n\tparams  int\n\tcolumns int\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "7fdbe38cf2d6e0c12239cf84",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/stmt.go",
+        "start_byte": 811,
+        "text": "func (s *Stmt) ParamNum() int {\n\treturn s.params\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "08eb51860506596a12796cc9",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/stmt.go",
+        "start_byte": 863,
+        "text": "func (s *Stmt) ColumnNum() int {\n\treturn s.columns\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "a372d5ad6ada65ece9348d91",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/stmt.go",
+        "start_byte": 965,
+        "text": "func (s *Stmt) Execute(args ...interface{}) (*mysql.Result, error) {\n\tif err := s.write(args...); err != nil {\n\t\treturn nil, err\n\t}\n\n\treturn s.conn.readResult(true)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "0919e05ea06af7af6b80ebd5",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/stmt.go",
+        "start_byte": 1133,
+        "text": "func (s *Stmt) Close() error {\n\tif err := s.conn.writeCommandUint32(mysql.COM_STMT_CLOSE, s.id); err != nil {\n\t\treturn err\n\t}\n\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "4c2c9c8c38018d1306f6edef",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/stmt.go",
+        "start_byte": 1275,
+        "text": "func (s *Stmt) write(args ...interface{}) error {\n\tparamsNum := s.params\n\n\tif len(args) != paramsNum {\n\t\treturn fmt.Errorf(\"argument mismatch, need %d but got %d\", s.params, len(args))\n\t}\n\n\tparamTypes := make([]byte, paramsNum<<1)\n\tparamValues := make([][]byte, paramsNum)\n\n\t//NULL-bitmap, length: (num-params+7)\n\tnullBitmap := make([]byte, (paramsNum+7)>>3)\n\n\tvar length int = int(1 + 4 + 1 + 4 + ((paramsNum + 7) >> 3) + 1 + (paramsNum << 1))\n\n\tvar newParamBoundFlag byte = 0\n\n\tfor i := range args {\n\t\tif args[i] == nil {\n\t\t\tnullBitmap[i/8] |= (1 << (uint(i) % 8))\n\t\t\tparamTypes[i<<1] = mysql.MYSQL_TYPE_NULL\n\t\t\tcontinue\n\t\t}\n\n\t\tnewParamBoundFlag = 1\n\n\t\tswitch v := args[i].(type) {\n\t\tcase int8:\n\t\t\tparamTypes[i<<1] = mysql.MYSQL_TYPE_TINY\n\t\t\tparamValues[i] = []byte{byte(v)}\n\t\tcase int16:\n\t\t\tparamTypes[i<<1] = mysql.MYSQL_TYPE_SHORT\n\t\t\tparamValues[i] = mysql.Uint16ToBytes(uint16(v))\n\t\tcase int32:\n\t\t\tparamTypes[i<<1] = mysql.MYSQL_TYPE_LONG\n\t\t\tparamValues[i] = mysql.Uint32ToBytes(uint32(v))\n\t\tcase int:\n\t\t\tparamTypes[i<<1] = mysql.MYSQL_TYPE_LONGLONG\n\t\t\tparamValues[i] = mysql.Uint64ToBytes(uint64(v))\n\t\tcase int64:\n\t\t\tparamTypes[i<<1] = mysql.MYSQL_TYPE_LONGLONG\n\t\t\tparamValues[i] = mysql.Uint64ToBytes(uint64(v))\n\t\tcase uint8:\n\t\t\tparamTypes[i<<1] = mysql.MYSQL_TYPE_TINY\n\t\t\tparamTypes[(i<<1)+1] = 0x80\n\t\t\tparamValues[i] = []byte{v}\n\t\tcase uint16:\n\t\t\tparamTypes[i<<1] = mysql.MYSQL_TYPE_SHORT\n\t\t\tparamTypes[(i<<1)+1] = 0x80\n\t\t\tparamValues[i] = mysql.Uint16ToBytes(uint16(v))\n\t\tcase uint32:\n\t\t\tparamTypes[i<<1] = mysql.MYSQL_TYPE_LONG\n\t\t\tparamTypes[(i<<1)+1] = 0x80\n\t\t\tparamValues[i] = mysql.Uint32ToBytes(uint32(v))\n\t\tcase uint:\n\t\t\tparamTypes[i<<1] = mysql.MYSQL_TYPE_LONGLONG\n\t\t\tparamTypes[(i<<1)+1] = 0x80\n\t\t\tparamValues[i] = mysql.Uint64ToBytes(uint64(v))\n\t\tcase uint64:\n\t\t\tparamTypes[i<<1] = mysql.MYSQL_TYPE_LONGLONG\n\t\t\tparamTypes[(i<<1)+1] = 0x80\n\t\t\tparamValues[i] = mysql.Uint64ToBytes(uint64(v))\n\t\tcase bool:\n\t\t\tparamTypes[i<<1] = mysql.MYSQL_TYPE_TINY\n\t\t\tif v {\n\t\t\t\tparamValues[i] = []byte{1}\n\t\t\t} else {\n\t\t\t\tparamValues[i] = []byte{0}\n\n\t\t\t}\n\t\tcase float32:\n\t\t\tparamTypes[i<<1] = mysql.MYSQL_TYPE_FLOAT\n\t\t\tparamValues[i] = mysql.Uint32ToBytes(math.Float32bits(v))\n\t\tcase float64:\n\t\t\tparamTypes[i<<1] = mysql.MYSQL_TYPE_DOUBLE\n\t\t\tparamValues[i] = mysql.Uint64ToBytes(math.Float64bits(v))\n\t\tcase string:\n\t\t\tparamTypes[i<<1] = mysql.MYSQL_TYPE_STRING\n\t\t\tparamValues[i] = append(mysql.PutLengthEncodedInt(uint64(len(v))), v...)\n\t\tcase []byte:\n\t\t\tparamTypes[i<<1] = mysql.MYSQL_TYPE_STRING\n\t\t\tparamValues[i] = append(mysql.PutLengthEncodedInt(uint64(len(v))), v...)\n\t\tdefault:\n\t\t\treturn fmt.Errorf(\"invalid argument type %T\", args[i])\n\t\t}\n\n\t\tlength += len(paramValues[i])\n\t}\n\n\tdata := make([]byte, 4, 4+length)\n\n\tdata = append(data, mysql.COM_STMT_EXECUTE)\n\tdata = append(data, byte(s.id), byte(s.id>>8), byte(s.id>>16), byte(s.id>>24))\n\n\t//flag: CURSOR_TYPE_NO_CURSOR\n\tdata = append(data, 0x00)\n\n\t//iteration-count, always 1\n\tdata = append(data, 1, 0, 0, 0)\n\n\tif s.params > 0 {\n\t\tdata = append(data, nullBitmap...)\n\n\t\t//new-params-bound-flag\n\t\tdata = append(data, newParamBoundFlag)\n\n\t\tif newParamBoundFlag == 1 {\n\t\t\t//type of each parameter, length: num-params * 2\n\t\t\tdata = append(data, paramTypes...)\n\n\t\t\t//value of each parameter\n\t\t\tfor _, v := range paramValues {\n\t\t\t\tdata = append(data, v...)\n\t\t\t}\n\t\t}\n\t}\n\n\ts.conn.pkg.Sequence = 0\n\n\treturn s.conn.writePacket(data)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "8741bf285039f8ef4fe2b51d",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/stmt.go",
+        "start_byte": 1636,
+        "text": "var length int = int(1 + 4 + 1 + 4 + ((paramsNum + 7) >> 3) + 1 + (paramsNum << 1))",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "88ecfc17edaad2e0a919db01",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "backend/stmt.go",
+        "start_byte": 4660,
+        "text": "func (c *Conn) Prepare(query string) (*Stmt, error) {\n\tif err := c.writeCommandStr(mysql.COM_STMT_PREPARE, query); err != nil {\n\t\treturn nil, err\n\t}\n\n\tdata, err := c.readPacket()\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\n\tif data[0] == mysql.ERR_HEADER {\n\t\treturn nil, c.handleErrorPacket(data)\n\t} else if data[0] != mysql.OK_HEADER {\n\t\treturn nil, mysql.ErrMalformPacket\n\t}\n\n\ts := new(Stmt)\n\ts.conn = c\n\n\tpos := 1\n\n\t//for statement id\n\ts.id = binary.LittleEndian.Uint32(data[pos:])\n\tpos += 4\n\n\t//number columns\n\ts.columns = int(binary.LittleEndian.Uint16(data[pos:]))\n\tpos += 2\n\n\t//number params\n\ts.params = int(binary.LittleEndian.Uint16(data[pos:]))\n\tpos += 2\n\n\t//warnings\n\t//warnings = binary.LittleEndian.Uint16(data[pos:])\n\n\tif s.params > 0 {\n\t\tif err := s.conn.readUntilEOF(); err != nil {\n\t\t\treturn nil, err\n\t\t}\n\t}\n\n\tif s.columns > 0 {\n\t\tif err := s.conn.readUntilEOF(); err != nil {\n\t\t\treturn nil, err\n\t\t}\n\t}\n\n\treturn s, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "5bfea3cf9cf6b2bd81d00b8d",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "cmd/kingshard/main.go",
+        "start_byte": 884,
+        "text": "var configFile *string = flag.String(\"config\", \"/etc/ks.yaml\", \"kingshard config file\")",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "1cdf40eec4cb4f961f224ae3",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "cmd/kingshard/main.go",
+        "start_byte": 972,
+        "text": "var logLevel *string = flag.String(\"log-level\", \"\", \"log level [debug|info|warn|error], default error\")",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "7074e7955b33f819d07cd090",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "cmd/kingshard/main.go",
+        "start_byte": 1239,
+        "text": "const banner string = `\n    __   _                  __                   __\n   / /__(_)___  ____ ______/ /_  ____ __________/ /\n  / //_/ / __ \\/ __ \\/ ___/ __ \\ / __\\/ ___/ __  /\n / ,< / / / / / /_/ (__  ) / / / /_/ / /  / /_/ /\n/_/|_/_/_/ /_/\\__, /____/_/ /_/\\__,_/_/   \\__,_/\n             /____/\n`",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "4ee08050a7eabe1f521858db",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "cmd/kingshard/main.go",
+        "start_byte": 3244,
+        "text": "func setLogLevel(level string) {\n\tswitch strings.ToLower(level) {\n\tcase \"debug\":\n\t\tgolog.GlobalSysLogger.SetLevel(golog.LevelDebug)\n\tcase \"info\":\n\t\tgolog.GlobalSysLogger.SetLevel(golog.LevelInfo)\n\tcase \"warn\":\n\t\tgolog.GlobalSysLogger.SetLevel(golog.LevelWarn)\n\tcase \"error\":\n\t\tgolog.GlobalSysLogger.SetLevel(golog.LevelError)\n\tdefault:\n\t\tgolog.GlobalSysLogger.SetLevel(golog.LevelError)\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "3a1c1547bf945a223446b892",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "config/config.go",
+        "start_byte": 745,
+        "text": "type Config struct {\n\tAddr        string       `yaml:\"addr\"`\n\tUser        string       `yaml:\"user\"`\n\tPassword    string       `yaml:\"password\"`\n\tLogPath     string       `yaml:\"log_path\"`\n\tLogLevel    string       `yaml:\"log_level\"`\n\tLogSql      string       `yaml:\"log_sql\"`\n\tSlowLogTime int          `yaml:\"slow_log_time\"`\n\tAllowIps    string       `yaml:\"allow_ips\"`\n\tBlsFile     string       `yaml:\"blacklist_sql_file\"`\n\tCharset     string       `yaml:\"proxy_charset\"`\n\tNodes       []NodeConfig `yaml:\"nodes\"`\n\n\tSchema SchemaConfig `yaml:\"schema\"`\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "9ccdcaff53f152c2ec5d5a98",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "config/config.go",
+        "start_byte": 1329,
+        "text": "type NodeConfig struct {\n\tName             string `yaml:\"name\"`\n\tDownAfterNoAlive int    `yaml:\"down_after_noalive\"`\n\tMaxConnNum       int    `yaml:\"max_conns_limit\"`\n\n\tUser     string `yaml:\"user\"`\n\tPassword string `yaml:\"password\"`\n\n\tMaster string `yaml:\"master\"`\n\tSlave  string `yaml:\"slave\"`\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "bd0f064fb865802e0c2e8957",
+        "revision": "8ec9b7f6f0b747ca81be4795fc46efecb05b7305",
+        "path": "config/config.go",
+        "start_byte": 1655,
+        "text": "type SchemaConfig struct {\n\tDB        string        `yaml:\"db\"`\n\tNodes     []string      `yaml:\"nodes\"`\n\tDefault   string        `yaml:\"default\"` //default route rule\n\tShardRule []ShardConfig `yaml:\"",
+        "rank": 2,
+        "truncated": true
+      }
+    ]
+  },
+  "retrieval": {
+    "unresolved": [
+      {
+        "side": "ours",
+        "identifier": "SubTableValueGroups",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "int",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "sqlparser",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "InRightToReplace",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "RouteTableIndexs",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "RouteNodeIndexs",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "RewrittenSqls",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "string",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "plan",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "tableIndex",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "error",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Right",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Plan",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Criteria",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "sqlparser",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "KeyIndex",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "int",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Rows",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "SubTableValueGroups",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "InRightToReplace",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "RouteTableIndexs",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "RouteNodeIndexs",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "RewrittenSqls",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "string",
+        "reason": "no-unique-declaration-established"
+      }
+    ],
+    "method": "syntax-ranges-and-identifier-candidates/3",
+    "budget_bytes": 32768,
+    "libraries": {
+      "C": "cbbd4827ee02cd5c018ab41f10d8404ff8741159054b352d9a6d763c506ba3c7",
+      "Go": "1612f8fd958ba1ec981bf4b91e2ff399f1e54d26a9da68e5b60b0d7cd00616fc"
+    }
+  }
+}

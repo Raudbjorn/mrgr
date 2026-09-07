@@ -1,0 +1,1282 @@
+{
+  "id": "683cecc3f08182b6f762026c35bbb0fe423f765435c3a74c5d67d979e07f4a36",
+  "source_protocol_sha256": "86ffe38086e217acf6e1a4aa4162e226862463d1bde3160478f9a6f4d2b968ce",
+  "repair_module_sha256": "b6a7cf123b0ac50001e1498cdf64964b8ac56e8e6a68cbbc6dcc01c8517b4a20",
+  "contexts": {
+    "local-context": [
+      {
+        "id": "06b7109733c1c9fcd36830d3",
+        "revision": "ae37dedcaae6fce497569786a8694aa3daa97abf",
+        "path": "assert/assertions.go",
+        "start_byte": 0,
+        "text": "package assert\n\nimport (\n\t\"bufio\"\n\t\"bytes\"\n\t\"fmt\"\n\t\"reflect\"\n\t\"regexp\"\n\t\"runtime\"\n\t\"strings\"\n\t\"time\"\n)\n\n// TestingT is an interface wrapper around *testing.T\ntype TestingT interface {\n\tErrorf(format string, args ...interface{})\n}\n\n// Comparison a custom function that returns true on success and false on failure\ntype Comparison func() (success bool)\n\n/*\n\tHelper functions\n*/\n\n// ObjectsAreEqual determines if two objects are considered equal.\n//\n// This function does no assertion of any kind.\nfunc ObjectsAreEqual(expected, actual interface{}) bool {\n\n\tif expected == nil || actual == nil {\n\t\treturn expected == actual\n\t}\n\n\tif reflect.DeepEqual(expected, actual) {\n\t\treturn true\n\t}\n\n\tactualType := reflect.TypeOf(actual)\n\texpectedType := reflect.TypeOf(expected)\n\tif actualType.ConvertibleTo(expectedType) {\n\t\tactualValue := reflect.ValueOf(actual).Convert(expectedType)\n\t\tif reflect.DeepEqual(actualValue.Interface(), expected) {\n\t\t\treturn true\n\t\t}\n\t}\n\n\t// Last ditch effort\n\tif fmt.Sprintf(\"%#v\", expected) == fmt.Sprintf(\"%#v\", actual) {\n\t\treturn true\n\t}\n\n\treturn false\n\n}\n\n/* CallerInfo is necessary because the assert functions use the testing object\ninternally, causing it to print the file:line of the assert method, rather than where\nthe problem actually occured in calling code.*/\n\n// CallerInfo returns a string containing the file and line number of the assert call\n// that failed.\nfunc CallerInfo() string {\n\n\tfile := \"\"\n\tline := 0\n\tok := false\n\n\tfor i := 0; ; i++ {\n\t\t_, file, line, ok = runtime.Caller(i)\n\t\tif !ok {\n\t\t\treturn \"\"\n\t\t}\n\t\tparts := strings.Split(file, \"/\")\n\t\tdir := parts[len(parts)-2]\n\t\tfile = parts[len(parts)-1]\n\t\tif (dir != \"assert\" && dir != \"mock\" && dir != \"require\") || file == \"mock_test.go\" {\n\t\t\tbreak\n\t\t}\n\t}\n\n\treturn fmt.Sprintf(\"%s:%d\", file, line)\n}\n\n// getWhitespaceString returns a string that is long enough to overwrite the default\n// output from the go testing framework.\nfunc getWhitespaceString() string {\n\n\t_, file, line, ok := runtime.Caller(1)\n\tif !ok {\n\t\treturn \"\"\n\t}\n\tparts := strings.Split(file, \"/\")\n\tfile = parts[len(parts)-1]\n\n\treturn strings.Repeat(\" \", len(fmt.Sprintf(\"%s:%d:      \", file, line)))\n\n}\n\nfunc messageFromMsgAndArgs(msgAndArgs ...interface{}) string {\n\tif len(msgAndArgs) == 0 || msgAndArgs == nil {\n\t\treturn \"\"\n\t}\n\tif len(msgAndArgs) == 1 {\n\t\treturn msgAndArgs[0].(string)\n\t}\n\tif len(msgAndArgs) > 1 {\n\t\treturn fmt.Sprintf(msgAndArgs[0].(string), msgAndArgs[1:]...)\n\t}\n\treturn \"\"\n}\n\n// Indents all lines of the message by appending a number of tabs to each line, in an output format compatible with Go's\n// test printing (see inner comment for specifics)\nfunc indentMessageLines(message string, tabs int) string {\n\toutBuf := new(bytes.Buffer)\n\n\tfor i, scanner := 0, bufio.NewScanner(strings.NewReader(message)); scanner.Scan(); i++ {\n\t\tif i != 0 {\n\t\t\toutBuf.WriteRune('\\n')\n\t\t}\n\t\tfor ii := 0; ii < tabs; ii++ {\n\t\t\toutBuf.WriteRune('\\t')\n\t\t\t// Bizarrely, all lines except the first need one fewer tabs prepended, so deliberately advance the counter\n\t\t\t// by 1 prematurely.\n\t\t\tif ii == 0 && i > 0 {\n\t\t\t\tii++\n\t\t\t}\n\t\t}\n\t\toutBuf.WriteString(scanner.Text())\n\t}\n\n\treturn outBuf.String()\n}\n\n// Fail reports a failure through\nfunc Fail(t TestingT, failureMessage string, msgAndArgs ...interface{}) bool {\n\n\tmessage := messageFromMsgAndArgs(msgAndArgs...)\n\n\tif len(message) > 0 {\n\t\tt.Errorf(\"\\r%s\\r\\tLocation:\\t%s\\n\"+\n\t\t\t\"\\r\\tError:%s\\n\"+\n\t\t\t\"\\r\\tMessages:\\t%s\\n\\r\",\n\t\t\tgetWhitespaceString(),\n\t\t\tCallerInfo(),\n\t\t\tindentMessageLines(failureMessage, 2),\n\t\t\tmessage)\n\t} else {\n\t\tt.Errorf(\"\\r%s\\r\\tLocation:\\t%s\\n\"+\n\t\t\t\"\\r\\tError:%s\\n\\r\",\n\t\t\tgetWhitespaceString(),\n\t\t\tCallerInfo(),\n\t\t\tindentMessageLines(failureMessage, 2))\n\t}\n\n\treturn false\n}\n\n// Implements asserts that an object is implemented by the specified interface.\n//\n//    assert.Implements(t, (*MyInterface)(nil), new(MyObject), \"MyObject\")\nfunc Implements(t TestingT, interfaceObject interface{}, object interface{}, msgAndArgs ...interface{}) bool {\n\n\tinterfaceType := reflect.TypeOf(interfaceObject).Elem()\n\n\tif !reflect.TypeOf(object).Implements(interfaceType) {\n\t\treturn Fail(t, fmt.Sprintf(\"Object must implement %v\", interfaceType), msgAndArgs...)\n\t}\n\n\treturn true\n\n}\n\n// IsType asserts that the specified objects are of the same type.\nfunc IsType(t TestingT, expectedType interface{}, object interface{}, msgAndArgs ...interface{}) bool {\n\n\tif !ObjectsAreEqual(reflect.TypeOf(object), reflect.TypeOf(expectedType)) {\n\t\treturn Fail(t, fmt.Sprintf(\"Object expected to be of type %v, but was %v\", reflect.TypeOf(expectedType), reflect.TypeOf(object)), msgAndArgs...)\n\t}\n\n\treturn true\n}\n\n// Equal asserts that two objects are equal.\n//\n//    assert.Equal(t, 123, 123, \"123 and 123 should be equal\")\n//\n// Returns whether the assertion was successful (true) or not (false).\nfunc Equal(t TestingT, expected, actual interface{}, msgAndArgs ...interface{}) bool {\n\n\tif !ObjectsAreEqual(expected, actual) {\n\t\treturn Fail(t, fmt.Sprintf(\"Not equal: %#v (expected)\\n\"+\n\t\t\t\"        != %#v (actual)\", expected, actual), msgAndArgs...)\n\t}\n\n\treturn true\n\n}\n\n// Exactly asserts that two objects are equal is value and type.\n//\n//    assert.Exactly(t, int32(123), int64(123), \"123 and 123 should NOT be equal\")\n//\n// Returns whether the assertion was successful (true) or not (false).\nfunc Exactly(t TestingT, expected, actual interface{}, msgAndArgs ...interface{}) bool {\n\n\taType := reflect.TypeOf(expected)\n\tbType := reflect.TypeOf(actual)\n\n\tif aType != bType {\n\t\treturn Fail(t, \"Types expected to match exactly\", \"%v != %v\", aType, bType)\n\t}\n\n\treturn Equal(t, expected, actual, msgAndArgs...)\n\n}\n\n// NotNil asserts that the specified object is not nil.\n//\n//    assert.NotNil(t, err, \"err should be something\")\n//\n// Returns whether the assertion was successful (true) or not (false).\nfunc NotNil(t TestingT, object interface{}, msgAndArgs ...interface{}) bool {\n\n\tsuccess := true\n\n\tif object == nil {\n\t\tsuccess = false\n\t} else {\n\t\tvalue := reflect.ValueOf(object)\n\t\tkind := value.Kind()\n\t\tif kind >= reflect.Chan && kind <= reflect.Slice && value.IsNil() {\n\t\t\tsuccess = false\n\t\t}\n\t}\n\n\tif !success {\n\t\tFail(t, \"Expected not to be nil.\", msgAndArgs...)\n\t}\n\n\treturn success\n}\n\n// isNil checks if a specified object is nil or not, without Failing.\nfunc isNil(object interface{}) bool {\n\tif object == nil {\n\t\treturn true\n\t}\n\n\tvalue := reflect.ValueOf(object)\n\tkind := value.Kind()\n\tif kind >= reflect.Chan && kind <= reflect.Slice && value.IsNil() {\n\t\treturn true\n\t}\n\n\treturn false\n}\n\n// Nil asserts that the specified object is nil.\n//\n//    assert.Nil(t, err, \"err should be nothing\")\n//\n// Returns whether the assertion was successful (true) or not (false).\nfunc Nil(t TestingT, object interface{}, msgAndArgs ...interface{}) bool {\n\tif isNil(object) {\n\t\treturn true\n\t}\n\treturn Fail(t, fmt.Sprintf(\"Expected nil, but got: %#v\", object), msgAndArgs...)\n}\n\nvar zeros = []interface{}{\n\tint(0),\n\tint8(0),\n\tint16(0),\n\tint32(0),\n\tint64(0),\n\tuint(0),\n\tuint8(0),\n\tuint16(0),\n\tuint32(0),\n\tuint64(0),\n\tfloat32(0),\n\tfloat64(0),\n}\n\n// isEmpty gets whether the specified object is considered empty or not.\nfunc isEmpty(object interface{}) bool {\n\n\tif object == nil {\n\t\treturn true\n\t} else if object == \"\" {\n\t\treturn true\n\t} else if object == false {\n\t\treturn true\n\t}\n\n\tfor _, v := range zeros {\n\t\tif object == v {\n\t\t\treturn true\n\t\t}\n\t}\n\n\tobjValue := reflect.ValueOf(object)\n\n\tswitch objValue.Kind() {\n\tcase reflect.Map:\n\t\tfallthrough\n\tcase reflect.Slice, reflect.Chan:\n\t\t{\n\t\t\treturn (objValue.Len() == 0)\n\t\t}\n\tcase reflect.Ptr:\n\t\t{\n\t\t\tswitch object.(type) {\n\t\t\tcase *time.Time:\n\t\t\t\treturn object.(*time.Time).IsZero()\n\t\t\tdefault:\n\t\t\t\treturn false\n\t\t\t}\n\t\t}\n\t}\n\treturn false\n}\n\n// Empty asserts that the specified object is empty.  I.e. nil, \"\", false, 0 or either\n// a slice or a channel with len == 0.\n//\n// assert.Empty(t, obj)\n//\n// Returns whether the assertion was successful (true) or not (false).\nfunc Empty(t TestingT, object interface{}, msgAndArgs ...interface{}) bool {\n\n\tpass := isEmpty(object)\n\tif !pass {\n\t\tFail(t, fmt.Sprintf(\"Should be empty, but was %v\", object), msgAndArgs...)\n\t}\n\n\treturn pass\n\n}\n\n// NotEmpty asserts that the specified object is NOT empty.  I.e. not nil, \"\", false, 0 or either\n// a slice or a channel with len == 0.\n//\n// if assert.NotEmpty(t, obj) {\n//   assert.Equal(t, \"two\", obj[1])\n// }\n//\n// Returns whether the assertion was successful (true) or not (false).\nfunc NotEmpty(t TestingT, object interface{}, msgAndArgs ...interface{}) bool {\n\n\tpass := !isEmpty(object)\n\tif !pass {\n\t\tFail(t, fmt.Sprintf(\"Should NOT be empty, but was %v\", object), msgAndArgs...)\n\t}\n\n\treturn pass\n\n}\n\n// getLen try to get length of object.\n// return (false, 0) if impossible.\nfunc getLen(x interface{}) (ok bool, length int) {\n\tv := reflect.ValueOf(x)\n\tdefer func() {\n\t\tif e := recover(); e != nil {\n\t\t\tok = false\n\t\t}\n\t}()\n\treturn true, v.Len()\n}\n\n// Len asserts that the specified object has specific length.\n// Len also fails if the object has a type that len() not accept.\n//\n//    assert.Len(t, mySlice, 3, \"The size of slice is not 3\")\n//\n// Returns whether the assertion was successful (true) or not (false).\nfunc Len(t TestingT, object interface{}, length int, msgAndArgs ...interface{}) bool {\n\tok, l := getLen(object)\n\tif !ok {\n\t\treturn Fail(t, fmt.Sprintf(\"\\\"%s\\\" could not be applied builtin len()\", object), msgAndArgs...)\n\t}\n\n\tif l != length {\n\t\treturn Fail(t, fmt.Sprintf(\"\\\"%s\\\" should have %d item(s), but has %d\", object, length, l), msgAndArgs...)\n\t}\n\treturn true\n}\n\n// True asserts that the specified value is true.\n//\n//    assert.True(t, myBool, \"myBool should be true\")\n//\n// Returns whether the assertion was successful (true) or not (false).\nfunc True(t TestingT, value bool, msgAndArgs ...interface{}) bool {\n\n\tif value != true {\n\t\treturn Fail(t, \"Should be true\", msgAndArgs...)\n\t}\n\n\treturn true\n\n}\n\n// False asserts that the specified value is true.\n//\n//    assert.False(t, myBool, \"myBool should be false\")\n//\n// Returns whether the assertion was successful (true) or not (false).\nfunc False(t TestingT, value bool, msgAndArgs ...interface{}) bool {\n\n\tif value != false {\n\t\treturn Fail(t, \"Should be false\", msgAndArgs...)\n\t}\n\n\treturn true\n\n}\n\n// NotEqual asserts that the specified values are NOT equal.\n//\n//    assert.NotEqual(t, obj1, obj2, \"two objects shouldn't be equal\")\n//\n// Returns whether the assertion was successful (true) or not (false).\nfunc NotEqual(t TestingT, expected, actual interface{}, msgAndArgs ...interface{}) bool {\n\n\tif ObjectsAreEqual(expected, actual) {\n\t\treturn Fail(t, \"Should not be equal\", msgAndArgs...)\n\t}\n\n\treturn true\n\n}\n\n// containsElement try loop over the list check if the list includes the element.\n// return (false, false) if impossible.\n// return (true, false) if element was not found.\n// return (true, true) if element was found.\nfunc includeElement(list interface{}, element interface{}) (ok, found bool) {\n\n\tlistValue := reflect.ValueOf(list)\n\telementValue := reflect.ValueOf(element)\n\tdefer func() {\n\t\tif e := recover(); e != nil {\n\t\t\tok = false\n\t\t\tfound = false\n\t\t}\n\t}()\n\n\tif reflect.TypeOf(list).Kind() == reflect.String {\n\t\treturn true, strings.Contains(listValue.String(), elementValue.String())\n\t}\n\n\tfor i := 0; i < listValue.Len(); i++ {\n\t\tif ObjectsAreEqual(listValue.Index(i).Interface(), element) {\n\t\t\treturn true, true\n\t\t}\n\t}\n\treturn true, false\n\n}\n\n// Contains asserts that the specified string or list(array, slice...) contains the\n// specified substring or element.\n//\n//    assert.Contains(t, \"Hello World\", \"World\", \"But 'Hello World' does contain 'World'\")\n//    assert.Contains(t, [\"Hello\", \"World\"], \"World\", \"But [\"Hello\", \"World\"] does contain 'World'\")\n//\n// Returns whether the assertion was successful (true) or not (false).\nfunc Contains(t TestingT, s, contains interface{}, msgAndArgs ...interface{}) bool {\n\n\tok, found := includeElement(s, contains)\n\tif !ok {\n\t\treturn Fail(t, fmt.Sprintf(\"\\\"%s\\\" could not be applied builtin len()\", s), msgAndArgs...)\n\t}\n\tif !found {\n\t\treturn Fail(t, fmt.Sprintf(\"\\\"%s\\\" does not contain \\\"%s\\\"\", s, contains), msgAndArgs...)\n\t}\n\n\treturn true\n\n}\n\n// NotContains asserts that the specified string or list(array, slice...) does NOT contain the\n// specified substring or element.\n//\n//    assert.NotContains(t, \"Hello World\", \"Earth\", \"But 'Hello World' does NOT contain 'Earth'\")\n//    assert.NotContains(t, [\"Hello\", \"World\"], \"Earth\", \"But ['Hello', 'World'] does NOT contain 'Earth'\")\n//\n// Returns whether the assertion was successful (true) or not (false).\nfunc NotContains(t TestingT, s, contains interface{}, msgAndArgs ...interface{}) bool {\n\n\tok, found := includeElement(s, contains)\n\tif !ok {\n\t\treturn Fail(t, fmt.Sprintf(\"\\\"%s\\\" could not be applied builtin len()\", s), msgAndArgs...)\n\t}\n\tif found {\n\t\treturn Fail(t, fmt.Sprintf(\"\\\"%s\\\" should not contain \\\"%s\\\"\", s, contains), msgAndArgs...)\n\t}\n\n\treturn true\n\n}\n\n// Condition uses a Comparison to assert a complex condition.\nfunc Condition(t TestingT, comp Comparison, msgAndArgs ...interface{}) bool {\n\tresult := comp()\n\tif !result {\n\t\tFail(t, \"Condition failed!\", msgAndArgs...)\n\t}\n\treturn result\n}\n\n// PanicTestFunc defines a func that should be passed to the assert.Panics and assert.NotPanics\n// methods, and represents a simple func that takes no arguments, and returns nothing.\ntype PanicTestFunc func()\n\n// didPanic returns true if the function passed to it panics. Otherwise, it returns false.\nfunc didPanic(f PanicTestFunc) (bool, interface{}) {\n\n\tdidPanic := false\n\tvar message interface{}\n\tfunc() {\n\n\t\tdefer func() {\n\t\t\tif message = recover(); message != nil {\n\t\t\t\tdidPanic = true\n\t\t\t}\n\t\t}()\n\n\t\t// call the target function\n\t\tf()\n\n\t}()\n\n\treturn didPanic, message\n\n}\n\n// Panics asserts that the code inside the specified PanicTestFunc panics.\n//\n//   assert.Panics(t, func(){\n//     GoCrazy()\n//   }, \"Calling GoCrazy() should panic\")\n//\n// Returns whether the assertion was successful (true) or not (false).\nfunc Panics(t TestingT, f PanicTestFunc, msgAndArgs ...interface{}) bool {\n\n\tif funcDidPanic, panicValue := didPanic(f); !funcDidPanic {\n\t\treturn Fail(t, fmt.Sprintf(\"func %#v should panic\\n\\r\\tPanic value:\\t%v\", f, panicValue), msgAndArgs...)\n\t}\n\n\treturn true\n}\n\n// NotPanics asserts that the code inside the specified PanicTestFunc does NOT panic.\n//\n//   assert.NotPanics(t, func(){\n//     RemainCalm()\n//   }, \"Calling RemainCalm() should NOT panic\")\n//\n// Returns whether the assertion was successful (true) or not (false).\nfunc NotPanics(t TestingT, f PanicTestFunc, msgAndArgs ...interface{}) bool {\n\n\tif funcDidPanic, panicValue := didPanic(f); funcDidPanic {\n\t\treturn Fail(t, fmt.Sprintf(\"func %#v should not panic\\n\\r\\tPanic value:\\t%v\", f, panicValue), msgAndArgs...)\n\t}\n\n\treturn true\n}\n\n// WithinDuration asserts that the two times are within duration delta of each other.\n//\n//   assert.WithinDuration(t, time.Now(), time.Now(), 10*time.Second, \"The difference should not be more than 10s\")\n//\n// Returns whether the assertion was successful (true) or not (false).\nfunc WithinDuration(t TestingT, expected, actual time.Time, delta time.Duration, msgAndArgs ...interface{}) bool {\n\n\tdt := expected.Sub(actual)\n\tif dt < -delta || dt > delta {\n\t\treturn Fail(t, fmt.Sprintf(\"Max difference between %v and %v allowed is %v, but difference was %v\", expected, actual, delta, dt), msgAndArgs...)\n\t}\n\n\treturn true\n}\n\nfunc toFloat(x interface{}) (float64, bool) {\n\tvar xf float64\n\txok := true\n\n\tswitch xn := x.(type) {\n\tcase uint8:\n\t\txf = float64(xn)\n\tcase uint16:\n\t\txf = float64(xn)\n\tcase uint32:\n\t\txf = float64(xn)\n\tcase uint64:\n\t\txf = float64(xn)\n\tcase int:\n\t\txf = float64(xn)\n\tcase int8:\n\t\txf = float64(xn)\n\tcase int16:\n\t\txf = float64(xn)\n\tcase int32:\n\t\txf = float64(xn)\n\tcase int64:\n\t\txf = float64(xn)\n\tcase float32:\n\t\txf = float64(xn)\n\tcase float64:\n\t\txf = float64(xn)\n\tdefault:\n\t\txok = false\n\t}\n\n\treturn xf, xok\n}\n\n// InDelta asserts that the two numerals are within delta of each other.\n//\n// \t assert.InDelta(t, math.Pi, (22 / 7.0), 0.01)\n//\n// Returns whether the assertion was successful (true) or not (false).\nfunc InDelta(t TestingT, expected, actual interface{}, delta float64, msgAndArgs ...interface{}) bool {\n\n\taf, aok := toFloat(expected)\n\tbf, bok := toFloat(actual)\n\n\tif !aok || !bok {\n\t\treturn Fail(t, fmt.Sprintf(\"Parameters must be numerical\"), msgAndArgs...)\n\t}\n\n\tdt := af - bf\n\tif dt < -delta || dt > delta {\n\t\t",
+        "rank": 0,
+        "truncated": false
+      },
+      {
+        "id": "a4978a3c9d851ba52baf7702",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "assert/assertions.go",
+        "start_byte": 0,
+        "text": "package assert\n\nimport (\n\t\"bufio\"\n\t\"bytes\"\n\t\"fmt\"\n\t\"reflect\"\n\t\"regexp\"\n\t\"runtime\"\n\t\"strings\"\n\t\"time\"\n)\n\n// TestingT is an interface wrapper around *testing.T\ntype TestingT interface {\n\tErrorf(format string, args ...interface{})\n}\n\n// Comparison a custom function that returns true on success and false on failure\ntype Comparison func() (success bool)\n\n/*\n\tHelper functions\n*/\n\n// ObjectsAreEqual determines if two objects are considered equal.\n//\n// This function does no assertion of any kind.\nfunc ObjectsAreEqual(expected, actual interface{}) bool {\n\n\tif expected == nil || actual == nil {\n\t\treturn expected == actual\n\t}\n\n\tif reflect.DeepEqual(expected, actual) {\n\t\treturn true\n\t}\n\n\tactualType := reflect.TypeOf(actual)\n\tif actualType.ConvertibleTo(reflect.TypeOf(expected)) {\n\t\texpectedValue := reflect.ValueOf(expected)\n\t\t// Attempt comparison after type conversion\n\t\tif reflect.DeepEqual(actual, expectedValue.Convert(actualType).Interface()) {\n\t\t\treturn true\n\t\t}\n\t}\n\n\t// Last ditch effort\n\tif fmt.Sprintf(\"%#v\", expected) == fmt.Sprintf(\"%#v\", actual) {\n\t\treturn true\n\t}\n\n\treturn false\n\n}\n\n/* CallerInfo is necessary because the assert functions use the testing object\ninternally, causing it to print the file:line of the assert method, rather than where\nthe problem actually occured in calling code.*/\n\n// CallerInfo returns a string containing the file and line number of the assert call\n// that failed.\nfunc CallerInfo() string {\n\n\tfile := \"\"\n\tline := 0\n\tok := false\n\n\tfor i := 0; ; i++ {\n\t\t_, file, line, ok = runtime.Caller(i)\n\t\tif !ok {\n\t\t\treturn \"\"\n\t\t}\n\t\tparts := strings.Split(file, \"/\")\n\t\tdir := parts[len(parts)-2]\n\t\tfile = parts[len(parts)-1]\n\t\tif (dir != \"assert\" && dir != \"mock\" && dir != \"require\") || file == \"mock_test.go\" {\n\t\t\tbreak\n\t\t}\n\t}\n\n\treturn fmt.Sprintf(\"%s:%d\", file, line)\n}\n\n// getWhitespaceString returns a string that is long enough to overwrite the default\n// output from the go testing framework.\nfunc getWhitespaceString() string {\n\n\t_, file, line, ok := runtime.Caller(1)\n\tif !ok {\n\t\treturn \"\"\n\t}\n\tparts := strings.Split(file, \"/\")\n\tfile = parts[len(parts)-1]\n\n\treturn strings.Repeat(\" \", len(fmt.Sprintf(\"%s:%d:      \", file, line)))\n\n}\n\nfunc messageFromMsgAndArgs(msgAndArgs ...interface{}) string {\n\tif len(msgAndArgs) == 0 || msgAndArgs == nil {\n\t\treturn \"\"\n\t}\n\tif len(msgAndArgs) == 1 {\n\t\treturn msgAndArgs[0].(string)\n\t}\n\tif len(msgAndArgs) > 1 {\n\t\treturn fmt.Sprintf(msgAndArgs[0].(string), msgAndArgs[1:]...)\n\t}\n\treturn \"\"\n}\n\n// Indents all lines of the message by appending a number of tabs to each line, in an output format compatible with Go's\n// test printing (see inner comment for specifics)\nfunc indentMessageLines(message string, tabs int) string {\n\toutBuf := new(bytes.Buffer)\n\n\tfor i, scanner := 0, bufio.NewScanner(strings.NewReader(message)); scanner.Scan(); i++ {\n\t\tif i != 0 {\n\t\t\toutBuf.WriteRune('\\n')\n\t\t}\n\t\tfor ii := 0; ii < tabs; ii++ {\n\t\t\toutBuf.WriteRune('\\t')\n\t\t\t// Bizarrely, all lines except the first need one fewer tabs prepended, so deliberately advance the counter\n\t\t\t// by 1 prematurely.\n\t\t\tif ii == 0 && i > 0 {\n\t\t\t\tii++\n\t\t\t}\n\t\t}\n\t\toutBuf.WriteString(scanner.Text())\n\t}\n\n\treturn outBuf.String()\n}\n\n// Fail reports a failure through\nfunc Fail(t TestingT, failureMessage string, msgAndArgs ...interface{}) bool {\n\n\tmessage := messageFromMsgAndArgs(msgAndArgs...)\n\n\tif len(message) > 0 {\n\t\tt.Errorf(\"\\r%s\\r\\tLocation:\\t%s\\n\"+\n\t\t\t\"\\r\\tError:%s\\n\"+\n\t\t\t\"\\r\\tMessages:\\t%s\\n\\r\",\n\t\t\tgetWhitespaceString(),\n\t\t\tCallerInfo(),\n\t\t\tindentMessageLines(failureMessage, 2),\n\t\t\tmessage)\n\t} else {\n\t\tt.Errorf(\"\\r%s\\r\\tLocation:\\t%s\\n\"+\n\t\t\t\"\\r\\tError:%s\\n\\r\",\n\t\t\tgetWhitespaceString(),\n\t\t\tCallerInfo(),\n\t\t\tindentMessageLines(failureMessage, 2))\n\t}\n\n\treturn false\n}\n\n// Implements asserts that an object is implemented by the specified interface.\n//\n//    assert.Implements(t, (*MyInterface)(nil), new(MyObject), \"MyObject\")\nfunc Implements(t TestingT, interfaceObject interface{}, object interface{}, msgAndArgs ...interface{}) bool {\n\n\tinterfaceType := reflect.TypeOf(interfaceObject).Elem()\n\n\tif !reflect.TypeOf(object).Implements(interfaceType) {\n\t\treturn Fail(t, fmt.Sprintf(\"Object must implement %v\", interfaceType), msgAndArgs...)\n\t}\n\n\treturn true\n\n}\n\n// IsType asserts that the specified objects are of the same type.\nfunc IsType(t TestingT, expectedType interface{}, object interface{}, msgAndArgs ...interface{}) bool {\n\n\tif !ObjectsAreEqual(reflect.TypeOf(object), reflect.TypeOf(expectedType)) {\n\t\treturn Fail(t, fmt.Sprintf(\"Object expected to be of type %v, but was %v\", reflect.TypeOf(expectedType), reflect.TypeOf(object)), msgAndArgs...)\n\t}\n\n\treturn true\n}\n\n// Equal asserts that two objects are equal.\n//\n//    assert.Equal(t, 123, 123, \"123 and 123 should be equal\")\n//\n// Returns whether the assertion was successful (true) or not (false).\nfunc Equal(t TestingT, expected, actual interface{}, msgAndArgs ...interface{}) bool {\n\n\tif !ObjectsAreEqual(expected, actual) {\n\t\treturn Fail(t, fmt.Sprintf(\"Not equal: %#v (expected)\\n\"+\n\t\t\t\"        != %#v (actual)\", expected, actual), msgAndArgs...)\n\t}\n\n\treturn true\n\n}\n\n// Exactly asserts that two objects are equal is value and type.\n//\n//    assert.Exactly(t, int32(123), int64(123), \"123 and 123 should NOT be equal\")\n//\n// Returns whether the assertion was successful (true) or not (false).\nfunc Exactly(t TestingT, expected, actual interface{}, msgAndArgs ...interface{}) bool {\n\n\taType := reflect.TypeOf(expected)\n\tbType := reflect.TypeOf(actual)\n\n\tif aType != bType {\n\t\treturn Fail(t, \"Types expected to match exactly\", \"%v != %v\", aType, bType)\n\t}\n\n\treturn Equal(t, expected, actual, msgAndArgs...)\n\n}\n\n// NotNil asserts that the specified object is not nil.\n//\n//    assert.NotNil(t, err, \"err should be something\")\n//\n// Returns whether the assertion was successful (true) or not (false).\nfunc NotNil(t TestingT, object interface{}, msgAndArgs ...interface{}) bool {\n\n\tsuccess := true\n\n\tif object == nil {\n\t\tsuccess = false\n\t} else {\n\t\tvalue := reflect.ValueOf(object)\n\t\tkind := value.Kind()\n\t\tif kind >= reflect.Chan && kind <= reflect.Slice && value.IsNil() {\n\t\t\tsuccess = false\n\t\t}\n\t}\n\n\tif !success {\n\t\tFail(t, \"Expected not to be nil.\", msgAndArgs...)\n\t}\n\n\treturn success\n}\n\n// isNil checks if a specified object is nil or not, without Failing.\nfunc isNil(object interface{}) bool {\n\tif object == nil {\n\t\treturn true\n\t}\n\n\tvalue := reflect.ValueOf(object)\n\tkind := value.Kind()\n\tif kind >= reflect.Chan && kind <= reflect.Slice && value.IsNil() {\n\t\treturn true\n\t}\n\n\treturn false\n}\n\n// Nil asserts that the specified object is nil.\n//\n//    assert.Nil(t, err, \"err should be nothing\")\n//\n// Returns whether the assertion was successful (true) or not (false).\nfunc Nil(t TestingT, object interface{}, msgAndArgs ...interface{}) bool {\n\tif isNil(object) {\n\t\treturn true\n\t}\n\treturn Fail(t, fmt.Sprintf(\"Expected nil, but got: %#v\", object), msgAndArgs...)\n}\n\nvar zeros = []interface{}{\n\tint(0),\n\tint8(0),\n\tint16(0),\n\tint32(0),\n\tint64(0),\n\tuint(0),\n\tuint8(0),\n\tuint16(0),\n\tuint32(0),\n\tuint64(0),\n\tfloat32(0),\n\tfloat64(0),\n}\n\n// isEmpty gets whether the specified object is considered empty or not.\nfunc isEmpty(object interface{}) bool {\n\n\tif object == nil {\n\t\treturn true\n\t} else if object == \"\" {\n\t\treturn true\n\t} else if object == false {\n\t\treturn true\n\t}\n\n\tfor _, v := range zeros {\n\t\tif object == v {\n\t\t\treturn true\n\t\t}\n\t}\n\n\tobjValue := reflect.ValueOf(object)\n\n\tswitch objValue.Kind() {\n\tcase reflect.Map:\n\t\tfallthrough\n\tcase reflect.Slice, reflect.Chan:\n\t\t{\n\t\t\treturn (objValue.Len() == 0)\n\t\t}\n\tcase reflect.Ptr:\n\t\t{\n\t\t\tswitch object.(type) {\n\t\t\tcase *time.Time:\n\t\t\t\treturn object.(*time.Time).IsZero()\n\t\t\tdefault:\n\t\t\t\treturn false\n\t\t\t}\n\t\t}\n\t}\n\treturn false\n}\n\n// Empty asserts that the specified object is empty.  I.e. nil, \"\", false, 0 or either\n// a slice or a channel with len == 0.\n//\n// assert.Empty(t, obj)\n//\n// Returns whether the assertion was successful (true) or not (false).\nfunc Empty(t TestingT, object interface{}, msgAndArgs ...interface{}) bool {\n\n\tpass := isEmpty(object)\n\tif !pass {\n\t\tFail(t, fmt.Sprintf(\"Should be empty, but was %v\", object), msgAndArgs...)\n\t}\n\n\treturn pass\n\n}\n\n// NotEmpty asserts that the specified object is NOT empty.  I.e. not nil, \"\", false, 0 or either\n// a slice or a channel with len == 0.\n//\n// if assert.NotEmpty(t, obj) {\n//   assert.Equal(t, \"two\", obj[1])\n// }\n//\n// Returns whether the assertion was successful (true) or not (false).\nfunc NotEmpty(t TestingT, object interface{}, msgAndArgs ...interface{}) bool {\n\n\tpass := !isEmpty(object)\n\tif !pass {\n\t\tFail(t, fmt.Sprintf(\"Should NOT be empty, but was %v\", object), msgAndArgs...)\n\t}\n\n\treturn pass\n\n}\n\n// getLen try to get length of object.\n// return (false, 0) if impossible.\nfunc getLen(x interface{}) (ok bool, length int) {\n\tv := reflect.ValueOf(x)\n\tdefer func() {\n\t\tif e := recover(); e != nil {\n\t\t\tok = false\n\t\t}\n\t}()\n\treturn true, v.Len()\n}\n\n// Len asserts that the specified object has specific length.\n// Len also fails if the object has a type that len() not accept.\n//\n//    assert.Len(t, mySlice, 3, \"The size of slice is not 3\")\n//\n// Returns whether the assertion was successful (true) or not (false).\nfunc Len(t TestingT, object interface{}, length int, msgAndArgs ...interface{}) bool {\n\tok, l := getLen(object)\n\tif !ok {\n\t\treturn Fail(t, fmt.Sprintf(\"\\\"%s\\\" could not be applied builtin len()\", object), msgAndArgs...)\n\t}\n\n\tif l != length {\n\t\treturn Fail(t, fmt.Sprintf(\"\\\"%s\\\" should have %d item(s), but has %d\", object, length, l), msgAndArgs...)\n\t}\n\treturn true\n}\n\n// True asserts that the specified value is true.\n//\n//    assert.True(t, myBool, \"myBool should be true\")\n//\n// Returns whether the assertion was successful (true) or not (false).\nfunc True(t TestingT, value bool, msgAndArgs ...interface{}) bool {\n\n\tif value != true {\n\t\treturn Fail(t, \"Should be true\", msgAndArgs...)\n\t}\n\n\treturn true\n\n}\n\n// False asserts that the specified value is true.\n//\n//    assert.False(t, myBool, \"myBool should be false\")\n//\n// Returns whether the assertion was successful (true) or not (false).\nfunc False(t TestingT, value bool, msgAndArgs ...interface{}) bool {\n\n\tif value != false {\n\t\treturn Fail(t, \"Should be false\", msgAndArgs...)\n\t}\n\n\treturn true\n\n}\n\n// NotEqual asserts that the specified values are NOT equal.\n//\n//    assert.NotEqual(t, obj1, obj2, \"two objects shouldn't be equal\")\n//\n// Returns whether the assertion was successful (true) or not (false).\nfunc NotEqual(t TestingT, expected, actual interface{}, msgAndArgs ...interface{}) bool {\n\n\tif ObjectsAreEqual(expected, actual) {\n\t\treturn Fail(t, \"Should not be equal\", msgAndArgs...)\n\t}\n\n\treturn true\n\n}\n\n// containsElement try loop over the list check if the list includes the element.\n// return (false, false) if impossible.\n// return (true, false) if element was not found.\n// return (true, true) if element was found.\nfunc includeElement(list interface{}, element interface{}) (ok, found bool) {\n\n\tlistValue := reflect.ValueOf(list)\n\telementValue := reflect.ValueOf(element)\n\tdefer func() {\n\t\tif e := recover(); e != nil {\n\t\t\tok = false\n\t\t\tfound = false\n\t\t}\n\t}()\n\n\tif reflect.TypeOf(list).Kind() == reflect.String {\n\t\treturn true, strings.Contains(listValue.String(), elementValue.String())\n\t}\n\n\tfor i := 0; i < listValue.Len(); i++ {\n\t\tif ObjectsAreEqual(listValue.Index(i).Interface(), element) {\n\t\t\treturn true, true\n\t\t}\n\t}\n\treturn true, false\n\n}\n\n// Contains asserts that the specified string or list(array, slice...) contains the\n// specified substring or element.\n//\n//    assert.Contains(t, \"Hello World\", \"World\", \"But 'Hello World' does contain 'World'\")\n//    assert.Contains(t, [\"Hello\", \"World\"], \"World\", \"But [\"Hello\", \"World\"] does contain 'World'\")\n//\n// Returns whether the assertion was successful (true) or not (false).\nfunc Contains(t TestingT, s, contains interface{}, msgAndArgs ...interface{}) bool {\n\n\tok, found := includeElement(s, contains)\n\tif !ok {\n\t\treturn Fail(t, fmt.Sprintf(\"\\\"%s\\\" could not be applied builtin len()\", s), msgAndArgs...)\n\t}\n\tif !found {\n\t\treturn Fail(t, fmt.Sprintf(\"\\\"%s\\\" does not contain \\\"%s\\\"\", s, contains), msgAndArgs...)\n\t}\n\n\treturn true\n\n}\n\n// NotContains asserts that the specified string or list(array, slice...) does NOT contain the\n// specified substring or element.\n//\n//    assert.NotContains(t, \"Hello World\", \"Earth\", \"But 'Hello World' does NOT contain 'Earth'\")\n//    assert.NotContains(t, [\"Hello\", \"World\"], \"Earth\", \"But ['Hello', 'World'] does NOT contain 'Earth'\")\n//\n// Returns whether the assertion was successful (true) or not (false).\nfunc NotContains(t TestingT, s, contains interface{}, msgAndArgs ...interface{}) bool {\n\n\tok, found := includeElement(s, contains)\n\tif !ok {\n\t\treturn Fail(t, fmt.Sprintf(\"\\\"%s\\\" could not be applied builtin len()\", s), msgAndArgs...)\n\t}\n\tif found {\n\t\treturn Fail(t, fmt.Sprintf(\"\\\"%s\\\" should not contain \\\"%s\\\"\", s, contains), msgAndArgs...)\n\t}\n\n\treturn true\n\n}\n\n// Condition uses a Comparison to assert a complex condition.\nfunc Condition(t TestingT, comp Comparison, msgAndArgs ...interface{}) bool {\n\tresult := comp()\n\tif !result {\n\t\tFail(t, \"Condition failed!\", msgAndArgs...)\n\t}\n\treturn result\n}\n\n// PanicTestFunc defines a func that should be passed to the assert.Panics and assert.NotPanics\n// methods, and represents a simple func that takes no arguments, and returns nothing.\ntype PanicTestFunc func()\n\n// didPanic returns true if the function passed to it panics. Otherwise, it returns false.\nfunc didPanic(f PanicTestFunc) (bool, interface{}) {\n\n\tdidPanic := false\n\tvar message interface{}\n\tfunc() {\n\n\t\tdefer func() {\n\t\t\tif message = recover(); message != nil {\n\t\t\t\tdidPanic = true\n\t\t\t}\n\t\t}()\n\n\t\t// call the target function\n\t\tf()\n\n\t}()\n\n\treturn didPanic, message\n\n}\n\n// Panics asserts that the code inside the specified PanicTestFunc panics.\n//\n//   assert.Panics(t, func(){\n//     GoCrazy()\n//   }, \"Calling GoCrazy() should panic\")\n//\n// Returns whether the assertion was successful (true) or not (false).\nfunc Panics(t TestingT, f PanicTestFunc, msgAndArgs ...interface{}) bool {\n\n\tif funcDidPanic, panicValue := didPanic(f); !funcDidPanic {\n\t\treturn Fail(t, fmt.Sprintf(\"func %#v should panic\\n\\r\\tPanic value:\\t%v\", f, panicValue), msgAndArgs...)\n\t}\n\n\treturn true\n}\n\n// NotPanics asserts that the code inside the specified PanicTestFunc does NOT panic.\n//\n//   assert.NotPanics(t, func(){\n//     RemainCalm()\n//   }, \"Calling RemainCalm() should NOT panic\")\n//\n// Returns whether the assertion was successful (true) or not (false).\nfunc NotPanics(t TestingT, f PanicTestFunc, msgAndArgs ...interface{}) bool {\n\n\tif funcDidPanic, panicValue := didPanic(f); funcDidPanic {\n\t\treturn Fail(t, fmt.Sprintf(\"func %#v should not panic\\n\\r\\tPanic value:\\t%v\", f, panicValue), msgAndArgs...)\n\t}\n\n\treturn true\n}\n\n// WithinDuration asserts that the two times are within duration delta of each other.\n//\n//   assert.WithinDuration(t, time.Now(), time.Now(), 10*time.Second, \"The difference should not be more than 10s\")\n//\n// Returns whether the assertion was successful (true) or not (false).\nfunc WithinDuration(t TestingT, expected, actual time.Time, delta time.Duration, msgAndArgs ...interface{}) bool {\n\n\tdt := expected.Sub(actual)\n\tif dt < -delta || dt > delta {\n\t\treturn Fail(t, fmt.Sprintf(\"Max difference between %v and %v allowed is %v, but difference was %v\", expected, actual, delta, dt), msgAndArgs...)\n\t}\n\n\treturn true\n}\n\nfunc toFloat(x interface{}) (float64, bool) {\n\tvar xf float64\n\txok := true\n\n\tswitch xn := x.(type) {\n\tcase uint8:\n\t\txf = float64(xn)\n\tcase uint16:\n\t\txf = float64(xn)\n\tcase uint32:\n\t\txf = float64(xn)\n\tcase uint64:\n\t\txf = float64(xn)\n\tcase int:\n\t\txf = float64(xn)\n\tcase int8:\n\t\txf = float64(xn)\n\tcase int16:\n\t\txf = float64(xn)\n\tcase int32:\n\t\txf = float64(xn)\n\tcase int64:\n\t\txf = float64(xn)\n\tcase float32:\n\t\txf = float64(xn)\n\tcase float64:\n\t\txf = float64(xn)\n\tdefault:\n\t\txok = false\n\t}\n\n\treturn xf, xok\n}\n\n// InDelta asserts that the two numerals are within delta of each other.\n//\n// \t assert.InDelta(t, math.Pi, (22 / 7.0), 0.01)\n//\n// Returns whether the assertion was successful (true) or not (false).\nfunc InDelta(t TestingT, expected, actual interface{}, delta float64, msgAndArgs ...interface{}) bool {\n\n\taf, aok := toFloat(expected)\n\tbf, bok := toFloat(actual)\n\n\tif !aok || !bok {\n\t\treturn Fail(t, fmt.Sprintf(\"Parameters must be numerical\"), msgAndArgs...)\n\t}\n\n\tdt := af - bf\n\tif dt < -delta ",
+        "rank": 0,
+        "truncated": false
+      }
+    ],
+    "selected": [
+      {
+        "id": "2d7bb07d999b777d3288a076",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "assert/assertions.go",
+        "start_byte": 495,
+        "text": "func ObjectsAreEqual(expected, actual interface{}) bool {\n\n\tif expected == nil || actual == nil {\n\t\treturn expected == actual\n\t}\n\n\tif reflect.DeepEqual(expected, actual) {\n\t\treturn true\n\t}\n\n\tactualType := reflect.TypeOf(actual)\n\tif actualType.ConvertibleTo(reflect.TypeOf(expected)) {\n\t\texpectedValue := reflect.ValueOf(expected)\n\t\t// Attempt comparison after type conversion\n\t\tif reflect.DeepEqual(actual, expectedValue.Convert(actualType).Interface()) {\n\t\t\treturn true\n\t\t}\n\t}\n\n\t// Last ditch effort\n\tif fmt.Sprintf(\"%#v\", expected) == fmt.Sprintf(\"%#v\", actual) {\n\t\treturn true\n\t}\n\n\treturn false\n\n}",
+        "rank": 0,
+        "truncated": false
+      },
+      {
+        "id": "328a2e19b843bf1d49e02b93",
+        "revision": "ae37dedcaae6fce497569786a8694aa3daa97abf",
+        "path": "assert/assertions.go",
+        "start_byte": 495,
+        "text": "func ObjectsAreEqual(expected, actual interface{}) bool {\n\n\tif expected == nil || actual == nil {\n\t\treturn expected == actual\n\t}\n\n\tif reflect.DeepEqual(expected, actual) {\n\t\treturn true\n\t}\n\n\tactualType := reflect.TypeOf(actual)\n\texpectedType := reflect.TypeOf(expected)\n\tif actualType.ConvertibleTo(expectedType) {\n\t\tactualValue := reflect.ValueOf(actual).Convert(expectedType)\n\t\tif reflect.DeepEqual(actualValue.Interface(), expected) {\n\t\t\treturn true\n\t\t}\n\t}\n\n\t// Last ditch effort\n\tif fmt.Sprintf(\"%#v\", expected) == fmt.Sprintf(\"%#v\", actual) {\n\t\treturn true\n\t}\n\n\treturn false\n\n}",
+        "rank": 0,
+        "truncated": false
+      },
+      {
+        "id": "a101cd1aa062ae964419956e",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "mock/mock.go",
+        "start_byte": 11240,
+        "text": "var actual, expected interface{}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "9448591d09b87d31a4f9edc8",
+        "revision": "ae37dedcaae6fce497569786a8694aa3daa97abf",
+        "path": "mock/mock.go",
+        "start_byte": 11240,
+        "text": "var actual, expected interface{}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "2551cdc311a7e967836e83a3",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "assert/assertions.go",
+        "start_byte": 313,
+        "text": "type Comparison func() (success bool)",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "6f0cc14d79fc9453908eac56",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "assert/assertions.go",
+        "start_byte": 1413,
+        "text": "func CallerInfo() string {\n\n\tfile := \"\"\n\tline := 0\n\tok := false\n\n\tfor i := 0; ; i++ {\n\t\t_, file, line, ok = runtime.Caller(i)\n\t\tif !ok {\n\t\t\treturn \"\"\n\t\t}\n\t\tparts := strings.Split(file, \"/\")\n\t\tdir := parts[len(parts)-2]\n\t\tfile = parts[len(parts)-1]\n\t\tif (dir != \"assert\" && dir != \"mock\" && dir != \"require\") || file == \"mock_test.go\" {\n\t\t\tbreak\n\t\t}\n\t}\n\n\treturn fmt.Sprintf(\"%s:%d\", file, line)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "12b8bbaecebfdace327dc201",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "assert/assertions.go",
+        "start_byte": 1936,
+        "text": "func getWhitespaceString() string {\n\n\t_, file, line, ok := runtime.Caller(1)\n\tif !ok {\n\t\treturn \"\"\n\t}\n\tparts := strings.Split(file, \"/\")\n\tfile = parts[len(parts)-1]\n\n\treturn strings.Repeat(\" \", len(fmt.Sprintf(\"%s:%d:      \", file, line)))\n\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "53d9c278389b88792300ccc2",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "assert/assertions.go",
+        "start_byte": 2180,
+        "text": "func messageFromMsgAndArgs(msgAndArgs ...interface{}) string {\n\tif len(msgAndArgs) == 0 || msgAndArgs == nil {\n\t\treturn \"\"\n\t}\n\tif len(msgAndArgs) == 1 {\n\t\treturn msgAndArgs[0].(string)\n\t}\n\tif len(msgAndArgs) > 1 {\n\t\treturn fmt.Sprintf(msgAndArgs[0].(string), msgAndArgs[1:]...)\n\t}\n\treturn \"\"\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "a4769396261c050c6729e276",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "assert/assertions.go",
+        "start_byte": 3209,
+        "text": "func Fail(t TestingT, failureMessage string, msgAndArgs ...interface{}) bool {\n\n\tmessage := messageFromMsgAndArgs(msgAndArgs...)\n\n\tif len(message) > 0 {\n\t\tt.Errorf(\"\\r%s\\r\\tLocation:\\t%s\\n\"+\n\t\t\t\"\\r\\tError:%s\\n\"+\n\t\t\t\"\\r\\tMessages:\\t%s\\n\\r\",\n\t\t\tgetWhitespaceString(),\n\t\t\tCallerInfo(),\n\t\t\tindentMessageLines(failureMessage, 2),\n\t\t\tmessage)\n\t} else {\n\t\tt.Errorf(\"\\r%s\\r\\tLocation:\\t%s\\n\"+\n\t\t\t\"\\r\\tError:%s\\n\\r\",\n\t\t\tgetWhitespaceString(),\n\t\t\tCallerInfo(),\n\t\t\tindentMessageLines(failureMessage, 2))\n\t}\n\n\treturn false\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "d98524f322e6ab415c24897d",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "assert/assertions.go",
+        "start_byte": 3881,
+        "text": "func Implements(t TestingT, interfaceObject interface{}, object interface{}, msgAndArgs ...interface{}) bool {\n\n\tinterfaceType := reflect.TypeOf(interfaceObject).Elem()\n\n\tif !reflect.TypeOf(object).Implements(interfaceType) {\n\t\treturn Fail(t, fmt.Sprintf(\"Object must implement %v\", interfaceType), msgAndArgs...)\n\t}\n\n\treturn true\n\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "abda2d78d999d65d6b661e2e",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "assert/assertions.go",
+        "start_byte": 4283,
+        "text": "func IsType(t TestingT, expectedType interface{}, object interface{}, msgAndArgs ...interface{}) bool {\n\n\tif !ObjectsAreEqual(reflect.TypeOf(object), reflect.TypeOf(expectedType)) {\n\t\treturn Fail(t, fmt.Sprintf(\"Object expected to be of type %v, but was %v\", reflect.TypeOf(expectedType), reflect.TypeOf(object)), msgAndArgs...)\n\t}\n\n\treturn true\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "7f16a7f30651a3aecaa959f0",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "assert/assertions.go",
+        "start_byte": 4817,
+        "text": "func Equal(t TestingT, expected, actual interface{}, msgAndArgs ...interface{}) bool {\n\n\tif !ObjectsAreEqual(expected, actual) {\n\t\treturn Fail(t, fmt.Sprintf(\"Not equal: %#v (expected)\\n\"+\n\t\t\t\"        != %#v (actual)\", expected, actual), msgAndArgs...)\n\t}\n\n\treturn true\n\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "10944ce2678abd7aa4a3e1cf",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "assert/assertions.go",
+        "start_byte": 5316,
+        "text": "func Exactly(t TestingT, expected, actual interface{}, msgAndArgs ...interface{}) bool {\n\n\taType := reflect.TypeOf(expected)\n\tbType := reflect.TypeOf(actual)\n\n\tif aType != bType {\n\t\treturn Fail(t, \"Types expected to match exactly\", \"%v != %v\", aType, bType)\n\t}\n\n\treturn Equal(t, expected, actual, msgAndArgs...)\n\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "985fb1785165b54ba2f4ab9b",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "assert/assertions.go",
+        "start_byte": 5820,
+        "text": "func NotNil(t TestingT, object interface{}, msgAndArgs ...interface{}) bool {\n\n\tsuccess := true\n\n\tif object == nil {\n\t\tsuccess = false\n\t} else {\n\t\tvalue := reflect.ValueOf(object)\n\t\tkind := value.Kind()\n\t\tif kind >= reflect.Chan && kind <= reflect.Slice && value.IsNil() {\n\t\t\tsuccess = false\n\t\t}\n\t}\n\n\tif !success {\n\t\tFail(t, \"Expected not to be nil.\", msgAndArgs...)\n\t}\n\n\treturn success\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "a63db1728651e33264b16c4f",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "assert/assertions.go",
+        "start_byte": 6280,
+        "text": "func isNil(object interface{}) bool {\n\tif object == nil {\n\t\treturn true\n\t}\n\n\tvalue := reflect.ValueOf(object)\n\tkind := value.Kind()\n\tif kind >= reflect.Chan && kind <= reflect.Slice && value.IsNil() {\n\t\treturn true\n\t}\n\n\treturn false\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "59d0f9f751105af99adf805c",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "assert/assertions.go",
+        "start_byte": 6692,
+        "text": "func Nil(t TestingT, object interface{}, msgAndArgs ...interface{}) bool {\n\tif isNil(object) {\n\t\treturn true\n\t}\n\treturn Fail(t, fmt.Sprintf(\"Expected nil, but got: %#v\", object), msgAndArgs...)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "29e3c1d126bea933b8d34200",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "assert/assertions.go",
+        "start_byte": 7127,
+        "text": "func isEmpty(object interface{}) bool {\n\n\tif object == nil {\n\t\treturn true\n\t} else if object == \"\" {\n\t\treturn true\n\t} else if object == false {\n\t\treturn true\n\t}\n\n\tfor _, v := range zeros {\n\t\tif object == v {\n\t\t\treturn true\n\t\t}\n\t}\n\n\tobjValue := reflect.ValueOf(object)\n\n\tswitch objValue.Kind() {\n\tcase reflect.Map:\n\t\tfallthrough\n\tcase reflect.Slice, reflect.Chan:\n\t\t{\n\t\t\treturn (objValue.Len() == 0)\n\t\t}\n\tcase reflect.Ptr:\n\t\t{\n\t\t\tswitch object.(type) {\n\t\t\tcase *time.Time:\n\t\t\t\treturn object.(*time.Time).IsZero()\n\t\t\tdefault:\n\t\t\t\treturn false\n\t\t\t}\n\t\t}\n\t}\n\treturn false\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "e19cf582918b5374acde2e7c",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "assert/assertions.go",
+        "start_byte": 7924,
+        "text": "func Empty(t TestingT, object interface{}, msgAndArgs ...interface{}) bool {\n\n\tpass := isEmpty(object)\n\tif !pass {\n\t\tFail(t, fmt.Sprintf(\"Should be empty, but was %v\", object), msgAndArgs...)\n\t}\n\n\treturn pass\n\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "80b79f1fcef5dda40aff2317",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "assert/assertions.go",
+        "start_byte": 8424,
+        "text": "func NotEmpty(t TestingT, object interface{}, msgAndArgs ...interface{}) bool {\n\n\tpass := !isEmpty(object)\n\tif !pass {\n\t\tFail(t, fmt.Sprintf(\"Should NOT be empty, but was %v\", object), msgAndArgs...)\n\t}\n\n\treturn pass\n\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "ebc4b33d2273231f67d0513c",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "assert/assertions.go",
+        "start_byte": 8720,
+        "text": "func getLen(x interface{}) (ok bool, length int) {\n\tv := reflect.ValueOf(x)\n\tdefer func() {\n\t\tif e := recover(); e != nil {\n\t\t\tok = false\n\t\t}\n\t}()\n\treturn true, v.Len()\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "90d5f51d5af8a3bda08fd01e",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "assert/assertions.go",
+        "start_byte": 9159,
+        "text": "func Len(t TestingT, object interface{}, length int, msgAndArgs ...interface{}) bool {\n\tok, l := getLen(object)\n\tif !ok {\n\t\treturn Fail(t, fmt.Sprintf(\"\\\"%s\\\" could not be applied builtin len()\", object), msgAndArgs...)\n\t}\n\n\tif l != length {\n\t\treturn Fail(t, fmt.Sprintf(\"\\\"%s\\\" should have %d item(s), but has %d\", object, length, l), msgAndArgs...)\n\t}\n\treturn true\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "17999632762cde259e38bad9",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "assert/assertions.go",
+        "start_byte": 9710,
+        "text": "func True(t TestingT, value bool, msgAndArgs ...interface{}) bool {\n\n\tif value != true {\n\t\treturn Fail(t, \"Should be true\", msgAndArgs...)\n\t}\n\n\treturn true\n\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "287af734ffff7a287a53e7c0",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "assert/assertions.go",
+        "start_byte": 10054,
+        "text": "func False(t TestingT, value bool, msgAndArgs ...interface{}) bool {\n\n\tif value != false {\n\t\treturn Fail(t, \"Should be false\", msgAndArgs...)\n\t}\n\n\treturn true\n\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "66058e63a7755ec648dd8c22",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "assert/assertions.go",
+        "start_byte": 10426,
+        "text": "func NotEqual(t TestingT, expected, actual interface{}, msgAndArgs ...interface{}) bool {\n\n\tif ObjectsAreEqual(expected, actual) {\n\t\treturn Fail(t, \"Should not be equal\", msgAndArgs...)\n\t}\n\n\treturn true\n\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "7231eaba5e75f0c77f75afa3",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "assert/assertions.go",
+        "start_byte": 10850,
+        "text": "func includeElement(list interface{}, element interface{}) (ok, found bool) {\n\n\tlistValue := reflect.ValueOf(list)\n\telementValue := reflect.ValueOf(element)\n\tdefer func() {\n\t\tif e := recover(); e != nil {\n\t\t\tok = false\n\t\t\tfound = false\n\t\t}\n\t}()\n\n\tif reflect.TypeOf(list).Kind() == reflect.String {\n\t\treturn true, strings.Contains(listValue.String(), elementValue.String())\n\t}\n\n\tfor i := 0; i < listValue.Len(); i++ {\n\t\tif ObjectsAreEqual(listValue.Index(i).Interface(), element) {\n\t\t\treturn true, true\n\t\t}\n\t}\n\treturn true, false\n\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "edf3b64a738881a09efd5c80",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "assert/assertions.go",
+        "start_byte": 11771,
+        "text": "func Contains(t TestingT, s, contains interface{}, msgAndArgs ...interface{}) bool {\n\n\tok, found := includeElement(s, contains)\n\tif !ok {\n\t\treturn Fail(t, fmt.Sprintf(\"\\\"%s\\\" could not be applied builtin len()\", s), msgAndArgs...)\n\t}\n\tif !found {\n\t\treturn Fail(t, fmt.Sprintf(\"\\\"%s\\\" does not contain \\\"%s\\\"\", s, contains), msgAndArgs...)\n\t}\n\n\treturn true\n\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "85715e29ed2f4e15dab7c4ac",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "assert/assertions.go",
+        "start_byte": 12544,
+        "text": "func NotContains(t TestingT, s, contains interface{}, msgAndArgs ...interface{}) bool {\n\n\tok, found := includeElement(s, contains)\n\tif !ok {\n\t\treturn Fail(t, fmt.Sprintf(\"\\\"%s\\\" could not be applied builtin len()\", s), msgAndArgs...)\n\t}\n\tif found {\n\t\treturn Fail(t, fmt.Sprintf(\"\\\"%s\\\" should not contain \\\"%s\\\"\", s, contains), msgAndArgs...)\n\t}\n\n\treturn true\n\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "de51c88526af7846ae12fb5b",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "assert/assertions.go",
+        "start_byte": 12970,
+        "text": "func Condition(t TestingT, comp Comparison, msgAndArgs ...interface{}) bool {\n\tresult := comp()\n\tif !result {\n\t\tFail(t, \"Condition failed!\", msgAndArgs...)\n\t}\n\treturn result\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "dd8314e40f316acec00fa36d",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "assert/assertions.go",
+        "start_byte": 13448,
+        "text": "func didPanic(f PanicTestFunc) (bool, interface{}) {\n\n\tdidPanic := false\n\tvar message interface{}\n\tfunc() {\n\n\t\tdefer func() {\n\t\t\tif message = recover(); message != nil {\n\t\t\t\tdidPanic = true\n\t\t\t}\n\t\t}()\n\n\t\t// call the target function\n\t\tf()\n\n\t}()\n\n\treturn didPanic, message\n\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "df063a592c26edcef3091b21",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "assert/assertions.go",
+        "start_byte": 13964,
+        "text": "func Panics(t TestingT, f PanicTestFunc, msgAndArgs ...interface{}) bool {\n\n\tif funcDidPanic, panicValue := didPanic(f); !funcDidPanic {\n\t\treturn Fail(t, fmt.Sprintf(\"func %#v should panic\\n\\r\\tPanic value:\\t%v\", f, panicValue), msgAndArgs...)\n\t}\n\n\treturn true\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "1b30334a3794d36790e53d0d",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "assert/assertions.go",
+        "start_byte": 14493,
+        "text": "func NotPanics(t TestingT, f PanicTestFunc, msgAndArgs ...interface{}) bool {\n\n\tif funcDidPanic, panicValue := didPanic(f); funcDidPanic {\n\t\treturn Fail(t, fmt.Sprintf(\"func %#v should not panic\\n\\r\\tPanic value:\\t%v\", f, panicValue), msgAndArgs...)\n\t}\n\n\treturn true\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "135e04be4eb77a041a2f9b01",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "assert/assertions.go",
+        "start_byte": 15042,
+        "text": "func WithinDuration(t TestingT, expected, actual time.Time, delta time.Duration, msgAndArgs ...interface{}) bool {\n\n\tdt := expected.Sub(actual)\n\tif dt < -delta || dt > delta {\n\t\treturn Fail(t, fmt.Sprintf(\"Max difference between %v and %v allowed is %v, but difference was %v\", expected, actual, delta, dt), msgAndArgs...)\n\t}\n\n\treturn true\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "cdc4748cf7b6c2c9ae97f103",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "assert/assertions.go",
+        "start_byte": 15385,
+        "text": "func toFloat(x interface{}) (float64, bool) {\n\tvar xf float64\n\txok := true\n\n\tswitch xn := x.(type) {\n\tcase uint8:\n\t\txf = float64(xn)\n\tcase uint16:\n\t\txf = float64(xn)\n\tcase uint32:\n\t\txf = float64(xn)\n\tcase uint64:\n\t\txf = float64(xn)\n\tcase int:\n\t\txf = float64(xn)\n\tcase int8:\n\t\txf = float64(xn)\n\tcase int16:\n\t\txf = float64(xn)\n\tcase int32:\n\t\txf = float64(xn)\n\tcase int64:\n\t\txf = float64(xn)\n\tcase float32:\n\t\txf = float64(xn)\n\tcase float64:\n\t\txf = float64(xn)\n\tdefault:\n\t\txok = false\n\t}\n\n\treturn xf, xok\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "61d859ddb7d239ab72fb81d2",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "assert/assertions.go",
+        "start_byte": 16089,
+        "text": "func InDelta(t TestingT, expected, actual interface{}, delta float64, msgAndArgs ...interface{}) bool {\n\n\taf, aok := toFloat(expected)\n\tbf, bok := toFloat(actual)\n\n\tif !aok || !bok {\n\t\treturn Fail(t, fmt.Sprintf(\"Parameters must be numerical\"), msgAndArgs...)\n\t}\n\n\tdt := af - bf\n\tif dt < -delta || dt > delta {\n\t\treturn Fail(t, fmt.Sprintf(\"Max difference between %v and %v allowed is %v, but difference was %v\", expected, actual, delta, dt), msgAndArgs...)\n\t}\n\n\treturn true\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "7b7d37f8e2351b25e4fb1e03",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "assert/assertions.go",
+        "start_byte": 16606,
+        "text": "func calcEpsilonDelta(expected, actual interface{}, epsilon float64) float64 {\n\taf, aok := toFloat(expected)\n\tbf, bok := toFloat(actual)\n\n\tif !aok || !bok {\n\t\t// invalid input\n\t\treturn 0\n\t}\n\n\tif af < 0 {\n\t\taf = -af\n\t}\n\tif bf < 0 {\n\t\tbf = -bf\n\t}\n\tvar delta float64\n\tif af < bf {\n\t\tdelta = af * epsilon\n\t} else {\n\t\tdelta = bf * epsilon\n\t}\n\treturn delta\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "f65852bd8b96729250d95eee",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "assert/assertions.go",
+        "start_byte": 17120,
+        "text": "func InEpsilon(t TestingT, expected, actual interface{}, epsilon float64, msgAndArgs ...interface{}) bool {\n\tdelta := calcEpsilonDelta(expected, actual, epsilon)\n\n\treturn InDelta(t, expected, actual, delta, msgAndArgs...)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "196eff6f7e4d957918082815",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "assert/assertions.go",
+        "start_byte": 17628,
+        "text": "func NoError(t TestingT, err error, msgAndArgs ...interface{}) bool {\n\tif isNil(err) {\n\t\treturn true\n\t}\n\n\treturn Fail(t, fmt.Sprintf(\"No error is expected but got %v\", err), msgAndArgs...)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "a525309f794f2f791ae8f13e",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "assert/assertions.go",
+        "start_byte": 18109,
+        "text": "func Error(t TestingT, err error, msgAndArgs ...interface{}) bool {\n\n\tmessage := messageFromMsgAndArgs(msgAndArgs...)\n\treturn NotNil(t, err, \"An error is expected but got nil. %s\", message)\n\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "7e70db9cbd54b44d8ef3dae3",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "assert/assertions.go",
+        "start_byte": 18643,
+        "text": "func EqualError(t TestingT, theError error, errString string, msgAndArgs ...interface{}) bool {\n\n\tmessage := messageFromMsgAndArgs(msgAndArgs...)\n\tif !NotNil(t, theError, \"An error is expected but got nil. %s\", message) {\n\t\treturn false\n\t}\n\ts := \"An error with value \\\"%s\\\" is expected but got \\\"%s\\\". %s\"\n\treturn Equal(t, theError.Error(), errString,\n\t\ts, errString, theError.Error(), message)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "8e20eb580957db4ec4f6c119",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "assert/assertions.go",
+        "start_byte": 19108,
+        "text": "func matchRegexp(rx interface{}, str interface{}) bool {\n\n\tvar r *regexp.Regexp\n\tif rr, ok := rx.(*regexp.Regexp); ok {\n\t\tr = rr\n\t} else {\n\t\tr = regexp.MustCompile(fmt.Sprint(rx))\n\t}\n\n\treturn (r.FindStringIndex(fmt.Sprint(str)) != nil)\n\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "b9f1c61aa6e9e9df586d288d",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "assert/assertions.go",
+        "start_byte": 19607,
+        "text": "func Regexp(t TestingT, rx interface{}, str interface{}) bool {\n\n\tmatch := matchRegexp(rx, str)\n\n\tif !match {\n\t\tFail(t, \"Expect \\\"%s\\\" to match \\\"%s\\\"\")\n\t}\n\n\treturn match\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "8ed049b8ebfdeb4d1b6576fa",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "assert/assertions.go",
+        "start_byte": 20054,
+        "text": "func NotRegexp(t TestingT, rx interface{}, str interface{}) bool {\n\tmatch := matchRegexp(rx, str)\n\n\tif match {\n\t\tFail(t, \"Expect \\\"%s\\\" to NOT match \\\"%s\\\"\")\n\t}\n\n\treturn !match\n\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "319c40a985fa5980780adb89",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "assert/forward_assertions.go",
+        "start_byte": 175,
+        "text": "func (a *Assertions) Fail(failureMessage string, msgAndArgs ...interface{}) bool {\n\treturn Fail(a.t, failureMessage, msgAndArgs...)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "93bac9dd161db5878c1d79ee",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "assert/forward_assertions.go",
+        "start_byte": 465,
+        "text": "func (a *Assertions) Implements(interfaceObject interface{}, object interface{}, msgAndArgs ...interface{}) bool {\n\treturn Implements(a.t, interfaceObject, object, msgAndArgs...)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "c3dc52c6dbdc3eb817581968",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "assert/forward_assertions.go",
+        "start_byte": 714,
+        "text": "func (a *Assertions) IsType(expectedType interface{}, object interface{}, msgAndArgs ...interface{}) bool {\n\treturn IsType(a.t, expectedType, object, msgAndArgs...)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "1d48779ec604ff031cf114d4",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "assert/forward_assertions.go",
+        "start_byte": 1064,
+        "text": "func (a *Assertions) Equal(expected, actual interface{}, msgAndArgs ...interface{}) bool {\n\treturn Equal(a.t, expected, actual, msgAndArgs...)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "bb6c9f3c6ff5193958798a33",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "assert/forward_assertions.go",
+        "start_byte": 1432,
+        "text": "func (a *Assertions) Exactly(expected, actual interface{}, msgAndArgs ...interface{}) bool {\n\treturn Exactly(a.t, expected, actual, msgAndArgs...)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "ec50440ced9e060c9149a691",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "assert/forward_assertions.go",
+        "start_byte": 1767,
+        "text": "func (a *Assertions) NotNil(object interface{}, msgAndArgs ...interface{}) bool {\n\treturn NotNil(a.t, object, msgAndArgs...)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "024943e0a3b45e7cc9062459",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "assert/forward_assertions.go",
+        "start_byte": 2068,
+        "text": "func (a *Assertions) Nil(object interface{}, msgAndArgs ...interface{}) bool {\n\treturn Nil(a.t, object, msgAndArgs...)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "23bf49b5bfb26336b38bea6c",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "assert/forward_assertions.go",
+        "start_byte": 2394,
+        "text": "func (a *Assertions) Empty(object interface{}, msgAndArgs ...interface{}) bool {\n\treturn Empty(a.t, object, msgAndArgs...)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "10afe79696272c2cd2556fa6",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "assert/forward_assertions.go",
+        "start_byte": 2778,
+        "text": "func (a *Assertions) NotEmpty(object interface{}, msgAndArgs ...interface{}) bool {\n\treturn NotEmpty(a.t, object, msgAndArgs...)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "fb27e2668992f78bfb487e44",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "assert/forward_assertions.go",
+        "start_byte": 3174,
+        "text": "func (a *Assertions) Len(object interface{}, length int, msgAndArgs ...interface{}) bool {\n\treturn Len(a.t, object, length, msgAndArgs...)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "d865d4d09d9871a35da9004c",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "assert/forward_assertions.go",
+        "start_byte": 3494,
+        "text": "func (a *Assertions) True(value bool, msgAndArgs ...interface{}) bool {\n\treturn True(a.t, value, msgAndArgs...)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "8caae75abaff1442adef347a",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "assert/forward_assertions.go",
+        "start_byte": 3790,
+        "text": "func (a *Assertions) False(value bool, msgAndArgs ...interface{}) bool {\n\treturn False(a.t, value, msgAndArgs...)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "b83cd6390c3cf06a9fd92d70",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "assert/forward_assertions.go",
+        "start_byte": 4113,
+        "text": "func (a *Assertions) NotEqual(expected, actual interface{}, msgAndArgs ...interface{}) bool {\n\treturn NotEqual(a.t, expected, actual, msgAndArgs...)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "b8fb8307cbef8cbdfaef458e",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "assert/forward_assertions.go",
+        "start_byte": 4510,
+        "text": "func (a *Assertions) Contains(s, contains interface{}, msgAndArgs ...interface{}) bool {\n\treturn Contains(a.t, s, contains, msgAndArgs...)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "9bbbc820ba930a53bf0c3ceb",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "assert/forward_assertions.go",
+        "start_byte": 4915,
+        "text": "func (a *Assertions) NotContains(s, contains interface{}, msgAndArgs ...interface{}) bool {\n\treturn NotContains(a.t, s, contains, msgAndArgs...)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "06acf902104219a547e2481a",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "assert/forward_assertions.go",
+        "start_byte": 5115,
+        "text": "func (a *Assertions) Condition(comp Comparison, msgAndArgs ...interface{}) bool {\n\treturn Condition(a.t, comp, msgAndArgs...)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "4160c4faf4ffaa2c2253c7a5",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "assert/forward_assertions.go",
+        "start_byte": 5482,
+        "text": "func (a *Assertions) Panics(f PanicTestFunc, msgAndArgs ...interface{}) bool {\n\treturn Panics(a.t, f, msgAndArgs...)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "cdcbee8b0a2afd172daa268e",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "assert/forward_assertions.go",
+        "start_byte": 5864,
+        "text": "func (a *Assertions) NotPanics(f PanicTestFunc, msgAndArgs ...interface{}) bool {\n\treturn NotPanics(a.t, f, msgAndArgs...)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "a9b6c4dc1f4dd22a0ff5b9e7",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "assert/forward_assertions.go",
+        "start_byte": 6266,
+        "text": "func (a *Assertions) WithinDuration(expected, actual time.Time, delta time.Duration, msgAndArgs ...interface{}) bool {\n\treturn WithinDuration(a.t, expected, actual, delta, msgAndArgs...)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "4784c55b6313b9dde813ee43",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "assert/forward_assertions.go",
+        "start_byte": 6656,
+        "text": "func (a *Assertions) InDelta(expected, actual interface{}, delta float64, msgAndArgs ...interface{}) bool {\n\treturn InDelta(a.t, expected, actual, delta, msgAndArgs...)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "242322d09965bfcf75e862d4",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "assert/forward_assertions.go",
+        "start_byte": 6988,
+        "text": "func (a *Assertions) InEpsilon(expected, actual interface{}, epsilon float64, msgAndArgs ...interface{}) bool {\n\treturn InEpsilon(a.t, expected, actual, epsilon, msgAndArgs...)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "d9c325e48b0ff72cbadcabe2",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "assert/forward_assertions.go",
+        "start_byte": 7430,
+        "text": "func (a *Assertions) NoError(theError error, msgAndArgs ...interface{}) bool {\n\treturn NoError(a.t, theError, msgAndArgs...)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "ea79eec770fc5b12ecde294b",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "assert/forward_assertions.go",
+        "start_byte": 7841,
+        "text": "func (a *Assertions) Error(theError error, msgAndArgs ...interface{}) bool {\n\treturn Error(a.t, theError, msgAndArgs...)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "60517c8cf67b569d9de0c6e4",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "assert/forward_assertions.go",
+        "start_byte": 8299,
+        "text": "func (a *Assertions) EqualError(theError error, errString string, msgAndArgs ...interface{}) bool {\n\treturn EqualError(a.t, theError, errString, msgAndArgs...)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "57b129f9a761bc4361e75b12",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "assert/forward_assertions.go",
+        "start_byte": 8721,
+        "text": "func (a *Assertions) Regexp(rx interface{}, str interface{}) bool {\n\treturn Regexp(a.t, rx, str)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "4458f453eee591108abd5f65",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "assert/forward_assertions.go",
+        "start_byte": 9094,
+        "text": "func (a *Assertions) NotRegexp(rx interface{}, str interface{}) bool {\n\treturn NotRegexp(a.t, rx, str)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "dcb2203b59dd9f951f5f87a5",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "assert/http_assertions.go",
+        "start_byte": 678,
+        "text": "func HTTPSuccess(t TestingT, handler http.HandlerFunc, mode, url string, values url.Values) bool {\n\tcode := httpCode(handler, mode, url, values)\n\tif code == -1 {\n\t\treturn false\n\t}\n\treturn code >= http.StatusOK && code <= http.StatusPartialContent\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "4b631024a32099554b60bd81",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "assert/http_assertions.go",
+        "start_byte": 1177,
+        "text": "func HTTPRedirect(t TestingT, handler http.HandlerFunc, mode, url string, values url.Values) bool {\n\tcode := httpCode(handler, mode, url, values)\n\tif code == -1 {\n\t\treturn false\n\t}\n\treturn code >= http.StatusMultipleChoices && code <= http.StatusTemporaryRedirect\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "4ce5f7693db8869ac45ba2b8",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "assert/http_assertions.go",
+        "start_byte": 1686,
+        "text": "func HTTPError(t TestingT, handler http.HandlerFunc, mode, url string, values url.Values) bool {\n\tcode := httpCode(handler, mode, url, values)\n\tif code == -1 {\n\t\treturn false\n\t}\n\treturn code >= http.StatusBadRequest\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "8c45dbd43b4a372e8284f7aa",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "assert/http_assertions.go",
+        "start_byte": 2543,
+        "text": "func HTTPBodyContains(t TestingT, handler http.HandlerFunc, mode, url string, values url.Values, str interface{}) bool {\n\tbody := HttpBody(handler, mode, url, values)\n\n\tcontains := strings.Contains(body, fmt.Sprint(str))\n\tif !contains {\n\t\tFail(t, fmt.Sprintf(\"Expected response body for \\\"%s\\\" to contain \\\"%s\\\" but found \\\"%s\\\"\", url+\"?\"+values.Encode(), str, body))\n\t}\n\n\treturn contains\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "bc95ed90a6cdc22dc072bad2",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "assert/http_assertions.go",
+        "start_byte": 3207,
+        "text": "func HTTPBodyNotContains(t TestingT, handler http.HandlerFunc, mode, url string, values url.Values, str interface{}) bool {\n\tbody := HttpBody(handler, mode, url, values)\n\n\tcontains := strings.Contains(body, fmt.Sprint(str))\n\tif contains {\n\t\tFail(t, \"Expected response body for %s to NOT contain \\\"%s\\\" but found \\\"%s\\\"\", url+\"?\"+values.Encode(), str, body)\n\t}\n\n\treturn !contains\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "6880a11e7f978cbe9902289d",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "assert/http_assertions.go",
+        "start_byte": 3846,
+        "text": "func (a *Assertions) HTTPSuccess(handler http.HandlerFunc, mode, url string, values url.Values) bool {\n\treturn HTTPSuccess(a.t, handler, mode, url, values)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "cddadbe3004647e7b8164a69",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "assert/http_assertions.go",
+        "start_byte": 4251,
+        "text": "func (a *Assertions) HTTPRedirect(handler http.HandlerFunc, mode, url string, values url.Values) bool {\n\treturn HTTPRedirect(a.t, handler, mode, url, values)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "c0822b34e1506dbfba3a2e0d",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "assert/http_assertions.go",
+        "start_byte": 4651,
+        "text": "func (a *Assertions) HTTPError(handler http.HandlerFunc, mode, url string, values url.Values) bool {\n\treturn HTTPError(a.t, handler, mode, url, values)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "58b3b2bb5d7aba06874c6c59",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "assert/http_assertions.go",
+        "start_byte": 5064,
+        "text": "func (a *Assertions) HTTPBodyContains(handler http.HandlerFunc, mode, url string, values url.Values, str interface{}) bool {\n\treturn HTTPBodyContains(a.t, handler, mode, url, values, str)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "c9b62acdc8792a90e7260459",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "assert/http_assertions.go",
+        "start_byte": 5527,
+        "text": "func (a *Assertions) HTTPBodyNotContains(handler http.HandlerFunc, mode, url string, values url.Values, str interface{}) bool {\n\treturn HTTPBodyNotContains(a.t, handler, mode, url, values, str)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "7d49882f87c9348d5d5f1ec9",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "mock/mock.go",
+        "start_byte": 3632,
+        "text": "func (m *Mock) findClosestCall(method string, arguments ...interface{}) (bool, *Call) {\n\n\tdiffCount := 0\n\tvar closestCall *Call = nil\n\n\tfor _, call := range m.ExpectedCalls {\n\t\tif call.Method == method {\n\n\t\t\t_, tempDiffCount := call.Arguments.Diff(arguments)\n\t\t\tif tempDiffCount < diffCount || diffCount == 0 {\n\t\t\t\tdiffCount = tempDiffCount\n\t\t\t\tclosestCall = &call\n\t\t\t}\n\n\t\t}\n\t}\n\n\tif closestCall == nil {\n\t\treturn false, nil\n\t}\n\n\treturn true, closestCall\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "59cd0871b8bc24a5860d5f16",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "mock/mock.go",
+        "start_byte": 4089,
+        "text": "func callString(method string, arguments Arguments, includeArgumentValues bool) string {\n\n\tvar argValsString string = \"\"\n\tif includeArgumentValues {\n\t\tvar argVals []string\n\t\tfor argIndex, arg := range arguments {\n\t\t\targVals = append(argVals, fmt.Sprintf(\"%d: %v\", argIndex, arg))\n\t\t}\n\t\targValsString = fmt.Sprintf(\"\\n\\t\\t%s\", strings.Join(argVals, \"\\n\\t\\t\"))\n\t}\n\n\treturn fmt.Sprintf(\"%s(%s)%s\", method, arguments.String(), argValsString)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "1c9e11f530813dca516e80d9",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "mock/mock.go",
+        "start_byte": 4731,
+        "text": "func (m *Mock) Called(arguments ...interface{}) Arguments {\n\tdefer m.mutex.Unlock()\n\tm.mutex.Lock()\n\n\t// get the calling function's name\n\tpc, _, _, ok := runtime.Caller(1)\n\tif !ok {\n\t\tpanic(\"Couldn't get the caller information\")\n\t}\n\tfunctionPath := runtime.FuncForPC(pc).Name()\n\tparts := strings.Split(functionPath, \".\")\n\tfunctionName := parts[len(parts)-1]\n\n\tfound, call := m.findExpectedCall(functionName, arguments...)\n\n\tswitch {\n\tcase found < 0:\n\t\t// we have to fail here - because we don't know what to do\n\t\t// as the return arguments.  This is because:\n\t\t//\n\t\t//   a) this is a totally unexpected call to this method,\n\t\t//   b) the arguments are not what was expected, or\n\t\t//   c) the developer has forgotten to add an accompanying On...Return pair.\n\n\t\tclosestFound, closestCall := m.findClosestCall(functionName, arguments...)\n\n\t\tif closestFound {\n\t\t\tpanic(fmt.Sprintf(\"\\n\\nmock: Unexpected Method Call\\n-----------------------------\\n\\n%s\\n\\nThe closest call I have is: \\n\\n%s\\n\", callString(functionName, arguments, true), callString(functionName, closestCall.Arguments, true)))\n\t\t} else {\n\t\t\tpanic(fmt.Sprintf(\"\\nassert: mock: I don't know what to return because the method call was unexpected.\\n\\tEither do Mock.On(\\\"%s\\\").Return(...) first, or remove the %s() call.\\n\\tThis method was unexpected:\\n\\t\\t%s\\n\\tat: %s\", functionName, functionName, callString(functionName, arguments, true), assert.CallerInfo()))\n\t\t}\n\tcase call.Repeatability == 1:\n\t\tcall.Repeatability = -1\n\t\tm.ExpectedCalls[found] = *call\n\tcase call.Repeatability > 1:\n\t\tcall.Repeatability -= 1\n\t\tm.ExpectedCalls[found] = *call\n\t}\n\n\t// add the call\n\tm.Calls = append(m.Calls, Call{functionName, arguments, make([]interface{}, 0), 0})\n\n\treturn call.ReturnArguments\n\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "957d935f074081cc44f9be71",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "mock/mock.go",
+        "start_byte": 6685,
+        "text": "func AssertExpectationsForObjects(t TestingT, testObjects ...interface{}) bool {\n\tvar success bool = true\n\tfor _, obj := range testObjects {\n\t\tmockObj := obj.(Mock)\n\t\tsuccess = success && mockObj.AssertExpectations(t)\n\t}\n\treturn success\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "7ad2b27aec8188829c8691f8",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "mock/mock.go",
+        "start_byte": 6767,
+        "text": "var success bool = true",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "938c6e1aced69d0f1bb87ceb",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "mock/mock.go",
+        "start_byte": 7074,
+        "text": "func (m *Mock) AssertExpectations(t TestingT) bool {\n\n\tvar somethingMissing bool = false\n\tvar failedExpectations int = 0\n\n\t// iterate through each expectation\n\tfor _, expectedCall := range m.ExpectedCalls {\n\t\tswitch {\n\t\tcase !m.methodWasCalled(expectedCall.Method, expectedCall.Arguments):\n\t\t\tsomethingMissing = true\n\t\t\tfailedExpectations++\n\t\t\tt.Logf(\"\\u274C\\t%s(%s)\", expectedCall.Method, expectedCall.Arguments.String())\n\t\tcase expectedCall.Repeatability > 0:\n\t\t\tsomethingMissing = true\n\t\t\tfailedExpectations++\n\t\tdefault:\n\t\t\tt.Logf(\"\\u2705\\t%s(%s)\", expectedCall.Method, expectedCall.Arguments.String())\n\t\t}\n\t}\n\n\tif somethingMissing {\n\t\tt.Errorf(\"FAIL: %d out of %d expectation(s) were met.\\n\\tThe code you are testing needs to make %d more call(s).\\n\\tat: %s\", len(m.ExpectedCalls)-failedExpectations, len(m.ExpectedCalls), failedExpectations, assert.CallerInfo())\n\t}\n\n\treturn !somethingMissing\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "1890f0da9ce43c31e9e34113",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "mock/mock.go",
+        "start_byte": 7129,
+        "text": "var somethingMissing bool = false",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "e130de13707b6eaa6963dec4",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "mock/mock.go",
+        "start_byte": 8054,
+        "text": "func (m *Mock) AssertNumberOfCalls(t TestingT, methodName string, expectedCalls int) bool {\n\tvar actualCalls int = 0\n\tfor _, call := range m.Calls {\n\t\tif call.Method == methodName {\n\t\t\tactualCalls++\n\t\t}\n\t}\n\treturn assert.Equal(t, actualCalls, expectedCalls, fmt.Sprintf(\"Expected number of calls (%d) does not match the actual number of calls (%d).\", expectedCalls, actualCalls))\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "3e9f5c06377087d8edffb798",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "mock/mock.go",
+        "start_byte": 8489,
+        "text": "func (m *Mock) AssertCalled(t TestingT, methodName string, arguments ...interface{}) bool {\n\tif !assert.True(t, m.methodWasCalled(methodName, arguments), fmt.Sprintf(\"The \\\"%s\\\" method should have been called with %d argument(s), but was not.\", methodName, len(arguments))) {\n\t\tt.Logf(\"%s\", m.ExpectedCalls)\n\t\treturn false\n\t}\n\treturn true\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "d61838e423c7f2406e7f32b3",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "mock/mock.go",
+        "start_byte": 8890,
+        "text": "func (m *Mock) AssertNotCalled(t TestingT, methodName string, arguments ...interface{}) bool {\n\tif !assert.False(t, m.methodWasCalled(methodName, arguments), fmt.Sprintf(\"The \\\"%s\\\" method was called with %d argument(s), but should NOT have been.\", methodName, len(arguments))) {\n\t\tt.Logf(\"%s\", m.ExpectedCalls)\n\t\treturn false\n\t}\n\treturn true\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "b1aa6e1f62b309a8a370f937",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "mock/mock.go",
+        "start_byte": 9236,
+        "text": "func (m *Mock) methodWasCalled(methodName string, expected []interface{}) bool {\n\tfor _, call := range m.Calls {\n\t\tif call.Method == methodName {\n\n\t\t\t_, differences := Arguments(expected).Diff(call.Arguments)\n\n\t\t\tif differences == 0 {\n\t\t\t\t// found the expected call\n\t\t\t\treturn true\n\t\t\t}\n\n\t\t}\n\t}\n\t// we didn't find the expected call\n\treturn false\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "8aba9c43428711ab69bc34c9",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "mock/mock.go",
+        "start_byte": 10396,
+        "text": "func (args Arguments) Get(index int) interface{} {\n\tif index+1 > len(args) {\n\t\tpanic(fmt.Sprintf(\"assert: arguments: Cannot call Get(%d) because there are %d argument(s).\", index, len(args)))\n\t}\n\treturn args[index]\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "9f54e72f3b5903a37c381bcd",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "mock/mock.go",
+        "start_byte": 10676,
+        "text": "func (args Arguments) Is(objects ...interface{}) bool {\n\tfor i, obj := range args {\n\t\tif obj != objects[i] {\n\t\t\treturn false\n\t\t}\n\t}\n\treturn true\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "29aa91e9299a4965e1df9e17",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "mock/mock.go",
+        "start_byte": 10988,
+        "text": "func (args Arguments) Diff(objects []interface{}) (string, int) {\n\n\tvar output string = \"\\n\"\n\tvar differences int\n\n\tvar maxArgCount int = len(args)\n\tif len(objects) > maxArgCount {\n\t\tmaxArgCount = len(objects)\n\t}\n\n\tfor i := 0; i < maxArgCount; i++ {\n\t\tvar actual, expected interface{}\n\n\t\tif len(objects) <= i {\n\t\t\tactual = \"(Missing)\"\n\t\t} else {\n\t\t\tactual = objects[i]\n\t\t}\n\n\t\tif len(args) <= i {\n\t\t\texpected = \"(Missing)\"\n\t\t} else {\n\t\t\texpected = args[i]\n\t\t}\n\n\t\tif reflect.TypeOf(expected) == reflect.TypeOf((*AnythingOfTypeArgument)(nil)).Elem() {\n\n\t\t\t// type checking\n\t\t\tif reflect.TypeOf(actual).Name() != string(expected.(AnythingOfTypeArgument)) && reflect.TypeOf(actual).String() != string(expected.(AnythingOfTypeArgument)) {\n\t\t\t\t// not match\n\t\t\t\tdifferences++\n\t\t\t\toutput = fmt.Sprintf(\"%s\\t%d: \\u274C  type %s != type %s - %s\\n\", output, i, expected, reflect.TypeOf(actual).Name(), actual)\n\t\t\t}\n\n\t\t} else {\n\n\t\t\t// normal checking\n\n\t\t\tif assert.ObjectsAreEqual(expected, Anything) || assert.ObjectsAreEqual(actual, Anything) || assert.ObjectsAreEqual(actual, expected) {\n\t\t\t\t// match\n\t\t\t\toutput = fmt.Sprintf(\"%s\\t%d: \\u2705  %s == %s\\n\", output, i, actual, expected)\n\t\t\t} else {\n\t\t\t\t// not match\n\t\t\t\tdifferences++\n\t\t\t\toutput = fmt.Sprintf(\"%s\\t%d: \\u274C  %s != %s\\n\", output, i, actual, expected)\n\t\t\t}\n\t\t}\n\n\t}\n\n\tif differences == 0 {\n\t\treturn \"No differences.\", differences\n\t}\n\n\treturn output, differences\n\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "e46227fdb3260a6ac00c6e4d",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "mock/mock.go",
+        "start_byte": 12510,
+        "text": "func (args Arguments) Assert(t TestingT, objects ...interface{}) bool {\n\n\t// get the differences\n\tdiff, diffCount := args.Diff(objects)\n\n\tif diffCount == 0 {\n\t\treturn true\n\t}\n\n\t// there are differences... report them...\n\tt.Logf(diff)\n\tt.Errorf(\"%sArguments do not match.\", assert.CallerInfo())\n\n\treturn false\n\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "6b96d090dd7dc39a39565b11",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "mock/mock.go",
+        "start_byte": 13053,
+        "text": "func (args Arguments) String(indexOrNil ...int) string {\n\n\tif len(indexOrNil) == 0 {\n\t\t// normal String() method - return a string representation of the args\n\t\tvar argsStr []string\n\t\tfor _, arg := range args {\n\t\t\targsStr = append(argsStr, fmt.Sprintf(\"%s\", reflect.TypeOf(arg)))\n\t\t}\n\t\treturn strings.Join(argsStr, \",\")\n\t} else if len(indexOrNil) == 1 {\n\t\t// Index has been specified - get the argument at that index\n\t\tvar index int = indexOrNil[0]\n\t\tvar s string\n\t\tvar ok bool\n\t\tif s, ok = args.Get(index).(string); !ok {\n\t\t\tpanic(fmt.Sprintf(\"assert: arguments: String(%d) failed because object wasn't correct type: %s\", index, args.Get(index)))\n\t\t}\n\t\treturn s\n\t}\n\n\tpanic(fmt.Sprintf(\"assert: arguments: Wrong number of arguments passed to String.  Must be 0 or 1, not %d\", len(indexOrNil)))\n\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "ca15425fc9bec899dd978f43",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "mock/mock.go",
+        "start_byte": 13518,
+        "text": "var ok bool",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "f2cb7fc48d088ab8b64b7f52",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "mock/mock.go",
+        "start_byte": 13975,
+        "text": "func (args Arguments) Int(index int) int {\n\tvar s int\n\tvar ok bool\n\tif s, ok = args.Get(index).(int); !ok {\n\t\tpanic(fmt.Sprintf(\"assert: arguments: Int(%d) failed because object wasn't correct type: %v\", index, args.Get(index)))\n\t}\n\treturn s\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "7a24725d6feba0eeb3df1900",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "mock/mock.go",
+        "start_byte": 14030,
+        "text": "var ok bool",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "b08df884e7828c2ab9c828ce",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "mock/mock.go",
+        "start_byte": 14347,
+        "text": "func (args Arguments) Error(index int) error {\n\tobj := args.Get(index)\n\tvar s error\n\tvar ok bool\n\tif obj == nil {\n\t\treturn nil\n\t}\n\tif s, ok = obj.(error); !ok {\n\t\tpanic(fmt.Sprintf(\"assert: arguments: Error(%d) failed because object wasn't correct type: %v\", index, args.Get(index)))\n\t}\n\treturn s\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "c5d5e83f50da598d81582fd0",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "mock/mock.go",
+        "start_byte": 14432,
+        "text": "var ok bool",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "187e34cbb57f56bdfe1cf1f3",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "mock/mock.go",
+        "start_byte": 14773,
+        "text": "func (args Arguments) Bool(index int) bool {\n\tvar s bool\n\tvar ok bool\n\tif s, ok = args.Get(index).(bool); !ok {\n\t\tpanic(fmt.Sprintf(\"assert: arguments: Bool(%d) failed because object wasn't correct type: %v\", index, args.Get(index)))\n\t}\n\treturn s\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "29c6de5405a5fab7d1985d2a",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "mock/mock.go",
+        "start_byte": 14819,
+        "text": "var s bool",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "13fba98cef5f9bc7780e0eef",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "mock/mock.go",
+        "start_byte": 14831,
+        "text": "var ok bool",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "f921a1be4123680414591c40",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "require/requirements.go",
+        "start_byte": 1119,
+        "text": "func Equal(t TestingT, expected, actual interface{}, msgAndArgs ...interface{}) {\n\tif !assert.Equal(t, expected, actual, msgAndArgs...) {\n\t\tt.FailNow()\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "7a5421c603b528c0aae4d407",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "require/requirements.go",
+        "start_byte": 1503,
+        "text": "func Exactly(t TestingT, expected, actual interface{}, msgAndArgs ...interface{}) {\n\tif !assert.Exactly(t, expected, actual, msgAndArgs...) {\n\t\tt.FailNow()\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "6030e603ddb4c92473ff5cfd",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "require/requirements.go",
+        "start_byte": 3274,
+        "text": "func True(t TestingT, value bool, msgAndArgs ...interface{}) {\n\tif !assert.True(t, value, msgAndArgs...) {\n\t\tt.FailNow()\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "e16043eda25a303fb005f095",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "require/requirements.go",
+        "start_byte": 3586,
+        "text": "func False(t TestingT, value bool, msgAndArgs ...interface{}) {\n\tif !assert.False(t, value, msgAndArgs...) {\n\t\tt.FailNow()\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "3d50e079bd4fa81a03569db6",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "require/requirements.go",
+        "start_byte": 3925,
+        "text": "func NotEqual(t TestingT, expected, actual interface{}, msgAndArgs ...interface{}) {\n\tif !assert.NotEqual(t, expected, actual, msgAndArgs...) {\n\t\tt.FailNow()\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "4e708c056d87e858f18fceef",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "require/requirements.go",
+        "start_byte": 6191,
+        "text": "func WithinDuration(t TestingT, expected, actual time.Time, delta time.Duration, msgAndArgs ...interface{}) {\n\tif !assert.WithinDuration(t, expected, actual, delta, msgAndArgs...) {\n\t\tt.FailNow()\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "17727912095fd52bebacb751",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "require/requirements.go",
+        "start_byte": 6594,
+        "text": "func InDelta(t TestingT, expected, actual interface{}, delta float64, msgAndArgs ...interface{}) {\n\tif !assert.InDelta(t, expected, actual, delta, msgAndArgs...) {\n\t\tt.FailNow()\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "f8ae26c38e4c1dd43f978df3",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "require/requirements.go",
+        "start_byte": 6938,
+        "text": "func InEpsilon(t TestingT, expected, actual interface{}, epsilon float64, msgAndArgs ...interface{}) {\n\tif !assert.InEpsilon(t, expected, actual, epsilon, msgAndArgs...) {\n\t\tt.FailNow()\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "543a1a0dc5aeded32b84e386",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "suite/suite.go",
+        "start_byte": 696,
+        "text": "func Run(t *testing.T, suite TestingSuite) {\n\tsuite.SetT(t)\n\n\tif setupAllSuite, ok := suite.(SetupAllSuite); ok {\n\t\tsetupAllSuite.SetupSuite()\n\t}\n\n\tmethodFinder := reflect.TypeOf(suite)\n\ttests := []testing.InternalTest{}\n\tfor index := 0; index < methodFinder.NumMethod(); index++ {\n\t\tmethod := methodFinder.Method(index)\n\t\tok, err := methodFilter(method.Name)\n\t\tif err != nil {\n\t\t\tfmt.Fprintf(os.Stderr, \"testify: invalid regexp for -m: %s\\n\", err)\n\t\t\tos.Exit(1)\n\t\t}\n\t\tif ok {\n\t\t\ttest := testing.InternalTest{\n\t\t\t\tName: method.Name,\n\t\t\t\tF: func(t *testing.T) {\n\t\t\t\t\tparentT := suite.T()\n\t\t\t\t\tsuite.SetT(t)\n\t\t\t\t\tif setupTestSuite, ok := suite.(SetupTestSuite); ok {\n\t\t\t\t\t\tsetupTestSuite.SetupTest()\n\t\t\t\t\t}\n\t\t\t\t\tmethod.Func.Call([]reflect.Value{reflect.ValueOf(suite)})\n\t\t\t\t\tif tearDownTestSuite, ok := suite.(TearDownTestSuite); ok {\n\t\t\t\t\t\ttearDownTestSuite.TearDownTest()\n\t\t\t\t\t}\n\t\t\t\t\tsuite.SetT(parentT)\n\t\t\t\t},\n\t\t\t}\n\t\t\ttests = append(tests, test)\n\t\t}\n\t}\n\n\tif !testing.RunTests(func(_, _ string) (bool, error) { return true, nil },\n\t\ttests) {\n\t\tt.Fail()\n\t}\n\n\tif tearDownAllSuite, ok := suite.(TearDownAllSuite); ok {\n\t\ttearDownAllSuite.TearDownSuite()\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "6a5c51346f35183e2b4fe3d9",
+        "revision": "38aecdc9572fcd0dd085e1616bd078a00da2f8e0",
+        "path": "suite/suite.go",
+        "start_byte": 1947,
+        "text": "func methodFilter(name string) (bool, error) {\n\tif ok, _ := regexp.MatchString(\"^Test\", name); !ok {\n\t\treturn false, nil\n\t}\n\treturn regexp.MatchString(*matchMethod, name)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "007a0761b508fdbc3e2173ff",
+        "revision": "ae37dedcaae6fce497569786a8694aa3daa97abf",
+        "path": "assert/assertions.go",
+        "start_byte": 313,
+        "text": "type Comparison func() (success bool)",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "0f09dd67a8598889e1fe4159",
+        "revision": "ae37dedcaae6fce497569786a8694aa3daa97abf",
+        "path": "assert/assertions.go",
+        "start_byte": 1395,
+        "text": "func CallerInfo() string {\n\n\tfile := \"\"\n\tline := 0\n\tok := false\n\n\tfor i := 0; ; i++ {\n\t\t_, file, line, ok = runtime.Caller(i)\n\t\tif !ok {\n\t\t\treturn \"\"\n\t\t}\n\t\tparts := strings.Split(file, \"/\")\n\t\tdir := parts[len(parts)-2]\n\t\tfile = parts[len(parts)-1]\n\t\tif (dir != \"assert\" && dir != \"mock\" && dir != \"require\") || file == \"mock_test.go\" {\n\t\t\tbreak\n\t\t}\n\t}\n\n\treturn fmt.Sprintf(\"%s:%d\", file, line)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "ccde62530417a14852c3dc2a",
+        "revision": "ae37dedcaae6fce497569786a8694aa3daa97abf",
+        "path": "assert/assertions.go",
+        "start_byte": 1918,
+        "text": "func getWhitespaceString() string {\n\n\t_, file, line, ok := runtime.Caller(1)\n\tif !ok {\n\t\treturn \"\"\n\t}\n\tparts := strings.Split(file, \"/\")\n\tfile = parts[len(parts)-1]\n\n\treturn strings.Repeat(\" \", len(fmt.Sprintf(\"%s:%d:      \", file, line)))\n\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "e7a8517ea2293e88723caa9d",
+        "revision": "ae37dedcaae6fce497569786a8694aa3daa97abf",
+        "path": "assert/assertions.go",
+        "start_byte": 2162,
+        "text": "func messageFromMsgAndArgs(msgAndArgs ...interface{}) string {\n\tif len(msgAndArgs) == 0 || msgAndArgs == nil {\n\t\treturn \"\"\n\t}\n\tif len(msgAndArgs) == 1 {\n\t\treturn msgAndArgs[0].(string)\n\t}\n\tif len(msgAndArgs) > 1 {\n\t\treturn fmt.Sprintf(msgAndArgs[0].(string), msgAndArgs[1:]...)\n\t}\n\treturn \"\"\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "12967c5c39d4793957b68e5d",
+        "revision": "ae37dedcaae6fce497569786a8694aa3daa97abf",
+        "path": "assert/assertions.go",
+        "start_byte": 3191,
+        "text": "func Fail(t TestingT, failureMessage string, msgAndArgs ...interface{}) bool {\n\n\tmessage := messageFromMsgAndArgs(msgAndArgs...)\n\n\tif len(message) > 0 {\n\t\tt.Errorf(\"\\r%s\\r\\tLocation:\\t%s\\n\"+\n\t\t\t\"\\r\\tError:%s\\n\"+\n\t\t\t\"\\r\\tMessages:\\t%s\\n\\r\",\n\t\t\tgetWhitespaceString(),\n\t\t\tCallerInfo(),\n\t\t\tindentMessageLines(failureMessage, 2),\n\t\t\tmessage)\n\t} else {\n\t\tt.Errorf(\"\\r%s\\r\\tLocation:\\t%s\\n\"+\n\t\t\t\"\\r\\tError:%s\\n\\r\",\n\t\t\tgetWhitespaceString(),\n\t\t\tCallerInfo(),\n\t\t\tindentMessageLines(failureMessage, 2))\n\t}\n\n\treturn false\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "1438ecf2de89a004bd1a66e9",
+        "revision": "ae37dedcaae6fce497569786a8694aa3daa97abf",
+        "path": "assert/assertions.go",
+        "start_byte": 3863,
+        "text": "func Implements(t TestingT, interfaceObject interface{}, object interface{}, msgAndArgs ...interface{}) bool {\n\n\tinterfaceType := reflect.TypeOf(interfaceObject).Elem()\n\n\tif !reflect.TypeOf(object).Implements(interfaceType) {\n\t\treturn Fail(t, fmt.Sprintf(\"Object must implement %v\", interfaceType), msgAndArgs...)\n\t}\n\n\treturn true\n\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "7eb9d98c69680032447a2bdc",
+        "revision": "ae37dedcaae6fce497569786a8694aa3daa97abf",
+        "path": "assert/assertions.go",
+        "start_byte": 4265,
+        "text": "func IsType(t TestingT, expectedType interface{}, object interface{}, msgAndArgs ...interface{}) bool {\n\n\tif !ObjectsAreEqual(reflect.TypeOf(object), reflect.TypeOf(expectedType)) {\n\t\treturn Fail(t, fmt.Sprintf(\"Object expected to be of type %v, but was %v\", reflect.TypeOf(expectedType), reflect.TypeOf(object)), msgAndArgs...)\n\t}\n\n\treturn true\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "73ed4f7c7031c354160cab01",
+        "revision": "ae37dedcaae6fce497569786a8694aa3daa97abf",
+        "path": "assert/assertions.go",
+        "start_byte": 4799,
+        "text": "func Equal(t TestingT, expected, actual interface{}, msgAndArgs ...interface{}) bool {\n\n\tif !ObjectsAreEqual(expected, actual) {\n\t\treturn Fail(t, fmt.Sprintf(\"Not equal: %#v (expected)\\n\"+\n\t\t\t\"        != %#v (actual)\", expected, actual), msgAndArgs...)\n\t}\n\n\treturn true\n\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "dc8b7dac3a76e5dacc878a01",
+        "revision": "ae37dedcaae6fce497569786a8694aa3daa97abf",
+        "path": "assert/assertions.go",
+        "start_byte": 5298,
+        "text": "func Exactly(t TestingT, expected, actual interface{}, msgAndArgs ...interface{}) bool {\n\n\taType := reflect.TypeOf(expected)\n\tbType := reflect.TypeOf(actual)\n\n\tif aType != bType {\n\t\treturn Fail(t, \"Types expected to match exactly\", \"%v != %v\", aType, bType)\n\t}\n\n\treturn Equal(t, expected, actual, msgAndArgs...)\n\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "231c9c97c9d6c61db07ceb4d",
+        "revision": "ae37dedcaae6fce497569786a8694aa3daa97abf",
+        "path": "assert/assertions.go",
+        "start_byte": 5802,
+        "text": "func NotNil(t TestingT, object interface{}, msgAndArgs ...interface{}) bool {\n\n\tsuccess := true\n\n\tif object == nil {\n\t\tsu",
+        "rank": 2,
+        "truncated": true
+      }
+    ]
+  },
+  "retrieval": {
+    "unresolved": [
+      {
+        "side": "ours",
+        "identifier": "ObjectsAreEqual",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "expected",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "bool",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "reflect",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "DeepEqual",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "actualType",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "TypeOf",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "expectedType",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "ConvertibleTo",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "actualValue",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "ValueOf",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Convert",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Interface",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "fmt",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Sprintf",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "ObjectsAreEqual",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "expected",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "bool",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "reflect",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "DeepEqual",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "actualType",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "TypeOf",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "ConvertibleTo",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "expectedValue",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "ValueOf",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Convert",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Interface",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "fmt",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Sprintf",
+        "reason": "no-unique-declaration-established"
+      }
+    ],
+    "method": "syntax-ranges-and-identifier-candidates/3",
+    "budget_bytes": 32768,
+    "libraries": {
+      "C": "cbbd4827ee02cd5c018ab41f10d8404ff8741159054b352d9a6d763c506ba3c7",
+      "Go": "1612f8fd958ba1ec981bf4b91e2ff399f1e54d26a9da68e5b60b0d7cd00616fc"
+    }
+  }
+}

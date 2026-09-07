@@ -2,6 +2,9 @@
 
 ## 12. Evidence ledger (for `/plan` traceability)
 
+| ID | Finding | Evidence |
+| --- | --- | --- |
+| H0-R4 | **2026-09-06: valid concrete-output confirmation; MEASURABLE=NO; Phase 3 complete, Phase 4 ready.** 92 distinct confirmation merge cases, 276 model requests; exact paired selected-primary gate. Historical agreement only. | [Result](../../../../evidence/h0/v2-2026-09-06b/RESULT.md); [protocol](../../../../evidence/h0/v2-2026-09-06b/protocol.json); [aggregate](../../../../evidence/h0/v2-2026-09-06b/confirmation-aggregate.json) |
 | H0-R3 | **Fresh run VALID and NULL** (2026-08-30). 540 records across three repositories / two languages; PRNG, citation, and adjudicator gates closed, so the run is clean. The WP3/WP4 acceptance gate was then executed for the first time and **not met**: no arm beats the best trivial baseline, every triple-correct delta is negative, and `arm_only = 0` at both units. Recorded with it: the gate is unsatisfiable by construction under the current grader. | evidence/h0/SIGNIFICANCE-2026-08-30T02-54-42-056Z.md; evidence/h0/REVIEW-2026-08-30T02-54-42-056Z.md; evidence/h0/aggregate-2026-08-30T02-54-42-056Z.json |
 | H0-R2 | Historical 2026-08-29 run: invalid; broken PRNG and single-repository sample. Superseded for current status by H0-R3. | evidence/h0/REVIEW-2026-08-29.md |
 | M0-E1 | clean-clone install / typecheck / 120 tests / build / carried-file verification / negative self-test / CLI smoke all PASS | `phases/m0/closure-evidence.md` |

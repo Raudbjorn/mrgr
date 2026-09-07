@@ -25,8 +25,8 @@ function restoreEnv(name: string, value: string | undefined): void {
 }
 
 // mergiraf is an external Rust binary, not a workspace dependency — it's not
-// installed in every environment (notably CI, which only sets up Node/pnpm).
-// Skip rather than fail so the suite doesn't break wherever it's absent.
+// installed in every environment. These isolated tests may skip; the real
+// Git-driver gate requires 0.19.0, and CI installs that pinned version.
 function mergirafAvailable(): boolean {
 	try {
 		execFileSync(process.env.MERGIRAF_BIN ?? "mergiraf", ["--version"], { stdio: "ignore" });
@@ -108,6 +108,8 @@ describe("mergiraf output verification", () => {
 			expect(result.ok).toBe(true);
 			if (!result.ok) return;
 			expect(result.value.normalizedStatus).toBe(130);
+			expect(result.value.rawStatus).toBe(0);
+			expect(result.value.error).toContain("ENOENT");
 			expect(readFileSync(oursPath, "utf8")).toBe("ours-original\n");
 		} finally {
 			restoreEnv("MERGIRAF_BIN", originalBin);

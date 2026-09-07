@@ -1,0 +1,1519 @@
+{
+  "id": "d03a37efe4197a4ec34a8959eec2bdfdcb44fd38926356aa3887a18b9fcb43e9",
+  "source_protocol_sha256": "86ffe38086e217acf6e1a4aa4162e226862463d1bde3160478f9a6f4d2b968ce",
+  "repair_module_sha256": "b6a7cf123b0ac50001e1498cdf64964b8ac56e8e6a68cbbc6dcc01c8517b4a20",
+  "contexts": {
+    "local-context": [
+      {
+        "id": "1aeb820be2ea18a53d9ea380",
+        "revision": "4bd5cbf9eea76f6e525add1bb43f351ca3685266",
+        "path": "libgobuster/libgobuster.go",
+        "start_byte": 0,
+        "text": "package libgobuster\n\nimport (\n\t\"bufio\"\n\t\"context\"\n\t\"errors\"\n\t\"fmt\"\n\t\"io\"\n\t\"os\"\n\t\"strings\"\n\t\"sync\"\n\t\"time\"\n)\n\n// PATTERN is the pattern for wordlist replacements in pattern file\nconst PATTERN = \"{GOBUSTER}\"\n\n// SetupFunc is the \"setup\" function prototype for implementations\ntype SetupFunc func(*Gobuster) error\n\n// ProcessFunc is the \"process\" function prototype for implementations\ntype ProcessFunc func(*Gobuster, string) ([]Result, error)\n\n// ResultToStringFunc is the \"to string\" function prototype for implementations\ntype ResultToStringFunc func(*Gobuster, *Result) (*string, error)\n\n// Gobuster is the main object when creating a new run\ntype Gobuster struct {\n\tOpts     *Options\n\tLogger   *Logger\n\tplugin   GobusterPlugin\n\tProgress *Progress\n}\n\ntype Guess struct {\n\tword              string\n\tdiscoverOnSuccess bool\n}\n\ntype Wordlist struct {\n\tscanner        *bufio.Scanner\n\tguessesPerLine int\n\tisStream       bool\n}\n\n// NewGobuster returns a new Gobuster object\nfunc NewGobuster(opts *Options, plugin GobusterPlugin, logger *Logger) (*Gobuster, error) {\n\tvar g Gobuster\n\tg.Opts = opts\n\tg.plugin = plugin\n\tg.Logger = logger\n\tg.Progress = NewProgress()\n\n\treturn &g, nil\n}\n\nfunc (g *Gobuster) worker(ctx context.Context, guessChan <-chan *Guess, successChan chan<- *Guess, wg *sync.WaitGroup) {\n\tdefer wg.Done()\n\tfor {\n\t\t// Prioritize stopping when the context is done\n\t\tselect {\n\t\tcase <-ctx.Done():\n\t\t\treturn\n\t\tdefault:\n\t\t}\n\t\tselect {\n\t\tcase <-ctx.Done():\n\t\t\treturn\n\t\tcase guess := <-guessChan:\n\n\t\t\t// Mode-specific processing\n\t\t\tres, err := g.plugin.ProcessWord(ctx, guess.word, g.Progress)\n\t\t\tif err != nil {\n\t\t\t\t// do not exit and continue\n\t\t\t\tg.Progress.ErrorChan <- fmt.Errorf(\"error on word %s: %w\", guess.word, err)\n\t\t\t}\n\n\t\t\tif res != nil {\n\t\t\t\tg.Progress.ResultChan <- res\n\n\t\t\t\tselect {\n\t\t\t\tcase <-ctx.Done():\n\t\t\t\t\tg.Progress.incrementRequests()\n\t\t\t\t\treturn\n\t\t\t\tcase successChan <- guess:\n\t\t\t\t}\n\t\t\t}\n\n\t\t\tg.Progress.incrementRequests()\n\n\t\t\tselect {\n\t\t\tcase <-ctx.Done():\n\t\t\tcase <-time.After(g.Opts.Delay):\n\t\t\t}\n\t\t}\n\t}\n}\n\nfunc feed(ctx context.Context, guessChan chan<- *Guess, words []string, discoverOnSuccess bool) {\n\tfor _, w := range words {\n\t\tguess := &Guess{word: w, discoverOnSuccess: discoverOnSuccess}\n\t\t// Prioritize stopping when the context is done\n\t\tselect {\n\t\tcase <-ctx.Done():\n\t\t\treturn\n\t\tdefault:\n\t\t}\n\t\tselect {\n\t\t// need to check here too otherwise guessChan will block\n\t\tcase <-ctx.Done():\n\t\t\treturn\n\t\tcase guessChan <- guess:\n\t\t}\n\t}\n}\n\nfunc (g *Gobuster) feeder(ctx context.Context, guessChan chan<- *Guess, words []string, discoverOnSuccess bool, wg *sync.WaitGroup) {\n\tdefer wg.Done()\n\n\tfeed(ctx, guessChan, words, discoverOnSuccess)\n}\n\nfunc (g *Gobuster) feedWordlist(ctx context.Context, guessChan chan<- *Guess, wordlist *Wordlist, wg *sync.WaitGroup) {\n\tdefer wg.Done()\n\n\tfor wordlist.scanner.Scan() {\n\t\t// Prioritize stopping when the context is done\n\t\tselect {\n\t\tcase <-ctx.Done():\n\t\t\treturn\n\t\tdefault:\n\t\t}\n\n\t\tword := strings.TrimSpace(wordlist.scanner.Text())\n\n\t\tswitch {\n\t\tcase wordlist.isStream && len(word) != 0:\n\t\t\t// Increment to keep track of expected work\n\t\t\tg.Progress.IncrementTotalRequests(wordlist.guessesPerLine)\n\t\tcase wordlist.isStream && len(word) == 0:\n\t\t\t// Skip empty lines without incrementing\n\t\t\tcontinue\n\t\tcase len(word) == 0:\n\t\t\t// Skip empty lines removing expected work\n\t\t\tg.Progress.IncrementTotalRequests(-1 * wordlist.guessesPerLine)\n\t\t\tcontinue\n\t\t}\n\n\t\tif len(g.Opts.Patterns) > 0 {\n\t\t\tfor _, w := range g.processPatterns(word) {\n\t\t\t\tguess := &Guess{word: w, discoverOnSuccess: true}\n\t\t\t\tselect {\n\t\t\t\tcase <-ctx.Done():\n\t\t\t\t\treturn\n\t\t\t\tcase guessChan <- guess:\n\t\t\t\t}\n\n\t\t\t\tfeed(ctx, guessChan, g.plugin.AdditionalWords(w), true)\n\t\t\t}\n\t\t} else {\n\t\t\tguess := &Guess{word: word, discoverOnSuccess: true}\n\n\t\t\tselect {\n\t\t\tcase <-ctx.Done():\n\t\t\t\treturn\n\t\t\tcase guessChan <- guess:\n\t\t\t}\n\n\t\t\tfeed(ctx, guessChan, g.plugin.AdditionalWords(word), true)\n\t\t}\n\t}\n}\n\nfunc (g *Gobuster) getWordlist(wordlist io.ReadSeeker) (*Wordlist, error) {\n\t// calculate expected requests\n\tvar guessesPerLine int\n\tif len(g.Opts.Patterns) > 0 {\n\t\tnPats := len(g.Opts.Patterns)\n\t\tguessesPerLine = nPats + nPats*g.plugin.AdditionalWordsLen()\n\t} else {\n\t\tguessesPerLine = 1 + g.plugin.AdditionalWordsLen()\n\t}\n\n\tif g.Opts.Wordlist == \"-\" {\n\t\t// Read directly from stdin\n\t\treturn &Wordlist{scanner: bufio.NewScanner(os.Stdin), guessesPerLine: guessesPerLine, isStream: true}, nil\n\t}\n\n\tlines, err := lineCounter(wordlist)\n\tif err != nil {\n\t\treturn nil, fmt.Errorf(\"failed to get number of lines: %w\", err)\n\t}\n\n\tif lines-g.Opts.WordlistOffset <= 0 {\n\t\treturn nil, errors.New(\"offset is greater than the number of lines in the wordlist\")\n\t}\n\n\tg.Progress.IncrementTotalRequests(lines * guessesPerLine)\n\n\t// add offset if needed (offset defaults to 0)\n\tg.Progress.incrementRequestsIssues(g.Opts.WordlistOffset * guessesPerLine)\n\n\t// rewind wordlist after lineCounter\n\t_, err = wordlist.Seek(0, 0)\n\tif err != nil {\n\t\treturn nil, fmt.Errorf(\"failed to rewind wordlist: %w\", err)\n\t}\n\n\twordlistScanner := bufio.NewScanner(wordlist)\n\n\t// skip lines\n\tfor range g.Opts.WordlistOffset {\n\t\tif !wordlistScanner.Scan() {\n\t\t\tif err := wordlistScanner.Err(); err != nil {\n\t\t\t\treturn nil, fmt.Errorf(\"failed to skip lines in wordlist: %w\", err)\n\t\t\t}\n\t\t\treturn nil, errors.New(\"failed to skip lines in wordlist\")\n\t\t}\n\t}\n\n\treturn &Wordlist{scanner: wordlistScanner, guessesPerLine: guessesPerLine, isStream: false}, nil\n}\n\n// Run the busting of the website with the given\n// set of settings from the command line.\nfunc (g *Gobuster) Run(ctx context.Context) error {\n\tdefer close(g.Progress.ResultChan)\n\tdefer close(g.Progress.ErrorChan)\n\tdefer close(g.Progress.MessageChan)\n\n\tif err := g.plugin.PreRun(ctx, g.Progress); err != nil {\n\t\treturn err\n\t}\n\n\tworkerCtx, workerCancel := context.WithCancel(ctx)\n\tdefer workerCancel()\n\tfeederCtx, feederCancel := context.WithCancel(ctx)\n\tdefer feederCancel()\n\n\tvar workerGroup, feederGroup sync.WaitGroup\n\tworkerGroup.Add(g.Opts.Threads)\n\n\tguessChan := make(chan *Guess, g.Opts.Threads*3)\n\tsuccessChan := make(chan *Guess)\n\n\tvar f io.ReadSeekCloser\n\tif g.Opts.Wordlist != \"-\" { // stdin case is handled inside getWordlist\n\t\tvar err error\n\t\tf, err = os.Open(g.Opts.Wordlist)\n\t\tif err != nil {\n\t\t\treturn fmt.Errorf(\"failed to open wordlist: %w\", err)\n\t\t}\n\t\tdefer f.Close()\n\t}\n\n\twordlist, err := g.getWordlist(f)\n\tif err != nil {\n\t\treturn err\n\t}\n\n\t// Create goroutines for each of the number of threads\n\t// specified.\n\tfor range g.Opts.Threads {\n\t\tgo g.worker(workerCtx, guessChan, successChan, &workerGroup)\n\t}\n\n\tfeederGroup.Add(1)\n\tgo g.feedWordlist(feederCtx, guessChan, wordlist, &feederGroup)\n\nListenForMore:\n\tfor {\n\t\t// Prioritize stopping when the context is done\n\t\tselect {\n\t\tcase <-ctx.Done():\n\t\t\tbreak ListenForMore\n\t\tdefault:\n\t\t}\n\n\t\tselect {\n\t\tcase <-ctx.Done():\n\t\t\tbreak ListenForMore\n\t\tcase successGuess := <-successChan:\n\t\t\tif !successGuess.discoverOnSuccess {\n\t\t\t\tbreak\n\t\t\t}\n\t\t\tdiscoverWords := g.plugin.AdditionalSuccessWords(successGuess.word)\n\t\t\tpatternDiscoverWords := g.processDiscoverPatterns(successGuess.word)\n\t\t\tif len(discoverWords) > 0 {\n\t\t\t\tg.Progress.IncrementTotalRequests(len(discoverWords))\n\t\t\t\tfeederGroup.Add(1)\n\t\t\t\tgo g.feeder(feederCtx, guessChan, discoverWords, false, &feederGroup)\n\t\t\t}\n\t\t\tif len(patternDiscoverWords) > 0 {\n\t\t\t\tg.Progress.IncrementTotalRequests(len(patternDiscoverWords))\n\t\t\t\tfeederGroup.Add(1)\n\t\t\t\tgo g.feeder(feederCtx, guessChan, patternDiscoverWords, false, &feederGroup)\n\t\t\t}\n\t\tcase <-time.After(200 * time.Millisecond):\n\t\t\t// With requests issued only after the results are synchronously\n\t\t\t// reported, this is well ordered without the timeout, however it would\n\t\t\t// exert a lot of lock pressure during the run to keep doing this in a\n\t\t\t// hot loop\n\t\t\tif g.Progress.RequestsExpected() == g.Progress.RequestsIssued() {\n\t\t\t\t// All the expected requests have completed, there is no pending or\n\t\t\t\t// in-progress work. If moreWordsChan was buffered we would need to\n\t\t\t\t// check it again here to ensure no pending work was added while we\n\t\t\t\t// acquired the locks\n\t\t\t\tbreak ListenForMore\n\t\t\t}\n\t\t}\n\t}\n\n\tfeederCancel()\n\tworkerCancel()\n\tfeederGroup.Wait()\n\tworkerGroup.Wait()\n\n\tif err := wordlist.scanner.Err(); err != nil {\n\t\treturn err\n\t}\n\n\treturn nil\n}\n\n// GetConfigString returns the current config as a printable string\nfunc (g *Gobuster) GetConfigString() (string, error) {\n\treturn g.plugin.GetConfigString()\n}\n\nfunc (g *Gobuster) processPatterns(word string) []string {\n\tif g.Opts.PatternFile == \"\" {\n\t\treturn nil\n\t}\n\n\treturn g.applyPatterns(word, g.Opts.Patterns)\n}\n\nfunc (g *Gobuster) processDiscoverPatterns(word string) []string {\n\tif g.Opts.DiscoverPatternFile == \"\" {\n\t\treturn nil\n\t}\n\n\treturn g.applyPatterns(word, g.Opts.DiscoverPatterns)\n}\n\nfunc (g *Gobuster) applyPatterns(word string, patterns []string) []string {\n\tpat := make([]string, len(patterns))\n\tfor i, x := range patterns {\n\t\tpat[i] = strings.ReplaceAll(x, PATTERN, word)\n\t}\n\treturn pat\n}\n",
+        "rank": 0,
+        "truncated": false
+      },
+      {
+        "id": "d1f1f1a3111298690ee06f9f",
+        "revision": "c098dea3524389a3116574b33049b549b92c78b8",
+        "path": "libgobuster/libgobuster.go",
+        "start_byte": 2197,
+        "text": "ess, result: res}:\n\t\t\t\t}\n\t\t\t}\n\n\t\t\tg.Progress.incrementRequests()\n\n\t\t\tselect {\n\t\t\tcase <-ctx.Done():\n\t\t\tcase <-time.After(g.Opts.Delay):\n\t\t\t}\n\t\t}\n\t}\n}\n\nfunc feed(ctx context.Context, guessChan chan<- *Guess, words []string, discoverOnSuccess bool) {\n\tfor _, w := range words {\n\t\tguess := &Guess{word: w, discoverOnSuccess: discoverOnSuccess}\n\t\t// Prioritize stopping when the context is done\n\t\tselect {\n\t\tcase <-ctx.Done():\n\t\t\treturn\n\t\tdefault:\n\t\t}\n\t\tselect {\n\t\t// need to check here too otherwise guessChan will block\n\t\tcase <-ctx.Done():\n\t\t\treturn\n\t\tcase guessChan <- guess:\n\t\t}\n\t}\n}\n\nfunc (g *Gobuster) feeder(ctx context.Context, guessChan chan<- *Guess, words []string, discoverOnSuccess bool, wg *sync.WaitGroup) {\n\tdefer wg.Done()\n\n\tfeed(ctx, guessChan, words, discoverOnSuccess)\n}\n\nfunc (g *Gobuster) feedWordlist(ctx context.Context, guessChan chan<- *Guess, wordlist *Wordlist, scanDone chan<- error, wg *sync.WaitGroup) {\n\tdefer wg.Done()\n\tdefer func() { scanDone <- wordlist.scanner.Err() }()\n\n\tfor wordlist.scanner.Scan() {\n\t\t// Prioritize stopping when the context is done\n\t\tselect {\n\t\tcase <-ctx.Done():\n\t\t\treturn\n\t\tdefault:\n\t\t}\n\n\t\tword := strings.TrimSpace(wordlist.scanner.Text())\n\n\t\tswitch {\n\t\tcase wordlist.isStream && len(word) != 0:\n\t\t\t// Increment to keep track of expected work\n\t\t\tg.Progress.IncrementTotalRequests(wordlist.guessesPerLine)\n\t\tcase wordlist.isStream && len(word) == 0:\n\t\t\t// Skip empty lines without incrementing\n\t\t\tcontinue\n\t\tcase len(word) == 0:\n\t\t\t// Skip empty lines removing expected work\n\t\t\tg.Progress.IncrementTotalRequests(-1 * wordlist.guessesPerLine)\n\t\t\tcontinue\n\t\t}\n\n\t\tif len(g.Opts.Patterns) > 0 {\n\t\t\tfor _, w := range g.processPatterns(word) {\n\t\t\t\tguess := &Guess{word: w, discoverOnSuccess: true}\n\t\t\t\tselect {\n\t\t\t\tcase <-ctx.Done():\n\t\t\t\t\treturn\n\t\t\t\tcase guessChan <- guess:\n\t\t\t\t}\n\n\t\t\t\tfeed(ctx, guessChan, g.plugin.AdditionalWords(w), true)\n\t\t\t}\n\t\t} else {\n\t\t\tguess := &Guess{word: word, discoverOnSuccess: true}\n\n\t\t\tselect {\n\t\t\tcase <-ctx.Done():\n\t\t\t\treturn\n\t\t\tcase guessChan <- guess:\n\t\t\t}\n\n\t\t\tfeed(ctx, guessChan, g.plugin.AdditionalWords(word), true)\n\t\t}\n\t}\n}\n\nfunc (g *Gobuster) getWordlistCache() (*wordlistCache, error) {\n\tvar guessesPerLine int\n\tif len(g.Opts.Patterns) > 0 {\n\t\tnPats := len(g.Opts.Patterns)\n\t\tguessesPerLine = nPats + nPats*g.plugin.AdditionalWordsLen()\n\t} else {\n\t\tguessesPerLine = 1 + g.plugin.AdditionalWordsLen()\n\t}\n\n\tif g.Opts.Wordlist == \"-\" {\n\t\treturn &wordlistCache{guessesPerLine: guessesPerLine}, nil\n\t}\n\n\tf, err := os.Open(g.Opts.Wordlist)\n\tif err != nil {\n\t\treturn nil, fmt.Errorf(\"failed to open wordlist: %w\", err)\n\t}\n\tdefer f.Close()\n\n\tlines, err := lineCounter(f)\n\tif err != nil {\n\t\treturn nil, fmt.Errorf(\"failed to get number of lines: %w\", err)\n\t}\n\tif lines-g.Opts.WordlistOffset <= 0 {\n\t\treturn nil, errors.New(\"offset is greater than the number of lines in the wordlist\")\n\t}\n\n\treturn &wordlistCache{guessesPerLine: guessesPerLine, lineCount: lines}, nil\n}\n\nfunc (g *Gobuster) getWordlist(wordlist io.ReadSeeker) (*Wordlist, error) {\n\tguessesPerLine := 0\n\tif g.wordlistCache != nil {\n\t\tguessesPerLine = g.wordlistCache.guessesPerLine\n\t} else {\n\t\tif len(g.Opts.Patterns) > 0 {\n\t\t\tnPats := len(g.Opts.Patterns)\n\t\t\tguessesPerLine = nPats + nPats*g.plugin.AdditionalWordsLen()\n\t\t} else {\n\t\t\tguessesPerLine = 1 + g.plugin.AdditionalWordsLen()\n\t\t}\n\t}\n\n\tif g.Opts.Wordlist == \"-\" {\n\t\t// Read directly from stdin\n\t\tscanner := bufio.NewScanner(os.Stdin)\n\t\tscanner.Buffer(make([]byte, 64*1024), maxWordlistLineSize)\n\t\treturn &Wordlist{scanner: scanner, guessesPerLine: guessesPerLine, isStream: true}, nil\n\t}\n\n\tlines := 0\n\tvar err error\n\tif g.wordlistCache != nil {\n\t\tlines = g.wordlistCache.lineCount\n\t} else {\n\t\tlines, err = lineCounter(wordlist)\n\t\tif err != nil {\n\t\t\treturn nil, fmt.Errorf(\"failed to get number of lines: %w\", err)\n\t\t}\n\t}\n\n\tif lines-g.Opts.WordlistOffset <= 0 {\n\t\treturn nil, errors.New(\"offset is greater than the number of lines in the wordlist\")\n\t}\n\n\tg.Progress.IncrementTotalRequests(lines * guessesPerLine)\n\n\t// add offset if needed (offset defaults to 0)\n\tg.Progress.incrementRequestsIssues(g.Opts.WordlistOffset * guessesPerLine)\n\n\t// rewind wordlist after lineCounter\n\t_, err = wordlist.Seek(0, 0)\n\tif err != nil {\n\t\treturn nil, fmt.Errorf(\"failed to rewind wordlist: %w\", err)\n\t}\n\n\twordlistScanner := bufio.NewScanner(wordlist)\n\twordlistScanner.Buffer(make([]byte, 64*1024), maxWordlistLineSize)\n\n\t// skip lines\n\tfor range g.Opts.WordlistOffset {\n\t\tif !wordlistScanner.Scan() {\n\t\t\tif err := wordlistScanner.Err(); err != nil {\n\t\t\t\treturn nil, fmt.Errorf(\"failed to skip lines in wordlist: %w\", err)\n\t\t\t}\n\t\t\treturn nil, errors.New(\"failed to skip lines in wordlist\")\n\t\t}\n\t}\n\n\treturn &Wordlist{scanner: wordlistScanner, guessesPerLine: guessesPerLine, isStream: false}, nil\n}\n\n// Run the busting of the website with the given\n// set of settings from the command line.\nfunc (g *Gobuster) Run(ctx context.Context) error {\n\tdefer close(g.Progress.ResultChan)\n\tdefer close(g.Progress.ErrorChan)\n\tdefer close(g.Progress.MessageChan)\n\tg.wordlistCache = nil\n\n\tif !g.Opts.Recursion {\n\t\treturn g.runTarget(ctx, nil)\n\t}\n\tplugin, ok := g.plugin.(RecursivePlugin)\n\tif !ok {\n\t\treturn errors.New(\"the selected plugin does not support recursion\")\n\t}\n\tif g.Opts.Wordlist == \"-\" {\n\t\treturn errors.New(\"recursion is not supported with a wordlist read from stdin\")\n\t}\n\n\tcache, err := g.getWordlistCache()\n\tif err != nil {\n\t\treturn err\n\t}\n\tg.wordlistCache = cache\n\n\ttype target struct {\n\t\turl   string\n\t\tdepth int\n\t}\n\tqueue := []target{{}}\n\tseen := make(map[string]struct{})\n\tfor len(queue) > 0 {\n\t\tcurrent := queue[0]\n\t\tqueue = queue[1:]\n\t\tif current.url != \"\" {\n\t\t\tif err := plugin.SetTarget(current.url); err != nil {\n\t\t\t\treturn fmt.Errorf(\"failed to set recursive target %q: %w\", current.url, err)\n\t\t\t}\n\t\t}\n\n\t\tvar discovered []string\n\t\tif err := g.runTarget(ctx, func(result Result) {\n\t\t\trecursiveResult, ok := result.(RecursiveResult)\n\t\t\tif !ok {\n\t\t\t\treturn\n\t\t\t}\n\t\t\ttargetURL := recursiveResult.RecursiveTarget()\n\t\t\tif targetURL != \"\" {\n\t\t\t\tdiscovered = append(discovered, targetURL)\n\t\t\t}\n\t\t}); err != nil {\n\t\t\treturn err\n\t\t}\n\t\tif err := ctx.Err(); err != nil {\n\t\t\treturn nil\n\t\t}\n\t\tif g.Opts.RecursionDepth > 0 && current.depth >= g.Opts.RecursionDepth {\n\t\t\tcontinue\n\t\t}\n\t\tfor _, targetURL := range discovered {\n\t\t\tif _, exists := seen[targetURL]; exists {\n\t\t\t\tcontinue\n\t\t\t}\n\t\t\tseen[targetURL] = struct{}{}\n\t\t\tif g.Opts.RecursionMaxTargets > 0 && len(seen) > g.Opts.RecursionMaxTargets {\n\t\t\t\treturn fmt.Errorf(\"recursive target limit of %d exceeded\", g.Opts.RecursionMaxTargets)\n\t\t\t}\n\t\t\tqueue = append(queue, target{url: targetURL, depth: current.depth + 1})\n\t\t}\n\t}\n\treturn nil\n}\n\n// runTarget runs one complete wordlist against the plugin's current target.\n// It does not close the public channels; Run owns their lifetime across all\n// recursive targets.\nfunc (g *Gobuster) runTarget(ctx context.Context, onResult func(Result)) error {\n\tif err := g.plugin.PreRun(ctx, g.Progress); err != nil {\n\t\treturn err\n\t}\n\n\tworkerCtx, workerCancel := context.WithCancel(ctx)\n\tdefer workerCancel()\n\tfeederCtx, feederCancel := context.WithCancel(ctx)\n\tdefer feederCancel()\n\n\tvar workerGroup, feederGroup sync.WaitGroup\n\tworkerGroup.Add(g.Opts.Threads)\n\n\tguessChan := make(chan *Guess, g.Opts.Threads*3)\n\tsuccessChan := make(chan successfulGuess)\n\tscanDone := make(chan error, 1)\n\n\tvar f io.ReadSeekCloser\n\tif g.Opts.Wordlist != \"-\" { // stdin case is handled inside getWordlist\n\t\tvar err error\n\t\tf, err = os.Open(g.Opts.Wordlist)\n\t\tif err != nil {\n\t\t\treturn fmt.Errorf(\"failed to open wordlist: %w\", err)\n\t\t}\n\t\tdefer f.Close()\n\t}\n\n\twordlist, err := g.getWordlist(f)\n\tif err != nil {\n\t\treturn err\n\t}\n\n\t// Create goroutines for each of the number of threads\n\t// specified.\n\tfor range g.Opts.Threads {\n\t\tgo g.worker(workerCtx, guessChan, successChan, &workerGroup)\n\t}\n\n\tfeederGroup.Add(1)\n\tgo g.feedWordlist(feederCtx, guessChan, wordlist, scanDone, &feederGroup)\n\n\twordlistFinished := false\n\tvar scanErr error\nListenForMore:\n\tfor {\n\t\t// Prioritize stopping when the context is done\n\t\tselect {\n\t\tcase <-ctx.Done():\n\t\t\tbreak ListenForMore\n\t\tdefault:\n\t\t}\n\n\t\tselect {\n\t\tcase <-ctx.Done():\n\t\t\tbreak ListenForMore\n\t\tcase scanErr = <-scanDone:\n\t\t\twordlistFinished = true\n\t\t\tif scanErr != nil {\n\t\t\t\tbreak ListenForMore\n\t\t\t}\n\t\tcase success := <-successChan:\n\t\t\tif onResult != nil {\n\t\t\t\tonResult(success.result)\n\t\t\t}\n\t\t\t// Add more guesses based on the results of previous attempts\n\t\t\tif success.guess.discoverOnSuccess {\n\t\t\t\tdiscoverWords := g.plugin.AdditionalSuccessWords(success.guess.word)\n\t\t\t\tif len(discoverWords) > 0 {\n\t\t\t\t\tg.Progress.IncrementTotalRequests(len(discoverWords))\n\t\t\t\t\tfeederGroup.Add(1)\n\t\t\t\t\tgo g.feeder(feederCtx, guessChan, discoverWords, false, &feederGroup)\n\t\t\t\t}\n\n\t\t\t\tpatternDiscoverWords := g.processDiscoverPatterns(success.guess.word)\n\t\t\t\tif len(patternDiscoverWords) > 0 {\n\t\t\t\t\tg.Progress.IncrementTotalRequests(len(patternDiscoverWords))\n\t\t\t\t\tfeederGroup.Add(1)\n\t\t\t\t\tgo g.feeder(feederCtx, guessChan, patternDiscoverWords, false, &feederGroup)\n\t\t\t\t}\n\t\t\t}\n\t\tcase <-time.After(200 * time.Millisecond):\n\t\t\t// With requests issued only after the results are synchronously\n\t\t\t// reported, this is well ordered without the timeout, however it would\n\t\t\t// exert a lot of lock pressure during the run to keep doing this in a\n\t\t\t// hot loop\n\t\t\tif wordlistFinished && g.Progress.RequestsExpected() == g.Progress.RequestsIssued() {\n\t\t\t\t// All the expected requests have completed, there is no pending or\n\t\t\t\t// in-progress work. If moreWordsChan was buffered we would need to\n\t\t\t\t// check it again here to ensure no pending work was added while we\n\t\t\t\t// acquired the locks\n\t\t\t\tbreak ListenForMore\n\t\t\t}\n\t\t}\n\t}\n\n\tfeederCancel()\n\tworkerCancel()\n\tfeederGroup.Wait()\n\tworkerGroup.Wait()\n\n\tif scanErr != nil {\n\t\treturn scanErr\n\t}\n\n\treturn nil\n}\n\n// GetConfigString returns the current config as a printable string\nfunc (g *Gobuster) GetConfigString() (string, error) {\n\treturn g.plugin.GetConfigString()\n}\n\nfunc (g *Gobuster) processPatterns(word string) []string {\n\tif g.Opts.PatternFile == \"\" {\n\t\treturn nil\n\t}\n\n\treturn g.applyPatterns(word, g.Opts.Patterns)\n}\n\nfunc (g *Gobuster) processDiscoverPatterns(word string) []string {\n\tif g.Opts.DiscoverPatternFile == \"\" {\n\t\treturn nil\n\t}\n\n\treturn g.applyPatterns(word, g.Opts.DiscoverPatterns)\n}\n\nfunc (g *Gobuster) applyPatterns(word string, patterns []string) []string {\n\tpat := make([]string, len(patterns))\n\tfor i, x := range patterns {\n\t\tpat[i] = strings.ReplaceAll(x, PATTERN, word)\n\t}\n\treturn pat\n}\n",
+        "rank": 0,
+        "truncated": false
+      }
+    ],
+    "selected": [
+      {
+        "id": "90827c104981015707b5450c",
+        "revision": "4bd5cbf9eea76f6e525add1bb43f351ca3685266",
+        "path": "libgobuster/libgobuster.go",
+        "start_byte": 5528,
+        "text": "func (g *Gobuster) Run(ctx context.Context) error {\n\tdefer close(g.Progress.ResultChan)\n\tdefer close(g.Progress.ErrorChan)\n\tdefer close(g.Progress.MessageChan)\n\n\tif err := g.plugin.PreRun(ctx, g.Progress); err != nil {\n\t\treturn err\n\t}\n\n\tworkerCtx, workerCancel := context.WithCancel(ctx)\n\tdefer workerCancel()\n\tfeederCtx, feederCancel := context.WithCancel(ctx)\n\tdefer feederCancel()\n\n\tvar workerGroup, feederGroup sync.WaitGroup\n\tworkerGroup.Add(g.Opts.Threads)\n\n\tguessChan := make(chan *Guess, g.Opts.Threads*3)\n\tsuccessChan := make(chan *Guess)\n\n\tvar f io.ReadSeekCloser\n\tif g.Opts.Wordlist != \"-\" { // stdin case is handled inside getWordlist\n\t\tvar err error\n\t\tf, err = os.Open(g.Opts.Wordlist)\n\t\tif err != nil {\n\t\t\treturn fmt.Errorf(\"failed to open wordlist: %w\", err)\n\t\t}\n\t\tdefer f.Close()\n\t}\n\n\twordlist, err := g.getWordlist(f)\n\tif err != nil {\n\t\treturn err\n\t}\n\n\t// Create goroutines for each of the number of threads\n\t// specified.\n\tfor range g.Opts.Threads {\n\t\tgo g.worker(workerCtx, guessChan, successChan, &workerGroup)\n\t}\n\n\tfeederGroup.Add(1)\n\tgo g.feedWordlist(feederCtx, guessChan, wordlist, &feederGroup)\n\nListenForMore:\n\tfor {\n\t\t// Prioritize stopping when the context is done\n\t\tselect {\n\t\tcase <-ctx.Done():\n\t\t\tbreak ListenForMore\n\t\tdefault:\n\t\t}\n\n\t\tselect {\n\t\tcase <-ctx.Done():\n\t\t\tbreak ListenForMore\n\t\tcase successGuess := <-successChan:\n\t\t\tif !successGuess.discoverOnSuccess {\n\t\t\t\tbreak\n\t\t\t}\n\t\t\tdiscoverWords := g.plugin.AdditionalSuccessWords(successGuess.word)\n\t\t\tpatternDiscoverWords := g.processDiscoverPatterns(successGuess.word)\n\t\t\tif len(discoverWords) > 0 {\n\t\t\t\tg.Progress.IncrementTotalRequests(len(discoverWords))\n\t\t\t\tfeederGroup.Add(1)\n\t\t\t\tgo g.feeder(feederCtx, guessChan, discoverWords, false, &feederGroup)\n\t\t\t}\n\t\t\tif len(patternDiscoverWords) > 0 {\n\t\t\t\tg.Progress.IncrementTotalRequests(len(patternDiscoverWords))\n\t\t\t\tfeederGroup.Add(1)\n\t\t\t\tgo g.feeder(feederCtx, guessChan, patternDiscoverWords, false, &feederGroup)\n\t\t\t}\n\t\tcase <-time.After(200 * time.Millisecond):\n\t\t\t// With requests issued only after the results are synchronously\n\t\t\t// reported, this is well ordered without the timeout, however it would\n\t\t\t// exert a lot of lock pressure during the run to keep doing this in a\n\t\t\t// hot loop\n\t\t\tif g.Progress.RequestsExpected() == g.Progress.RequestsIssued() {\n\t\t\t\t// All the expected requests have completed, there is no pending or\n\t\t\t\t// in-progress work. If moreWordsChan was buffered we would need to\n\t\t\t\t// check it again here to ensure no pending work was added while we\n\t\t\t\t// acquired the locks\n\t\t\t\tbreak ListenForMore\n\t\t\t}\n\t\t}\n\t}\n\n\tfeederCancel()\n\tworkerCancel()\n\tfeederGroup.Wait()\n\tworkerGroup.Wait()\n\n\tif err := wordlist.scanner.Err(); err != nil {\n\t\treturn err\n\t}\n\n\treturn nil\n}",
+        "rank": 0,
+        "truncated": false
+      },
+      {
+        "id": "8dd3605d75aa86a4f8220353",
+        "revision": "c098dea3524389a3116574b33049b549b92c78b8",
+        "path": "libgobuster/libgobuster.go",
+        "start_byte": 9052,
+        "text": "func (g *Gobuster) runTarget(ctx context.Context, onResult func(Result)) error {\n\tif err := g.plugin.PreRun(ctx, g.Progress); err != nil {\n\t\treturn err\n\t}\n\n\tworkerCtx, workerCancel := context.WithCancel(ctx)\n\tdefer workerCancel()\n\tfeederCtx, feederCancel := context.WithCancel(ctx)\n\tdefer feederCancel()\n\n\tvar workerGroup, feederGroup sync.WaitGroup\n\tworkerGroup.Add(g.Opts.Threads)\n\n\tguessChan := make(chan *Guess, g.Opts.Threads*3)\n\tsuccessChan := make(chan successfulGuess)\n\tscanDone := make(chan error, 1)\n\n\tvar f io.ReadSeekCloser\n\tif g.Opts.Wordlist != \"-\" { // stdin case is handled inside getWordlist\n\t\tvar err error\n\t\tf, err = os.Open(g.Opts.Wordlist)\n\t\tif err != nil {\n\t\t\treturn fmt.Errorf(\"failed to open wordlist: %w\", err)\n\t\t}\n\t\tdefer f.Close()\n\t}\n\n\twordlist, err := g.getWordlist(f)\n\tif err != nil {\n\t\treturn err\n\t}\n\n\t// Create goroutines for each of the number of threads\n\t// specified.\n\tfor range g.Opts.Threads {\n\t\tgo g.worker(workerCtx, guessChan, successChan, &workerGroup)\n\t}\n\n\tfeederGroup.Add(1)\n\tgo g.feedWordlist(feederCtx, guessChan, wordlist, scanDone, &feederGroup)\n\n\twordlistFinished := false\n\tvar scanErr error\nListenForMore:\n\tfor {\n\t\t// Prioritize stopping when the context is done\n\t\tselect {\n\t\tcase <-ctx.Done():\n\t\t\tbreak ListenForMore\n\t\tdefault:\n\t\t}\n\n\t\tselect {\n\t\tcase <-ctx.Done():\n\t\t\tbreak ListenForMore\n\t\tcase scanErr = <-scanDone:\n\t\t\twordlistFinished = true\n\t\t\tif scanErr != nil {\n\t\t\t\tbreak ListenForMore\n\t\t\t}\n\t\tcase success := <-successChan:\n\t\t\tif onResult != nil {\n\t\t\t\tonResult(success.result)\n\t\t\t}\n\t\t\t// Add more guesses based on the results of previous attempts\n\t\t\tif success.guess.discoverOnSuccess {\n\t\t\t\tdiscoverWords := g.plugin.AdditionalSuccessWords(success.guess.word)\n\t\t\t\tif len(discoverWords) > 0 {\n\t\t\t\t\tg.Progress.IncrementTotalRequests(len(discoverWords))\n\t\t\t\t\tfeederGroup.Add(1)\n\t\t\t\t\tgo g.feeder(feederCtx, guessChan, discoverWords, false, &feederGroup)\n\t\t\t\t}\n\n\t\t\t\tpatternDiscoverWords := g.processDiscoverPatterns(success.guess.word)\n\t\t\t\tif len(patternDiscoverWords) > 0 {\n\t\t\t\t\tg.Progress.IncrementTotalRequests(len(patternDiscoverWords))\n\t\t\t\t\tfeederGroup.Add(1)\n\t\t\t\t\tgo g.feeder(feederCtx, guessChan, patternDiscoverWords, false, &feederGroup)\n\t\t\t\t}\n\t\t\t}\n\t\tcase <-time.After(200 * time.Millisecond):\n\t\t\t// With requests issued only after the results are synchronously\n\t\t\t// reported, this is well ordered without the timeout, however it would\n\t\t\t// exert a lot of lock pressure during the run to keep doing this in a\n\t\t\t// hot loop\n\t\t\tif wordlistFinished && g.Progress.RequestsExpected() == g.Progress.RequestsIssued() {\n\t\t\t\t// All the expected requests have completed, there is no pending or\n\t\t\t\t// in-progress work. If moreWordsChan was buffered we would need to\n\t\t\t\t// check it again here to ensure no pending work was added while we\n\t\t\t\t// acquired the locks\n\t\t\t\tbreak ListenForMore\n\t\t\t}\n\t\t}\n\t}\n\n\tfeederCancel()\n\tworkerCancel()\n\tfeederGroup.Wait()\n\tworkerGroup.Wait()\n\n\tif scanErr != nil {\n\t\treturn scanErr\n\t}\n\n\treturn nil\n}",
+        "rank": 0,
+        "truncated": false
+      },
+      {
+        "id": "0fd43ed6fe618b75e07c6c29",
+        "revision": "4bd5cbf9eea76f6e525add1bb43f351ca3685266",
+        "path": "cli/gobuster.go",
+        "start_byte": 563,
+        "text": "var f *os.File",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "64ea21c47a686c6f93f8f913",
+        "revision": "4bd5cbf9eea76f6e525add1bb43f351ca3685266",
+        "path": "cli/gobuster.go",
+        "start_byte": 579,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "5bd42edd6fa301b83e8a865b",
+        "revision": "4bd5cbf9eea76f6e525add1bb43f351ca3685266",
+        "path": "cli/gobuster.go",
+        "start_byte": 3597,
+        "text": "func Gobuster(ctx context.Context, opts *libgobuster.Options, plugin libgobuster.GobusterPlugin, log *libgobuster.Logger) error {\n\t// Sanity checks\n\tif opts == nil {\n\t\treturn errors.New(\"please provide valid options\")\n\t}\n\n\tif plugin == nil {\n\t\treturn errors.New(\"please provide a valid plugin\")\n\t}\n\n\tctxCancel, cancel := context.WithCancel(ctx)\n\tdefer cancel()\n\n\tgobuster, err := libgobuster.NewGobuster(opts, plugin, log)\n\tif err != nil {\n\t\treturn err\n\t}\n\n\tif !opts.Quiet {\n\t\tlog.Println(ruler)\n\t\tlog.Printf(\"Gobuster v%s\\n\", libgobuster.VERSION)\n\t\tlog.Println(\"by OJ Reeves (@TheColonial) & Christian Mehlmauer (@firefart)\")\n\t\tlog.Println(ruler)\n\t\tc, err := gobuster.GetConfigString()\n\t\tif err != nil {\n\t\t\treturn fmt.Errorf(\"error on creating config string: %w\", err)\n\t\t}\n\t\tlog.Println(c)\n\t\tlog.Println(ruler)\n\t\tgobuster.Logger.Printf(\"Starting gobuster in %s mode\", plugin.Name())\n\t\tif opts.WordlistOffset > 0 {\n\t\t\tgobuster.Logger.Printf(\"Skipping the first %d elements...\", opts.WordlistOffset)\n\t\t}\n\t\tlog.Println(ruler)\n\t}\n\n\tfi, err := os.Stdout.Stat()\n\tif err != nil {\n\t\treturn err\n\t}\n\t// check if we are not in a terminal. If so, disable output\n\tif (fi.Mode() & os.ModeCharDevice) != os.ModeCharDevice {\n\t\topts.NoProgress = true\n\t}\n\n\t// our waitgroup for all goroutines\n\t// this ensures all goroutines are finished\n\t// when we call wg.Wait()\n\tvar wg sync.WaitGroup\n\n\twg.Add(1)\n\tgo resultWorker(gobuster, opts.OutputFilename, &wg)\n\n\twg.Add(1)\n\tgo errorWorker(gobuster, &wg)\n\n\twg.Add(1)\n\tgo messageWorker(gobuster, &wg)\n\n\tif !opts.Quiet && !opts.NoProgress {\n\t\t// if not quiet add a new workgroup entry and start the goroutine\n\t\twg.Add(1)\n\t\tgo progressWorker(ctxCancel, gobuster, &wg)\n\t}\n\n\terr = gobuster.Run(ctxCancel)\n\n\t// call cancel func so progressWorker will exit (the only goroutine in this\n\t// file using the context) and to free resources\n\tcancel()\n\t// wait for all spun up goroutines to finish (all have to call wg.Done())\n\twg.Wait()\n\n\t// Late error checking to finish all threads\n\tif err != nil {\n\t\treturn err\n\t}\n\n\tif !opts.Quiet {\n\t\tlog.Println(ruler)\n\t\tgobuster.Logger.Println(\"Finished\")\n\t\tlog.Println(ruler)\n\t}\n\treturn nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "43b70723f00633732bfb2c3e",
+        "revision": "4bd5cbf9eea76f6e525add1bb43f351ca3685266",
+        "path": "gobusterdir/gobusterdir.go",
+        "start_byte": 2742,
+        "text": "func (d *GobusterDir) PreRun(ctx context.Context, pr *libgobuster.Progress) error {\n\t// add trailing slash\n\tif !strings.HasSuffix(d.options.URL.Path, \"/\") {\n\t\td.options.URL.Path = fmt.Sprintf(\"%s/\", d.options.URL.Path)\n\t}\n\n\t_, _, _, _, err := d.http.Request(ctx, *d.options.URL, libgobuster.RequestOptions{})\n\tif err != nil {\n\t\tvar retErr error\n\t\tswitch {\n\t\tcase errors.Is(err, io.EOF):\n\t\t\tretErr = libgobuster.ErrEOF\n\t\tcase os.IsTimeout(err):\n\t\t\tretErr = libgobuster.ErrTimeout\n\t\tcase errors.Is(err, syscall.ECONNREFUSED):\n\t\t\tretErr = libgobuster.ErrConnectionRefused\n\t\tdefault:\n\t\t\tretErr = fmt.Errorf(\"unable to connect to %s: %w\", d.options.URL, err)\n\t\t}\n\t\tif !d.options.Force {\n\t\t\treturn retErr\n\t\t}\n\t\t// if force is set, we continue even if the preRun fails\n\t\tpr.MessageChan <- libgobuster.Message{\n\t\t\tLevel:   libgobuster.LevelWarn,\n\t\t\tMessage: fmt.Sprintf(\"PreRun failed with error: %s. Continuing because force is set.\", retErr),\n\t\t}\n\t}\n\n\tguid := uuid.New()\n\turl := *d.options.URL\n\turl.Path = fmt.Sprintf(\"%s%s\", url.Path, guid)\n\tif d.options.UseSlash {\n\t\turl.Path = fmt.Sprintf(\"%s/\", url.Path)\n\t}\n\n\twildcardResp, wildcardLength, wildcardHeader, _, err := d.http.Request(ctx, url, libgobuster.RequestOptions{})\n\tif err != nil {\n\t\tvar retErr error\n\t\tswitch {\n\t\tcase errors.Is(err, io.EOF):\n\t\t\tretErr = libgobuster.ErrEOF\n\t\tcase os.IsTimeout(err):\n\t\t\tretErr = libgobuster.ErrTimeout\n\t\tcase errors.Is(err, syscall.ECONNREFUSED):\n\t\t\tretErr = libgobuster.ErrConnectionRefused\n\t\tdefault:\n\t\t\tretErr = fmt.Errorf(\"unable to connect to %s: %w\", url.String(), err)\n\t\t}\n\t\tif !d.options.Force {\n\t\t\treturn retErr\n\t\t}\n\t\t// if force is set, we continue even if the preRun fails\n\t\tpr.MessageChan <- libgobuster.Message{\n\t\t\tLevel:   libgobuster.LevelWarn,\n\t\t\tMessage: fmt.Sprintf(\"PreRun failed with error: %s. Continuing because force is set.\", retErr),\n\t\t}\n\t}\n\n\tif d.options.ExcludeLengthParsed.Contains(int(wildcardLength)) {\n\t\t// we are done and ignore the request as the length is excluded\n\t\treturn nil\n\t}\n\n\tswitch {\n\tcase d.options.StatusCodesBlacklistParsed.Length() > 0:\n\t\tif !d.options.StatusCodesBlacklistParsed.Contains(wildcardResp) {\n\t\t\treturn &WildcardError{url: url.String(), statusCode: wildcardResp, length: wildcardLength, location: wildcardHeader.Get(\"Location\")}\n\t\t}\n\tcase d.options.StatusCodesParsed.Length() > 0:\n\t\tif d.options.StatusCodesParsed.Contains(wildcardResp) {\n\t\t\treturn &WildcardError{url: url.String(), statusCode: wildcardResp, length: wildcardLength, location: wildcardHeader.Get(\"Location\")}\n\t\t}\n\tdefault:\n\t\treturn errors.New(\"StatusCodes and StatusCodesBlacklist are both not set which should not happen\")\n\t}\n\n\treturn nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "190cc7539eea86cddf6fac2e",
+        "revision": "4bd5cbf9eea76f6e525add1bb43f351ca3685266",
+        "path": "gobusterdir/gobusterdir.go",
+        "start_byte": 5396,
+        "text": "func (d *GobusterDir) AdditionalSuccessWords(word string) []string {\n\tif d.options.DiscoverBackup {\n\t\tret := make([]string, len(backupExtensions)+len(backupDotExtensions))\n\t\ti := 0\n\t\tfor _, b := range backupExtensions {\n\t\t\tret[i] = fmt.Sprintf(\"%s%s\", word, b)\n\t\t\ti++\n\t\t}\n\t\tfor _, b := range backupDotExtensions {\n\t\t\tret[i] = fmt.Sprintf(\".%s%s\", word, b)\n\t\t\ti++\n\t\t}\n\n\t\treturn ret\n\t}\n\n\treturn []string{}\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "273ef626202d8bee12282b31",
+        "revision": "4bd5cbf9eea76f6e525add1bb43f351ca3685266",
+        "path": "gobusterdir/gobusterdir.go",
+        "start_byte": 7247,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "b913992d1f118a232843a3fe",
+        "revision": "4bd5cbf9eea76f6e525add1bb43f351ca3685266",
+        "path": "gobusterdns/gobusterdns.go",
+        "start_byte": 1949,
+        "text": "func (d *GobusterDNS) PreRun(ctx context.Context, progress *libgobuster.Progress) error {\n\t// Resolve a subdomain that probably shouldn't exist\n\tguid := uuid.New()\n\twildcardIps, err := d.dnsLookup(ctx, fmt.Sprintf(\"%s.%s\", guid, d.options.Domain))\n\tif err == nil {\n\t\td.isWildcard = true\n\t\td.wildcardIps.AddRange(wildcardIps)\n\t\tif !d.options.WildcardForced {\n\t\t\treturn &WildcardError{wildcardIps: d.wildcardIps}\n\t\t}\n\t}\n\n\tif !d.globalopts.Quiet {\n\t\t// Provide a warning if the base domain doesn't resolve (in case of typo)\n\t\t_, err = d.dnsLookup(ctx, d.options.Domain)\n\t\tif err != nil {\n\t\t\t// Not an error, just a warning. Eg. `yp.to` doesn't resolve, but `cr.yp.to` does!\n\t\t\tprogress.MessageChan <- libgobuster.Message{\n\t\t\t\tLevel:   libgobuster.LevelInfo,\n\t\t\t\tMessage: fmt.Sprintf(\"[-] Unable to validate base domain: %s (%v)\", d.options.Domain, err),\n\t\t\t}\n\t\t\tprogress.MessageChan <- libgobuster.Message{\n\t\t\t\tLevel:   libgobuster.LevelDebug,\n\t\t\t\tMessage: fmt.Sprintf(\"%#v\", err),\n\t\t\t}\n\t\t}\n\t}\n\n\treturn nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "428ddec69be91de0bface219",
+        "revision": "4bd5cbf9eea76f6e525add1bb43f351ca3685266",
+        "path": "gobusterdns/gobusterdns.go",
+        "start_byte": 4577,
+        "text": "func (d *GobusterDNS) AdditionalSuccessWords(_ string) []string {\n\treturn []string{}\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "cbe7bc335c13667dd58bf9a8",
+        "revision": "4bd5cbf9eea76f6e525add1bb43f351ca3685266",
+        "path": "gobusterfuzz/gobusterfuzz.go",
+        "start_byte": 2229,
+        "text": "func (d *GobusterFuzz) PreRun(_ context.Context, _ *libgobuster.Progress) error {\n\treturn nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "3e88db74c2b9855ba1b105cc",
+        "revision": "4bd5cbf9eea76f6e525add1bb43f351ca3685266",
+        "path": "gobusterfuzz/gobusterfuzz.go",
+        "start_byte": 4756,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "53fcc97e01067c77e817b393",
+        "revision": "4bd5cbf9eea76f6e525add1bb43f351ca3685266",
+        "path": "gobusterfuzz/gobusterfuzz.go",
+        "start_byte": 6249,
+        "text": "func (d *GobusterFuzz) AdditionalSuccessWords(_ string) []string {\n\treturn []string{}\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "a562803b4bfd7e5dbf8eb1ec",
+        "revision": "4bd5cbf9eea76f6e525add1bb43f351ca3685266",
+        "path": "gobustergcs/gobustersgcs.go",
+        "start_byte": 1763,
+        "text": "func (s *GobusterGCS) PreRun(_ context.Context, _ *libgobuster.Progress) error {\n\treturn nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "ec3be97e3e13d117b2da01e1",
+        "revision": "4bd5cbf9eea76f6e525add1bb43f351ca3685266",
+        "path": "gobustergcs/gobustersgcs.go",
+        "start_byte": 2854,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "bf0d029f16f0a6587473c202",
+        "revision": "4bd5cbf9eea76f6e525add1bb43f351ca3685266",
+        "path": "gobustergcs/gobustersgcs.go",
+        "start_byte": 5918,
+        "text": "func (s *GobusterGCS) AdditionalSuccessWords(_ string) []string {\n\treturn []string{}\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "4489a61bdf062e04b63d47e0",
+        "revision": "4bd5cbf9eea76f6e525add1bb43f351ca3685266",
+        "path": "gobusters3/gobusters3.go",
+        "start_byte": 1639,
+        "text": "func (s *GobusterS3) PreRun(_ context.Context, _ *libgobuster.Progress) error {\n\treturn nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "e2b6a1f32da912568898b5ed",
+        "revision": "4bd5cbf9eea76f6e525add1bb43f351ca3685266",
+        "path": "gobusters3/gobusters3.go",
+        "start_byte": 2706,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "b69f3c994e1bef36a798651b",
+        "revision": "4bd5cbf9eea76f6e525add1bb43f351ca3685266",
+        "path": "gobusters3/gobusters3.go",
+        "start_byte": 5494,
+        "text": "func (s *GobusterS3) AdditionalSuccessWords(_ string) []string {\n\treturn []string{}\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "6d57473e7a0fea46c856f1a8",
+        "revision": "4bd5cbf9eea76f6e525add1bb43f351ca3685266",
+        "path": "gobustertftp/gobustertftp.go",
+        "start_byte": 897,
+        "text": "func (d *GobusterTFTP) PreRun(_ context.Context, _ *libgobuster.Progress) error {\n\t_, err := tftp.NewClient(d.options.Server)\n\tif err != nil {\n\t\treturn err\n\t}\n\treturn nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "76b16fcb9d2457f3acfdd248",
+        "revision": "4bd5cbf9eea76f6e525add1bb43f351ca3685266",
+        "path": "gobustertftp/gobustertftp.go",
+        "start_byte": 2060,
+        "text": "func (d *GobusterTFTP) AdditionalSuccessWords(_ string) []string {\n\treturn []string{}\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "6ba7c0f3e4722fae2fcdaa13",
+        "revision": "4bd5cbf9eea76f6e525add1bb43f351ca3685266",
+        "path": "gobustervhost/gobustervhost.go",
+        "start_byte": 1893,
+        "text": "func (v *GobusterVhost) PreRun(ctx context.Context, _ *libgobuster.Progress) error {\n\t// add trailing slash\n\tif !strings.HasSuffix(v.options.URL.Path, \"/\") {\n\t\tv.options.URL.Path = fmt.Sprintf(\"%s/\", v.options.URL.Path)\n\t}\n\n\tif v.options.Domain != \"\" {\n\t\tv.domain = v.options.Domain\n\t} else {\n\t\tv.domain = v.options.URL.Host\n\t}\n\n\t// request default vhost for normalBody\n\t_, _, _, body, err := v.http.Request(ctx, *v.options.URL, libgobuster.RequestOptions{ReturnBody: true})\n\tif err != nil {\n\t\tswitch {\n\t\tcase errors.Is(err, io.EOF):\n\t\t\treturn libgobuster.ErrEOF\n\t\tcase os.IsTimeout(err):\n\t\t\treturn libgobuster.ErrTimeout\n\t\tcase errors.Is(err, syscall.ECONNREFUSED):\n\t\t\treturn libgobuster.ErrConnectionRefused\n\t\t}\n\t\treturn fmt.Errorf(\"unable to connect to %s: %w\", v.options.URL, err)\n\t}\n\tv.normalBody = body\n\n\t// request non existent vhost for abnormalBody\n\tsubdomain := fmt.Sprintf(\"%s.%s\", uuid.New(), v.domain)\n\t_, _, _, body, err = v.http.Request(ctx, *v.options.URL, libgobuster.RequestOptions{Host: subdomain, ReturnBody: true})\n\tif err != nil {\n\t\tswitch {\n\t\tcase errors.Is(err, io.EOF):\n\t\t\treturn libgobuster.ErrEOF\n\t\tcase os.IsTimeout(err):\n\t\t\treturn libgobuster.ErrTimeout\n\t\tcase errors.Is(err, syscall.ECONNREFUSED):\n\t\t\treturn libgobuster.ErrConnectionRefused\n\t\t}\n\t\treturn fmt.Errorf(\"unable to connect to %s: %w\", v.options.URL, err)\n\t}\n\tv.abnormalBody = body\n\treturn nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "3a15d79e482addbedd93143d",
+        "revision": "4bd5cbf9eea76f6e525add1bb43f351ca3685266",
+        "path": "gobustervhost/gobustervhost.go",
+        "start_byte": 4694,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "a3bdb492712535a8215a3d4d",
+        "revision": "4bd5cbf9eea76f6e525add1bb43f351ca3685266",
+        "path": "gobustervhost/gobustervhost.go",
+        "start_byte": 6217,
+        "text": "func (v *GobusterVhost) AdditionalSuccessWords(_ string) []string {\n\treturn []string{}\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "f947ae77d557903c6cbd7257",
+        "revision": "4bd5cbf9eea76f6e525add1bb43f351ca3685266",
+        "path": "libgobuster/helpers.go",
+        "start_byte": 326,
+        "text": "func (set *Set[T]) Add(s T) bool {\n\t_, found := set.Set[s]\n\tset.Set[s] = true\n\treturn !found\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "160fb6ee9f1aa82f4383416b",
+        "revision": "4bd5cbf9eea76f6e525add1bb43f351ca3685266",
+        "path": "libgobuster/libgobuster.go",
+        "start_byte": 645,
+        "text": "type Gobuster struct {\n\tOpts     *Options\n\tLogger   *Logger\n\tplugin   GobusterPlugin\n\tProgress *Progress\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "e73b9ee5d7c033627f3c467b",
+        "revision": "4bd5cbf9eea76f6e525add1bb43f351ca3685266",
+        "path": "libgobuster/libgobuster.go",
+        "start_byte": 753,
+        "text": "type Guess struct {\n\tword              string\n\tdiscoverOnSuccess bool\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "78e1751b3542d4d7bb586d67",
+        "revision": "4bd5cbf9eea76f6e525add1bb43f351ca3685266",
+        "path": "libgobuster/libgobuster.go",
+        "start_byte": 826,
+        "text": "type Wordlist struct {\n\tscanner        *bufio.Scanner\n\tguessesPerLine int\n\tisStream       bool\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "10b4cb7106a31f21a3cf09d2",
+        "revision": "4bd5cbf9eea76f6e525add1bb43f351ca3685266",
+        "path": "libgobuster/libgobuster.go",
+        "start_byte": 1062,
+        "text": "var g Gobuster",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "7ebd042b5c9fab94597c334d",
+        "revision": "4bd5cbf9eea76f6e525add1bb43f351ca3685266",
+        "path": "libgobuster/libgobuster.go",
+        "start_byte": 1178,
+        "text": "func (g *Gobuster) worker(ctx context.Context, guessChan <-chan *Guess, successChan chan<- *Guess, wg *sync.WaitGroup) {\n\tdefer wg.Done()\n\tfor {\n\t\t// Prioritize stopping when the context is done\n\t\tselect {\n\t\tcase <-ctx.Done():\n\t\t\treturn\n\t\tdefault:\n\t\t}\n\t\tselect {\n\t\tcase <-ctx.Done():\n\t\t\treturn\n\t\tcase guess := <-guessChan:\n\n\t\t\t// Mode-specific processing\n\t\t\tres, err := g.plugin.ProcessWord(ctx, guess.word, g.Progress)\n\t\t\tif err != nil {\n\t\t\t\t// do not exit and continue\n\t\t\t\tg.Progress.ErrorChan <- fmt.Errorf(\"error on word %s: %w\", guess.word, err)\n\t\t\t}\n\n\t\t\tif res != nil {\n\t\t\t\tg.Progress.ResultChan <- res\n\n\t\t\t\tselect {\n\t\t\t\tcase <-ctx.Done():\n\t\t\t\t\tg.Progress.incrementRequests()\n\t\t\t\t\treturn\n\t\t\t\tcase successChan <- guess:\n\t\t\t\t}\n\t\t\t}\n\n\t\t\tg.Progress.incrementRequests()\n\n\t\t\tselect {\n\t\t\tcase <-ctx.Done():\n\t\t\tcase <-time.After(g.Opts.Delay):\n\t\t\t}\n\t\t}\n\t}\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "355ed4b04b46f32c8c4ed32b",
+        "revision": "4bd5cbf9eea76f6e525add1bb43f351ca3685266",
+        "path": "libgobuster/libgobuster.go",
+        "start_byte": 2470,
+        "text": "func (g *Gobuster) feeder(ctx context.Context, guessChan chan<- *Guess, words []string, discoverOnSuccess bool, wg *sync.WaitGroup) {\n\tdefer wg.Done()\n\n\tfeed(ctx, guessChan, words, discoverOnSuccess)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "1fd78eef4d52ae74e7681996",
+        "revision": "4bd5cbf9eea76f6e525add1bb43f351ca3685266",
+        "path": "libgobuster/libgobuster.go",
+        "start_byte": 2673,
+        "text": "func (g *Gobuster) feedWordlist(ctx context.Context, guessChan chan<- *Guess, wordlist *Wordlist, wg *sync.WaitGroup) {\n\tdefer wg.Done()\n\n\tfor wordlist.scanner.Scan() {\n\t\t// Prioritize stopping when the context is done\n\t\tselect {\n\t\tcase <-ctx.Done():\n\t\t\treturn\n\t\tdefault:\n\t\t}\n\n\t\tword := strings.TrimSpace(wordlist.scanner.Text())\n\n\t\tswitch {\n\t\tcase wordlist.isStream && len(word) != 0:\n\t\t\t// Increment to keep track of expected work\n\t\t\tg.Progress.IncrementTotalRequests(wordlist.guessesPerLine)\n\t\tcase wordlist.isStream && len(word) == 0:\n\t\t\t// Skip empty lines without incrementing\n\t\t\tcontinue\n\t\tcase len(word) == 0:\n\t\t\t// Skip empty lines removing expected work\n\t\t\tg.Progress.IncrementTotalRequests(-1 * wordlist.guessesPerLine)\n\t\t\tcontinue\n\t\t}\n\n\t\tif len(g.Opts.Patterns) > 0 {\n\t\t\tfor _, w := range g.processPatterns(word) {\n\t\t\t\tguess := &Guess{word: w, discoverOnSuccess: true}\n\t\t\t\tselect {\n\t\t\t\tcase <-ctx.Done():\n\t\t\t\t\treturn\n\t\t\t\tcase guessChan <- guess:\n\t\t\t\t}\n\n\t\t\t\tfeed(ctx, guessChan, g.plugin.AdditionalWords(w), true)\n\t\t\t}\n\t\t} else {\n\t\t\tguess := &Guess{word: word, discoverOnSuccess: true}\n\n\t\t\tselect {\n\t\t\tcase <-ctx.Done():\n\t\t\t\treturn\n\t\t\tcase guessChan <- guess:\n\t\t\t}\n\n\t\t\tfeed(ctx, guessChan, g.plugin.AdditionalWords(word), true)\n\t\t}\n\t}\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "4344e8ae2baac837dd6909ad",
+        "revision": "4bd5cbf9eea76f6e525add1bb43f351ca3685266",
+        "path": "libgobuster/libgobuster.go",
+        "start_byte": 3922,
+        "text": "func (g *Gobuster) getWordlist(wordlist io.ReadSeeker) (*Wordlist, error) {\n\t// calculate expected requests\n\tvar guessesPerLine int\n\tif len(g.Opts.Patterns) > 0 {\n\t\tnPats := len(g.Opts.Patterns)\n\t\tguessesPerLine = nPats + nPats*g.plugin.AdditionalWordsLen()\n\t} else {\n\t\tguessesPerLine = 1 + g.plugin.AdditionalWordsLen()\n\t}\n\n\tif g.Opts.Wordlist == \"-\" {\n\t\t// Read directly from stdin\n\t\treturn &Wordlist{scanner: bufio.NewScanner(os.Stdin), guessesPerLine: guessesPerLine, isStream: true}, nil\n\t}\n\n\tlines, err := lineCounter(wordlist)\n\tif err != nil {\n\t\treturn nil, fmt.Errorf(\"failed to get number of lines: %w\", err)\n\t}\n\n\tif lines-g.Opts.WordlistOffset <= 0 {\n\t\treturn nil, errors.New(\"offset is greater than the number of lines in the wordlist\")\n\t}\n\n\tg.Progress.IncrementTotalRequests(lines * guessesPerLine)\n\n\t// add offset if needed (offset defaults to 0)\n\tg.Progress.incrementRequestsIssues(g.Opts.WordlistOffset * guessesPerLine)\n\n\t// rewind wordlist after lineCounter\n\t_, err = wordlist.Seek(0, 0)\n\tif err != nil {\n\t\treturn nil, fmt.Errorf(\"failed to rewind wordlist: %w\", err)\n\t}\n\n\twordlistScanner := bufio.NewScanner(wordlist)\n\n\t// skip lines\n\tfor range g.Opts.WordlistOffset {\n\t\tif !wordlistScanner.Scan() {\n\t\t\tif err := wordlistScanner.Err(); err != nil {\n\t\t\t\treturn nil, fmt.Errorf(\"failed to skip lines in wordlist: %w\", err)\n\t\t\t}\n\t\t\treturn nil, errors.New(\"failed to skip lines in wordlist\")\n\t\t}\n\t}\n\n\treturn &Wordlist{scanner: wordlistScanner, guessesPerLine: guessesPerLine, isStream: false}, nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "526ec9f4bdd3185d1893877c",
+        "revision": "4bd5cbf9eea76f6e525add1bb43f351ca3685266",
+        "path": "libgobuster/libgobuster.go",
+        "start_byte": 5914,
+        "text": "var workerGroup, feederGroup sync.WaitGroup",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "c0e3dbe48c2bbd02947b4f44",
+        "revision": "4bd5cbf9eea76f6e525add1bb43f351ca3685266",
+        "path": "libgobuster/libgobuster.go",
+        "start_byte": 6078,
+        "text": "var f io.ReadSeekCloser",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "b05424315cac17863bc892f8",
+        "revision": "4bd5cbf9eea76f6e525add1bb43f351ca3685266",
+        "path": "libgobuster/libgobuster.go",
+        "start_byte": 6177,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "22fd0b4141ee1049ea16a397",
+        "revision": "4bd5cbf9eea76f6e525add1bb43f351ca3685266",
+        "path": "libgobuster/libgobuster.go",
+        "start_byte": 8582,
+        "text": "func (g *Gobuster) processDiscoverPatterns(word string) []string {\n\tif g.Opts.DiscoverPatternFile == \"\" {\n\t\treturn nil\n\t}\n\n\treturn g.applyPatterns(word, g.Opts.DiscoverPatterns)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "cf9cc890e774a6648db13764",
+        "revision": "4bd5cbf9eea76f6e525add1bb43f351ca3685266",
+        "path": "libgobuster/logger.go",
+        "start_byte": 1419,
+        "text": "func (l Logger) Errorf(format string, v ...any) {\n\tl.errorLog.Printf(format, v...)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "edf96a644c68e923c3e2c634",
+        "revision": "4bd5cbf9eea76f6e525add1bb43f351ca3685266",
+        "path": "libgobuster/progress.go",
+        "start_byte": 199,
+        "text": "type Progress struct {\n\trequestsExpectedMutex *sync.RWMutex\n\trequestsExpected      int\n\trequestsCountMutex    *sync.RWMutex\n\trequestsIssued        int\n\tResultChan            chan Result\n\tErrorChan             chan error\n\tMessageChan           chan Message\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "7bbec0519c8be6f691dbf508",
+        "revision": "4bd5cbf9eea76f6e525add1bb43f351ca3685266",
+        "path": "libgobuster/progress.go",
+        "start_byte": 730,
+        "text": "func (p *Progress) RequestsExpected() int {\n\tp.requestsExpectedMutex.RLock()\n\tdefer p.requestsExpectedMutex.RUnlock()\n\treturn p.requestsExpected\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "54f3ed9761a4bb2b734652db",
+        "revision": "4bd5cbf9eea76f6e525add1bb43f351ca3685266",
+        "path": "libgobuster/progress.go",
+        "start_byte": 878,
+        "text": "func (p *Progress) RequestsIssued() int {\n\tp.requestsCountMutex.RLock()\n\tdefer p.requestsCountMutex.RUnlock()\n\treturn p.requestsIssued\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "d674f32eff93add7e17f1ab9",
+        "revision": "4bd5cbf9eea76f6e525add1bb43f351ca3685266",
+        "path": "libgobuster/progress.go",
+        "start_byte": 1292,
+        "text": "func (p *Progress) IncrementTotalRequests(by int) {\n\tp.requestsExpectedMutex.Lock()\n\tdefer p.requestsExpectedMutex.Unlock()\n\tp.requestsExpected += by\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "dd8b994b049c3b2de6618f36",
+        "revision": "c098dea3524389a3116574b33049b549b92c78b8",
+        "path": "cli/gobuster.go",
+        "start_byte": 563,
+        "text": "var f *os.File",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "148c9fa0d1251862d6cfdfc4",
+        "revision": "c098dea3524389a3116574b33049b549b92c78b8",
+        "path": "cli/gobuster.go",
+        "start_byte": 579,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "9f1bf9f30f927b4991fcb1bf",
+        "revision": "c098dea3524389a3116574b33049b549b92c78b8",
+        "path": "cli/gobuster.go",
+        "start_byte": 3616,
+        "text": "func Gobuster(ctx context.Context, opts *libgobuster.Options, plugin libgobuster.GobusterPlugin, log *libgobuster.Logger) error {\n\t// Sanity checks\n\tif opts == nil {\n\t\treturn errors.New(\"please provide valid options\")\n\t}\n\n\tif plugin == nil {\n\t\treturn errors.New(\"please provide a valid plugin\")\n\t}\n\n\tctxCancel, cancel := context.WithCancel(ctx)\n\tdefer cancel()\n\n\tgobuster, err := libgobuster.NewGobuster(opts, plugin, log)\n\tif err != nil {\n\t\treturn err\n\t}\n\n\tif !opts.Quiet {\n\t\tlog.Println(ruler)\n\t\tlog.Printf(\"Gobuster v%s\\n\", libgobuster.VERSION)\n\t\tlog.Println(\"by OJ Reeves (@TheColonial) & Christian Mehlmauer (@firefart)\")\n\t\tlog.Println(ruler)\n\t\tc, err := gobuster.GetConfigString()\n\t\tif err != nil {\n\t\t\treturn fmt.Errorf(\"error on creating config string: %w\", err)\n\t\t}\n\t\tlog.Println(c)\n\t\tlog.Println(ruler)\n\t\tgobuster.Logger.Printf(\"Starting gobuster in %s mode\", plugin.Name())\n\t\tif opts.WordlistOffset > 0 {\n\t\t\tgobuster.Logger.Printf(\"Skipping the first %d elements...\", opts.WordlistOffset)\n\t\t}\n\t\tlog.Println(ruler)\n\t}\n\n\tfi, err := os.Stdout.Stat()\n\tif err != nil {\n\t\treturn err\n\t}\n\t// check if we are not in a terminal. If so, disable output\n\tif (fi.Mode() & os.ModeCharDevice) != os.ModeCharDevice {\n\t\topts.NoProgress = true\n\t}\n\n\t// our waitgroup for all goroutines\n\t// this ensures all goroutines are finished\n\t// when we call wg.Wait()\n\tvar wg sync.WaitGroup\n\n\twg.Add(1)\n\tgo resultWorker(gobuster, opts.OutputFilename, &wg)\n\n\twg.Add(1)\n\tgo errorWorker(gobuster, &wg)\n\n\twg.Add(1)\n\tgo messageWorker(gobuster, &wg)\n\n\tif !opts.Quiet && !opts.NoProgress {\n\t\t// if not quiet add a new workgroup entry and start the goroutine\n\t\twg.Add(1)\n\t\tgo progressWorker(ctxCancel, gobuster, &wg)\n\t}\n\n\terr = gobuster.Run(ctxCancel)\n\n\t// call cancel func so progressWorker will exit (the only goroutine in this\n\t// file using the context) and to free resources\n\tcancel()\n\t// wait for all spun up goroutines to finish (all have to call wg.Done())\n\twg.Wait()\n\n\t// Late error checking to finish all threads\n\tif err != nil {\n\t\treturn err\n\t}\n\n\tif !opts.Quiet {\n\t\tlog.Println(ruler)\n\t\tgobuster.Logger.Println(\"Finished\")\n\t\tlog.Println(ruler)\n\t}\n\treturn nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "a9cb824a5044b0ccc5dcecde",
+        "revision": "c098dea3524389a3116574b33049b549b92c78b8",
+        "path": "gobusterdir/gobusterdir.go",
+        "start_byte": 3862,
+        "text": "func (d *GobusterDir) PreRun(ctx context.Context, pr *libgobuster.Progress) error {\n\t// add trailing slash\n\tif !strings.HasSuffix(d.options.URL.Path, \"/\") {\n\t\td.options.URL.Path = fmt.Sprintf(\"%s/\", d.options.URL.Path)\n\t}\n\n\t_, _, _, _, err := d.http.Request(ctx, *d.options.URL, libgobuster.RequestOptions{})\n\tif err != nil {\n\t\tvar retErr error\n\t\tswitch {\n\t\tcase errors.Is(err, io.EOF):\n\t\t\tretErr = libgobuster.ErrEOF\n\t\tcase os.IsTimeout(err):\n\t\t\tretErr = libgobuster.ErrTimeout\n\t\tcase errors.Is(err, syscall.ECONNREFUSED):\n\t\t\tretErr = libgobuster.ErrConnectionRefused\n\t\tdefault:\n\t\t\tretErr = fmt.Errorf(\"unable to connect to %s: %w\", d.options.URL, err)\n\t\t}\n\t\tif !d.options.Force {\n\t\t\treturn retErr\n\t\t}\n\t\t// if force is set, we continue even if the preRun fails\n\t\tpr.MessageChan <- libgobuster.Message{\n\t\t\tLevel:   libgobuster.LevelWarn,\n\t\t\tMessage: fmt.Sprintf(\"PreRun failed with error: %s. Continuing because force is set.\", retErr),\n\t\t}\n\t}\n\n\tguid := uuid.New()\n\turl := *d.options.URL\n\turl.Path = fmt.Sprintf(\"%s%s\", url.Path, guid)\n\tif d.options.UseSlash {\n\t\turl.Path = fmt.Sprintf(\"%s/\", url.Path)\n\t}\n\n\twildcardResp, wildcardLength, wildcardHeader, wildcardBody, err := d.http.Request(ctx, url, libgobuster.RequestOptions{ReturnBody: true})\n\tif err != nil {\n\t\tvar retErr error\n\t\tswitch {\n\t\tcase errors.Is(err, io.EOF):\n\t\t\tretErr = libgobuster.ErrEOF\n\t\tcase os.IsTimeout(err):\n\t\t\tretErr = libgobuster.ErrTimeout\n\t\tcase errors.Is(err, syscall.ECONNREFUSED):\n\t\t\tretErr = libgobuster.ErrConnectionRefused\n\t\tdefault:\n\t\t\tretErr = fmt.Errorf(\"unable to connect to %s: %w\", url.String(), err)\n\t\t}\n\t\tif !d.options.Force {\n\t\t\treturn retErr\n\t\t}\n\t\t// if force is set, we continue even if the preRun fails\n\t\tpr.MessageChan <- libgobuster.Message{\n\t\t\tLevel:   libgobuster.LevelWarn,\n\t\t\tMessage: fmt.Sprintf(\"PreRun failed with error: %s. Continuing because force is set.\", retErr),\n\t\t}\n\t}\n\n\tif d.options.ExcludeLengthParsed.Contains(int(wildcardLength)) {\n\t\t// we are done and ignore the request as the length is excluded\n\t\treturn nil\n\t}\n\n\tswitch {\n\tcase d.options.StatusCodesBlacklistParsed.Length() > 0:\n\t\tif !d.options.StatusCodesBlacklistParsed.Contains(wildcardResp) {\n\t\t\tif d.regexBodyIsAMatch(wildcardBody) {\n\t\t\t\treturn nil\n\t\t\t}\n\t\t\treturn &WildcardError{url: url.String(), statusCode: wildcardResp, length: wildcardLength, location: wildcardHeader.Get(\"Location\")}\n\t\t}\n\tcase d.options.StatusCodesParsed.Length() > 0:\n\t\tif d.options.StatusCodesParsed.Contains(wildcardResp) {\n\t\t\tif d.regexBodyIsAMatch(wildcardBody) {\n\t\t\t\treturn nil\n\t\t\t}\n\t\t\treturn &WildcardError{url: url.String(), statusCode: wildcardResp, length: wildcardLength, location: wildcardHeader.Get(\"Location\")}\n\t\t}\n\tdefault:\n\t\treturn errors.New(\"StatusCodes and StatusCodesBlacklist are both not set which should not happen\")\n\t}\n\n\treturn nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "e47e4f44e586e79744d3fb55",
+        "revision": "c098dea3524389a3116574b33049b549b92c78b8",
+        "path": "gobusterdir/gobusterdir.go",
+        "start_byte": 6667,
+        "text": "func (d *GobusterDir) AdditionalSuccessWords(word string) []string {\n\tif d.options.DiscoverBackup {\n\t\tret := make([]string, len(backupExtensions)+len(backupDotExtensions))\n\t\ti := 0\n\t\tfor _, b := range backupExtensions {\n\t\t\tret[i] = fmt.Sprintf(\"%s%s\", word, b)\n\t\t\ti++\n\t\t}\n\t\tfor _, b := range backupDotExtensions {\n\t\t\tret[i] = fmt.Sprintf(\".%s%s\", word, b)\n\t\t\ti++\n\t\t}\n\n\t\treturn ret\n\t}\n\n\treturn []string{}\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "3e71034cb3c8e0e2b2fb2f76",
+        "revision": "c098dea3524389a3116574b33049b549b92c78b8",
+        "path": "gobusterdir/gobusterdir.go",
+        "start_byte": 8685,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "190a3749c29ef49087be1a23",
+        "revision": "c098dea3524389a3116574b33049b549b92c78b8",
+        "path": "gobusterdir/result.go",
+        "start_byte": 425,
+        "text": "type Result struct {\n\tPath            string\n\tHeader          http.Header\n\tStatusCode      int\n\tSize            int64\n\trecursionTarget string\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "1dd89df5f5d8e5b7ed0e81fd",
+        "revision": "c098dea3524389a3116574b33049b549b92c78b8",
+        "path": "gobusterdns/gobusterdns.go",
+        "start_byte": 1949,
+        "text": "func (d *GobusterDNS) PreRun(ctx context.Context, progress *libgobuster.Progress) error {\n\t// Resolve a subdomain that probably shouldn't exist\n\tguid := uuid.New()\n\twildcardIps, err := d.dnsLookup(ctx, fmt.Sprintf(\"%s.%s\", guid, d.options.Domain))\n\tif err == nil {\n\t\td.isWildcard = true\n\t\td.wildcardIps.AddRange(wildcardIps)\n\t\tif !d.options.WildcardForced {\n\t\t\treturn &WildcardError{wildcardIps: d.wildcardIps}\n\t\t}\n\t}\n\n\tif !d.globalopts.Quiet {\n\t\t// Provide a warning if the base domain doesn't resolve (in case of typo)\n\t\t_, err = d.dnsLookup(ctx, d.options.Domain)\n\t\tif err != nil {\n\t\t\t// Not an error, just a warning. Eg. `yp.to` doesn't resolve, but `cr.yp.to` does!\n\t\t\tprogress.MessageChan <- libgobuster.Message{\n\t\t\t\tLevel:   libgobuster.LevelInfo,\n\t\t\t\tMessage: fmt.Sprintf(\"[-] Unable to validate base domain: %s (%v)\", d.options.Domain, err),\n\t\t\t}\n\t\t\tprogress.MessageChan <- libgobuster.Message{\n\t\t\t\tLevel:   libgobuster.LevelDebug,\n\t\t\t\tMessage: fmt.Sprintf(\"%#v\", err),\n\t\t\t}\n\t\t}\n\t}\n\n\treturn nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "bd86bb81b475f86b17ec005e",
+        "revision": "c098dea3524389a3116574b33049b549b92c78b8",
+        "path": "gobusterdns/gobusterdns.go",
+        "start_byte": 4571,
+        "text": "func (d *GobusterDNS) AdditionalSuccessWords(_ string) []string {\n\treturn []string{}\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "a3b8ea73c703f9d1c0956cbf",
+        "revision": "c098dea3524389a3116574b33049b549b92c78b8",
+        "path": "gobusterdns/result.go",
+        "start_byte": 189,
+        "text": "type Result struct {\n\tSubdomain string\n\tIPs       []netip.Addr\n\tCNAME     string\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "bb7a19bf57258fbb974f88e8",
+        "revision": "c098dea3524389a3116574b33049b549b92c78b8",
+        "path": "gobusterfuzz/gobusterfuzz.go",
+        "start_byte": 2377,
+        "text": "func (d *GobusterFuzz) PreRun(_ context.Context, _ *libgobuster.Progress) error {\n\treturn nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "c43bd37e26a0b913cc26b6a3",
+        "revision": "c098dea3524389a3116574b33049b549b92c78b8",
+        "path": "gobusterfuzz/gobusterfuzz.go",
+        "start_byte": 4996,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "7de0439b4c33d4a18ec28a59",
+        "revision": "c098dea3524389a3116574b33049b549b92c78b8",
+        "path": "gobusterfuzz/gobusterfuzz.go",
+        "start_byte": 6955,
+        "text": "func (d *GobusterFuzz) AdditionalSuccessWords(_ string) []string {\n\treturn []string{}\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "b9f87c583a74c67d3feec0e9",
+        "revision": "c098dea3524389a3116574b33049b549b92c78b8",
+        "path": "gobusterfuzz/result.go",
+        "start_byte": 230,
+        "text": "type Result struct {\n\tWord       string\n\tPath       string\n\tStatusCode int\n\tSize       int64\n\tHeader     http.Header\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "15e669d73c9c2de0962e11fa",
+        "revision": "c098dea3524389a3116574b33049b549b92c78b8",
+        "path": "gobustergcs/gobustersgcs.go",
+        "start_byte": 1849,
+        "text": "func (s *GobusterGCS) PreRun(_ context.Context, _ *libgobuster.Progress) error {\n\treturn nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "8cecd09a7b51ecb406204a90",
+        "revision": "c098dea3524389a3116574b33049b549b92c78b8",
+        "path": "gobustergcs/gobustersgcs.go",
+        "start_byte": 2940,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "679502a205daf32d6115e739",
+        "revision": "c098dea3524389a3116574b33049b549b92c78b8",
+        "path": "gobustergcs/gobustersgcs.go",
+        "start_byte": 4420,
+        "text": "var result map[string]any",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "3df4484504d70dad85427057",
+        "revision": "c098dea3524389a3116574b33049b549b92c78b8",
+        "path": "gobustergcs/gobustersgcs.go",
+        "start_byte": 5996,
+        "text": "func (s *GobusterGCS) AdditionalSuccessWords(_ string) []string {\n\treturn []string{}\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "ca62ccdb3e1878a956e1fd12",
+        "revision": "c098dea3524389a3116574b33049b549b92c78b8",
+        "path": "gobustergcs/result.go",
+        "start_byte": 158,
+        "text": "type Result struct {\n\tFound      bool\n\tBucketName string\n\tStatus     string\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "3b73f551e4666f39a88a516e",
+        "revision": "c098dea3524389a3116574b33049b549b92c78b8",
+        "path": "gobusters3/gobusters3.go",
+        "start_byte": 1639,
+        "text": "func (s *GobusterS3) PreRun(_ context.Context, _ *libgobuster.Progress) error {\n\treturn nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "2793fdfff6a5c57ed4fd6573",
+        "revision": "c098dea3524389a3116574b33049b549b92c78b8",
+        "path": "gobusters3/gobusters3.go",
+        "start_byte": 2706,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "92ff818261f27f2b4ff3c23f",
+        "revision": "c098dea3524389a3116574b33049b549b92c78b8",
+        "path": "gobusters3/gobusters3.go",
+        "start_byte": 5494,
+        "text": "func (s *GobusterS3) AdditionalSuccessWords(_ string) []string {\n\treturn []string{}\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "59f3ecca404b56c092a99467",
+        "revision": "c098dea3524389a3116574b33049b549b92c78b8",
+        "path": "gobusters3/result.go",
+        "start_byte": 157,
+        "text": "type Result struct {\n\tFound      bool\n\tBucketName string\n\tStatus     string\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "9d0a1e4162efc98f700be36d",
+        "revision": "c098dea3524389a3116574b33049b549b92c78b8",
+        "path": "gobustertftp/gobustertftp.go",
+        "start_byte": 897,
+        "text": "func (d *GobusterTFTP) PreRun(_ context.Context, _ *libgobuster.Progress) error {\n\t_, err := tftp.NewClient(d.options.Server)\n\tif err != nil {\n\t\treturn err\n\t}\n\treturn nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "5051e572ff193418f95f33e5",
+        "revision": "c098dea3524389a3116574b33049b549b92c78b8",
+        "path": "gobustertftp/gobustertftp.go",
+        "start_byte": 2060,
+        "text": "func (d *GobusterTFTP) AdditionalSuccessWords(_ string) []string {\n\treturn []string{}\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "325b9d348ca5cbe670ad0d2a",
+        "revision": "c098dea3524389a3116574b33049b549b92c78b8",
+        "path": "gobustertftp/result.go",
+        "start_byte": 166,
+        "text": "type Result struct {\n\tFilename     string\n\tSize         int64\n\tErrorMessage string\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "45495f0c476222ef4915c7d0",
+        "revision": "c098dea3524389a3116574b33049b549b92c78b8",
+        "path": "gobustervhost/gobustervhost.go",
+        "start_byte": 2041,
+        "text": "func (v *GobusterVhost) PreRun(ctx context.Context, _ *libgobuster.Progress) error {\n\t// add trailing slash\n\tif !strings.HasSuffix(v.options.URL.Path, \"/\") {\n\t\tv.options.URL.Path = fmt.Sprintf(\"%s/\", v.options.URL.Path)\n\t}\n\n\tif v.options.Domain != \"\" {\n\t\tv.domain = v.options.Domain\n\t} else {\n\t\tv.domain = v.options.URL.Host\n\t}\n\n\t// request default vhost for normalBody\n\t_, _, _, body, err := v.http.Request(ctx, *v.options.URL, libgobuster.RequestOptions{ReturnBody: true})\n\tif err != nil {\n\t\tswitch {\n\t\tcase errors.Is(err, io.EOF):\n\t\t\treturn libgobuster.ErrEOF\n\t\tcase os.IsTimeout(err):\n\t\t\treturn libgobuster.ErrTimeout\n\t\tcase errors.Is(err, syscall.ECONNREFUSED):\n\t\t\treturn libgobuster.ErrConnectionRefused\n\t\t}\n\t\treturn fmt.Errorf(\"unable to connect to %s: %w\", v.options.URL, err)\n\t}\n\tv.normalBody = body\n\n\t// request non existent vhost for abnormalBody\n\tsubdomain := fmt.Sprintf(\"%s.%s\", uuid.New(), v.domain)\n\t_, _, _, body, err = v.http.Request(ctx, *v.options.URL, libgobuster.RequestOptions{Host: subdomain, ReturnBody: true})\n\tif err != nil {\n\t\tswitch {\n\t\tcase errors.Is(err, io.EOF):\n\t\t\treturn libgobuster.ErrEOF\n\t\tcase os.IsTimeout(err):\n\t\t\treturn libgobuster.ErrTimeout\n\t\tcase errors.Is(err, syscall.ECONNREFUSED):\n\t\t\treturn libgobuster.ErrConnectionRefused\n\t\t}\n\t\treturn fmt.Errorf(\"unable to connect to %s: %w\", v.options.URL, err)\n\t}\n\tv.abnormalBody = body\n\treturn nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "16bf565d9584c3b05027a02a",
+        "revision": "c098dea3524389a3116574b33049b549b92c78b8",
+        "path": "gobustervhost/gobustervhost.go",
+        "start_byte": 4842,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "f84c07981a9f659cb8017e5e",
+        "revision": "c098dea3524389a3116574b33049b549b92c78b8",
+        "path": "gobustervhost/gobustervhost.go",
+        "start_byte": 6828,
+        "text": "func (v *GobusterVhost) AdditionalSuccessWords(_ string) []string {\n\treturn []string{}\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "6c0dc54a03739b05b213d567",
+        "revision": "c098dea3524389a3116574b33049b549b92c78b8",
+        "path": "gobustervhost/result.go",
+        "start_byte": 412,
+        "text": "type Result struct {\n\tVhost      string\n\tStatusCode int\n\tSize       int64\n\tHeader     http.Header\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "f6c689788e784ea028470baa",
+        "revision": "c098dea3524389a3116574b33049b549b92c78b8",
+        "path": "libgobuster/helpers.go",
+        "start_byte": 354,
+        "text": "func (set *Set[T]) Add(s T) bool {\n\t_, found := set.Set[s]\n\tset.Set[s] = true\n\treturn !found\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "7989e22a57b840a0c632da30",
+        "revision": "c098dea3524389a3116574b33049b549b92c78b8",
+        "path": "libgobuster/interfaces.go",
+        "start_byte": 443,
+        "text": "type Result interface {\n\tResultToString() (string, error)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "f561c6e4e8336d2e0e19a8c2",
+        "revision": "c098dea3524389a3116574b33049b549b92c78b8",
+        "path": "libgobuster/libgobuster.go",
+        "start_byte": 691,
+        "text": "type Gobuster struct {\n\tOpts          *Options\n\tLogger        *Logger\n\tplugin        GobusterPlugin\n\tProgress      *Progress\n\twordlistCache *wordlistCache\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "7b8895982700a2351ad3e76b",
+        "revision": "c098dea3524389a3116574b33049b549b92c78b8",
+        "path": "libgobuster/libgobuster.go",
+        "start_byte": 920,
+        "text": "type Guess struct {\n\tword              string\n\tdiscoverOnSuccess bool\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "20070b2c24b4b66cae73e034",
+        "revision": "c098dea3524389a3116574b33049b549b92c78b8",
+        "path": "libgobuster/libgobuster.go",
+        "start_byte": 993,
+        "text": "type successfulGuess struct {\n\tguess  *Guess\n\tresult Result\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "118ae59b61e59d9780cc55a5",
+        "revision": "c098dea3524389a3116574b33049b549b92c78b8",
+        "path": "libgobuster/libgobuster.go",
+        "start_byte": 1056,
+        "text": "type Wordlist struct {\n\tscanner        *bufio.Scanner\n\tguessesPerLine int\n\tisStream       bool\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "d6289ff3db22641da801a14b",
+        "revision": "c098dea3524389a3116574b33049b549b92c78b8",
+        "path": "libgobuster/libgobuster.go",
+        "start_byte": 1292,
+        "text": "var g Gobuster",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "fbc6b45b0f2a97ce5a5ef87e",
+        "revision": "c098dea3524389a3116574b33049b549b92c78b8",
+        "path": "libgobuster/libgobuster.go",
+        "start_byte": 1408,
+        "text": "func (g *Gobuster) worker(ctx context.Context, guessChan <-chan *Guess, successChan chan<- successfulGuess, wg *sync.WaitGroup) {\n\tdefer wg.Done()\n\tfor {\n\t\t// Prioritize stopping when the context is done\n\t\tselect {\n\t\tcase <-ctx.Done():\n\t\t\treturn\n\t\tdefault:\n\t\t}\n\t\tselect {\n\t\tcase <-ctx.Done():\n\t\t\treturn\n\t\tcase guess := <-guessChan:\n\t\t\tif guess == nil {\n\t\t\t\treturn\n\t\t\t}\n\n\t\t\t// Mode-specific processing\n\t\t\tres, err := g.plugin.ProcessWord(ctx, guess.word, g.Progress)\n\t\t\tif err != nil {\n\t\t\t\t// do not exit and continue\n\t\t\t\tg.Progress.ErrorChan <- fmt.Errorf(\"error on word %s: %w\", guess.word, err)\n\t\t\t}\n\n\t\t\tif res != nil {\n\t\t\t\tg.Progress.ResultChan <- res\n\n\t\t\t\tselect {\n\t\t\t\tcase <-ctx.Done():\n\t\t\t\t\tg.Progress.incrementRequests()\n\t\t\t\t\treturn\n\t\t\t\tcase successChan <- successfulGuess{guess: guess, result: res}:\n\t\t\t\t}\n\t\t\t}\n\n\t\t\tg.Progress.incrementRequests()\n\n\t\t\tselect {\n\t\t\tcase <-ctx.Done():\n\t\t\tcase <-time.After(g.Opts.Delay):\n\t\t\t}\n\t\t}\n\t}\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "ecb22dd8b608c611fcd68cf4",
+        "revision": "c098dea3524389a3116574b33049b549b92c78b8",
+        "path": "libgobuster/libgobuster.go",
+        "start_byte": 2783,
+        "text": "func (g *Gobuster) feeder(ctx context.Context, guessChan chan<- *Guess, words []string, discoverOnSuccess bool, wg *sync.WaitGroup) {\n\tdefer wg.Done()\n\n\tfeed(ctx, guessChan, words, discoverOnSuccess)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "6337c98a22c8eb9606e31a66",
+        "revision": "c098dea3524389a3116574b33049b549b92c78b8",
+        "path": "libgobuster/libgobuster.go",
+        "start_byte": 2986,
+        "text": "func (g *Gobuster) feedWordlist(ctx context.Context, guessChan chan<- *Guess, wordlist *Wordlist, scanDone chan<- error, wg *sync.WaitGroup) {\n\tdefer wg.Done()\n\tdefer func() { scanDone <- wordlist.scanner.Err() }()\n\n\tfor wordlist.scanner.Scan() {\n\t\t// Prioritize stopping when the context is done\n\t\tselect {\n\t\tcase <-ctx.Done():\n\t\t\treturn\n\t\tdefault:\n\t\t}\n\n\t\tword := strings.TrimSpace(wordlist.scanner.Text())\n\n\t\tswitch {\n\t\tcase wordlist.isStream && len(word) != 0:\n\t\t\t// Increment to keep track of expected work\n\t\t\tg.Progress.IncrementTotalRequests(wordlist.guessesPerLine)\n\t\tcase wordlist.isStream && len(word) == 0:\n\t\t\t// Skip empty lines without incrementing\n\t\t\tcontinue\n\t\tcase len(word) == 0:\n\t\t\t// Skip empty lines removing expected work\n\t\t\tg.Progress.IncrementTotalRequests(-1 * wordlist.guessesPerLine)\n\t\t\tcontinue\n\t\t}\n\n\t\tif len(g.Opts.Patterns) > 0 {\n\t\t\tfor _, w := range g.processPatterns(word) {\n\t\t\t\tguess := &Guess{word: w, discoverOnSuccess: true}\n\t\t\t\tselect {\n\t\t\t\tcase <-ctx.Done():\n\t\t\t\t\treturn\n\t\t\t\tcase guessChan <- guess:\n\t\t\t\t}\n\n\t\t\t\tfeed(ctx, guessChan, g.plugin.AdditionalWords(w), true)\n\t\t\t}\n\t\t} else {\n\t\t\tguess := &Guess{word: word, discoverOnSuccess: true}\n\n\t\t\tselect {\n\t\t\tcase <-ctx.Done():\n\t\t\t\treturn\n\t\t\tcase guessChan <- guess:\n\t\t\t}\n\n\t\t\tfeed(ctx, guessChan, g.plugin.AdditionalWords(word), true)\n\t\t}\n\t}\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "78c5436d720f87282eb31b58",
+        "revision": "c098dea3524389a3116574b33049b549b92c78b8",
+        "path": "libgobuster/libgobuster.go",
+        "start_byte": 5151,
+        "text": "func (g *Gobuster) getWordlist(wordlist io.ReadSeeker) (*Wordlist, error) {\n\tguessesPerLine := 0\n\tif g.wordlistCache != nil {\n\t\tguessesPerLine = g.wordlistCache.guessesPerLine\n\t} else {\n\t\tif len(g.Opts.Patterns) > 0 {\n\t\t\tnPats := len(g.Opts.Patterns)\n\t\t\tguessesPerLine = nPats + nPats*g.plugin.AdditionalWordsLen()\n\t\t} else {\n\t\t\tguessesPerLine = 1 + g.plugin.AdditionalWordsLen()\n\t\t}\n\t}\n\n\tif g.Opts.Wordlist == \"-\" {\n\t\t// Read directly from stdin\n\t\tscanner := bufio.NewScanner(os.Stdin)\n\t\tscanner.Buffer(make([]byte, 64*1024), maxWordlistLineSize)\n\t\treturn &Wordlist{scanner: scanner, guessesPerLine: guessesPerLine, isStream: true}, nil\n\t}\n\n\tl",
+        "rank": 1,
+        "truncated": true
+      }
+    ]
+  },
+  "retrieval": {
+    "unresolved": [
+      {
+        "side": "ours",
+        "identifier": "Gobuster",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "cli/gobuster.go",
+            "start": 3597
+          },
+          {
+            "path": "libgobuster/libgobuster.go",
+            "start": 645
+          }
+        ]
+      },
+      {
+        "side": "ours",
+        "identifier": "Run",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "ctx",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "context",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Context",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "error",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "close",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "ResultChan",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "ErrorChan",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "MessageChan",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "err",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "cli/gobuster.go",
+            "start": 579
+          },
+          {
+            "path": "gobusterdir/gobusterdir.go",
+            "start": 7247
+          },
+          {
+            "path": "gobusterfuzz/gobusterfuzz.go",
+            "start": 4756
+          },
+          {
+            "path": "gobustergcs/gobustersgcs.go",
+            "start": 2854
+          },
+          {
+            "path": "gobusters3/gobusters3.go",
+            "start": 2706
+          },
+          {
+            "path": "gobustervhost/gobustervhost.go",
+            "start": 4694
+          },
+          {
+            "path": "libgobuster/libgobuster.go",
+            "start": 6177
+          }
+        ]
+      },
+      {
+        "side": "ours",
+        "identifier": "plugin",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "PreRun",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "gobusterdir/gobusterdir.go",
+            "start": 2742
+          },
+          {
+            "path": "gobusterdns/gobusterdns.go",
+            "start": 1949
+          },
+          {
+            "path": "gobusterfuzz/gobusterfuzz.go",
+            "start": 2229
+          },
+          {
+            "path": "gobustergcs/gobustersgcs.go",
+            "start": 1763
+          },
+          {
+            "path": "gobusters3/gobusters3.go",
+            "start": 1639
+          },
+          {
+            "path": "gobustertftp/gobustertftp.go",
+            "start": 897
+          },
+          {
+            "path": "gobustervhost/gobustervhost.go",
+            "start": 1893
+          }
+        ]
+      },
+      {
+        "side": "ours",
+        "identifier": "workerCtx",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "workerCancel",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "WithCancel",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "feederCtx",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "feederCancel",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "feederGroup",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "sync",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "WaitGroup",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Opts",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Threads",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "guessChan",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "make",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "successChan",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "f",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "cli/gobuster.go",
+            "start": 563
+          },
+          {
+            "path": "libgobuster/libgobuster.go",
+            "start": 6078
+          }
+        ]
+      },
+      {
+        "side": "ours",
+        "identifier": "io",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "ReadSeekCloser",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "os",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Open",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "fmt",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Close",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "wordlist",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Done",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "successGuess",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "discoverOnSuccess",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "discoverWords",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "AdditionalSuccessWords",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "gobusterdir/gobusterdir.go",
+            "start": 5396
+          },
+          {
+            "path": "gobusterdns/gobusterdns.go",
+            "start": 4577
+          },
+          {
+            "path": "gobusterfuzz/gobusterfuzz.go",
+            "start": 6249
+          },
+          {
+            "path": "gobustergcs/gobustersgcs.go",
+            "start": 5918
+          },
+          {
+            "path": "gobusters3/gobusters3.go",
+            "start": 5494
+          },
+          {
+            "path": "gobustertftp/gobustertftp.go",
+            "start": 2060
+          },
+          {
+            "path": "gobustervhost/gobustervhost.go",
+            "start": 6217
+          }
+        ]
+      },
+      {
+        "side": "ours",
+        "identifier": "word",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "patternDiscoverWords",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "len",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "time",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "After",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Millisecond",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Wait",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "scanner",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Err",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Gobuster",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "cli/gobuster.go",
+            "start": 3616
+          },
+          {
+            "path": "libgobuster/libgobuster.go",
+            "start": 691
+          }
+        ]
+      },
+      {
+        "side": "theirs",
+        "identifier": "runTarget",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "ctx",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "context",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Context",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "onResult",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Result",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "gobusterdir/result.go",
+            "start": 425
+          },
+          {
+            "path": "gobusterdns/result.go",
+            "start": 189
+          },
+          {
+            "path": "gobusterfuzz/result.go",
+            "start": 230
+          },
+          {
+            "path": "gobustergcs/result.go",
+            "start": 158
+          },
+          {
+            "path": "gobusters3/result.go",
+            "start": 157
+          },
+          {
+            "path": "gobustertftp/result.go",
+            "start": 166
+          },
+          {
+            "path": "gobustervhost/result.go",
+            "start": 412
+          },
+          {
+            "path": "libgobuster/interfaces.go",
+            "start": 443
+          }
+        ]
+      },
+      {
+        "side": "theirs",
+        "identifier": "error",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "err",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "cli/gobuster.go",
+            "start": 579
+          },
+          {
+            "path": "gobusterdir/gobusterdir.go",
+            "start": 8685
+          },
+          {
+            "path": "gobusterfuzz/gobusterfuzz.go",
+            "start": 4996
+          },
+          {
+            "path": "gobustergcs/gobustersgcs.go",
+            "start": 2940
+          },
+          {
+            "path": "gobusters3/gobusters3.go",
+            "start": 2706
+          },
+          {
+            "path": "gobustervhost/gobustervhost.go",
+            "start": 4842
+          },
+          {
+            "path": "libgobuster/libgobuster.go",
+            "start": 5806
+          },
+          {
+            "path": "libgobuster/libgobuster.go",
+            "start": 9663
+          }
+        ]
+      },
+      {
+        "side": "theirs",
+        "identifier": "plugin",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "PreRun",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "gobusterdir/gobusterdir.go",
+            "start": 3862
+          },
+          {
+            "path": "gobusterdns/gobusterdns.go",
+            "start": 1949
+          },
+          {
+            "path": "gobusterfuzz/gobusterfuzz.go",
+            "start": 2377
+          },
+          {
+            "path": "gobustergcs/gobustersgcs.go",
+            "start": 1849
+          },
+          {
+            "path": "gobusters3/gobusters3.go",
+            "start": 1639
+          },
+          {
+            "path": "gobustertftp/gobustertftp.go",
+            "start": 897
+          },
+          {
+            "path": "gobustervhost/gobustervhost.go",
+            "start": 2041
+          }
+        ]
+      },
+      {
+        "side": "theirs",
+        "identifier": "workerCtx",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "workerCancel",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "WithCancel",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "feederCtx",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "feederCancel",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "feederGroup",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "sync",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "WaitGroup",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Opts",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Threads",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "guessChan",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "make",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "successChan",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "scanDone",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "f",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "cli/gobuster.go",
+            "start": 563
+          },
+          {
+            "path": "libgobuster/libgobuster.go",
+            "start": 9564
+          }
+        ]
+      },
+      {
+        "side": "theirs",
+        "identifier": "io",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "ReadSeekCloser",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "os",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Open",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "fmt",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Close",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "wordlist",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "wordlistFinished",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Done",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "success",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "guess",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "discoverOnSuccess",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "discoverWords",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "AdditionalSuccessWords",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "gobusterdir/gobusterdir.go",
+            "start": 6667
+          },
+          {
+            "path": "gobusterdns/gobusterdns.go",
+            "start": 4571
+          },
+          {
+            "path": "gobusterfuzz/gobusterfuzz.go",
+            "start": 6955
+          },
+          {
+            "path": "gobustergcs/gobustersgcs.go",
+            "start": 5996
+          },
+          {
+            "path": "gobusters3/gobusters3.go",
+            "start": 5494
+          },
+          {
+            "path": "gobustertftp/gobustertftp.go",
+            "start": 2060
+          },
+          {
+            "path": "gobustervhost/gobustervhost.go",
+            "start": 6828
+          }
+        ]
+      },
+      {
+        "side": "theirs",
+        "identifier": "word",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "len",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "patternDiscoverWords",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "time",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "After",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Millisecond",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Wait",
+        "reason": "no-unique-declaration-established"
+      }
+    ],
+    "method": "syntax-ranges-and-identifier-candidates/3",
+    "budget_bytes": 32768,
+    "libraries": {
+      "C": "cbbd4827ee02cd5c018ab41f10d8404ff8741159054b352d9a6d763c506ba3c7",
+      "Go": "1612f8fd958ba1ec981bf4b91e2ff399f1e54d26a9da68e5b60b0d7cd00616fc"
+    }
+  }
+}

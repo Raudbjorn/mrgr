@@ -1,0 +1,2212 @@
+{
+  "id": "693b27051d721bf52fa72c597e2f5bff583f0cf7376c6d2d9803658ebab9483c",
+  "source_protocol_sha256": "86ffe38086e217acf6e1a4aa4162e226862463d1bde3160478f9a6f4d2b968ce",
+  "repair_module_sha256": "b6a7cf123b0ac50001e1498cdf64964b8ac56e8e6a68cbbc6dcc01c8517b4a20",
+  "contexts": {
+    "local-context": [
+      {
+        "id": "350c6cf70946526e2ddcc09b",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "baked_in.go",
+        "start_byte": 31340,
+        "text": "ion for validating if the current field's value is equal to the param's value.\nfunc isEq(fl FieldLevel) bool {\n\n\tfield := fl.Field()\n\tparam := fl.Param()\n\n\tswitch field.Kind() {\n\n\tcase reflect.String:\n\t\treturn field.String() == param\n\n\tcase reflect.Slice, reflect.Map, reflect.Array:\n\t\tp := asInt(param)\n\n\t\treturn int64(field.Len()) == p\n\n\tcase reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:\n\t\tp := asInt(param)\n\n\t\treturn field.Int() == p\n\n\tcase reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:\n\t\tp := asUint(param)\n\n\t\treturn field.Uint() == p\n\n\tcase reflect.Float32, reflect.Float64:\n\t\tp := asFloat(param)\n\n\t\treturn field.Float() == p\n\n\tcase reflect.Bool:\n\t\tp := asBool(param)\n\n\t\treturn field.Bool() == p\n\t}\n\n\tpanic(fmt.Sprintf(\"Bad field type %T\", field.Interface()))\n}\n\n// IsBase64 is the validation function for validating if the current field's value is a valid base 64.\nfunc isBase64(fl FieldLevel) bool {\n\treturn base64Regex.MatchString(fl.Field().String())\n}\n\n// IsBase64URL is the validation function for validating if the current field's value is a valid base64 URL safe string.\nfunc isBase64URL(fl FieldLevel) bool {\n\treturn base64URLRegex.MatchString(fl.Field().String())\n}\n\n// IsURI is the validation function for validating if the current field's value is a valid URI.\nfunc isURI(fl FieldLevel) bool {\n\n\tfield := fl.Field()\n\n\tswitch field.Kind() {\n\n\tcase reflect.String:\n\n\t\ts := field.String()\n\n\t\t// checks needed as of Go 1.6 because of change https://github.com/golang/go/commit/617c93ce740c3c3cc28cdd1a0d712be183d0b328#diff-6c2d018290e298803c0c9419d8739885L195\n\t\t// emulate browser and strip the '#' suffix prior to validation. see issue-#237\n\t\tif i := strings.Index(s, \"#\"); i > -1 {\n\t\t\ts = s[:i]\n\t\t}\n\n\t\tif len(s) == 0 {\n\t\t\treturn false\n\t\t}\n\n\t\t_, err := url.ParseRequestURI(s)\n\n\t\treturn err == nil\n\t}\n\n\tpanic(fmt.Sprintf(\"Bad field type %T\", field.Interface()))\n}\n\n// IsURL is the validation function for validating if the current field's value is a valid URL.\nfunc isURL(fl FieldLevel) bool {\n\n\tfield := fl.Field()\n\n\tswitch field.Kind() {\n\n\tcase reflect.String:\n\n\t\tvar i int\n\t\ts := field.String()\n\n\t\t// checks needed as of Go 1.6 because of change https://github.com/golang/go/commit/617c93ce740c3c3cc28cdd1a0d712be183d0b328#diff-6c2d018290e298803c0c9419d8739885L195\n\t\t// emulate browser and strip the '#' suffix prior to validation. see issue-#237\n\t\tif i = strings.Index(s, \"#\"); i > -1 {\n\t\t\ts = s[:i]\n\t\t}\n\n\t\tif len(s) == 0 {\n\t\t\treturn false\n\t\t}\n\n\t\turl, err := url.ParseRequestURI(s)\n\n\t\tif err != nil || url.Scheme == \"\" {\n\t\t\treturn false\n\t\t}\n\n\t\treturn true\n\t}\n\n\tpanic(fmt.Sprintf(\"Bad field type %T\", field.Interface()))\n}\n\n// isUrnRFC2141 is the validation function for validating if the current field's value is a valid URN as per RFC 2141.\nfunc isUrnRFC2141(fl FieldLevel) bool {\n\tfield := fl.Field()\n\n\tswitch field.Kind() {\n\n\tcase reflect.String:\n\n\t\tstr := field.String()\n\n\t\t_, match := urn.Parse([]byte(str))\n\n\t\treturn match\n\t}\n\n\tpanic(fmt.Sprintf(\"Bad field type %T\", field.Interface()))\n}\n\n// IsFile is the validation function for validating if the current field's value is a valid file path.\nfunc isFile(fl FieldLevel) bool {\n\tfield := fl.Field()\n\n\tswitch field.Kind() {\n\tcase reflect.String:\n\t\tfileInfo, err := os.Stat(field.String())\n\t\tif err != nil {\n\t\t\treturn false\n\t\t}\n\n\t\treturn !fileInfo.IsDir()\n\t}\n\n\tpanic(fmt.Sprintf(\"Bad field type %T\", field.Interface()))\n}\n\n// IsE164 is the validation function for validating if the current field's value is a valid e.164 formatted phone number.\nfunc isE164(fl FieldLevel) bool {\n\treturn e164Regex.MatchString(fl.Field().String())\n}\n\n// IsEmail is the validation function for validating if the current field's value is a valid email address.\nfunc isEmail(fl FieldLevel) bool {\n\treturn emailRegex.MatchString(fl.Field().String())\n}\n\n// IsHSLA is the validation function for validating if the current field's value is a valid HSLA color.\nfunc isHSLA(fl FieldLevel) bool {\n\treturn hslaRegex.MatchString(fl.Field().String())\n}\n\n// IsHSL is the validation function for validating if the current field's value is a valid HSL color.\nfunc isHSL(fl FieldLevel) bool {\n\treturn hslRegex.MatchString(fl.Field().String())\n}\n\n// IsRGBA is the validation function for validating if the current field's value is a valid RGBA color.\nfunc isRGBA(fl FieldLevel) bool {\n\treturn rgbaRegex.MatchString(fl.Field().String())\n}\n\n// IsRGB is the validation function for validating if the current field's value is a valid RGB color.\nfunc isRGB(fl FieldLevel) bool {\n\treturn rgbRegex.MatchString(fl.Field().String())\n}\n\n// IsHEXColor is the validation function for validating if the current field's value is a valid HEX color.\nfunc isHEXColor(fl FieldLevel) bool {\n\treturn hexcolorRegex.MatchString(fl.Field().String())\n}\n\n// IsHexadecimal is the validation function for validating if the current field's value is a valid hexadecimal.\nfunc isHexadecimal(fl FieldLevel) bool {\n\treturn hexadecimalRegex.MatchString(fl.Field().String())\n}\n\n// IsNumber is the validation function for validating if the current field's value is a valid number.\nfunc isNumber(fl FieldLevel) bool {\n\tswitch fl.Field().Kind() {\n\tcase reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64, reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr, reflect.Float32, reflect.Float64:\n\t\treturn true\n\tdefault:\n\t\treturn numberRegex.MatchString(fl.Field().String())\n\t}\n}\n\n// IsNumeric is the validation function for validating if the current field's value is a valid numeric value.\nfunc isNumeric(fl FieldLevel) bool {\n\tswitch fl.Field().Kind() {\n\tcase reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64, reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr, reflect.Float32, reflect.Float64:\n\t\treturn true\n\tdefault:\n\t\treturn numericRegex.MatchString(fl.Field().String())\n\t}\n}\n\n// IsAlphanum is the validation function for validating if the current field's value is a valid alphanumeric value.\nfunc isAlphanum(fl FieldLevel) bool {\n\treturn alphaNumericRegex.MatchString(fl.Field().String())\n}\n\n// IsAlpha is the validation function for validating if the current field's value is a valid alpha value.\nfunc isAlpha(fl FieldLevel) bool {\n\treturn alphaRegex.MatchString(fl.Field().String())\n}\n\n// IsAlphanumUnicode is the validation function for validating if the current field's value is a valid alphanumeric unicode value.\nfunc isAlphanumUnicode(fl FieldLevel) bool {\n\treturn alphaUnicodeNumericRegex.MatchString(fl.Field().String())\n}\n\n// IsAlphaUnicode is the validation function for validating if the current field's value is a valid alpha unicode value.\nfunc isAlphaUnicode(fl FieldLevel) bool {\n\treturn alphaUnicodeRegex.MatchString(fl.Field().String())\n}\n\n// isDefault is the opposite of required aka hasValue\nfunc isDefault(fl FieldLevel) bool {\n\treturn !hasValue(fl)\n}\n\n// HasValue is the validation function for validating if the current field's value is not the default static value.\nfunc hasValue(fl FieldLevel) bool {\n\tfield := fl.Field()\n\tswitch field.Kind() {\n\tcase reflect.Slice, reflect.Map, reflect.Ptr, reflect.Interface, reflect.Chan, reflect.Func:\n\t\treturn !field.IsNil()\n\tdefault:\n\t\tif fl.(*validate).fldIsPointer && field.Interface() != nil {\n\t\t\treturn true\n\t\t}\n\t\treturn field.IsValid() && field.Interface() != reflect.Zero(field.Type()).Interface()\n\t}\n}\n\n// requireCheckField is a func for check field kind\nfunc requireCheckFieldKind(fl FieldLevel, param string, defaultNotFoundValue bool) bool {\n\tfield := fl.Field()\n\tkind := field.Kind()\n\tvar nullable, found bool\n\tif len(param) > 0 {\n\t\tfield, kind, nullable, found = fl.GetStructFieldOKAdvanced2(fl.Parent(), param)\n\t\tif !found {\n\t\t\treturn defaultNotFoundValue\n\t\t}\n\t}\n\tswitch kind {\n\tcase reflect.Invalid:\n\t\treturn defaultNotFoundValue\n\tcase reflect.Slice, reflect.Map, reflect.Ptr, reflect.Interface, reflect.Chan, reflect.Func:\n\t\treturn field.IsNil()\n\tdefault:\n\t\tif nullable && field.Interface() != nil {\n\t\t\treturn false\n\t\t}\n\t\treturn field.IsValid() && field.Interface() == reflect.Zero(field.Type()).Interface()\n\t}\n}\n\n// requireCheckFieldValue is a func for check field value\nfunc requireCheckFieldValue(fl FieldLevel, param string, value string, defaultNotFoundValue bool) bool {\n\tfield, kind, _, found := fl.GetStructFieldOKAdvanced2(fl.Parent(), param)\n\tif !found {\n\t\treturn defaultNotFoundValue\n\t}\n\n\tswitch kind {\n\n\tcase reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:\n\t\treturn field.Int() == asInt(value)\n\n\tcase reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:\n\t\treturn field.Uint() == asUint(value)\n\n\tcase reflect.Float32, reflect.Float64:\n\t\treturn field.Float() == asFloat(value)\n\n\tcase reflect.Slice, reflect.Map, reflect.Array:\n\t\treturn int64(field.Len()) == asInt(value)\n\t}\n\n\t// default reflect.String:\n\treturn field.String() == value\n}\n\n// requiredIf is the validation function\n// The field under validation must be present and not empty only if all the other specified fields are equal to the value following with the specified field.\nfunc requiredIf(fl FieldLevel) bool {\n\tparams := parseOneOfParam2(fl.Param())\n\tif len(params)%2 != 0 {\n\t\tpanic(fmt.Sprintf(\"Bad param number for required_if %s\", fl.FieldName()))\n\t}\n\tfor i := 0; i < len(params); i += 2 {\n\t\tif !requireCheckFieldValue(fl, params[i], params[i+1], false) {\n\t\t\treturn true\n\t\t}\n\t}\n\treturn hasValue(fl)\n}\n\n// requiredUnless is the validation function\n// The field under validation must be present and not empty only unless all the other specified fields are equal to the value following with the specified field.\nfunc requiredUnless(fl FieldLevel) bool {\n\tparams := parseOneOfParam2(fl.Param())\n\tif len(params)%2 != 0 {\n\t\tpanic(fmt.Sprintf(\"Bad param number for required_unless %s\", fl.FieldName()))\n\t}\n\n\tfor i := 0; i < len(params); i += 2 {\n\t\tif requireCheckFieldValue(fl, params[i], params[i+1], false) {\n\t\t\treturn true\n\t\t}\n\t}\n\treturn hasValue(fl)\n}\n\n// RequiredWith is the validation function\n// The field under validation must be present and not empty only if any of the other specified fields are present.\nfunc requiredWith(fl FieldLevel) bool {\n\tparams := parseOneOfParam2(fl.Param())\n\tfor _, param := range params {\n\t\tif !requireCheckFieldKind(fl, param, true) {\n\t\t\treturn hasValue(fl)\n\t\t}\n\t}\n\treturn true\n}\n\n// RequiredWithAll is the validation function\n// The field under validation must be present and not empty only if all of the other specified fields are present.\nfunc requiredWithAll(fl FieldLevel) bool {\n\tparams := parseOneOfParam2(fl.Param())\n\tfor _, param := range params {\n\t\tif requireCheckFieldKind(fl, param, true) {\n\t\t\treturn true\n\t\t}\n\t}\n\treturn hasValue(fl)\n}\n\n// RequiredWithout is the validation function\n// The field under validation must be present and not empty only when any of the other specified fields are not present.\nfunc requiredWithout(fl FieldLevel) bool {\n\tif requireCheckFieldKind(fl, strings.TrimSpace(fl.Param()), true) {\n\t\treturn hasValue(fl)\n\t}\n\treturn true\n}\n\n// RequiredWithoutAll is the validation function\n// The field under validation must be present and not empty only when all of the other specified fields are not present.\nfunc requiredWithoutAll(fl FieldLevel) bool {\n\tparams := parseOneOfParam2(fl.Param())\n\tfor _, param := range params {\n\t\tif !requireCheckFieldKind(fl, param, true) {\n\t\t\treturn true\n\t\t}\n\t}\n\treturn hasValue(fl)\n}\n\n// IsGteField is the validation function for validating if the current field's value is greater than or equal to the field specified by the param's value.\nfunc isGteField(fl FieldLevel) bool {\n\n\tfield := fl.Field()\n\tkind := field.Kind()\n\n\tcurrentField, currentKind, ok := fl.GetStructFieldOK()\n\tif !ok || currentKind != kind {\n\t\treturn false\n\t}\n\n\tswitch kind {\n\n\tcase reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:\n\n\t\treturn field.Int() >= currentField.Int()\n\n\tcase reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:\n\n\t\treturn field.Uint() >= currentField.Uint()\n\n\tcase reflect.Float32, reflect.Float64:\n\n\t\treturn field.Float() >= currentField.Float()\n\n\tcase reflect.Struct:\n\n\t\tfieldType := field.Type()\n\n\t\t// Not Same underlying type i.e. struct and time\n\t\tif fieldType != currentField.Type() {\n\t\t\treturn false\n\t\t}\n\n\t\tif fieldType == timeType {\n\n\t\t\tt := currentField.Interface().(time.Time)\n\t\t\tfieldTime := field.Interface().(time.Time)\n\n\t\t\treturn fieldTime.After(t) || fieldTime.Equal(t)\n\t\t}\n\t}\n\n\t// default reflect.String\n\treturn len(field.String()) >= len(currentField.String())\n}\n\n// IsGtField is the validation function for validating if the current field's value is greater than the field specified by the param's value.\nfunc isGtField(fl FieldLevel) bool {\n\n\tfield := fl.Field()\n\tkind := field.Kind()\n\n\tcurrentField, currentKind, ok := fl.GetStructFieldOK()\n\tif !ok || currentKind != kind {\n\t\treturn false\n\t}\n\n\tswitch kind {\n\n\tcase reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:\n\n\t\treturn field.Int() > currentField.Int()\n\n\tcase reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:\n\n\t\treturn field.Uint() > currentField.Uint()\n\n\tcase reflect.Float32, reflect.Float64:\n\n\t\treturn field.Float() > currentField.Float()\n\n\tcase reflect.Struct:\n\n\t\tfieldType := field.Type()\n\n\t\t// Not Same underlying type i.e. struct and time\n\t\tif fieldType != currentField.Type() {\n\t\t\treturn false\n\t\t}\n\n\t\tif fieldType == timeType {\n\n\t\t\tt := currentField.Interface().(time.Time)\n\t\t\tfieldTime := field.Interface().(time.Time)\n\n\t\t\treturn fieldTime.After(t)\n\t\t}\n\t}\n\n\t// default reflect.String\n\treturn len(field.String()) > len(currentField.String())\n}\n\n// IsGte is the validation function for validating if the current field's value is greater than or equal to the param's value.\nfunc isGte(fl FieldLevel) bool {\n\n\tfield := fl.Field()\n\tparam := fl.Param()\n\n\tswitch field.Kind() {\n\n\tcase reflect.String:\n\t\tp := asInt(param)\n\n\t\treturn int64(utf8.RuneCountInString(field.String())) >= p\n\n\tcase reflect.Slice, reflect.Map, reflect.Array:\n\t\tp := asInt(param)\n\n\t\treturn int64(field.Len()) >= p\n\n\tcase reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:\n\t\tp := asInt(param)\n\n\t\treturn field.Int() >= p\n\n\tcase reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:\n\t\tp := asUint(param)\n\n\t\treturn field.Uint() >= p\n\n\tcase reflect.Float32, reflect.Float64:\n\t\tp := asFloat(param)\n\n\t\treturn field.Float() >= p\n\n\tcase reflect.Struct:\n\n\t\tif field.Type() == timeType {\n\n\t\t\tnow := time.Now().UTC()\n\t\t\tt := field.Interface().(time.Time)\n\n\t\t\treturn t.After(now) || t.Equal(now)\n\t\t}\n\t}\n\n\tpanic(fmt.Sprintf(\"Bad field type %T\", field.Interface()))\n}\n\n// IsGt is the validation function for validating if the current field's value is greater than the param's value.\nfunc isGt(fl FieldLevel) bool {\n\n\tfield := fl.Field()\n\tparam := fl.Param()\n\n\tswitch field.Kind() {\n\n\tcase reflect.String:\n\t\tp := asInt(param)\n\n\t\treturn int64(utf8.RuneCountInString(field.String())) > p\n\n\tcase reflect.Slice, reflect.Map, reflect.Array:\n\t\tp := asInt(param)\n\n\t\treturn int64(field.Len()) > p\n\n\tcase reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:\n\t\tp := asInt(param)\n\n\t\treturn field.Int() > p\n\n\tcase reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:\n\t\tp := asUint(param)\n\n\t\treturn field.Uint() > p\n\n\tcase reflect.Float32, reflect.Float64:\n\t\tp := asFloat(param)\n\n\t\treturn field.Float() > p\n\tcase reflect.Struct:\n\n\t\tif field.Type() == timeType {\n\n\t\t\treturn field.Interface().(time.Time).After(time.Now().UTC())\n\t\t}\n\t}\n\n\tpanic(fmt.Sprintf(\"Bad field type %T\", field.Interface()))\n}\n\n// HasLengthOf is the validation function for validating if the current field's value is equal to the param's value.\nfunc hasLengthOf(fl FieldLevel) bool {\n\n\tfield := fl.Field()\n\tparam := fl.Param()\n\n\tswitch field.Kind() {\n\n\tcase reflect.String:\n\t\tp := asInt(param)\n\n\t\treturn int64(utf8.RuneCountInString(field.String())) == p\n\n\tcase reflect.Slice, reflect.Map, reflect.Array:\n\t\tp := asInt(param)\n\n\t\treturn int64(field.Len()) == p\n\n\tcase reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:\n\t\tp := asInt(param)\n\n\t\treturn field.Int() == p\n\n\tcase reflect.Uint, reflect.Uint8, reflect.U",
+        "rank": 0,
+        "truncated": false
+      },
+      {
+        "id": "0b4a867efd078442da25172d",
+        "revision": "b1ccceeb1193ae8e747d8cdb14e644c979eb1295",
+        "path": "baked_in.go",
+        "start_byte": 31432,
+        "text": "ion for validating if the current field's value is equal to the param's value.\nfunc isEq(fl FieldLevel) bool {\n\n\tfield := fl.Field()\n\tparam := fl.Param()\n\n\tswitch field.Kind() {\n\n\tcase reflect.String:\n\t\treturn field.String() == param\n\n\tcase reflect.Slice, reflect.Map, reflect.Array:\n\t\tp := asInt(param)\n\n\t\treturn int64(field.Len()) == p\n\n\tcase reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:\n\t\tp := asInt(param)\n\n\t\treturn field.Int() == p\n\n\tcase reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:\n\t\tp := asUint(param)\n\n\t\treturn field.Uint() == p\n\n\tcase reflect.Float32, reflect.Float64:\n\t\tp := asFloat(param)\n\n\t\treturn field.Float() == p\n\n\tcase reflect.Bool:\n\t\tp := asBool(param)\n\n\t\treturn field.Bool() == p\n\t}\n\n\tpanic(fmt.Sprintf(\"Bad field type %T\", field.Interface()))\n}\n\n// IsBase64 is the validation function for validating if the current field's value is a valid base 64.\nfunc isBase64(fl FieldLevel) bool {\n\treturn base64Regex.MatchString(fl.Field().String())\n}\n\n// IsBase64URL is the validation function for validating if the current field's value is a valid base64 URL safe string.\nfunc isBase64URL(fl FieldLevel) bool {\n\treturn base64URLRegex.MatchString(fl.Field().String())\n}\n\n// IsURI is the validation function for validating if the current field's value is a valid URI.\nfunc isURI(fl FieldLevel) bool {\n\n\tfield := fl.Field()\n\n\tswitch field.Kind() {\n\n\tcase reflect.String:\n\n\t\ts := field.String()\n\n\t\t// checks needed as of Go 1.6 because of change https://github.com/golang/go/commit/617c93ce740c3c3cc28cdd1a0d712be183d0b328#diff-6c2d018290e298803c0c9419d8739885L195\n\t\t// emulate browser and strip the '#' suffix prior to validation. see issue-#237\n\t\tif i := strings.Index(s, \"#\"); i > -1 {\n\t\t\ts = s[:i]\n\t\t}\n\n\t\tif len(s) == 0 {\n\t\t\treturn false\n\t\t}\n\n\t\t_, err := url.ParseRequestURI(s)\n\n\t\treturn err == nil\n\t}\n\n\tpanic(fmt.Sprintf(\"Bad field type %T\", field.Interface()))\n}\n\n// IsURL is the validation function for validating if the current field's value is a valid URL.\nfunc isURL(fl FieldLevel) bool {\n\n\tfield := fl.Field()\n\n\tswitch field.Kind() {\n\n\tcase reflect.String:\n\n\t\tvar i int\n\t\ts := field.String()\n\n\t\t// checks needed as of Go 1.6 because of change https://github.com/golang/go/commit/617c93ce740c3c3cc28cdd1a0d712be183d0b328#diff-6c2d018290e298803c0c9419d8739885L195\n\t\t// emulate browser and strip the '#' suffix prior to validation. see issue-#237\n\t\tif i = strings.Index(s, \"#\"); i > -1 {\n\t\t\ts = s[:i]\n\t\t}\n\n\t\tif len(s) == 0 {\n\t\t\treturn false\n\t\t}\n\n\t\turl, err := url.ParseRequestURI(s)\n\n\t\tif err != nil || url.Scheme == \"\" {\n\t\t\treturn false\n\t\t}\n\n\t\treturn true\n\t}\n\n\tpanic(fmt.Sprintf(\"Bad field type %T\", field.Interface()))\n}\n\n// isUrnRFC2141 is the validation function for validating if the current field's value is a valid URN as per RFC 2141.\nfunc isUrnRFC2141(fl FieldLevel) bool {\n\tfield := fl.Field()\n\n\tswitch field.Kind() {\n\n\tcase reflect.String:\n\n\t\tstr := field.String()\n\n\t\t_, match := urn.Parse([]byte(str))\n\n\t\treturn match\n\t}\n\n\tpanic(fmt.Sprintf(\"Bad field type %T\", field.Interface()))\n}\n\n// IsFile is the validation function for validating if the current field's value is a valid file path.\nfunc isFile(fl FieldLevel) bool {\n\tfield := fl.Field()\n\n\tswitch field.Kind() {\n\tcase reflect.String:\n\t\tfileInfo, err := os.Stat(field.String())\n\t\tif err != nil {\n\t\t\treturn false\n\t\t}\n\n\t\treturn !fileInfo.IsDir()\n\t}\n\n\tpanic(fmt.Sprintf(\"Bad field type %T\", field.Interface()))\n}\n\n// IsE164 is the validation function for validating if the current field's value is a valid e.164 formatted phone number.\nfunc isE164(fl FieldLevel) bool {\n\treturn e164Regex.MatchString(fl.Field().String())\n}\n\n// IsEmail is the validation function for validating if the current field's value is a valid email address.\nfunc isEmail(fl FieldLevel) bool {\n\treturn emailRegex.MatchString(fl.Field().String())\n}\n\n// IsHSLA is the validation function for validating if the current field's value is a valid HSLA color.\nfunc isHSLA(fl FieldLevel) bool {\n\treturn hslaRegex.MatchString(fl.Field().String())\n}\n\n// IsHSL is the validation function for validating if the current field's value is a valid HSL color.\nfunc isHSL(fl FieldLevel) bool {\n\treturn hslRegex.MatchString(fl.Field().String())\n}\n\n// IsRGBA is the validation function for validating if the current field's value is a valid RGBA color.\nfunc isRGBA(fl FieldLevel) bool {\n\treturn rgbaRegex.MatchString(fl.Field().String())\n}\n\n// IsRGB is the validation function for validating if the current field's value is a valid RGB color.\nfunc isRGB(fl FieldLevel) bool {\n\treturn rgbRegex.MatchString(fl.Field().String())\n}\n\n// IsHEXColor is the validation function for validating if the current field's value is a valid HEX color.\nfunc isHEXColor(fl FieldLevel) bool {\n\treturn hexcolorRegex.MatchString(fl.Field().String())\n}\n\n// IsHexadecimal is the validation function for validating if the current field's value is a valid hexadecimal.\nfunc isHexadecimal(fl FieldLevel) bool {\n\treturn hexadecimalRegex.MatchString(fl.Field().String())\n}\n\n// IsNumber is the validation function for validating if the current field's value is a valid number.\nfunc isNumber(fl FieldLevel) bool {\n\tswitch fl.Field().Kind() {\n\tcase reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64, reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr, reflect.Float32, reflect.Float64:\n\t\treturn true\n\tdefault:\n\t\treturn numberRegex.MatchString(fl.Field().String())\n\t}\n}\n\n// IsNumeric is the validation function for validating if the current field's value is a valid numeric value.\nfunc isNumeric(fl FieldLevel) bool {\n\tswitch fl.Field().Kind() {\n\tcase reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64, reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr, reflect.Float32, reflect.Float64:\n\t\treturn true\n\tdefault:\n\t\treturn numericRegex.MatchString(fl.Field().String())\n\t}\n}\n\n// IsAlphanum is the validation function for validating if the current field's value is a valid alphanumeric value.\nfunc isAlphanum(fl FieldLevel) bool {\n\treturn alphaNumericRegex.MatchString(fl.Field().String())\n}\n\n// IsAlpha is the validation function for validating if the current field's value is a valid alpha value.\nfunc isAlpha(fl FieldLevel) bool {\n\treturn alphaRegex.MatchString(fl.Field().String())\n}\n\n// IsAlphanumUnicode is the validation function for validating if the current field's value is a valid alphanumeric unicode value.\nfunc isAlphanumUnicode(fl FieldLevel) bool {\n\treturn alphaUnicodeNumericRegex.MatchString(fl.Field().String())\n}\n\n// IsAlphaUnicode is the validation function for validating if the current field's value is a valid alpha unicode value.\nfunc isAlphaUnicode(fl FieldLevel) bool {\n\treturn alphaUnicodeRegex.MatchString(fl.Field().String())\n}\n\n// isDefault is the opposite of required aka hasValue\nfunc isDefault(fl FieldLevel) bool {\n\treturn !hasValue(fl)\n}\n\n// HasValue is the validation function for validating if the current field's value is not the default static value.\nfunc hasValue(fl FieldLevel) bool {\n\tfield := fl.Field()\n\tswitch field.Kind() {\n\tcase reflect.Slice, reflect.Map, reflect.Ptr, reflect.Interface, reflect.Chan, reflect.Func:\n\t\treturn !field.IsNil()\n\tdefault:\n\t\tif fl.(*validate).fldIsPointer && field.Interface() != nil {\n\t\t\treturn true\n\t\t}\n\t\treturn field.IsValid() && field.Interface() != reflect.Zero(field.Type()).Interface()\n\t}\n}\n\n// requireCheckField is a func for check field kind\nfunc requireCheckFieldKind(fl FieldLevel, param string, defaultNotFoundValue bool) bool {\n\tfield := fl.Field()\n\tkind := field.Kind()\n\tvar nullable, found bool\n\tif len(param) > 0 {\n\t\tfield, kind, nullable, found = fl.GetStructFieldOKAdvanced2(fl.Parent(), param)\n\t\tif !found {\n\t\t\treturn defaultNotFoundValue\n\t\t}\n\t}\n\tswitch kind {\n\tcase reflect.Invalid:\n\t\treturn defaultNotFoundValue\n\tcase reflect.Slice, reflect.Map, reflect.Ptr, reflect.Interface, reflect.Chan, reflect.Func:\n\t\treturn field.IsNil()\n\tdefault:\n\t\tif nullable && field.Interface() != nil {\n\t\t\treturn false\n\t\t}\n\t\treturn field.IsValid() && field.Interface() == reflect.Zero(field.Type()).Interface()\n\t}\n}\n\n// ExcludedWith is the validation function\n// The field under validation must not be present or is empty if any of the other specified fields are present.\nfunc excludedWith(fl FieldLevel) bool {\n\tparams := parseOneOfParam2(fl.Param())\n\tfor _, param := range params {\n\t\tif !requireCheckFieldKind(fl, param, true) {\n\t\t\treturn !hasValue(fl)\n\t\t}\n\t}\n\treturn true\n}\n\n// RequiredWith is the validation function\n// The field under validation must be present and not empty only if any of the other specified fields are present.\nfunc requiredWith(fl FieldLevel) bool {\n\tparams := parseOneOfParam2(fl.Param())\n\tfor _, param := range params {\n\t\tif !requireCheckFieldKind(fl, param, true) {\n\t\t\treturn hasValue(fl)\n\t\t}\n\t}\n\treturn true\n}\n\n// ExcludedWithAll is the validation function\n// The field under validation must not be present or is empty if all of the other specified fields are present.\nfunc excludedWithAll(fl FieldLevel) bool {\n\tparams := parseOneOfParam2(fl.Param())\n\tfor _, param := range params {\n\t\tif requireCheckFieldKind(fl, param, true) {\n\t\t\treturn true\n\t\t}\n\t}\n\treturn !hasValue(fl)\n}\n\n// RequiredWithAll is the validation function\n// The field under validation must be present and not empty only if all of the other specified fields are present.\nfunc requiredWithAll(fl FieldLevel) bool {\n\tparams := parseOneOfParam2(fl.Param())\n\tfor _, param := range params {\n\t\tif requireCheckFieldKind(fl, param, true) {\n\t\t\treturn true\n\t\t}\n\t}\n\treturn hasValue(fl)\n}\n\n// ExcludedWithout is the validation function\n// The field under validation must not be present or is empty when any of the other specified fields are not present.\nfunc excludedWithout(fl FieldLevel) bool {\n\tif requireCheckFieldKind(fl, strings.TrimSpace(fl.Param()), true) {\n\t\treturn !hasValue(fl)\n\t}\n\treturn true\n}\n\n// RequiredWithout is the validation function\n// The field under validation must be present and not empty only when any of the other specified fields are not present.\nfunc requiredWithout(fl FieldLevel) bool {\n\tif requireCheckFieldKind(fl, strings.TrimSpace(fl.Param()), true) {\n\t\treturn hasValue(fl)\n\t}\n\treturn true\n}\n\n// RequiredWithoutAll is the validation function\n// The field under validation must not be present or is empty when all of the other specified fields are not present.\nfunc excludedWithoutAll(fl FieldLevel) bool {\n\tparams := parseOneOfParam2(fl.Param())\n\tfor _, param := range params {\n\t\tif !requireCheckFieldKind(fl, param, true) {\n\t\t\treturn true\n\t\t}\n\t}\n\treturn !hasValue(fl)\n}\n\n// RequiredWithoutAll is the validation function\n// The field under validation must be present and not empty only when all of the other specified fields are not present.\nfunc requiredWithoutAll(fl FieldLevel) bool {\n\tparams := parseOneOfParam2(fl.Param())\n\tfor _, param := range params {\n\t\tif !requireCheckFieldKind(fl, param, true) {\n\t\t\treturn true\n\t\t}\n\t}\n\treturn hasValue(fl)\n}\n\n// IsGteField is the validation function for validating if the current field's value is greater than or equal to the field specified by the param's value.\nfunc isGteField(fl FieldLevel) bool {\n\n\tfield := fl.Field()\n\tkind := field.Kind()\n\n\tcurrentField, currentKind, ok := fl.GetStructFieldOK()\n\tif !ok || currentKind != kind {\n\t\treturn false\n\t}\n\n\tswitch kind {\n\n\tcase reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:\n\n\t\treturn field.Int() >= currentField.Int()\n\n\tcase reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:\n\n\t\treturn field.Uint() >= currentField.Uint()\n\n\tcase reflect.Float32, reflect.Float64:\n\n\t\treturn field.Float() >= currentField.Float()\n\n\tcase reflect.Struct:\n\n\t\tfieldType := field.Type()\n\n\t\t// Not Same underlying type i.e. struct and time\n\t\tif fieldType != currentField.Type() {\n\t\t\treturn false\n\t\t}\n\n\t\tif fieldType == timeType {\n\n\t\t\tt := currentField.Interface().(time.Time)\n\t\t\tfieldTime := field.Interface().(time.Time)\n\n\t\t\treturn fieldTime.After(t) || fieldTime.Equal(t)\n\t\t}\n\t}\n\n\t// default reflect.String\n\treturn len(field.String()) >= len(currentField.String())\n}\n\n// IsGtField is the validation function for validating if the current field's value is greater than the field specified by the param's value.\nfunc isGtField(fl FieldLevel) bool {\n\n\tfield := fl.Field()\n\tkind := field.Kind()\n\n\tcurrentField, currentKind, ok := fl.GetStructFieldOK()\n\tif !ok || currentKind != kind {\n\t\treturn false\n\t}\n\n\tswitch kind {\n\n\tcase reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:\n\n\t\treturn field.Int() > currentField.Int()\n\n\tcase reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:\n\n\t\treturn field.Uint() > currentField.Uint()\n\n\tcase reflect.Float32, reflect.Float64:\n\n\t\treturn field.Float() > currentField.Float()\n\n\tcase reflect.Struct:\n\n\t\tfieldType := field.Type()\n\n\t\t// Not Same underlying type i.e. struct and time\n\t\tif fieldType != currentField.Type() {\n\t\t\treturn false\n\t\t}\n\n\t\tif fieldType == timeType {\n\n\t\t\tt := currentField.Interface().(time.Time)\n\t\t\tfieldTime := field.Interface().(time.Time)\n\n\t\t\treturn fieldTime.After(t)\n\t\t}\n\t}\n\n\t// default reflect.String\n\treturn len(field.String()) > len(currentField.String())\n}\n\n// IsGte is the validation function for validating if the current field's value is greater than or equal to the param's value.\nfunc isGte(fl FieldLevel) bool {\n\n\tfield := fl.Field()\n\tparam := fl.Param()\n\n\tswitch field.Kind() {\n\n\tcase reflect.String:\n\t\tp := asInt(param)\n\n\t\treturn int64(utf8.RuneCountInString(field.String())) >= p\n\n\tcase reflect.Slice, reflect.Map, reflect.Array:\n\t\tp := asInt(param)\n\n\t\treturn int64(field.Len()) >= p\n\n\tcase reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:\n\t\tp := asInt(param)\n\n\t\treturn field.Int() >= p\n\n\tcase reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:\n\t\tp := asUint(param)\n\n\t\treturn field.Uint() >= p\n\n\tcase reflect.Float32, reflect.Float64:\n\t\tp := asFloat(param)\n\n\t\treturn field.Float() >= p\n\n\tcase reflect.Struct:\n\n\t\tif field.Type() == timeType {\n\n\t\t\tnow := time.Now().UTC()\n\t\t\tt := field.Interface().(time.Time)\n\n\t\t\treturn t.After(now) || t.Equal(now)\n\t\t}\n\t}\n\n\tpanic(fmt.Sprintf(\"Bad field type %T\", field.Interface()))\n}\n\n// IsGt is the validation function for validating if the current field's value is greater than the param's value.\nfunc isGt(fl FieldLevel) bool {\n\n\tfield := fl.Field()\n\tparam := fl.Param()\n\n\tswitch field.Kind() {\n\n\tcase reflect.String:\n\t\tp := asInt(param)\n\n\t\treturn int64(utf8.RuneCountInString(field.String())) > p\n\n\tcase reflect.Slice, reflect.Map, reflect.Array:\n\t\tp := asInt(param)\n\n\t\treturn int64(field.Len()) > p\n\n\tcase reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:\n\t\tp := asInt(param)\n\n\t\treturn field.Int() > p\n\n\tcase reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:\n\t\tp := asUint(param)\n\n\t\treturn field.Uint() > p\n\n\tcase reflect.Float32, reflect.Float64:\n\t\tp := asFloat(param)\n\n\t\treturn field.Float() > p\n\tcase reflect.Struct:\n\n\t\tif field.Type() == timeType {\n\n\t\t\treturn field.Interface().(time.Time).After(time.Now().UTC())\n\t\t}\n\t}\n\n\tpanic(fmt.Sprintf(\"Bad field type %T\", field.Interface()))\n}\n\n// HasLengthOf is the validation function for validating if the current field's value is equal to the param's value.\nfunc hasLengthOf(fl FieldLevel) bool {\n\n\tfield := fl.Field()\n\tparam := fl.Param()\n\n\tswitch field.Kind() {\n\n\tcase reflect.String:\n\t\tp := asInt(param)\n\n\t\treturn int64(utf8.RuneCountInString(field.String())) == p\n\n\tcase reflect.Slice, reflect.Map, reflect.Array:\n\t\tp := asInt(param)\n\n\t\treturn int64(field.Len()) == p\n\n\tcase reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:\n\t\tp := asInt(param)\n\n\t\treturn field.Int() == p\n\n\tcase reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:\n\t\tp := asUint(param)\n\n\t\treturn field.Uint() == p\n\n\tcase reflect.Float32, reflect.Float64:\n\t\tp := asFloat(param)\n\n\t\treturn field.Float() == p\n\t}\n\n\tpanic(fmt.Sprintf(\"Bad field type %T\", field.Interface()))\n}\n\n// HasMinOf is the validation function for validating if the current field's value is greater than or equal to the param's value.\nfunc hasMinOf(fl FieldLevel) bool {\n\treturn isGte(fl)\n}\n\n// I",
+        "rank": 0,
+        "truncated": false
+      }
+    ],
+    "selected": [
+      {
+        "id": "ef6217a031256550dfb25282",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "_examples/gin-upgrading-overriding/v8_to_v9.go",
+        "start_byte": 208,
+        "text": "var _ binding.StructValidator = &defaultValidator{}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "da86ba1896c7fa245fa8e0c4",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "baked_in.go",
+        "start_byte": 6182,
+        "text": "func parseOneOfParam2(s string) []string {\n\toneofValsCacheRWLock.RLock()\n\tvals, ok := oneofValsCache[s]\n\toneofValsCacheRWLock.RUnlock()\n\tif !ok {\n\t\toneofValsCacheRWLock.Lock()\n\t\tvals = splitParamsRegex.FindAllString(s, -1)\n\t\tfor i := 0; i < len(vals); i++ {\n\t\t\tvals[i] = strings.Replace(vals[i], \"'\", \"\", -1)\n\t\t}\n\t\toneofValsCache[s] = vals\n\t\toneofValsCacheRWLock.Unlock()\n\t}\n\treturn vals\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "98e907fed5ab1db458f760c1",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "baked_in.go",
+        "start_byte": 14872,
+        "text": "var i int32",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "dd70157feb0df716770d0ab4",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "baked_in.go",
+        "start_byte": 15336,
+        "text": "var i int32",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "ea668b1dbbcad5a706630787",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "baked_in.go",
+        "start_byte": 33494,
+        "text": "var i int",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "b937fd3c431d70b56da9ac06",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "baked_in.go",
+        "start_byte": 38429,
+        "text": "func hasValue(fl FieldLevel) bool {\n\tfield := fl.Field()\n\tswitch field.Kind() {\n\tcase reflect.Slice, reflect.Map, reflect.Ptr, reflect.Interface, reflect.Chan, reflect.Func:\n\t\treturn !field.IsNil()\n\tdefault:\n\t\tif fl.(*validate).fldIsPointer && field.Interface() != nil {\n\t\t\treturn true\n\t\t}\n\t\treturn field.IsValid() && field.Interface() != reflect.Zero(field.Type()).Interface()\n\t}\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "a37b506632ee6e238dfe1141",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "baked_in.go",
+        "start_byte": 39590,
+        "text": "func requireCheckFieldValue(fl FieldLevel, param string, value string, defaultNotFoundValue bool) bool {\n\tfield, kind, _, found := fl.GetStructFieldOKAdvanced2(fl.Parent(), param)\n\tif !found {\n\t\treturn defaultNotFoundValue\n\t}\n\n\tswitch kind {\n\n\tcase reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:\n\t\treturn field.Int() == asInt(value)\n\n\tcase reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:\n\t\treturn field.Uint() == asUint(value)\n\n\tcase reflect.Float32, reflect.Float64:\n\t\treturn field.Float() == asFloat(value)\n\n\tcase reflect.Slice, reflect.Map, reflect.Array:\n\t\treturn int64(field.Len()) == asInt(value)\n\t}\n\n\t// default reflect.String:\n\treturn field.String() == value\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "bcdfd461b416fbc5c4826318",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "baked_in.go",
+        "start_byte": 40530,
+        "text": "func requiredIf(fl FieldLevel) bool {\n\tparams := parseOneOfParam2(fl.Param())\n\tif len(params)%2 != 0 {\n\t\tpanic(fmt.Sprintf(\"Bad param number for required_if %s\", fl.FieldName()))\n\t}\n\tfor i := 0; i < len(params); i += 2 {\n\t\tif !requireCheckFieldValue(fl, params[i], params[i+1], false) {\n\t\t\treturn true\n\t\t}\n\t}\n\treturn hasValue(fl)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "405cc29a3ce3675383533d5d",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "baked_in.go",
+        "start_byte": 41070,
+        "text": "func requiredUnless(fl FieldLevel) bool {\n\tparams := parseOneOfParam2(fl.Param())\n\tif len(params)%2 != 0 {\n\t\tpanic(fmt.Sprintf(\"Bad param number for required_unless %s\", fl.FieldName()))\n\t}\n\n\tfor i := 0; i < len(params); i += 2 {\n\t\tif requireCheckFieldValue(fl, params[i], params[i+1], false) {\n\t\t\treturn true\n\t\t}\n\t}\n\treturn hasValue(fl)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "0691c074a61ac0263f3656bf",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "errors.go",
+        "start_byte": 4427,
+        "text": "var _ FieldError = new(fieldError)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "6ed5db73942ff774cc96d82b",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "errors.go",
+        "start_byte": 4462,
+        "text": "var _ error = new(fieldError)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "20aac924c4d24f0e13007c4f",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "errors.go",
+        "start_byte": 6476,
+        "text": "func (fe *fieldError) Param() string {\n\treturn fe.param\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "2d6710c78f7dafa7b41edced",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "field_level.go",
+        "start_byte": 124,
+        "text": "type FieldLevel interface {\n\t// returns the top level struct, if any\n\tTop() reflect.Value\n\n\t// returns the current fields parent struct, if any or\n\t// the comparison value if called 'VarWithValue'\n\tParent() reflect.Value\n\n\t// returns current field for validation\n\tField() reflect.Value\n\n\t// returns the field's name with the tag\n\t// name taking precedence over the fields actual name.\n\tFieldName() string\n\n\t// returns the struct field's name\n\tStructFieldName() string\n\n\t// returns param for validation against current field\n\tParam() string\n\n\t// GetTag returns the current validations tag name\n\tGetTag() string\n\n\t// ExtractType gets the actual underlying type of field value.\n\t// It will dive into pointers, customTypes and return you the\n\t// underlying value and it's kind.\n\tExtractType(field reflect.Value) (value reflect.Value, kind reflect.Kind, nullable bool)\n\n\t// traverses the parent struct to retrieve a specific field denoted by the provided namespace\n\t// in the param and returns the field, field kind and whether is was successful in retrieving\n\t// the field at all.\n\t//\n\t// NOTE: when not successful ok will be false, this can happen when a nested struct is nil and so the field\n\t// could not be retrieved because it didn't exist.\n\t//\n\t// Deprecated: Use GetStructFieldOK2() instead which also return if the value is nullable.\n\tGetStructFieldOK() (reflect.Value, reflect.Kind, bool)\n\n\t// GetStructFieldOKAdvanced is the same as GetStructFieldOK except that it accepts the parent struct to start looking for\n\t// the field and namespace allowing more extensibility for validators.\n\t//\n\t// Deprecated: Use GetStructFieldOKAdvanced2() instead which also return if the value is nullable.\n\tGetStructFieldOKAdvanced(val reflect.Value, namespace string) (reflect.Value, reflect.Kind, bool)\n\n\t// traverses the parent struct to retrieve a specific field denoted by the provided namespace\n\t// in the param and returns the field, field kind, if it's a nullable type and whether is was successful in retrieving\n\t// the field at all.\n\t//\n\t// NOTE: when not successful ok will be false, this can happen when a nested struct is nil and so the field\n\t// could not be retrieved because it didn't exist.\n\tGetStructFieldOK2() (reflect.Value, reflect.Kind, bool, bool)\n\n\t// GetStructFieldOKAdvanced is the same as GetStructFieldOK except that it accepts the parent struct to start looking for\n\t// the field and namespace allowing more extensibility for validators.\n\tGetStructFieldOKAdvanced2(val reflect.Value, namespace string) (reflect.Value, reflect.Kind, bool, bool)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "166604d7345e0de4b06ced14",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "field_level.go",
+        "start_byte": 2688,
+        "text": "var _ FieldLevel = new(validate)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "acd113d67ba1d6e9e5b2c06f",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "field_level.go",
+        "start_byte": 2938,
+        "text": "func (v *validate) FieldName() string {\n\treturn v.cf.altName\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "c792de859d56fbde16221c34",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "field_level.go",
+        "start_byte": 3288,
+        "text": "func (v *validate) Param() string {\n\treturn v.ct.param\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "5c312e11074279f9c42d075f",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "field_level.go",
+        "start_byte": 4657,
+        "text": "func (v *validate) GetStructFieldOKAdvanced2(val reflect.Value, namespace string) (reflect.Value, reflect.Kind, bool, bool) {\n\treturn v.getStructFieldOKInternal(val, namespace)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "f44a546a2352748cf6edd05c",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "struct_level.go",
+        "start_byte": 2346,
+        "text": "var _ StructLevel = new(validate)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "c0bf1627fda5f9617a12ab2a",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "struct_level.go",
+        "start_byte": 2996,
+        "text": "func (v *validate) Parent() reflect.Value {\n\treturn v.slflParent\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "edb9d233f1f5f5b6f062352a",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "translations/en/en.go",
+        "start_byte": 1799,
+        "text": "var kind reflect.Kind",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "7a8faf36c4374e6ccb856b83",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "translations/en/en.go",
+        "start_byte": 3913,
+        "text": "var kind reflect.Kind",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "e986ee53d5b296b904e03f6d",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "translations/en/en.go",
+        "start_byte": 6030,
+        "text": "var kind reflect.Kind",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "3650cd8ae9993741dea4a16c",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "translations/en/en.go",
+        "start_byte": 9030,
+        "text": "var kind reflect.Kind",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "84423c85da656e0a3f4460ef",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "translations/en/en.go",
+        "start_byte": 11713,
+        "text": "var kind reflect.Kind",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "91b0e5178dad0165612edce7",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "translations/en/en.go",
+        "start_byte": 14390,
+        "text": "var kind reflect.Kind",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "ca20d6379d8f131f3aab2a8b",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "translations/en/en.go",
+        "start_byte": 17075,
+        "text": "var kind reflect.Kind",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "e8a3fd06535abc4341f8f38f",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "translations/es/es.go",
+        "start_byte": 1815,
+        "text": "var kind reflect.Kind",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "48351b0cc2c1bd28efaedb97",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "translations/es/es.go",
+        "start_byte": 3940,
+        "text": "var kind reflect.Kind",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "36c1e3f74be093707c7564da",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "translations/es/es.go",
+        "start_byte": 6075,
+        "text": "var kind reflect.Kind",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "835041a99691181b48272cec",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "translations/es/es.go",
+        "start_byte": 9085,
+        "text": "var kind reflect.Kind",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "36c82e1be38e9ca592266b10",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "translations/es/es.go",
+        "start_byte": 11782,
+        "text": "var kind reflect.Kind",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "a6cfb4132f2a0187a6479c3a",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "translations/es/es.go",
+        "start_byte": 14463,
+        "text": "var kind reflect.Kind",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "e0e07fe2ceff7760d91d4f97",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "translations/es/es.go",
+        "start_byte": 17156,
+        "text": "var kind reflect.Kind",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "361d8383cecf34f3b9bac6c5",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "translations/fr/fr.go",
+        "start_byte": 1838,
+        "text": "var kind reflect.Kind",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "26011ed3fd9aee4a4989c36a",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "translations/fr/fr.go",
+        "start_byte": 4000,
+        "text": "var kind reflect.Kind",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "42e28d5c67bd779aec156aae",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "translations/fr/fr.go",
+        "start_byte": 6165,
+        "text": "var kind reflect.Kind",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "9b0eb059ceb6ef93ef384977",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "translations/fr/fr.go",
+        "start_byte": 9222,
+        "text": "var kind reflect.Kind",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "ebc9aef264719fa38dbbc378",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "translations/fr/fr.go",
+        "start_byte": 11951,
+        "text": "var kind reflect.Kind",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "33e019dd95477c54dd03c75f",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "translations/fr/fr.go",
+        "start_byte": 14669,
+        "text": "var kind reflect.Kind",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "c81e88739f89b56c1f2df246",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "translations/fr/fr.go",
+        "start_byte": 17393,
+        "text": "var kind reflect.Kind",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "55ca97dc3dc5d4033c5aacdb",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "translations/id/id.go",
+        "start_byte": 1802,
+        "text": "var kind reflect.Kind",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "4f71e407adb30b5f05697286",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "translations/id/id.go",
+        "start_byte": 3931,
+        "text": "var kind reflect.Kind",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "110d2c231dd839ab4e8613ad",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "translations/id/id.go",
+        "start_byte": 6055,
+        "text": "var kind reflect.Kind",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "c70314a829dc0717c9e0dc34",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "translations/id/id.go",
+        "start_byte": 9067,
+        "text": "var kind reflect.Kind",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "235f43e087dea98dca23a1f6",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "translations/id/id.go",
+        "start_byte": 11765,
+        "text": "var kind reflect.Kind",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "6d07fa51a84bb0a744ff1ebd",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "translations/id/id.go",
+        "start_byte": 14456,
+        "text": "var kind reflect.Kind",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "ae2029937da070a4949b4a69",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "translations/id/id.go",
+        "start_byte": 17165,
+        "text": "var kind reflect.Kind",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "3fab2bf7fafb6f8bc40bb4bd",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "translations/ja/ja.go",
+        "start_byte": 1903,
+        "text": "var kind reflect.Kind",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "d1de5cacd8cb761a65518fd0",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "translations/ja/ja.go",
+        "start_byte": 4127,
+        "text": "var kind reflect.Kind",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "cb9919a21fa1688708999f09",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "translations/ja/ja.go",
+        "start_byte": 6345,
+        "text": "var kind reflect.Kind",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "7b09c2d8419b478deb3c8f2c",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "translations/ja/ja.go",
+        "start_byte": 8664,
+        "text": "var kind reflect.Kind",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "6ad9c37f0b510d9db40b56f9",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "translations/ja/ja.go",
+        "start_byte": 10842,
+        "text": "var kind reflect.Kind",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "9ac685f694267ea7095e0e0c",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "translations/ja/ja.go",
+        "start_byte": 13622,
+        "text": "var kind reflect.Kind",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "fc46cc7b4db2a250650b222b",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "translations/ja/ja.go",
+        "start_byte": 16414,
+        "text": "var kind reflect.Kind",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "6c44bf2f2838509e8cb2b3cd",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "translations/ja/ja.go",
+        "start_byte": 19206,
+        "text": "var kind reflect.Kind",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "3975f8bcddc521fabc5cb170",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "translations/nl/nl.go",
+        "start_byte": 1801,
+        "text": "var kind reflect.Kind",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "da613967b32bfde206f4e5cc",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "translations/nl/nl.go",
+        "start_byte": 3914,
+        "text": "var kind reflect.Kind",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "392072d381ee22f367101499",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "translations/nl/nl.go",
+        "start_byte": 6024,
+        "text": "var kind reflect.Kind",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "8220caa51359485cbf619e6e",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "translations/nl/nl.go",
+        "start_byte": 9035,
+        "text": "var kind reflect.Kind",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "80b35eb0600acf180ba2049e",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "translations/nl/nl.go",
+        "start_byte": 11718,
+        "text": "var kind reflect.Kind",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "c51951067b66f4b363e6f7a6",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "translations/nl/nl.go",
+        "start_byte": 14383,
+        "text": "var kind reflect.Kind",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "3bf359cce20fb87ef975da0e",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "translations/nl/nl.go",
+        "start_byte": 17069,
+        "text": "var kind reflect.Kind",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "15be85440f01b8eced81e4e7",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "translations/pt_BR/pt_BR.go",
+        "start_byte": 1794,
+        "text": "var kind reflect.Kind",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "beec7505cf6a0c3d64d083cc",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "translations/pt_BR/pt_BR.go",
+        "start_byte": 3904,
+        "text": "var kind reflect.Kind",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "3c90e89b80f6f2dba55e783a",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "translations/pt_BR/pt_BR.go",
+        "start_byte": 6011,
+        "text": "var kind reflect.Kind",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "7a65fc2bbf18f7cc63a8eaab",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "translations/pt_BR/pt_BR.go",
+        "start_byte": 8996,
+        "text": "var kind reflect.Kind",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "ab0f8f340dd105c8fcbd765e",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "translations/pt_BR/pt_BR.go",
+        "start_byte": 11671,
+        "text": "var kind reflect.Kind",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "08010127f04da55c48382c40",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "translations/pt_BR/pt_BR.go",
+        "start_byte": 14335,
+        "text": "var kind reflect.Kind",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "c346e3178e67b9f59be27645",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "translations/pt_BR/pt_BR.go",
+        "start_byte": 17013,
+        "text": "var kind reflect.Kind",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "0475b6007a83fea04d7fbfcc",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "translations/ru/ru.go",
+        "start_byte": 1896,
+        "text": "var kind reflect.Kind",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "7d41cb8d2331834c25e9578a",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "translations/ru/ru.go",
+        "start_byte": 4117,
+        "text": "var kind reflect.Kind",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "d4c99104943de330ffa2a87c",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "translations/ru/ru.go",
+        "start_byte": 6342,
+        "text": "var kind reflect.Kind",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "cf71048b458f74c52afbe14e",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "translations/ru/ru.go",
+        "start_byte": 9427,
+        "text": "var kind reflect.Kind",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "07c70dacf5b46386c81c5ee1",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "translations/ru/ru.go",
+        "start_byte": 12218,
+        "text": "var kind reflect.Kind",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "5d32f7c99a2e3c23ae3814e1",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "translations/ru/ru.go",
+        "start_byte": 14983,
+        "text": "var kind reflect.Kind",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "a7247ae04f12a11a0a1bd0d5",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "translations/ru/ru.go",
+        "start_byte": 17801,
+        "text": "var kind reflect.Kind",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "a5ef3f356a8319a9452ba796",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "translations/tr/tr.go",
+        "start_byte": 1815,
+        "text": "var kind reflect.Kind",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "6cb74ae212dc4b6867a616d1",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "translations/tr/tr.go",
+        "start_byte": 3940,
+        "text": "var kind reflect.Kind",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "b92d67743e46e65866abffee",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "translations/tr/tr.go",
+        "start_byte": 6063,
+        "text": "var kind reflect.Kind",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "0d2d12495b3157541d878f80",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "translations/tr/tr.go",
+        "start_byte": 9106,
+        "text": "var kind reflect.Kind",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "00a4ab26f0660379c5603068",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "translations/tr/tr.go",
+        "start_byte": 11808,
+        "text": "var kind reflect.Kind",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "afa655ec1fb53f4bc0321592",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "translations/tr/tr.go",
+        "start_byte": 14503,
+        "text": "var kind reflect.Kind",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "8e373b365d5ea9cf9633a0bf",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "translations/tr/tr.go",
+        "start_byte": 17203,
+        "text": "var kind reflect.Kind",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "d208dc907c7f97315c414e12",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "translations/zh_tw/zh_tw.go",
+        "start_byte": 1786,
+        "text": "var kind reflect.Kind",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "8595556a4be4a5d1d159ce42",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "translations/zh_tw/zh_tw.go",
+        "start_byte": 3876,
+        "text": "var kind reflect.Kind",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "71cfaf142cc1bb55cd6e9bbb",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "translations/zh_tw/zh_tw.go",
+        "start_byte": 5969,
+        "text": "var kind reflect.Kind",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "9d36d39ef0b59610c41f0623",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "translations/zh_tw/zh_tw.go",
+        "start_byte": 8887,
+        "text": "var kind reflect.Kind",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "586ddba3dfc6a574d04d8ccd",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "translations/zh_tw/zh_tw.go",
+        "start_byte": 11531,
+        "text": "var kind reflect.Kind",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "77669f188754fcf98b9637a8",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "translations/zh_tw/zh_tw.go",
+        "start_byte": 14145,
+        "text": "var kind reflect.Kind",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "54b8a5eb5d8d8789d4329923",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "translations/zh_tw/zh_tw.go",
+        "start_byte": 16786,
+        "text": "var kind reflect.Kind",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "6d267c110cd8f91676ca35ae",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "translations/zh/zh.go",
+        "start_byte": 1783,
+        "text": "var kind reflect.Kind",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "4d5424ca8b0795dca26497a7",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "translations/zh/zh.go",
+        "start_byte": 3873,
+        "text": "var kind reflect.Kind",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "d41ce0bae416c60f83f63b40",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "translations/zh/zh.go",
+        "start_byte": 5966,
+        "text": "var kind reflect.Kind",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "94b6f7095f6ea85eabcfb3c1",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "translations/zh/zh.go",
+        "start_byte": 8884,
+        "text": "var kind reflect.Kind",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "576b75084db252e095adfac3",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "translations/zh/zh.go",
+        "start_byte": 11528,
+        "text": "var kind reflect.Kind",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "2e6be2cbd1a08a23935f090c",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "translations/zh/zh.go",
+        "start_byte": 14142,
+        "text": "var kind reflect.Kind",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "72322b1b5388f60e75c2412b",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "translations/zh/zh.go",
+        "start_byte": 16787,
+        "text": "var kind reflect.Kind",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "6cd22c7c5597ebf3d78643be",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "util.go",
+        "start_byte": 5210,
+        "text": "func asInt(param string) int64 {\n\n\ti, err := strconv.ParseInt(param, 0, 64)\n\tpanicIf(err)\n\n\treturn i\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "4c2fa01bdc3670f480a4a574",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "util.go",
+        "start_byte": 5391,
+        "text": "func asUint(param string) uint64 {\n\n\ti, err := strconv.ParseUint(param, 0, 64)\n\tpanicIf(err)\n\n\treturn i\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "a65435b859325221727e2117",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "util.go",
+        "start_byte": 5577,
+        "text": "func asFloat(param string) float64 {\n\n\ti, err := strconv.ParseFloat(param, 64)\n\tpanicIf(err)\n\n\treturn i\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "b860b4ee716553cee6037ae2",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "validator.go",
+        "start_byte": 2861,
+        "text": "var kind reflect.Kind",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "5eb95f1f2e9787234aa005d6",
+        "revision": "b1ccceeb1193ae8e747d8cdb14e644c979eb1295",
+        "path": "_examples/gin-upgrading-overriding/v8_to_v9.go",
+        "start_byte": 208,
+        "text": "var _ binding.StructValidator = &defaultValidator{}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "b07c3d78565c06833b732255",
+        "revision": "b1ccceeb1193ae8e747d8cdb14e644c979eb1295",
+        "path": "baked_in.go",
+        "start_byte": 6274,
+        "text": "func parseOneOfParam2(s string) []string {\n\toneofValsCacheRWLock.RLock()\n\tvals, ok := oneofValsCache[s]\n\toneofValsCacheRWLock.RUnlock()\n\tif !ok {\n\t\toneofValsCacheRWLock.Lock()\n\t\tvals = splitParamsRegex.FindAllString(s, -1)\n\t\tfor i := 0; i < len(vals); i++ {\n\t\t\tvals[i] = strings.Replace(vals[i], \"'\", \"\", -1)\n\t\t}\n\t\toneofValsCache[s] = vals\n\t\toneofValsCacheRWLock.Unlock()\n\t}\n\treturn vals\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "bab7715d648336a2cf8eb834",
+        "revision": "b1ccceeb1193ae8e747d8cdb14e644c979eb1295",
+        "path": "baked_in.go",
+        "start_byte": 38521,
+        "text": "func hasValue(fl FieldLevel) bool {\n\tfield := fl.Field()\n\tswitch field.Kind() {\n\tcase reflect.Slice, reflect.Map, reflect.Ptr, reflect.Interface, reflect.Chan, reflect.Func:\n\t\treturn !field.IsNil()\n\tdefault:\n\t\tif fl.(*validate).fldIsPointer && field.Interface() != nil {\n\t\t\treturn true\n\t\t}\n\t\treturn field.IsValid() && field.Interface() != reflect.Zero(field.Type()).Interface()\n\t}\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "94f3fd7f988a062efa904e07",
+        "revision": "b1ccceeb1193ae8e747d8cdb14e644c979eb1295",
+        "path": "baked_in.go",
+        "start_byte": 38957,
+        "text": "func requireCheckFieldKind(fl FieldLevel, param string, defaultNotFoundValue bool) bool {\n\tfield := fl.Field()\n\tkind := field.Kind()\n\tvar nullable, found bool\n\tif len(param) > 0 {\n\t\tfield, kind, nullable, found = fl.GetStructFieldOKAdvanced2(fl.Parent(), param)\n\t\tif !found {\n\t\t\treturn defaultNotFoundValue\n\t\t}\n\t}\n\tswitch kind {\n\tcase reflect.Invalid:\n\t\treturn defaultNotFoundValue\n\tcase reflect.Slice, reflect.Map, reflect.Ptr, reflect.Interface, reflect.Chan, reflect.Func:\n\t\treturn field.IsNil()\n\tdefault:\n\t\tif nullable && field.Interface() != nil {\n\t\t\treturn false\n\t\t}\n\t\treturn field.IsValid() && field.Interface() == reflect.Zero(field.Type()).Interface()\n\t}\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "127136800f4278a274959a4a",
+        "revision": "b1ccceeb1193ae8e747d8cdb14e644c979eb1295",
+        "path": "baked_in.go",
+        "start_byte": 39779,
+        "text": "func excludedWith(fl FieldLevel) bool {\n\tparams := parseOneOfParam2(fl.Param())\n\tfor _, param := range params {\n\t\tif !requireCheckFieldKind(fl, param, true) {\n\t\t\treturn !hasValue(fl)\n\t\t}\n\t}\n\treturn true\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "f887064633f8f27e4b0dd6c6",
+        "revision": "b1ccceeb1193ae8e747d8cdb14e644c979eb1295",
+        "path": "errors.go",
+        "start_byte": 4487,
+        "text": "var _ FieldError = new(fieldError)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "c453f51425ab9b9f5cd70f3e",
+        "revision": "b1ccceeb1193ae8e747d8cdb14e644c979eb1295",
+        "path": "errors.go",
+        "start_byte": 4522,
+        "text": "var _ error = new(fieldError)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "3d56d6fdb947d3680c43b630",
+        "revision": "b1ccceeb1193ae8e747d8cdb14e644c979eb1295",
+        "path": "errors.go",
+        "start_byte": 6536,
+        "text": "func (fe *fieldError) Param() string {\n\treturn fe.param\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "7e60759c718b763ee09cc8d7",
+        "revision": "b1ccceeb1193ae8e747d8cdb14e644c979eb1295",
+        "path": "field_level.go",
+        "start_byte": 124,
+        "text": "type FieldLevel interface {\n\t// returns the top level struct, if any\n\tTop() reflect.Value\n\n\t// returns the current fields parent struct, if any or\n\t// the comparison value if called 'VarWithValue'\n\tParent() reflect.Value\n\n\t// returns current field for validation\n\tField() reflect.Value\n\n\t// returns the field's name with the tag\n\t// name taking precedence over the fields actual name.\n\tFieldName() string\n\n\t// returns the struct field's name\n\tStructFieldName() string\n\n\t// returns param for validation against current field\n\tParam() string\n\n\t// GetTag returns the current validations tag name\n\tGetTag() string\n\n\t// ExtractType gets the actual underlying type of field value.\n\t// It will dive into pointers, customTypes and return you the\n\t// underlying value and it's kind.\n\tExtractType(field reflect.Value) (value reflect.Value, kind reflect.Kind, nullable bool)\n\n\t// traverses the parent struct to retrieve a specific field denoted by the provided namespace\n\t// in the param and returns the field, field kind and whether is was successful in retrieving\n\t// the field at all.\n\t//\n\t// NOTE: when not successful ok will be false, this can happen when a nested struct is nil and so the field\n\t// could not be retrieved because it didn't exist.\n\t//\n\t// Deprecated: Use GetStructFieldOK2() instead which also return if the value is nullable.\n\tGetStructFieldOK() (reflect.Value, reflect.Kind, bool)\n\n\t// GetStructFieldOKAdvanced is the same as GetStructFieldOK except that it accepts the parent struct to start looking for\n\t// the field and namespace allowing more extensibility for validators.\n\t//\n\t// Deprecated: Use GetStructFieldOKAdvanced2() instead which also return if the value is nullable.\n\tGetStructFieldOKAdvanced(val reflect.Value, namespace string) (reflect.Value, reflect.Kind, bool)\n\n\t// traverses the parent struct to retrieve a specific field denoted by the provided namespace\n\t// in the param and returns the field, field kind, if it's a nullable type and whether is was successful in retrieving\n\t// the field at all.\n\t//\n\t// NOTE: when not successful ok will be false, this can happen when a nested struct is nil and so the field\n\t// could not be retrieved because it didn't exist.\n\tGetStructFieldOK2() (reflect.Value, reflect.Kind, bool, bool)\n\n\t// GetStructFieldOKAdvanced is the same as GetStructFieldOK except that it accepts the parent struct to start looking for\n\t// the field and namespace allowing more extensibility for validators.\n\tGetStructFieldOKAdvanced2(val reflect.Value, namespace string) (reflect.Value, reflect.Kind, bool, bool)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "773d6bb9ce0dc85134ad9ea0",
+        "revision": "b1ccceeb1193ae8e747d8cdb14e644c979eb1295",
+        "path": "field_level.go",
+        "start_byte": 2688,
+        "text": "var _ FieldLevel = new(validate)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "f853134bb9512ba3a3fbf105",
+        "revision": "b1ccceeb1193ae8e747d8cdb14e644c979eb1295",
+        "path": "field_level.go",
+        "start_byte": 3288,
+        "text": "func (v *validate) Param() string {\n\treturn v.ct.param\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "7a8c92854ad75b8219fef423",
+        "revision": "b1ccceeb1193ae8e747d8cdb14e644c979eb1295",
+        "path": "struct_level.go",
+        "start_byte": 2346,
+        "text": "var _ StructLevel = new(validate)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "907abfe5c2ee22abcebc1fba",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "_examples/custom-validation/main.go",
+        "start_byte": 91,
+        "text": "type MyStruct struct {\n\tString string `validate:\"is-awesome\"`\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "fe98f05a4a58229c691a9c6e",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "_examples/custom-validation/main.go",
+        "start_byte": 250,
+        "text": "func main() {\n\n\tvalidate = validator.New()\n\tvalidate.RegisterValidation(\"is-awesome\", ValidateMyVal)\n\n\ts := MyStruct{String: \"awesome\"}\n\n\terr := validate.Struct(s)\n\tif err != nil {\n\t\tfmt.Printf(\"Err(s):\\n%+v\\n\", err)\n\t}\n\n\ts.String = \"not awesome\"\n\terr = validate.Struct(s)\n\tif err != nil {\n\t\tfmt.Printf(\"Err(s):\\n%+v\\n\", err)\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "f4ab418372ca7f611797e985",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "_examples/custom-validation/main.go",
+        "start_byte": 625,
+        "text": "func ValidateMyVal(fl validator.FieldLevel) bool {\n\treturn fl.Field().String() == \"awesome\"\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "459a53c35b9b5a21a54c9b11",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "_examples/custom/main.go",
+        "start_byte": 364,
+        "text": "func main() {\n\n\tvalidate = validator.New()\n\n\t// register all sql.Null* types to use the ValidateValuer CustomTypeFunc\n\tvalidate.RegisterCustomTypeFunc(ValidateValuer, sql.NullString{}, sql.NullInt64{}, sql.NullBool{}, sql.NullFloat64{})\n\n\t// build object for validation\n\tx := DbBackedUser{Name: sql.NullString{String: \"\", Valid: true}, Age: sql.NullInt64{Int64: 0, Valid: false}}\n\n\terr := validate.Struct(x)\n\n\tif err != nil {\n\t\tfmt.Printf(\"Err(s):\\n%+v\\n\", err)\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "c831ae34fdaa1cf87c4da3e7",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "_examples/custom/main.go",
+        "start_byte": 886,
+        "text": "func ValidateValuer(field reflect.Value) interface{} {\n\n\tif valuer, ok := field.Interface().(driver.Valuer); ok {\n\n\t\tval, err := valuer.Value()\n\t\tif err == nil {\n\t\t\treturn val\n\t\t}\n\t\t// handle the error how you want\n\t}\n\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "e9235250c6e18bb80ba8c490",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "_examples/dive/main.go",
+        "start_byte": 88,
+        "text": "type Test struct {\n\tArray []string          `validate:\"required,gt=0,dive,required\"`\n\tMap   map[string]string `validate:\"required,gt=0,dive,keys,keymax,endkeys,required,max=1000\"`\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "6e1ba59abd64f1f2cd0a9084",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "_examples/dive/main.go",
+        "start_byte": 365,
+        "text": "func main() {\n\n\tvalidate = validator.New()\n\n\t// registering alias so we can see the differences between\n\t// map key, value validation errors\n\tvalidate.RegisterAlias(\"keymax\", \"max=10\")\n\n\tvar test Test\n\n\tval(test)\n\n\ttest.Array = []string{\"\"}\n\ttest.Map = map[string]string{\"test > than 10\": \"\"}\n\tval(test)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "f89a5770fdf996d5a966b7a5",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "_examples/dive/main.go",
+        "start_byte": 672,
+        "text": "func val(test Test) {\n\tfmt.Println(\"testing\")\n\terr := validate.Struct(test)\n\tfmt.Println(err)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "7275b338cbb60dc1c95e6f1b",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "_examples/gin-upgrading-overriding/v8_to_v9.go",
+        "start_byte": 261,
+        "text": "func (v *defaultValidator) ValidateStruct(obj interface{}) error {\n\n\tif kindOfData(obj) == reflect.Struct {\n\n\t\tv.lazyinit()\n\n\t\tif err := v.validate.Struct(obj); err != nil {\n\t\t\treturn err\n\t\t}\n\t}\n\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "6e38a994b23e22d42254c62c",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "_examples/gin-upgrading-overriding/v8_to_v9.go",
+        "start_byte": 734,
+        "text": "func kindOfData(data interface{}) reflect.Kind {\n\n\tvalue := reflect.ValueOf(data)\n\tvalueType := value.Kind()\n\n\tif valueType == reflect.Ptr {\n\t\tvalueType = value.Elem().Kind()\n\t}\n\treturn valueType\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "99b8950d2a1eee919c655a17",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "_examples/simple/main.go",
+        "start_byte": 110,
+        "text": "type User struct {\n\tFirstName      string     `validate:\"required\"`\n\tLastName       string     `validate:\"required\"`\n\tAge            uint8      `validate:\"gte=0,lte=130\"`\n\tEmail          string     `validate:\"required,email\"`\n\tFavouriteColor string     `validate:\"iscolor\"`                // alias for 'hexcolor|rgb|rgba|hsl|hsla'\n\tAddresses      []*Address `validate:\"required,dive,required\"` // a person can have a home and cottage...\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "a4c738908b199eeb59c9bd52",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "_examples/simple/main.go",
+        "start_byte": 596,
+        "text": "type Address struct {\n\tStreet string `validate:\"required\"`\n\tCity   string `validate:\"required\"`\n\tPlanet string `validate:\"required\"`\n\tPhone  string `validate:\"required\"`\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "35f6c13df8a1438aa66afc0b",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "_examples/simple/main.go",
+        "start_byte": 948,
+        "text": "func validateStruct() {\n\n\taddress := &Address{\n\t\tStreet: \"Eavesdown Docks\",\n\t\tPlanet: \"Persphone\",\n\t\tPhone:  \"none\",\n\t}\n\n\tuser := &User{\n\t\tFirstName:      \"Badger\",\n\t\tLastName:       \"Smith\",\n\t\tAge:            135,\n\t\tEmail:          \"Badger.Smith@gmail.com\",\n\t\tFavouriteColor: \"#000-\",\n\t\tAddresses:      []*Address{address},\n\t}\n\n\t// returns nil or ValidationErrors ( []FieldError )\n\terr := validate.Struct(user)\n\tif err != nil {\n\n\t\t// this check is only needed when your code could produce\n\t\t// an invalid value for validation such as interface with nil\n\t\t// value most including myself do not usually have code like this.\n\t\tif _, ok := err.(*validator.InvalidValidationError); ok {\n\t\t\tfmt.Println(err)\n\t\t\treturn\n\t\t}\n\n\t\tfor _, err := range err.(validator.ValidationErrors) {\n\n\t\t\tfmt.Println(err.Namespace())\n\t\t\tfmt.Println(err.Field())\n\t\t\tfmt.Println(err.StructNamespace())\n\t\t\tfmt.Println(err.StructField())\n\t\t\tfmt.Println(err.Tag())\n\t\t\tfmt.Println(err.ActualTag())\n\t\t\tfmt.Println(err.Kind())\n\t\t\tfmt.Println(err.Type())\n\t\t\tfmt.Println(err.Value())\n\t\t\tfmt.Println(err.Param())\n\t\t\tfmt.Println()\n\t\t}\n\n\t\t// from here you can create your own error messages in whatever language you wish\n\t\treturn\n\t}\n\n\t// save user to database\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "71629c31e10e8d884d1a274d",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "_examples/simple/main.go",
+        "start_byte": 2172,
+        "text": "func validateVariable() {\n\n\tmyEmail := \"joeybloggs.gmail.com\"\n\n\terrs := validate.Var(myEmail, \"required,email\")\n\n\tif errs != nil {\n\t\tfmt.Println(errs) // output: Key: \"\" Error:Field validation for \"\" failed on the \"email\" tag\n\t\treturn\n\t}\n\n\t// email ok, move on\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "dbcea0af90631fde5f9fcd5f",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "_examples/struct-level/main.go",
+        "start_byte": 132,
+        "text": "type User struct {\n\tFirstName      string     `json:\"fname\"`\n\tLastName       string     `json:\"lname\"`\n\tAge            uint8      `validate:\"gte=0,lte=130\"`\n\tEmail          string     `json:\"e-mail\" validate:\"required,email\"`\n\tFavouriteColor string     `validate:\"hexcolor|rgb|rgba\"`\n\tAddresses      []*Address `validate:\"required,dive,required\"` // a person can have a home and cottage...\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "f92718918296f563ea3fef43",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "_examples/struct-level/main.go",
+        "start_byte": 571,
+        "text": "type Address struct {\n\tStreet string `validate:\"required\"`\n\tCity   string `validate:\"required\"`\n\tPlanet string `validate:\"required\"`\n\tPhone  string `validate:\"required\"`\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "f446b7bf5af2fe3f8545d876",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "_examples/struct-level/main.go",
+        "start_byte": 838,
+        "text": "func main() {\n\n\tvalidate = validator.New()\n\n\t// register function to get tag name from json tags.\n\tvalidate.RegisterTagNameFunc(func(fld reflect.StructField) string {\n\t\tname := strings.SplitN(fld.Tag.Get(\"json\"), \",\", 2)[0]\n\t\tif name == \"-\" {\n\t\t\treturn \"\"\n\t\t}\n\t\treturn name\n\t})\n\n\t// register validation for 'User'\n\t// NOTE: only have to register a non-pointer type for 'User', validator\n\t// interanlly dereferences during it's type checks.\n\tvalidate.RegisterStructValidation(UserStructLevelValidation, User{})\n\n\t// build 'User' info, normally posted data etc...\n\taddress := &Address{\n\t\tStreet: \"Eavesdown Docks\",\n\t\tPlanet: \"Persphone\",\n\t\tPhone:  \"none\",\n\t\tCity:   \"Unknown\",\n\t}\n\n\tuser := &User{\n\t\tFirstName:      \"\",\n\t\tLastName:       \"\",\n\t\tAge:            45,\n\t\tEmail:          \"Badger.Smith@gmail\",\n\t\tFavouriteColor: \"#000\",\n\t\tAddresses:      []*Address{address},\n\t}\n\n\t// returns InvalidValidationError for bad validation input, nil or ValidationErrors ( []FieldError )\n\terr := validate.Struct(user)\n\tif err != nil {\n\n\t\t// this check is only needed when your code could produce\n\t\t// an invalid value for validation such as interface with nil\n\t\t// value most including myself do not usually have code like this.\n\t\tif _, ok := err.(*validator.InvalidValidationError); ok {\n\t\t\tfmt.Println(err)\n\t\t\treturn\n\t\t}\n\n\t\tfor _, err := range err.(validator.ValidationErrors) {\n\n\t\t\tfmt.Println(err.Namespace()) // can differ when a custom TagNameFunc is registered or\n\t\t\tfmt.Println(err.Field())     // by passing alt name to ReportError like below\n\t\t\tfmt.Println(err.StructNamespace())\n\t\t\tfmt.Println(err.StructField())\n\t\t\tfmt.Println(err.Tag())\n\t\t\tfmt.Println(err.ActualTag())\n\t\t\tfmt.Println(err.Kind())\n\t\t\tfmt.Println(err.Type())\n\t\t\tfmt.Println(err.Value())\n\t\t\tfmt.Println(err.Param())\n\t\t\tfmt.Println()\n\t\t}\n\n\t\t// from here you can create your own error messages in whatever language you wish\n\t\treturn\n\t}\n\n\t// save user to database\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "13527ef763d360a154feabbb",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "_examples/struct-level/main.go",
+        "start_byte": 3367,
+        "text": "func UserStructLevelValidation(sl validator.StructLevel) {\n\n\tuser := sl.Current().Interface().(User)\n\n\tif len(user.FirstName) == 0 && len(user.LastName) == 0 {\n\t\tsl.ReportError(user.FirstName, \"fname\", \"FirstName\", \"fnameorlname\", \"\")\n\t\tsl.ReportError(user.LastName, \"lname\", \"LastName\", \"fnameorlname\", \"\")\n\t}\n\n\t// plus can do more, even with different tag than \"fnameorlname\"\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "cb2b1059966097fd5e0cdf3d",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "_examples/translations/main.go",
+        "start_byte": 275,
+        "text": "type User struct {\n\tFirstName      string     `validate:\"required\"`\n\tLastName       string     `validate:\"required\"`\n\tAge            uint8      `validate:\"gte=0,lte=130\"`\n\tEmail          string     `validate:\"required,email\"`\n\tFavouriteColor string     `validate:\"iscolor\"`                // alias for 'hexcolor|rgb|rgba|hsl|hsla'\n\tAddresses      []*Address `validate:\"required,dive,required\"` // a person can have a home and cottage...\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "f8f3d6895f0083866d7ecb46",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "_examples/translations/main.go",
+        "start_byte": 761,
+        "text": "type Address struct {\n\tStreet string `validate:\"required\"`\n\tCity   string `validate:\"required\"`\n\tPlanet string `validate:\"required\"`\n\tPhone  string `validate:\"required\"`\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "265e33a42c8ed69285941066",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "_examples/translations/main.go",
+        "start_byte": 1056,
+        "text": "func main() {\n\n\t// NOTE: ommitting allot of error checking for brevity\n\n\ten := en.New()\n\tuni = ut.New(en, en)\n\n\t// this is usually know or extracted from http 'Accept-Language' header\n\t// also see uni.FindTranslator(...)\n\ttrans, _ := uni.GetTranslator(\"en\")\n\n\tvalidate = validator.New()\n\ten_translations.RegisterDefaultTranslations(validate, trans)\n\n\ttranslateAll(trans)\n\ttranslateIndividual(trans)\n\ttranslateOverride(trans) // yep you can specify your own in whatever locale you want!\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "3a2ce0bbe994581c24df744c",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "_examples/translations/main.go",
+        "start_byte": 1545,
+        "text": "func translateAll(trans ut.Translator) {\n\n\ttype User struct {\n\t\tUsername string `validate:\"required\"`\n\t\tTagline  string `validate:\"required,lt=10\"`\n\t\tTagline2 string `validate:\"required,gt=1\"`\n\t}\n\n\tuser := User{\n\t\tUsername: \"Joeybloggs\",\n\t\tTagline:  \"This tagline is way too long.\",\n\t\tTagline2: \"1\",\n\t}\n\n\terr := validate.Struct(user)\n\tif err != nil {\n\n\t\t// translate all error at once\n\t\terrs := err.(validator.ValidationErrors)\n\n\t\t// returns a map with key = namespace & value = translated error\n\t\t// NOTICE: 2 errors are returned and you'll see something surprising\n\t\t// translations are i18n aware!!!!\n\t\t// eg. '10 characters' vs '1 character'\n\t\tfmt.Println(errs.Translate(trans))\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "8ecaf38c8d7df1c10ca3bd04",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "_examples/translations/main.go",
+        "start_byte": 1588,
+        "text": "type User struct {\n\t\tUsername string `validate:\"required\"`\n\t\tTagline  string `validate:\"required,lt=10\"`\n\t\tTagline2 string `validate:\"required,gt=1\"`\n\t}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "9074cc6177bfed7ea333a853",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "_examples/translations/main.go",
+        "start_byte": 2234,
+        "text": "func translateIndividual(trans ut.Translator) {\n\n\ttype User struct {\n\t\tUsername string `validate:\"required\"`\n\t}\n\n\tvar user User\n\n\terr := validate.Struct(user)\n\tif err != nil {\n\n\t\terrs := err.(validator.ValidationErrors)\n\n\t\tfor _, e := range errs {\n\t\t\t// can translate each error one at a time.\n\t\t\tfmt.Println(e.Translate(trans))\n\t\t}\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "fd0630b8b12499a21f2ab845",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "_examples/translations/main.go",
+        "start_byte": 2284,
+        "text": "type User struct {\n\t\tUsername string `validate:\"required\"`\n\t}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "bed47b494f675cbed577c4aa",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "_examples/translations/main.go",
+        "start_byte": 2573,
+        "text": "func translateOverride(trans ut.Translator) {\n\n\tvalidate.RegisterTranslation(\"required\", trans, func(ut ut.Translator) error {\n\t\treturn ut.Add(\"required\", \"{0} must have a value!\", true) // see universal-translator for details\n\t}, func(ut ut.Translator, fe validator.FieldError) string {\n\t\tt, _ := ut.T(\"required\", fe.Field())\n\n\t\treturn t\n\t})\n\n\ttype User struct {\n\t\tUsername string `validate:\"required\"`\n\t}\n\n\tvar user User\n\n\terr := validate.Struct(user)\n\tif err != nil {\n\n\t\terrs := err.(validator.ValidationErrors)\n\n\t\tfor _, e := range errs {\n\t\t\t// can translate each error one at a time.\n\t\t\tfmt.Println(e.Translate(trans))\n\t\t}\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "7138de222c45c6a5a9df0d5f",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "_examples/translations/main.go",
+        "start_byte": 2918,
+        "text": "type User struct {\n\t\tUsername string `validate:\"required\"`\n\t}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "44170617703cf890a016ac86",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "baked_in.go",
+        "start_byte": 341,
+        "text": "type Func func(fl FieldLevel) bool",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "93c37821815790f12a825103",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "baked_in.go",
+        "start_byte": 526,
+        "text": "type FuncCtx func(ctx context.Context, fl FieldLevel) bool",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "57d93ae2abcc53289e55d422",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "baked_in.go",
+        "start_byte": 650,
+        "text": "func wrapFunc(fn Func) FuncCtx {\n\tif fn == nil {\n\t\treturn nil // be sure not to wrap a bad function.\n\t}\n\treturn func(ctx context.Context, fl FieldLevel) bool {\n\t\treturn fn(fl)\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "88862668a7a517f386d4eb92",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "baked_in.go",
+        "start_byte": 832,
+        "text": "var (\n\trestrictedTags = map[string]struct{}{\n\t\tdiveTag:           {},\n\t\tkeysTag:           {},\n\t\tendKeysTag:        {},\n\t\tstructOnlyTag:     {},\n\t\tomitempty:         {},\n\t\tskipValidationTag: {},\n\t\tutf8HexComma:      {},\n\t\tutf8Pipe:          {},\n\t\tnoStructLevelTag:  {},\n\t\trequiredTag:       {},\n\t\tisdefault:         {},\n\t}\n\n\t// BakedInAliasValidators is a default mapping of a single validation tag that\n\t// defines a common or complex set of validation(s) to simplify\n\t// adding validation to structs.\n\tbakedInAliases = map[string]string{\n\t\t\"iscolor\": \"hexcolor|rgb|rgba|hsl|hsla\",\n\t}\n\n\t// BakedInValidators is the default map of ValidationFunc\n\t// you can add, remove or even replace items to suite your needs,\n\t// or even disregard and use your own map if so desired.\n\tbakedInValidators = map[string]Func{\n\t\t\"required\":             hasValue,\n\t\t\"required_if\":          requiredIf,\n\t\t\"required_unless\":      requiredUnless,\n\t\t\"required_with\":        requiredWith,\n\t\t\"required_with_all\":    requiredWithAll,\n\t\t\"required_without\":     requiredWithout,\n\t\t\"required_without_all\": requiredWithoutAll,\n\t\t\"isdefault\":            isDefault,\n\t\t\"len\":                  hasLengthOf,\n\t\t\"min\":                  hasMinOf,\n\t\t\"max\":                  hasMaxOf,\n\t\t\"eq\":                   isEq,\n\t\t\"ne\":                   isNe,\n\t\t\"lt\":                   isLt,\n\t\t\"lte\":                  isLte,\n\t\t\"gt\":                   isGt,\n\t\t\"gte\":                  isGte,\n\t\t\"eqfield\":              isEqField,\n\t\t\"eqcsfield\":            isEqCrossStructField,\n\t\t\"necsfield\":            isNeCrossStructField,\n\t\t\"gtcsfield\":            isGtCrossStructField,\n\t\t\"gtecsfield\":           isGteCrossStructField,\n\t\t\"ltcsfield\":            isLtCrossStructField,\n\t\t\"ltecsfield\":           isLteCrossStructField,\n\t\t\"nefield\":              isNeField,\n\t\t\"gtefield\":             isGteField,\n\t\t\"gtfield\":              isGtField,\n\t\t\"ltefield\":             isLteField,\n\t\t\"ltfield\":              isLtField,\n\t\t\"fieldcontains\":        fieldContains,\n\t\t\"fieldexcludes\":        fieldExcludes,\n\t\t\"alpha\":                isAlpha,\n\t\t\"alphanum\":             isAlphanum,\n\t\t\"alphaunicode\":         isAlphaUnicode,\n\t\t\"alphanumunicode\":      isAlphanumUnicode,\n\t\t\"numeric\":              isNumeric,\n\t\t\"number\":               isNumber,\n\t\t\"hexadecimal\":          isHexadecimal,\n\t\t\"hexcolor\":             isHEXColor,\n\t\t\"rgb\":                  isRGB,\n\t\t\"rgba\":                 isRGBA,\n\t\t\"hsl\":                  isHSL,\n\t\t\"hsla\":                 isHSLA,\n\t\t\"e164\":                 isE164,\n\t\t\"email\":                isEmail,\n\t\t\"url\":                  isURL,\n\t\t\"uri\":                  isURI,\n\t\t\"urn_rfc2141\":          isUrnRFC2141, // RFC 2141\n\t\t\"file\":                 isFile,\n\t\t\"base64\":               isBase64,\n\t\t\"base64url\":            isBase64URL,\n\t\t\"contains\":             contains,\n\t\t\"containsany\":          containsAny,\n\t\t\"containsrune\":         containsRune,\n\t\t\"excludes\":             excludes,\n\t\t\"excludesall\":          excludesAll,\n\t\t\"excludesrune\":         excludesRune,\n\t\t\"startswith\":           startsWith,\n\t\t\"endswith\":             endsWith,\n\t\t\"startsnotwith\":        startsNotWith,\n\t\t\"endsnotwith\":          endsNotWith,\n\t\t\"isbn\":                 isISBN,\n\t\t\"isbn10\":               isISBN10,\n\t\t\"isbn13\":               isISBN13,\n\t\t\"eth_addr\":             isEthereumAddress,\n\t\t\"btc_addr\":             isBitcoinAddress,\n\t\t\"btc_addr_bech32\":      isBitcoinBech32Address,\n\t\t\"uuid\":                 isUUID,\n\t\t\"uuid3\":                isUUID3,\n\t\t\"uuid4\":                isUUID4,\n\t\t\"uuid5\":                isUUID5,\n\t\t\"uuid_rfc4122\":         isUUIDRFC4122,\n\t\t\"uuid3_rfc4122\":        isUUID3RFC4122,\n\t\t\"uuid4_rfc4122\":        isUUID4RFC4122,\n\t\t\"uuid5_rfc4122\":        isUUID5RFC4122,\n\t\t\"ascii\":                isASCII,\n\t\t\"printascii\":           isPrintableASCII,\n\t\t\"multibyte\":            hasMultiByteCharacter,\n\t\t\"datauri\":              isDataURI,\n\t\t\"latitude\":             isLatitude,\n\t\t\"longitude\":            isLongitude,\n\t\t\"ssn\":                  isSSN,\n\t\t\"ipv4\":                 isIPv4,\n\t\t\"ipv6\":                 isIPv6,\n\t\t\"ip\":                   isIP,\n\t\t\"cidrv4\":               isCIDRv4,\n\t\t\"cidrv6\":               isCIDRv6,\n\t\t\"cidr\":                 isCIDR,\n\t\t\"tcp4_addr\":            isTCP4AddrResolvable,\n\t\t\"tcp6_addr\":            isTCP6AddrResolvable,\n\t\t\"tcp_addr\":             isTCPAddrResolvable,\n\t\t\"udp4_addr\":            isUDP4AddrResolvable,\n\t\t\"udp6_addr\":            isUDP6AddrResolvable,\n\t\t\"udp_addr\":             isUDPAddrResolvable,\n\t\t\"ip4_addr\":             isIP4AddrResolvable,\n\t\t\"ip6_addr\":             isIP6AddrResolvable,\n\t\t\"ip_addr\":              isIPAddrResolvable,\n\t\t\"unix_addr\":            isUnixAddrResolvable,\n\t\t\"mac\":                  isMAC,\n\t\t\"hostname\":             isHostnameRFC952,  // RFC 952\n\t\t\"hostname_rfc1123\":     isHostnameRFC1123, // RFC 1123\n\t\t\"fqdn\":                 isFQDN,\n\t\t\"unique\":               isUnique,\n\t\t\"oneof\":                isOneOf,\n\t\t\"html\":                 isHTML,\n\t\t\"html_encoded\":         isHTMLEncoded,\n\t\t\"url_encoded\":          isURLEncoded,\n\t\t\"dir\":                  isDir,\n\t\t\"json\":                 isJSON,\n\t\t\"hostname_port\":        isHostnamePort,\n\t\t\"lowercase\":            isLowercase,\n\t\t\"uppercase\":            isUppercase,\n\t\t\"datetime\":             isDatetime,\n\t}\n)",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "6f7beb429da9dc8903d83ce1",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "baked_in.go",
+        "start_byte": 6096,
+        "text": "var oneofValsCache = map[string][]string{}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "08fdd309c5e516725fda07b0",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "baked_in.go",
+        "start_byte": 6573,
+        "text": "func isURLEncoded(fl FieldLevel) bool {\n\treturn uRLEncodedRegex.MatchString(fl.Field().String())\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "a4c8b861f1ca26e943400542",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "baked_in.go",
+        "start_byte": 6673,
+        "text": "func isHTMLEncoded(fl FieldLevel) bool {\n\treturn hTMLEncodedRegex.MatchString(fl.Field().String())\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "3c411b07cc6a44cd7b59de12",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "baked_in.go",
+        "start_byte": 6775,
+        "text": "func isHTML(fl FieldLevel) bool {\n\treturn hTMLRegex.MatchString(fl.Field().String())\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "b570cee38222f73bb60ed69a",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "baked_in.go",
+        "start_byte": 6863,
+        "text": "func isOneOf(fl FieldLevel) bool {\n\tvals := parseOneOfParam2(fl.Param())\n\n\tfield := fl.Field()\n\n\tvar v string\n\tswitch field.Kind() {\n\tcase reflect.String:\n\t\tv = field.String()\n\tcase reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:\n\t\tv = strconv.FormatInt(field.Int(), 10)\n\tcase reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:\n\t\tv = strconv.FormatUint(field.Uint(), 10)\n\tdefault:\n\t\tpanic(fmt.Sprintf(\"Bad field type %T\", field.Interface()))\n\t}\n\tfor i := 0; i < len(vals); i++ {\n\t\tif vals[i] == v {\n\t\t\treturn true\n\t\t}\n\t}\n\treturn false\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "aff9f73ef351124eb1cf011e",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "baked_in.go",
+        "start_byte": 6960,
+        "text": "var v string",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "94e5624f56270b03bfbca97e",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "baked_in.go",
+        "start_byte": 7545,
+        "text": "func isUnique(fl FieldLevel) bool {\n\n\tfield := fl.Field()\n\tparam := fl.Param()\n\tv := reflect.ValueOf(struct{}{})\n\n\tswitch field.Kind() {\n\tcase reflect.Slice, reflect.Array:\n\t\tif param == \"\" {\n\t\t\tm := reflect.MakeMap(reflect.MapOf(field.Type().Elem(), v.Type()))\n\n\t\t\tfor i := 0; i < field.Len(); i++ {\n\t\t\t\tm.SetMapIndex(field.Index(i), v)\n\t\t\t}\n\t\t\treturn field.Len() == m.Len()\n\t\t}\n\n\t\tsf, ok := field.Type().Elem().FieldByName(param)\n\t\tif !ok {\n\t\t\tpanic(fmt.Sprintf(\"Bad field name %s\", param))\n\t\t}\n\n\t\tm := reflect.MakeMap(reflect.MapOf(sf.Type, v.Type()))\n\t\tfor i := 0; i < field.Len(); i++ {\n\t\t\tm.SetMapIndex(field.Index(i).FieldByName(param), v)\n\t\t}\n\t\treturn field.Len() == m.Len()\n\tcase reflect.Map:\n\t\tm := reflect.MakeMap(reflect.MapOf(field.Type().Elem(), v.Type()))\n\n\t\tfor _, k := range field.MapKeys() {\n\t\t\tm.SetMapIndex(field.MapIndex(k), v)\n\t\t}\n\t\treturn field.Len() == m.Len()\n\tdefault:\n\t\tpanic(fmt.Sprintf(\"Bad field type %T\", field.Interface()))\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "2fde9f8337e3a24171b2b9e0",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "baked_in.go",
+        "start_byte": 8603,
+        "text": "func isMAC(fl FieldLevel) bool {\n\n\t_, err := net.ParseMAC(fl.Field().String())\n\n\treturn err == nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "a6d2516fa94cc5ce121be949",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "baked_in.go",
+        "start_byte": 8808,
+        "text": "func isCIDRv4(fl FieldLevel) bool {\n\n\tip, _, err := net.ParseCIDR(fl.Field().String())\n\n\treturn err == nil && ip.To4() != nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "1d25f7015ec6ac4991734ecb",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "baked_in.go",
+        "start_byte": 9040,
+        "text": "func isCIDRv6(fl FieldLevel) bool {\n\n\tip, _, err := net.ParseCIDR(fl.Field().String())\n\n\treturn err == nil && ip.To4() == nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "b1977efd863cef72abbcef1e",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "baked_in.go",
+        "start_byte": 9276,
+        "text": "func isCIDR(fl FieldLevel) bool {\n\n\t_, _, err := net.ParseCIDR(fl.Field().String())\n\n\treturn err == nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "4cdef9f5c61b7e36cd3862f7",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "baked_in.go",
+        "start_byte": 9472,
+        "text": "func isIPv4(fl FieldLevel) bool {\n\n\tip := net.ParseIP(fl.Field().String())\n\n\treturn ip != nil && ip.To4() != nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "41d884a39922a0ee00f38d0d",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "baked_in.go",
+        "start_byte": 9687,
+        "text": "func isIPv6(fl FieldLevel) bool {\n\n\tip := net.ParseIP(fl.Field().String())\n\n\treturn ip != nil && ip.To4() == nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "52f44c2b793b1dadab8070ab",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "baked_in.go",
+        "start_byte": 9906,
+        "text": "func isIP(fl FieldLevel) bool {\n\n\tip := net.ParseIP(fl.Field().String())\n\n\treturn ip != nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "1ca0fc991ded9f60e7ab67bb",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "baked_in.go",
+        "start_byte": 10089,
+        "text": "func isSSN(fl FieldLevel) bool {\n\n\tfield := fl.Field()\n\n\tif field.Len() != 11 {\n\t\treturn false\n\t}\n\n\treturn sSNRegex.MatchString(field.String())\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "3b1f2af54a133289a707df8a",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "baked_in.go",
+        "start_byte": 10347,
+        "text": "func isLongitude(fl FieldLevel) bool {\n\tfield := fl.Field()\n\n\tvar v string\n\tswitch field.Kind() {\n\tcase reflect.String:\n\t\tv = field.String()\n\tcase reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:\n\t\tv = strconv.FormatInt(field.Int(), 10)\n\tcase reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:\n\t\tv = strconv.FormatUint(field.Uint(), 10)\n\tcase reflect.Float32:\n\t\tv = strconv.FormatFloat(field.Float(), 'f', -1, 32)\n\tcase reflect.Float64:\n\t\tv = strconv.FormatFloat(field.Float(), 'f', -1, 64)\n\tdefault:\n\t\tpanic(fmt.Sprintf(\"Bad field type %T\", field.Interface()))\n\t}\n\n\treturn longitudeRegex.MatchString(v)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "dad24613d8c2d7673af53d1c",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "baked_in.go",
+        "start_byte": 10409,
+        "text": "var v string",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "022b8cc8c9d8db0dc839d9a7",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "baked_in.go",
+        "start_byte": 11112,
+        "text": "func isLatitude(fl FieldLevel) bool {\n\tfield := fl.Field()\n\n\tvar v string\n\tswitch field.Kind() {\n\tcase reflect.String:\n\t\tv = field.String()\n\tcase reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:\n\t\tv = strconv.FormatInt(field.Int(), 10)\n\tcase reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:\n\t\tv = strconv.FormatUint(field.Uint(), 10)\n\tcase reflect.Float32:\n\t\tv = strconv.FormatFloat(field.Float(), 'f', -1, 32)\n\tcase reflect.Float64:\n\t\tv = strconv.FormatFloat(field.Float(), 'f', -1, 64)\n\tdefault:\n\t\tpanic(fmt.Sprintf(\"Bad field type %T\", field.Interface()))\n\t}\n\n\treturn latitudeRegex.MatchString(v)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "88694e86b4bf6f3dbca6fbcb",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "baked_in.go",
+        "start_byte": 11173,
+        "text": "var v string",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "fdb001806a8512c3dd15f4b8",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "baked_in.go",
+        "start_byte": 11863,
+        "text": "func isDataURI(fl FieldLevel) bool {\n\n\turi := strings.SplitN(fl.Field().String(), \",\", 2)\n\n\tif len(uri) != 2 {\n\t\treturn false\n\t}\n\n\tif !dataURIRegex.MatchString(uri[0]) {\n\t\treturn false\n\t}\n\n\treturn base64Regex.MatchString(uri[1])\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "774db4e30981c4aa57122603",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "baked_in.go",
+        "start_byte": 12211,
+        "text": "func hasMultiByteCharacter(fl FieldLevel) bool {\n\n\tfield := fl.Field()\n\n\tif field.Len() == 0 {\n\t\treturn true\n\t}\n\n\treturn multibyteRegex.MatchString(field.String())\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "4a4bac619827906d194934d0",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "baked_in.go",
+        "start_byte": 12499,
+        "text": "func isPrintableASCII(fl FieldLevel) bool {\n\treturn printableASCIIRegex.MatchString(fl.Field().String())\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "ac315e04b6f37ca0aa2cd3f3",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "baked_in.go",
+        "start_byte": 12709,
+        "text": "func isASCII(fl FieldLevel) bool {\n\treturn aSCIIRegex.MatchString(fl.Field().String())\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "e35aaeae53d0fee4e571265b",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "baked_in.go",
+        "start_byte": 12893,
+        "text": "func isUUID5(fl FieldLevel) bool {\n\treturn uUID5Regex.MatchString(fl.Field().String())\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "1de31ef22072a94f295f15b4",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "baked_in.go",
+        "start_byte": 13077,
+        "text": "func isUUID4(fl FieldLevel) bool {\n\treturn uUID4Regex.MatchString(fl.Field().String())\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "6fe0d06a95fb7aaead4e8d0f",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "baked_in.go",
+        "start_byte": 13261,
+        "text": "func isUUID3(fl FieldLevel) bool {\n\treturn uUID3Regex.MatchString(fl.Field().String())\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "a2cfa18426641501fef0533f",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "baked_in.go",
+        "start_byte": 13456,
+        "text": "func isUUID(fl FieldLevel) bool {\n\treturn uUIDRegex.MatchString(fl.Field().String())\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "a06c2a970d95dce47ad3bc32",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "baked_in.go",
+        "start_byte": 13653,
+        "text": "func isUUID5RFC4122(fl FieldLevel) bool {\n\treturn uUID5RFC4122Regex.MatchString(fl.Field().String())\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "a95d7fa24c085d0c97b82a3f",
+        "revision": "44a150f3593441156b2d568bcad45f66e8f7339c",
+        "path": "baked_in.go",
+        "start_byte": 13866,
+        "text": "func isUUID4RFC4122(fl FieldLevel) bool {\n\treturn uUID4RFC4122Reg",
+        "rank": 2,
+        "truncated": true
+      }
+    ]
+  },
+  "retrieval": {
+    "unresolved": [
+      {
+        "side": "ours",
+        "identifier": "fl",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "param",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "string",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "value",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "defaultNotFoundValue",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "bool",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "field",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "kind",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "translations/en/en.go",
+            "start": 1799
+          },
+          {
+            "path": "translations/en/en.go",
+            "start": 3913
+          },
+          {
+            "path": "translations/en/en.go",
+            "start": 6030
+          },
+          {
+            "path": "translations/en/en.go",
+            "start": 9030
+          },
+          {
+            "path": "translations/en/en.go",
+            "start": 11713
+          },
+          {
+            "path": "translations/en/en.go",
+            "start": 14390
+          },
+          {
+            "path": "translations/en/en.go",
+            "start": 17075
+          },
+          {
+            "path": "translations/es/es.go",
+            "start": 1815
+          },
+          {
+            "path": "translations/es/es.go",
+            "start": 3940
+          },
+          {
+            "path": "translations/es/es.go",
+            "start": 6075
+          },
+          {
+            "path": "translations/es/es.go",
+            "start": 9085
+          },
+          {
+            "path": "translations/es/es.go",
+            "start": 11782
+          },
+          {
+            "path": "translations/es/es.go",
+            "start": 14463
+          },
+          {
+            "path": "translations/es/es.go",
+            "start": 17156
+          },
+          {
+            "path": "translations/fr/fr.go",
+            "start": 1838
+          },
+          {
+            "path": "translations/fr/fr.go",
+            "start": 4000
+          },
+          {
+            "path": "translations/fr/fr.go",
+            "start": 6165
+          },
+          {
+            "path": "translations/fr/fr.go",
+            "start": 9222
+          },
+          {
+            "path": "translations/fr/fr.go",
+            "start": 11951
+          },
+          {
+            "path": "translations/fr/fr.go",
+            "start": 14669
+          },
+          {
+            "path": "translations/fr/fr.go",
+            "start": 17393
+          },
+          {
+            "path": "translations/id/id.go",
+            "start": 1802
+          },
+          {
+            "path": "translations/id/id.go",
+            "start": 3931
+          },
+          {
+            "path": "translations/id/id.go",
+            "start": 6055
+          },
+          {
+            "path": "translations/id/id.go",
+            "start": 9067
+          },
+          {
+            "path": "translations/id/id.go",
+            "start": 11765
+          },
+          {
+            "path": "translations/id/id.go",
+            "start": 14456
+          },
+          {
+            "path": "translations/id/id.go",
+            "start": 17165
+          },
+          {
+            "path": "translations/ja/ja.go",
+            "start": 1903
+          },
+          {
+            "path": "translations/ja/ja.go",
+            "start": 4127
+          },
+          {
+            "path": "translations/ja/ja.go",
+            "start": 6345
+          },
+          {
+            "path": "translations/ja/ja.go",
+            "start": 8664
+          },
+          {
+            "path": "translations/ja/ja.go",
+            "start": 10842
+          },
+          {
+            "path": "translations/ja/ja.go",
+            "start": 13622
+          },
+          {
+            "path": "translations/ja/ja.go",
+            "start": 16414
+          },
+          {
+            "path": "translations/ja/ja.go",
+            "start": 19206
+          },
+          {
+            "path": "translations/nl/nl.go",
+            "start": 1801
+          },
+          {
+            "path": "translations/nl/nl.go",
+            "start": 3914
+          },
+          {
+            "path": "translations/nl/nl.go",
+            "start": 6024
+          },
+          {
+            "path": "translations/nl/nl.go",
+            "start": 9035
+          },
+          {
+            "path": "translations/nl/nl.go",
+            "start": 11718
+          },
+          {
+            "path": "translations/nl/nl.go",
+            "start": 14383
+          },
+          {
+            "path": "translations/nl/nl.go",
+            "start": 17069
+          },
+          {
+            "path": "translations/pt_BR/pt_BR.go",
+            "start": 1794
+          },
+          {
+            "path": "translations/pt_BR/pt_BR.go",
+            "start": 3904
+          },
+          {
+            "path": "translations/pt_BR/pt_BR.go",
+            "start": 6011
+          },
+          {
+            "path": "translations/pt_BR/pt_BR.go",
+            "start": 8996
+          },
+          {
+            "path": "translations/pt_BR/pt_BR.go",
+            "start": 11671
+          },
+          {
+            "path": "translations/pt_BR/pt_BR.go",
+            "start": 14335
+          },
+          {
+            "path": "translations/pt_BR/pt_BR.go",
+            "start": 17013
+          },
+          {
+            "path": "translations/ru/ru.go",
+            "start": 1896
+          },
+          {
+            "path": "translations/ru/ru.go",
+            "start": 4117
+          },
+          {
+            "path": "translations/ru/ru.go",
+            "start": 6342
+          },
+          {
+            "path": "translations/ru/ru.go",
+            "start": 9427
+          },
+          {
+            "path": "translations/ru/ru.go",
+            "start": 12218
+          },
+          {
+            "path": "translations/ru/ru.go",
+            "start": 14983
+          },
+          {
+            "path": "translations/ru/ru.go",
+            "start": 17801
+          },
+          {
+            "path": "translations/tr/tr.go",
+            "start": 1815
+          },
+          {
+            "path": "translations/tr/tr.go",
+            "start": 3940
+          },
+          {
+            "path": "translations/tr/tr.go",
+            "start": 6063
+          },
+          {
+            "path": "translations/tr/tr.go",
+            "start": 9106
+          },
+          {
+            "path": "translations/tr/tr.go",
+            "start": 11808
+          },
+          {
+            "path": "translations/tr/tr.go",
+            "start": 14503
+          },
+          {
+            "path": "translations/tr/tr.go",
+            "start": 17203
+          },
+          {
+            "path": "translations/zh/zh.go",
+            "start": 1783
+          },
+          {
+            "path": "translations/zh/zh.go",
+            "start": 3873
+          },
+          {
+            "path": "translations/zh/zh.go",
+            "start": 5966
+          },
+          {
+            "path": "translations/zh/zh.go",
+            "start": 8884
+          },
+          {
+            "path": "translations/zh/zh.go",
+            "start": 11528
+          },
+          {
+            "path": "translations/zh/zh.go",
+            "start": 14142
+          },
+          {
+            "path": "translations/zh/zh.go",
+            "start": 16787
+          },
+          {
+            "path": "translations/zh_tw/zh_tw.go",
+            "start": 1786
+          },
+          {
+            "path": "translations/zh_tw/zh_tw.go",
+            "start": 3876
+          },
+          {
+            "path": "translations/zh_tw/zh_tw.go",
+            "start": 5969
+          },
+          {
+            "path": "translations/zh_tw/zh_tw.go",
+            "start": 8887
+          },
+          {
+            "path": "translations/zh_tw/zh_tw.go",
+            "start": 11531
+          },
+          {
+            "path": "translations/zh_tw/zh_tw.go",
+            "start": 14145
+          },
+          {
+            "path": "translations/zh_tw/zh_tw.go",
+            "start": 16786
+          },
+          {
+            "path": "validator.go",
+            "start": 2861
+          }
+        ]
+      },
+      {
+        "side": "ours",
+        "identifier": "_",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "_examples/gin-upgrading-overriding/v8_to_v9.go",
+            "start": 208
+          },
+          {
+            "path": "errors.go",
+            "start": 4427
+          },
+          {
+            "path": "errors.go",
+            "start": 4462
+          },
+          {
+            "path": "field_level.go",
+            "start": 2688
+          },
+          {
+            "path": "struct_level.go",
+            "start": 2346
+          }
+        ]
+      },
+      {
+        "side": "ours",
+        "identifier": "found",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "reflect",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Int",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Int8",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Int16",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Int32",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Int64",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Uint",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Uint8",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Uint16",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Uint32",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Uint64",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Uintptr",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Float32",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Float64",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Float",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Slice",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Map",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Array",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "int64",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Len",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "String",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "params",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Param",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "errors.go",
+            "start": 6476
+          },
+          {
+            "path": "field_level.go",
+            "start": 3288
+          }
+        ]
+      },
+      {
+        "side": "ours",
+        "identifier": "len",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "panic",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "fmt",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Sprintf",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "i",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "baked_in.go",
+            "start": 14872
+          },
+          {
+            "path": "baked_in.go",
+            "start": 15336
+          },
+          {
+            "path": "baked_in.go",
+            "start": 33494
+          }
+        ]
+      },
+      {
+        "side": "theirs",
+        "identifier": "fl",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "bool",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "params",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Param",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "errors.go",
+            "start": 6536
+          },
+          {
+            "path": "field_level.go",
+            "start": 3288
+          }
+        ]
+      },
+      {
+        "side": "theirs",
+        "identifier": "_",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "_examples/gin-upgrading-overriding/v8_to_v9.go",
+            "start": 208
+          },
+          {
+            "path": "errors.go",
+            "start": 4487
+          },
+          {
+            "path": "errors.go",
+            "start": 4522
+          },
+          {
+            "path": "field_level.go",
+            "start": 2688
+          },
+          {
+            "path": "struct_level.go",
+            "start": 2346
+          }
+        ]
+      },
+      {
+        "side": "theirs",
+        "identifier": "param",
+        "reason": "no-unique-declaration-established"
+      }
+    ],
+    "method": "syntax-ranges-and-identifier-candidates/3",
+    "budget_bytes": 32768,
+    "libraries": {
+      "C": "cbbd4827ee02cd5c018ab41f10d8404ff8741159054b352d9a6d763c506ba3c7",
+      "Go": "1612f8fd958ba1ec981bf4b91e2ff399f1e54d26a9da68e5b60b0d7cd00616fc"
+    }
+  }
+}

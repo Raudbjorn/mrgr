@@ -1,0 +1,513 @@
+{
+  "id": "6c7ec5b33fc95598c145eb017add216089cfd4c889d73ddbbab576c7340972e8",
+  "source_protocol_sha256": "86ffe38086e217acf6e1a4aa4162e226862463d1bde3160478f9a6f4d2b968ce",
+  "repair_module_sha256": "475070c72aaadf08fe1cbd1ec90cde5210664924e6b0589d61d2226e86f3da7f",
+  "contexts": {
+    "local-context": [
+      {
+        "id": "9ef1400244f13ddbd1fd5280",
+        "revision": "341e2524b97e02755382b165b1bdf2af16d6815b",
+        "path": "pkg/yqlib/operator_slice.go",
+        "start_byte": 0,
+        "text": "package yqlib\n\nimport (\n\t\"container/list\"\n\t\"fmt\"\n)\n\nfunc getSliceNumber(d *dataTreeNavigator, context Context, node *CandidateNode, expressionNode *ExpressionNode) (int, error) {\n\tresult, err := d.GetMatchingNodes(context.SingleChildContext(node), expressionNode)\n\tif err != nil {\n\t\treturn 0, err\n\t}\n\tif result.MatchingNodes.Len() != 1 {\n\t\treturn 0, fmt.Errorf(\"expected to find 1 number, got %v instead\", result.MatchingNodes.Len())\n\t}\n\treturn parseInt(result.MatchingNodes.Front().Value.(*CandidateNode).Value)\n}\n\nfunc sliceStringNode(lhsNode *CandidateNode, firstNumber int, secondNumber int) *CandidateNode {\n\trunes := []rune(lhsNode.Value)\n\tlength := len(runes)\n\n\trelativeFirstNumber := firstNumber\n\tif relativeFirstNumber < 0 {\n\t\trelativeFirstNumber = length + firstNumber\n\t}\n\tif relativeFirstNumber < 0 {\n\t\trelativeFirstNumber = 0\n\t}\n\n\trelativeSecondNumber := secondNumber\n\tif relativeSecondNumber < 0 {\n\t\trelativeSecondNumber = length + secondNumber\n\t} else if relativeSecondNumber > length {\n\t\trelativeSecondNumber = length\n\t}\n\n\tlog.Debugf(\"sliceStringNode: slice from %v to %v\", relativeFirstNumber, relativeSecondNumber)\n\n\tif relativeFirstNumber > length {\n\t\trelativeFirstNumber = length\n\t}\n\tif relativeSecondNumber < relativeFirstNumber {\n\t\trelativeSecondNumber = relativeFirstNumber\n\t}\n\n\tslicedString := string(runes[relativeFirstNumber:relativeSecondNumber])\n\treplacement := lhsNode.CreateReplacement(ScalarNode, lhsNode.Tag, slicedString)\n\treplacement.Style = lhsNode.Style\n\treturn replacement\n}\n\nfunc sliceArrayOperator(d *dataTreeNavigator, context Context, expressionNode *ExpressionNode) (Context, error) {\n\n\tlog.Debug(\"slice array operator!\")\n\tlog.Debugf(\"lhs: %v\", expressionNode.LHS.Operation.toString())\n\tlog.Debugf(\"rhs: %v\", expressionNode.RHS.Operation.toString())\n\n\tresults := list.New()\n\n\tfor el := context.MatchingNodes.Front(); el != nil; el = el.Next() {\n\t\tlhsNode := el.Value.(*CandidateNode)\n\n\t\tfirstNumber, err := getSliceNumber(d, context, lhsNode, expressionNode.LHS)\n\t\tif err != nil {\n\t\t\treturn Context{}, err\n\t\t}\n\n\t\tsecondNumber, err := getSliceNumber(d, context, lhsNode, expressionNode.RHS)\n\t\tif err != nil {\n\t\t\treturn Context{}, err\n\t\t}\n\n\t\tif lhsNode.Kind == ScalarNode && lhsNode.guessTagFromCustomType() == \"!!str\" {\n\t\t\tresults.PushBack(sliceStringNode(lhsNode, firstNumber, secondNumber))\n\t\t\tcontinue\n\t\t}\n\n\t\trelativeFirstNumber := firstNumber\n\t\tif relativeFirstNumber < 0 {\n\t\t\trelativeFirstNumber = len(lhsNode.Content) + firstNumber\n\t\t}\n\t\tif relativeFirstNumber < 0 {\n\t\t\trelativeFirstNumber = 0\n\t\t} else if relativeFirstNumber > len(lhsNode.Content) {\n\t\t\trelativeFirstNumber = len(lhsNode.Content)\n\t\t}\n\n\t\trelativeSecondNumber := secondNumber\n\t\tif relativeSecondNumber < 0 {\n\t\t\trelativeSecondNumber = len(lhsNode.Content) + secondNumber\n\t\t}\n\t\tif relativeSecondNumber < 0 {\n\t\t\trelativeSecondNumber = 0\n\t\t} else if relativeSecondNumber > len(lhsNode.Content) {\n\t\t\trelativeSecondNumber = len(lhsNode.Content)\n\t\t}\n\t\tif relativeSecondNumber < relativeFirstNumber {\n\t\t\trelativeSecondNumber = relativeFirstNumber\n\t\t}\n\n\t\tlog.Debugf(\"calculateIndicesToTraverse: slice from %v to %v\", relativeFirstNumber, relativeSecondNumber)\n\n\t\tvar newResults []*CandidateNode\n\t\tfor i := relativeFirstNumber; i < relativeSecondNumber; i++ {\n\t\t\tnewResults = append(newResults, lhsNode.Content[i])\n\t\t}\n\n\t\tsliceArrayNode := lhsNode.CreateReplacement(SequenceNode, lhsNode.Tag, \"\")\n\t\tsliceArrayNode.AddChildren(newResults)\n\t\tresults.PushBack(sliceArrayNode)\n\n\t}\n\n\t// result is now the context that has the nodes we need to put back into a sequence.\n\t//what about multiple arrays in the context? I think we need to create an array for each one\n\treturn context.ChildContext(results), nil\n}\n",
+        "rank": 0,
+        "truncated": false
+      },
+      {
+        "id": "acd31217e4c32bf9ac6f4383",
+        "revision": "b0ba9589d754dd9a7827a87df57007eec0fdb483",
+        "path": "pkg/yqlib/operator_slice.go",
+        "start_byte": 0,
+        "text": "package yqlib\n\nimport (\n\t\"container/list\"\n\t\"fmt\"\n)\n\nfunc getSliceNumber(d *dataTreeNavigator, context Context, node *CandidateNode, expressionNode *ExpressionNode) (int, error) {\n\tresult, err := d.GetMatchingNodes(context.SingleChildContext(node), expressionNode)\n\tif err != nil {\n\t\treturn 0, err\n\t}\n\tif result.MatchingNodes.Len() != 1 {\n\t\treturn 0, fmt.Errorf(\"expected to find 1 number, got %v instead\", result.MatchingNodes.Len())\n\t}\n\treturn parseInt(result.MatchingNodes.Front().Value.(*CandidateNode).Value)\n}\n\n// clampSliceIndex resolves a possibly-negative slice index against\n// length and clamps the result to [0, length].\nfunc clampSliceIndex(index, length int) int {\n\tif index < 0 {\n\t\tindex += length\n\t}\n\tif index < 0 {\n\t\treturn 0\n\t}\n\tif index > length {\n\t\treturn length\n\t}\n\treturn index\n}\n\nfunc sliceArrayOperator(d *dataTreeNavigator, context Context, expressionNode *ExpressionNode) (Context, error) {\n\n\tlog.Debug(\"slice array operator!\")\n\tlog.Debugf(\"lhs: %v\", expressionNode.LHS.Operation.toString())\n\tlog.Debugf(\"rhs: %v\", expressionNode.RHS.Operation.toString())\n\n\tresults := list.New()\n\n\tfor el := context.MatchingNodes.Front(); el != nil; el = el.Next() {\n\t\tlhsNode := el.Value.(*CandidateNode)\n\n\t\tfirstNumber, err := getSliceNumber(d, context, lhsNode, expressionNode.LHS)\n\n\t\tif err != nil {\n\t\t\treturn Context{}, err\n\t\t}\n\t\trelativeFirstNumber := clampSliceIndex(firstNumber, len(lhsNode.Content))\n\n\t\tsecondNumber, err := getSliceNumber(d, context, lhsNode, expressionNode.RHS)\n\t\tif err != nil {\n\t\t\treturn Context{}, err\n\t\t}\n\t\trelativeSecondNumber := clampSliceIndex(secondNumber, len(lhsNode.Content))\n\n\t\tlog.Debugf(\"calculateIndicesToTraverse: slice from %v to %v\", relativeFirstNumber, relativeSecondNumber)\n\n\t\tvar newResults []*CandidateNode\n\t\tfor i := relativeFirstNumber; i < relativeSecondNumber; i++ {\n\t\t\tnewResults = append(newResults, lhsNode.Content[i])\n\t\t}\n\n\t\tsliceArrayNode := lhsNode.CreateReplacement(SequenceNode, lhsNode.Tag, \"\")\n\t\tsliceArrayNode.AddChildren(newResults)\n\t\tresults.PushBack(sliceArrayNode)\n\n\t}\n\n\t// result is now the context that has the nodes we need to put back into a sequence.\n\t//what about multiple arrays in the context? I think we need to create an array for each one\n\treturn context.ChildContext(results), nil\n}\n",
+        "rank": 0,
+        "truncated": false
+      }
+    ],
+    "selected": [
+      {
+        "id": "ed38b1c310097ca161915af3",
+        "revision": "341e2524b97e02755382b165b1bdf2af16d6815b",
+        "path": "pkg/yqlib/candidate_node.go",
+        "start_byte": 170,
+        "text": "type Style uint32",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "263d18e66353e8f1414c69c9",
+        "revision": "341e2524b97e02755382b165b1bdf2af16d6815b",
+        "path": "pkg/yqlib/candidate_node.go",
+        "start_byte": 1450,
+        "text": "type CandidateNode struct {\n\tKind  Kind\n\tStyle Style\n\n\tTag     string\n\tValue   string\n\tAnchor  string\n\tAlias   *CandidateNode\n\tContent []*CandidateNode\n\n\tHeadComment string\n\tLineComment string\n\tFootComment string\n\n\tParent *CandidateNode // parent node\n\tKey    *CandidateNode // node key, if this is a value from a map (or index in an array)\n\n\tLeadingContent string\n\n\tdocument uint // the document index of this node\n\tfilename string\n\n\tLine   int\n\tColumn int\n\n\tfileIndex int\n\t// when performing op against all nodes given, this will treat all the nodes as one\n\t// (e.g. top level cross document merge). This property does not propagate to child nodes.\n\tEvaluateTogether bool\n\tIsMapKey         bool\n\t// For formats like HCL and TOML: indicates that child entries should be emitted as separate blocks/tables\n\t// rather than consolidated into nested mappings (default behaviour)\n\tEncodeSeparate bool\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "6b86537ff6094243e2cd4806",
+        "revision": "341e2524b97e02755382b165b1bdf2af16d6815b",
+        "path": "pkg/yqlib/candidate_node.go",
+        "start_byte": 7364,
+        "text": "func (n *CandidateNode) CreateReplacement(kind Kind, tag string, value string) *CandidateNode {\n\tnode := &CandidateNode{\n\t\tKind:  kind,\n\t\tTag:   tag,\n\t\tValue: value,\n\t}\n\treturn n.CopyAsReplacement(node)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "25b7c11919e92bf72cc2d457",
+        "revision": "341e2524b97e02755382b165b1bdf2af16d6815b",
+        "path": "pkg/yqlib/lib.go",
+        "start_byte": 345,
+        "text": "var log = newLogger()",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "63af63f5aff69f740c5655be",
+        "revision": "341e2524b97e02755382b165b1bdf2af16d6815b",
+        "path": "pkg/yqlib/logger.go",
+        "start_byte": 1050,
+        "text": "func (l *Logger) Debugf(format string, args ...interface{}) {\n\tif l.IsEnabledFor(slog.LevelDebug) {\n\t\tl.slogger.Debug(fmt.Sprintf(format, args...))\n\t}\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "3fb8c1ea3528ec38b30ffb43",
+        "revision": "341e2524b97e02755382b165b1bdf2af16d6815b",
+        "path": "pkg/yqlib/operator_length.go",
+        "start_byte": 320,
+        "text": "var length int",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "b6718c019ddf4799c1ea9eff",
+        "revision": "341e2524b97e02755382b165b1bdf2af16d6815b",
+        "path": "pkg/yqlib/operator_omit.go",
+        "start_byte": 1815,
+        "text": "var replacement *CandidateNode",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "1002397fc32db4a71863b8ae",
+        "revision": "341e2524b97e02755382b165b1bdf2af16d6815b",
+        "path": "pkg/yqlib/operator_pick.go",
+        "start_byte": 1844,
+        "text": "var replacement *CandidateNode",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "d7bd810ec41a468c6d2d2483",
+        "revision": "341e2524b97e02755382b165b1bdf2af16d6815b",
+        "path": "pkg/yqlib/operator_slice.go",
+        "start_byte": 516,
+        "text": "func sliceStringNode(lhsNode *CandidateNode, firstNumber int, secondNumber int) *CandidateNode {\n\trunes := []rune(lhsNode.Value)\n\tlength := len(runes)\n\n\trelativeFirstNumber := firstNumber\n\tif relativeFirstNumber < 0 {\n\t\trelativeFirstNumber = length + firstNumber\n\t}\n\tif relativeFirstNumber < 0 {\n\t\trelativeFirstNumber = 0\n\t}\n\n\trelativeSecondNumber := secondNumber\n\tif relativeSecondNumber < 0 {\n\t\trelativeSecondNumber = length + secondNumber\n\t} else if relativeSecondNumber > length {\n\t\trelativeSecondNumber = length\n\t}\n\n\tlog.Debugf(\"sliceStringNode: slice from %v to %v\", relativeFirstNumber, relativeSecondNumber)\n\n\tif relativeFirstNumber > length {\n\t\trelativeFirstNumber = length\n\t}\n\tif relativeSecondNumber < relativeFirstNumber {\n\t\trelativeSecondNumber = relativeFirstNumber\n\t}\n\n\tslicedString := string(runes[relativeFirstNumber:relativeSecondNumber])\n\treplacement := lhsNode.CreateReplacement(ScalarNode, lhsNode.Tag, slicedString)\n\treplacement.Style = lhsNode.Style\n\treturn replacement\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "d3f6acde9d6ed2c5f196ba35",
+        "revision": "b0ba9589d754dd9a7827a87df57007eec0fdb483",
+        "path": "pkg/yqlib/operator_length.go",
+        "start_byte": 320,
+        "text": "var length int",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "9c735eeadce6b255dfb79691",
+        "revision": "b0ba9589d754dd9a7827a87df57007eec0fdb483",
+        "path": "pkg/yqlib/operator_slice.go",
+        "start_byte": 632,
+        "text": "func clampSliceIndex(index, length int) int {\n\tif index < 0 {\n\t\tindex += length\n\t}\n\tif index < 0 {\n\t\treturn 0\n\t}\n\tif index > length {\n\t\treturn length\n\t}\n\treturn index\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "9ab976ac5683aacf590f7572",
+        "revision": "b0ba9589d754dd9a7827a87df57007eec0fdb483",
+        "path": "pkg/yqlib/operator_split_document.go",
+        "start_byte": 158,
+        "text": "var index uint",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "0b90156e6d39a1997f98a4c7",
+        "revision": "b0ba9589d754dd9a7827a87df57007eec0fdb483",
+        "path": "pkg/yqlib/operator_traverse_path.go",
+        "start_byte": 6549,
+        "text": "var index int",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "3c2a6d32a9c5fe83cf5e1a92",
+        "revision": "341e2524b97e02755382b165b1bdf2af16d6815b",
+        "path": "cmd/completion.go",
+        "start_byte": 58,
+        "text": "var completionCmd = &cobra.Command{\n\tUse:     \"completion [bash|zsh|fish|powershell]\",\n\tAliases: []string{\"shell-completion\"},\n\tShort:   \"Generate the autocompletion script for the specified shell\",\n\tLong: `To load completions:\n\nBash:\n\n$ source <(yq completion bash)\n\n# To load completions for each session, execute once:\nLinux:\n  $ yq completion bash > /etc/bash_completion.d/yq\nMacOS:\n  $ yq completion bash > /usr/local/etc/bash_completion.d/yq\n\nZsh:\n\n# If shell completion is not already enabled in your environment you will need\n# to enable it.  You can execute the following once:\n\n$ echo \"autoload -U compinit; compinit\" >> ~/.zshrc\n\n# To load completions for each session, execute once:\n$ yq completion zsh > \"${fpath[1]}/_yq\"\n\n# You will need to start a new shell for this setup to take effect.\n\nFish:\n\n$ yq completion fish | source\n\n# To load completions for each session, execute once:\n$ yq completion fish > ~/.config/fish/completions/yq.fish\n`,\n\tDisableFlagsInUseLine: true,\n\tValidArgs:             []string{\"bash\", \"zsh\", \"fish\", \"powershell\"},\n\tArgs:                  cobra.MatchAll(cobra.ExactArgs(1), cobra.OnlyValidArgs),\n\tRunE: func(cmd *cobra.Command, args []string) error {\n\t\tvar err error = nil\n\t\tswitch args[0] {\n\t\tcase \"bash\":\n\t\t\terr = cmd.Root().GenBashCompletionV2(os.Stdout, true)\n\t\tcase \"zsh\":\n\t\t\terr = cmd.Root().GenZshCompletion(os.Stdout)\n\t\tcase \"fish\":\n\t\t\terr = cmd.Root().GenFishCompletion(os.Stdout, true)\n\t\tcase \"powershell\":\n\t\t\terr = cmd.Root().GenPowerShellCompletion(os.Stdout)\n\t\t}\n\t\treturn err\n\n\t},\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "5a090c504f29967fa4446bf5",
+        "revision": "341e2524b97e02755382b165b1bdf2af16d6815b",
+        "path": "cmd/evaluate_all_command.go",
+        "start_byte": 102,
+        "text": "func createEvaluateAllCommand() *cobra.Command {\n\tvar cmdEvalAll = &cobra.Command{\n\t\tUse:     \"eval-all [expression] [yaml_file1]...\",\n\t\tAliases: []string{\"ea\"},\n\t\tShort:   \"Loads _all_ yaml documents of _all_ yaml files and runs expression once\",\n\t\tValidArgsFunction: func(_ *cobra.Command, args []string, _ string) ([]string, cobra.ShellCompDirective) {\n\t\t\tif len(args) == 0 {\n\t\t\t\treturn nil, cobra.ShellCompDirectiveNoFileComp\n\t\t\t}\n\t\t\treturn nil, cobra.ShellCompDirectiveDefault\n\t\t},\n\t\tExample: `\n# Merge f2.yml into f1.yml (in place)\nyq eval-all --inplace 'select(fileIndex == 0) * select(fileIndex == 1)' f1.yml f2.yml\n## the same command and expression using shortened names:\nyq ea -i 'select(fi == 0) * select(fi == 1)' f1.yml f2.yml\n\n\n# Merge all given files\nyq ea '. as $item ireduce ({}; . * $item )' file1.yml file2.yml ...\n\n# Pipe from STDIN\n## use '-' as a filename to pipe from STDIN\ncat file2.yml | yq ea '.a.b' file1.yml - file3.yml\n`,\n\t\tLong: `yq is a portable command-line data file processor (https://github.com/mikefarah/yq/) \nSee https://mikefarah.gitbook.io/yq/ for detailed documentation and examples.\n\n## Evaluate All ##\nThis command loads _all_ yaml documents of _all_ yaml files and runs expression once\nUseful when you need to run an expression across several yaml documents or files (like merge).\nNote that it consumes more memory than eval.\n`,\n\t\tRunE: evaluateAll,\n\t}\n\treturn cmdEvalAll\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "0b4cf5c56ddfbf653d04351f",
+        "revision": "341e2524b97e02755382b165b1bdf2af16d6815b",
+        "path": "cmd/evaluate_all_command.go",
+        "start_byte": 152,
+        "text": "var cmdEvalAll = &cobra.Command{\n\t\tUse:     \"eval-all [expression] [yaml_file1]...\",\n\t\tAliases: []string{\"ea\"},\n\t\tShort:   \"Loads _all_ yaml documents of _all_ yaml files and runs expression once\",\n\t\tValidArgsFunction: func(_ *cobra.Command, args []string, _ string) ([]string, cobra.ShellCompDirective) {\n\t\t\tif len(args) == 0 {\n\t\t\t\treturn nil, cobra.ShellCompDirectiveNoFileComp\n\t\t\t}\n\t\t\treturn nil, cobra.ShellCompDirectiveDefault\n\t\t},\n\t\tExample: `\n# Merge f2.yml into f1.yml (in place)\nyq eval-all --inplace 'select(fileIndex == 0) * select(fileIndex == 1)' f1.yml f2.yml\n## the same command and expression using shortened names:\nyq ea -i 'select(fi == 0) * select(fi == 1)' f1.yml f2.yml\n\n\n# Merge all given files\nyq ea '. as $item ireduce ({}; . * $item )' file1.yml file2.yml ...\n\n# Pipe from STDIN\n## use '-' as a filename to pipe from STDIN\ncat file2.yml | yq ea '.a.b' file1.yml - file3.yml\n`,\n\t\tLong: `yq is a portable command-line data file processor (https://github.com/mikefarah/yq/) \nSee https://mikefarah.gitbook.io/yq/ for detailed documentation and examples.\n\n## Evaluate All ##\nThis command loads _all_ yaml documents of _all_ yaml files and runs expression once\nUseful when you need to run an expression across several yaml documents or files (like merge).\nNote that it consumes more memory than eval.\n`,\n\t\tRunE: evaluateAll,\n\t}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "6df6203e417a6e07ccacafe7",
+        "revision": "341e2524b97e02755382b165b1bdf2af16d6815b",
+        "path": "cmd/evaluate_all_command.go",
+        "start_byte": 1520,
+        "text": "func evaluateAll(cmd *cobra.Command, args []string) (cmdError error) {\n\t// 0 args, read std in\n\t// 1 arg, null input, process expression\n\t// 1 arg, read file in sequence\n\t// 2+ args, [0] = expression, file the rest\n\n\tvar err error\n\n\texpression, args, err := initCommand(cmd, args)\n\tif err != nil {\n\t\treturn err\n\t}\n\n\tout := cmd.OutOrStdout()\n\n\tif writeInplace {\n\t\t// only use colours if its forced\n\t\tcolorsEnabled = forceColor\n\t\twriteInPlaceHandler := yqlib.NewWriteInPlaceHandler(args[0])\n\t\tout, err = writeInPlaceHandler.CreateTempFile()\n\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n\t\t// need to indirectly call the function so  that completedSuccessfully is\n\t\t// passed when we finish execution as opposed to now\n\t\tdefer func() {\n\t\t\tif cmdError == nil {\n\t\t\t\tcmdError = writeInPlaceHandler.FinishWriteInPlace(completedSuccessfully)\n\t\t\t}\n\t\t}()\n\t}\n\n\tformat, err := yqlib.FormatFromString(outputFormat)\n\tif err != nil {\n\t\treturn err\n\t}\n\n\tdecoder, err := configureDecoder(true)\n\tif err != nil {\n\t\treturn err\n\t}\n\n\tprinterWriter, err := configurePrinterWriter(format, out)\n\tif err != nil {\n\t\treturn err\n\t}\n\tencoder, err := configureEncoder()\n\tif err != nil {\n\t\treturn err\n\t}\n\n\tprinter := yqlib.NewPrinter(encoder, printerWriter)\n\tif nulSepOutput {\n\t\tprinter.SetNulSepOutput(true)\n\t}\n\n\tif frontMatter != \"\" {\n\t\toriginalFilename := args[0]\n\t\tfrontMatterHandler := yqlib.NewFrontMatterHandler(args[0])\n\t\terr = frontMatterHandler.Split()\n\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n\t\targs[0] = frontMatterHandler.GetYamlFrontMatterFilename()\n\t\tyqlib.SetFilenameAlias(args[0], originalFilename)\n\t\tdefer yqlib.ClearFilenameAliases()\n\n\t\tif frontMatter == \"process\" {\n\t\t\treader := frontMatterHandler.GetContentReader()\n\t\t\tprinter.SetAppendix(reader)\n\t\t\tdefer yqlib.SafelyCloseReader(reader)\n\t\t}\n\t\tdefer frontMatterHandler.CleanUp()\n\t}\n\n\tallAtOnceEvaluator := yqlib.NewAllAtOnceEvaluator()\n\n\tswitch len(args) {\n\tcase 0:\n\t\tif nullInput {\n\t\t\terr = yqlib.NewStreamEvaluator().EvaluateNew(processExpression(expression), printer)\n\t\t} else {\n\t\t\tcmd.Println(cmd.UsageString())\n\t\t\treturn nil\n\t\t}\n\tdefault:\n\t\terr = allAtOnceEvaluator.EvaluateFiles(processExpression(expression), args, printer, decoder)\n\t}\n\n\tcompletedSuccessfully = err == nil\n\n\tif err == nil && exitStatus && !printer.PrintedAnything() {\n\t\treturn errors.New(\"no matches found\")\n\t}\n\n\treturn err\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "d5be424642ec20bafc6f4606",
+        "revision": "341e2524b97e02755382b165b1bdf2af16d6815b",
+        "path": "cmd/evaluate_sequence_command.go",
+        "start_byte": 109,
+        "text": "func createEvaluateSequenceCommand() *cobra.Command {\n\tvar cmdEvalSequence = &cobra.Command{\n\t\tUse:     \"eval [expression] [yaml_file1]...\",\n\t\tAliases: []string{\"e\"},\n\t\tShort:   \"(default) Apply the expression to each document in each yaml file in sequence\",\n\t\tValidArgsFunction: func(_ *cobra.Command, args []string, _ string) ([]string, cobra.ShellCompDirective) {\n\t\t\tif len(args) == 0 {\n\t\t\t\treturn nil, cobra.ShellCompDirectiveNoFileComp\n\t\t\t}\n\t\t\treturn nil, cobra.ShellCompDirectiveDefault\n\t\t},\n\t\tExample: `\n# Reads field under the given path for each file\nyq e '.a.b' f1.yml f2.yml \n\n# Prints out the file\nyq e sample.yaml \n\n# Pipe from STDIN\n## use '-' as a filename to pipe from STDIN\ncat file2.yml | yq e '.a.b' file1.yml - file3.yml\n\n# Creates a new yaml document\n## Note that editing an empty file does not work.\nyq e -n '.a.b.c = \"cat\"' \n\n# Update a file in place\nyq e '.a.b = \"cool\"' -i file.yaml \n`,\n\t\tLong: `yq is a portable command-line data file processor (https://github.com/mikefarah/yq/) \nSee https://mikefarah.gitbook.io/yq/ for detailed documentation and examples.\n\n## Evaluate Sequence ##\nThis command iterates over each yaml document from each given file, applies the \nexpression and prints the result in sequence.`,\n\t\tRunE: evaluateSequence,\n\t}\n\treturn cmdEvalSequence\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "37336017da14859e044d7104",
+        "revision": "341e2524b97e02755382b165b1bdf2af16d6815b",
+        "path": "cmd/evaluate_sequence_command.go",
+        "start_byte": 164,
+        "text": "var cmdEvalSequence = &cobra.Command{\n\t\tUse:     \"eval [expression] [yaml_file1]...\",\n\t\tAliases: []string{\"e\"},\n\t\tShort:   \"(default) Apply the expression to each document in each yaml file in sequence\",\n\t\tValidArgsFunction: func(_ *cobra.Command, args []string, _ string) ([]string, cobra.ShellCompDirective) {\n\t\t\tif len(args) == 0 {\n\t\t\t\treturn nil, cobra.ShellCompDirectiveNoFileComp\n\t\t\t}\n\t\t\treturn nil, cobra.ShellCompDirectiveDefault\n\t\t},\n\t\tExample: `\n# Reads field under the given path for each file\nyq e '.a.b' f1.yml f2.yml \n\n# Prints out the file\nyq e sample.yaml \n\n# Pipe from STDIN\n## use '-' as a filename to pipe from STDIN\ncat file2.yml | yq e '.a.b' file1.yml - file3.yml\n\n# Creates a new yaml document\n## Note that editing an empty file does not work.\nyq e -n '.a.b.c = \"cat\"' \n\n# Update a file in place\nyq e '.a.b = \"cool\"' -i file.yaml \n`,\n\t\tLong: `yq is a portable command-line data file processor (https://github.com/mikefarah/yq/) \nSee https://mikefarah.gitbook.io/yq/ for detailed documentation and examples.\n\n## Evaluate Sequence ##\nThis command iterates over each yaml document from each given file, applies the \nexpression and prints the result in sequence.`,\n\t\tRunE: evaluateSequence,\n\t}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "90b0060870506ea9646d280a",
+        "revision": "341e2524b97e02755382b165b1bdf2af16d6815b",
+        "path": "cmd/evaluate_sequence_command.go",
+        "start_byte": 1404,
+        "text": "func processExpression(expression string) string {\n\n\tif prettyPrint && expression == \"\" {\n\t\treturn yqlib.PrettyPrintExp\n\t} else if prettyPrint {\n\t\treturn fmt.Sprintf(\"%v | %v\", expression, yqlib.PrettyPrintExp)\n\t}\n\treturn expression\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "f0d4b5ac7cac808ee8565d1b",
+        "revision": "341e2524b97e02755382b165b1bdf2af16d6815b",
+        "path": "cmd/evaluate_sequence_command.go",
+        "start_byte": 1640,
+        "text": "func evaluateSequence(cmd *cobra.Command, args []string) (cmdError error) {\n\t// 0 args, read std in\n\t// 1 arg, null input, process expression\n\t// 1 arg, read file in sequence\n\t// 2+ args, [0] = expression, file the rest\n\n\tout := cmd.OutOrStdout()\n\n\tvar err error\n\n\texpression, args, err := initCommand(cmd, args)\n\tif err != nil {\n\t\treturn err\n\t}\n\n\tif writeInplace {\n\t\t// only use colours if its forced\n\t\tcolorsEnabled = forceColor\n\t\twriteInPlaceHandler := yqlib.NewWriteInPlaceHandler(args[0])\n\t\tout, err = writeInPlaceHandler.CreateTempFile()\n\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n\t\t// need to indirectly call the function so  that completedSuccessfully is\n\t\t// passed when we finish execution as opposed to now\n\t\tdefer func() {\n\t\t\tif cmdError == nil {\n\t\t\t\tcmdError = writeInPlaceHandler.FinishWriteInPlace(completedSuccessfully)\n\t\t\t}\n\t\t}()\n\t}\n\n\tformat, err := yqlib.FormatFromString(outputFormat)\n\tif err != nil {\n\t\treturn err\n\t}\n\n\tprinterWriter, err := configurePrinterWriter(format, out)\n\tif err != nil {\n\t\treturn err\n\t}\n\tencoder, err := configureEncoder()\n\tif err != nil {\n\t\treturn err\n\t}\n\n\tprinter := yqlib.NewPrinter(encoder, printerWriter)\n\n\tif printNodeInfo {\n\t\tprinter = yqlib.NewNodeInfoPrinter(printerWriter)\n\t}\n\n\tif nulSepOutput {\n\t\tprinter.SetNulSepOutput(true)\n\t}\n\n\tdecoder, err := configureDecoder(false)\n\tif err != nil {\n\t\treturn err\n\t}\n\tstreamEvaluator := yqlib.NewStreamEvaluator()\n\n\tif frontMatter != \"\" {\n\t\tyqlib.GetLogger().Debug(\"using front matter handler\")\n\t\toriginalFilename := args[0]\n\t\tfrontMatterHandler := yqlib.NewFrontMatterHandler(args[0])\n\t\terr = frontMatterHandler.Split()\n\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n\t\targs[0] = frontMatterHandler.GetYamlFrontMatterFilename()\n\t\tyqlib.SetFilenameAlias(args[0], originalFilename)\n\t\tdefer yqlib.ClearFilenameAliases()\n\n\t\tif frontMatter == \"process\" {\n\t\t\treader := frontMatterHandler.GetContentReader()\n\t\t\tprinter.SetAppendix(reader)\n\t\t\tdefer yqlib.SafelyCloseReader(reader)\n\t\t}\n\t\tdefer frontMatterHandler.CleanUp()\n\t}\n\n\tswitch len(args) {\n\tcase 0:\n\t\tif nullInput {\n\t\t\terr = streamEvaluator.EvaluateNew(processExpression(expression), printer)\n\t\t} else {\n\t\t\tcmd.Println(cmd.UsageString())\n\t\t\treturn nil\n\t\t}\n\tdefault:\n\t\terr = streamEvaluator.EvaluateFiles(processExpression(expression), args, printer, decoder)\n\t}\n\tcompletedSuccessfully = err == nil\n\n\tif err == nil && exitStatus && !printer.PrintedAnything() {\n\t\treturn errors.New(\"no matches found\")\n\t}\n\n\treturn err\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "68f86e9f6933e1eea481e926",
+        "revision": "341e2524b97e02755382b165b1bdf2af16d6815b",
+        "path": "cmd/root.go",
+        "start_byte": 128,
+        "text": "type runeValue rune",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "ef5508d3df6a14c0988325d2",
+        "revision": "341e2524b97e02755382b165b1bdf2af16d6815b",
+        "path": "cmd/root.go",
+        "start_byte": 149,
+        "text": "func newRuneVar(p *rune) *runeValue {\n\treturn (*runeValue)(p)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "9bcb1fba39dd2d600d7b7afb",
+        "revision": "341e2524b97e02755382b165b1bdf2af16d6815b",
+        "path": "cmd/root.go",
+        "start_byte": 214,
+        "text": "func (r *runeValue) String() string {\n\treturn string(*r)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "e6308d0f06b699e0480f0203",
+        "revision": "341e2524b97e02755382b165b1bdf2af16d6815b",
+        "path": "cmd/root.go",
+        "start_byte": 274,
+        "text": "func (r *runeValue) Set(rawVal string) error {\n\tval := strings.ReplaceAll(rawVal, \"\\\\n\", \"\\n\")\n\tval = strings.ReplaceAll(val, \"\\\\t\", \"\\t\")\n\tval = strings.ReplaceAll(val, \"\\\\r\", \"\\r\")\n\tval = strings.ReplaceAll(val, \"\\\\f\", \"\\f\")\n\tval = strings.ReplaceAll(val, \"\\\\v\", \"\\v\")\n\tif len(val) != 1 {\n\t\treturn fmt.Errorf(\"[%v] is not a valid character. Must be length 1 was %v\", val, len(val))\n\t}\n\t*r = runeValue(rune(val[0]))\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "390cf78e9651930c32d1b792",
+        "revision": "341e2524b97e02755382b165b1bdf2af16d6815b",
+        "path": "cmd/root.go",
+        "start_byte": 706,
+        "text": "func (r *runeValue) Type() string {\n\treturn \"char\"\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "b78dd940164c47e4816794a3",
+        "revision": "341e2524b97e02755382b165b1bdf2af16d6815b",
+        "path": "cmd/root.go",
+        "start_byte": 760,
+        "text": "func New() *cobra.Command {\n\tvar rootCmd = &cobra.Command{\n\t\tUse:   \"yq\",\n\t\tShort: \"yq is a lightweight and portable command-line data file processor.\",\n\t\tLong: `yq is a portable command-line data file processor (https://github.com/mikefarah/yq/) \nSee https://mikefarah.gitbook.io/yq/ for detailed documentation and examples.`,\n\t\tExample: `\n# yq tries to auto-detect the file format based off the extension, and defaults to YAML if it's unknown (or piping through STDIN)\n# Use the '-p/--input-format' flag to specify a format type.\ncat file.xml | yq -p xml\n\n# read the \"stuff\" node from \"myfile.yml\"\nyq '.stuff' < myfile.yml\n\n# update myfile.yml in place\nyq -i '.stuff = \"foo\"' myfile.yml\n\n# print contents of sample.json as idiomatic YAML\nyq -P -oy sample.json\n`,\n\n\t\tRunE: func(cmd *cobra.Command, args []string) error {\n\t\t\tif version {\n\t\t\t\tcmd.Print(GetVersionDisplay())\n\t\t\t\treturn nil\n\t\t\t}\n\t\t\treturn evaluateSequence(cmd, args)\n\n\t\t},\n\t\tPersistentPreRunE: func(cmd *cobra.Command, _ []string) error {\n\t\t\tcmd.SetOut(cmd.OutOrStdout())\n\n\t\t\t// when NO_COLOR environment variable presents and not an empty string the coloured output should be disabled;\n\t\t\t// refer to no-color.org\n\t\t\tforceNoColor = forceNoColor || os.Getenv(\"NO_COLOR\") != \"\"\n\n\t\t\tlevel := slog.LevelWarn\n\t\t\tif verbose {\n\t\t\t\tlevel = slog.LevelDebug\n\t\t\t}\n\n\t\t\tyqlib.GetLogger().SetLevel(level)\n\t\t\topts := &slog.HandlerOptions{Level: level, AddSource: verbose}\n\t\t\thandler := slog.NewTextHandler(os.Stderr, opts)\n\t\t\tyqlib.GetLogger().SetSlogger(slog.New(handler))\n\n\t\t\tyqlib.InitExpressionParser()\n\n\t\t\treturn nil\n\t\t},\n\t}\n\n\trootCmd.PersistentFlags().BoolVarP(&verbose, \"verbose\", \"v\", false, \"verbose mode\")\n\trootCmd.PersistentFlags().BoolVarP(&printNodeInfo, \"debug-node-info\", \"\", false, \"debug node info\")\n\n\trootCmd.PersistentFlags().BoolVarP(&outputToJSON, \"tojson\", \"j\", false, \"(deprecated) output as json. Set indent to 0 to print json in one line.\")\n\terr := rootCmd.PersistentFlags().MarkDeprecated(\"tojson\", \"please use -o=json instead\")\n\tif err != nil {\n\t\tpanic(err)\n\t}\n\n\trootCmd.PersistentFlags().StringVarP(&outputFormat, \"output-format\", \"o\", \"auto\", fmt.Sprintf(\"[auto|a|%v] output format type.\", yqlib.GetAvailableOutputFormatString()))\n\tvar outputCompletions = []string{\"auto\"}\n\tfor _, formats := range yqlib.GetAvailableOutputFormats() {\n\t\toutputCompletions = append(outputCompletions, formats.FormalName)\n\t}\n\n\tif err = rootCmd.RegisterFlagCompletionFunc(\"output-format\", cobra.FixedCompletions(outputCompletions, cobra.ShellCompDirectiveNoFileComp)); err != nil {\n\t\tpanic(err)\n\t}\n\trootCmd.PersistentFlags().StringVarP(&inputFormat, \"input-format\", \"p\", \"auto\", fmt.Sprintf(\"[auto|a|%v] parse format for input.\", yqlib.GetAvailableInputFormatString()))\n\n\tvar inputCompletions = []string{\"auto\"}\n\tfor _, formats := range yqlib.GetAvailableInputFormats() {\n\t\tinputCompletions = append(inputCompletions, formats.FormalName)\n\t}\n\n\tif err = rootCmd.RegisterFlagCompletionFunc(\"input-format\", cobra.FixedCompletions(inputCompletions, cobra.ShellCompDirectiveNoFileComp)); err != nil {\n\t\tpanic(err)\n\t}\n\n\trootCmd.PersistentFlags().StringVar(&yqlib.ConfiguredXMLPreferences.AttributePrefix, \"xml-attribute-prefix\", yqlib.ConfiguredXMLPreferences.AttributePrefix, \"prefix for xml attributes\")\n\tif err = rootCmd.RegisterFlagCompletionFunc(\"xml-attribute-prefix\", cobra.NoFileCompletions); err != nil {\n\t\tpanic(err)\n\t}\n\trootCmd.PersistentFlags().StringVar(&yqlib.ConfiguredXMLPreferences.ContentName, \"xml-content-name\", yqlib.ConfiguredXMLPreferences.ContentName, \"name for xml content (if no attribute name is present).\")\n\tif err = rootCmd.RegisterFlagCompletionFunc(\"xml-content-name\", cobra.NoFileCompletions); err != nil {\n\t\tpanic(err)\n\t}\n\trootCmd.PersistentFlags().BoolVar(&yqlib.ConfiguredXMLPreferences.StrictMode, \"xml-strict-mode\", yqlib.ConfiguredXMLPreferences.StrictMode, \"enables strict parsing of XML. See https://pkg.go.dev/encoding/xml for more details.\")\n\trootCmd.PersistentFlags().BoolVar(&yqlib.ConfiguredXMLPreferences.KeepNamespace, \"xml-keep-namespace\", yqlib.ConfiguredXMLPreferences.KeepNamespace, \"enables keeping namespace after parsing attributes\")\n\trootCmd.PersistentFlags().BoolVar(&yqlib.ConfiguredXMLPreferences.UseRawToken, \"xml-raw-token\", yqlib.ConfiguredXMLPreferences.UseRawToken, \"enables using RawToken method instead Token. Commonly disables namespace translations. See https://pkg.go.dev/encoding/xml#Decoder.RawToken for details.\")\n\trootCmd.PersistentFlags().StringVar(&yqlib.ConfiguredXMLPreferences.ProcInstPrefix, \"xml-proc-inst-prefix\", yqlib.ConfiguredXMLPreferences.ProcInstPrefix, \"prefix for xml processing instructions (e.g. <?xml version=\\\"1\\\"?>)\")\n\tif err = rootCmd.RegisterFlagCompletionFunc(\"xml-proc-inst-prefix\", cobra.NoFileCompletions); err != nil {\n\t\tpanic(err)\n\t}\n\trootCmd.PersistentFlags().StringVar(&yqlib.ConfiguredXMLPreferences.DirectiveName, \"xml-directive-name\", yqlib.ConfiguredXMLPreferences.DirectiveName, \"name for xml directives (e.g. <!DOCTYPE thing cat>)\")\n\tif err = rootCmd.RegisterFlagCompletionFunc(\"xml-directive-name\", cobra.NoFileCompletions); err != nil {\n\t\tpanic(err)\n\t}\n\trootCmd.PersistentFlags().BoolVar(&yqlib.ConfiguredXMLPreferences.SkipProcInst, \"xml-skip-proc-inst\", yqlib.ConfiguredXMLPreferences.SkipProcInst, \"skip over process instructions (e.g. <?xml version=\\\"1\\\"?>)\")\n\trootCmd.PersistentFlags().BoolVar(&yqlib.ConfiguredXMLPreferences.SkipDirectives, \"xml-skip-directives\", yqlib.ConfiguredXMLPreferences.SkipDirectives, \"skip over directives (e.g. <!DOCTYPE thing cat>)\")\n\n\trootCmd.PersistentFlags().BoolVar(&yqlib.ConfiguredCsvPreferences.AutoParse, \"csv-auto-parse\", yqlib.ConfiguredCsvPreferences.AutoParse, \"parse CSV YAML/JSON values\")\n\trootCmd.PersistentFlags().Var(newRuneVar(&yqlib.ConfiguredCsvPreferences.Separator), \"csv-separator\", \"CSV Separator character\")\n\n\trootCmd.PersistentFlags().BoolVar(&yqlib.ConfiguredTsvPreferences.AutoParse, \"tsv-auto-parse\", yqlib.ConfiguredTsvPreferences.AutoParse, \"parse TSV YAML/JSON values\")\n\n\trootCmd.PersistentFlags().StringVar(&yqlib.ConfiguredLuaPreferences.DocPrefix, \"lua-prefix\", yqlib.ConfiguredLuaPreferences.DocPrefix, \"prefix\")\n\tif err = rootCmd.RegisterFlagCompletionFunc(\"lua-prefix\", cobra.NoFileCompletions); err != nil {\n\t\tpanic(err)\n\t}\n\trootCmd.PersistentFlags().StringVar(&yqlib.ConfiguredLuaPreferences.DocSuffix, \"lua-suffix\", yqlib.ConfiguredLuaPreferences.DocSuffix, \"suffix\")\n\tif err = rootCmd.RegisterFlagCompletionFunc(\"lua-suffix\", cobra.NoFileCompletions); err != nil {\n\t\tpanic(err)\n\t}\n\trootCmd.PersistentFlags().BoolVar(&yqlib.ConfiguredLuaPreferences.UnquotedKeys, \"lua-unquoted\", yqlib.ConfiguredLuaPreferences.UnquotedKeys, \"output unquoted string keys (e.g. {foo=\\\"bar\\\"})\")\n\trootCmd.PersistentFlags().BoolVar(&yqlib.ConfiguredLuaPreferences.Globals, \"lua-globals\", yqlib.ConfiguredLuaPreferences.Globals, \"output keys as top-level global variables\")\n\n\trootCmd.PersistentFlags().StringVar(&yqlib.ConfiguredPropertiesPreferences.KeyValueSeparator, \"properties-separator\", yqlib.ConfiguredPropertiesPreferences.KeyValueSeparator, \"separator to use between keys and values\")\n\trootCmd.PersistentFlags().BoolVar(&yqlib.ConfiguredPropertiesPreferences.UseArrayBrackets, \"properties-array-brackets\", yqlib.ConfiguredPropertiesPreferences.UseArrayBrackets, \"use [x] in array paths (e.g. for SpringBoot)\")\n\n\trootCmd.PersistentFlags().StringVar(&yqlib.ConfiguredShellVariablesPreferences.KeySeparator, \"shell-key-separator\", yqlib.ConfiguredShellVariablesPreferences.KeySeparator, \"separator for shell variable key paths\")\n\tif err = rootCmd.RegisterFlagCompletionFunc(\"shell-key-separator\", cobra.NoFileCompletions); err != nil {\n\t\tpanic(err)\n\t}\n\n\trootCmd.PersistentFlags().BoolVar(&yqlib.StringInterpolationEnabled, \"string-interpolation\", yqlib.StringInterpolationEnabled, \"Toggles strings interpolation of \\\\(exp)\")\n\n\trootCmd.PersistentFlags().BoolVarP(&nullInput, \"null-input\", \"n\", false, \"Don't read input, simply evaluate the expression given. Useful for creating docs from scratch.\")\n\trootCmd.PersistentFlags().BoolVarP(&noDocSeparators, \"no-doc\", \"N\", false, \"Don't print document separators (---)\")\n\n\trootCmd.PersistentFlags().IntVarP(&indent, \"indent\", \"I\", 2, \"sets indent level for output\")\n\tif err = rootCmd.RegisterFlagCompletionFunc(\"indent\", cobra.NoFileCompletions); err != nil {\n\t\tpanic(err)\n\t}\n\trootCmd.Flags().BoolVarP(&version, \"version\", \"V\", false, \"Print version information and quit\")\n\trootCmd.PersistentFlags().BoolVarP(&writeInplace, \"inplace\", \"i\", false, \"update the file in place of first file given.\")\n\trootCmd.PersistentFlags().VarP(unwrapScalarFlag, \"unwrapScalar\", \"r\", \"unwrap scalar, print the value with no quotes, colours or comments. Defaults to true for yaml\")\n\trootCmd.PersistentFlags().Lookup(\"unwrapScalar\").NoOptDefVal = \"true\"\n\trootCmd.PersistentFlags().BoolVarP(&nulSepOutput, \"nul-output\", \"0\", false, \"Use NUL char to separate values. If unwrap scalar is also set, fail if unwrapped scalar contains NUL char.\")\n\n\trootCmd.PersistentFlags().BoolVarP(&prettyPrint, \"prettyPrint\", \"P\", false, \"pretty print, shorthand for '... style = \\\"\\\"'\")\n\trootCmd.PersistentFlags().BoolVarP(&exitStatus, \"exit-status\", \"e\", false, \"set exit status if there are no matches or null or false is returned\")\n\n\trootCmd.PersistentFlags().BoolVarP(&forceColor, \"colors\", \"C\", false, \"force print with colors\")\n\trootCmd.PersistentFlags().BoolVarP(&forceNoColor, \"no-colors\", \"M\", forceNoColor, \"force print with no colors\")\n\trootCmd.PersistentFlags().StringVarP(&frontMatter, \"front-matter\", \"f\", \"\", \"(extract|process) first input as yaml front-matter. Extract will pull out the yaml content, process will run the expression against the yaml content, leaving the remaining data intact\")\n\tif err = rootCmd.RegisterFlagCompletionFunc(\"front-matter\", cobra.FixedCompletions([]string{\"extract\", \"process\"}, cobra.ShellCompDirectiveNoFileComp)); err != nil {\n\t\tpanic(err)\n\t}\n\trootCmd.PersistentFlags().StringVarP(&forceExpression, \"expression\", \"\", \"\", \"forcibly set the expression argument. Useful when yq argument detection thinks your expression is a file.\")\n\tif err = rootCmd.RegisterFlagCompletionFunc(\"expression\", cobra.NoFileCompletions); err != nil {\n\t\tpanic(err)\n\t}\n\trootCmd.PersistentFlags().BoolVarP(&yqlib.ConfiguredYamlPreferences.LeadingContentPreProcessing, \"header-preprocess\", \"\", true, \"Slurp any header comments and separators before processing expression.\")\n\trootCmd.PersistentFlags().BoolVarP(&yqlib.ConfiguredYamlPreferences.FixMergeAnchorToSpec, \"yaml-fix-merge-anchor-to-spec\", \"\", false, \"Fix merge anchor to match YAML spec. Will default to true in late 2025\")\n\trootCmd.PersistentFlags().BoolVarP(&yqlib.ConfiguredYamlPreferences.CompactSequenceIndent, \"yaml-compact-seq-indent\", \"c\", false, \"Use compact sequence indentation where '- ' is considered part of the indentation.\")\n\n\trootCmd.PersistentFlags().StringVarP(&splitFileExp, \"split-exp\", \"s\", \"\", \"print each result (or doc) into a file named (exp). [exp] argument must return a string. You can use $index in the expression as the result counter. The necessary directories will be created.\")\n\tif err = rootCmd.RegisterFlagCompletionFunc(\"split-exp\", cobra.NoFileCompletions); err != nil {\n\t\tpanic(err)\n\t}\n\trootCmd.PersistentFlags().StringVarP(&splitFileExpFile, \"split-exp-file\", \"\", \"\", \"Use a file to specify the split-exp expression.\")\n\tif err = rootCmd.MarkPersistentFlagFilename(\"split-exp-file\"); err != nil {\n\t\tpanic(err)\n\t}\n\n\trootCmd.PersistentFlags().StringVarP(&expressionFile, \"from-file\", \"\", \"\", \"Load expression from specified file.\")\n\tif err = rootCmd.MarkPersistentFlagFilename(\"from-file\"); err != nil {\n\t\tpanic(err)\n\t}\n\n\trootCmd.PersistentFlags().BoolVarP(&yqlib.ConfiguredSecurityPreferences.DisableEnvOps, \"security-disable-env-ops\", \"\", false, \"Disable env related operations.\")\n\trootCmd.PersistentFlags().BoolVarP(&yqlib.ConfiguredSecurityPreferences.DisableFileOps, \"security-disable-file-ops\", \"\", false, \"Disable file related operations (e.g. load)\")\n\n\trootCmd.AddCommand(\n\t\tcreateEvaluateSequenceCommand(),\n\t\tcreateEvaluateAllCommand(),\n\t\tcompletionCmd,\n\t)\n\treturn rootCmd\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "eb31c59e5e3a3f50f2ebf0ef",
+        "revision": "341e2524b97e02755382b165b1bdf2af16d6815b",
+        "path": "cmd/root.go",
+        "start_byte": 789,
+        "text": "var rootCmd = &cobra.Command{\n\t\tUse:   \"yq\",\n\t\tShort: \"yq is a lightweight and portable command-line data file processor.\",\n\t\tLong: `yq is a portable command-line data file processor (https://github.com/mikefarah/yq/) \nSee https://mikefarah.gitbook.io/yq/ for detailed documentation and examples.`,\n\t\tExample: `\n# yq tries to auto-detect the file format based off the extension, and defaults to YAML if it's unknown (or piping through STDIN)\n# Use the '-p/--input-format' flag to specify a format type.\ncat file.xml | yq -p xml\n\n# read the \"stuff\" node from \"myfile.yml\"\nyq '.stuff' < myfile.yml\n\n# update myfile.yml in place\nyq -i '.stuff = \"foo\"' myfile.yml\n\n# print contents of sample.json as idiomatic YAML\nyq -P -oy sample.json\n`,\n\n\t\tRunE: func(cmd *cobra.Command, args []string) error {\n\t\t\tif version {\n\t\t\t\tcmd.Print(GetVersionDisplay())\n\t\t\t\treturn nil\n\t\t\t}\n\t\t\treturn evaluateSequence(cmd, args)\n\n\t\t},\n\t\tPersistentPreRunE: func(cmd *cobra.Command, _ []string) error {\n\t\t\tcmd.SetOut(cmd.OutOrStdout())\n\n\t\t\t// when NO_COLOR environment variable presents and not an empty string the coloured output should be disabled;\n\t\t\t// refer to no-color.org\n\t\t\tforceNoColor = forceNoColor || os.Getenv(\"NO_COLOR\") != \"\"\n\n\t\t\tlevel := slog.LevelWarn\n\t\t\tif verbose {\n\t\t\t\tlevel = slog.LevelDebug\n\t\t\t}\n\n\t\t\tyqlib.GetLogger().SetLevel(level)\n\t\t\topts := &slog.HandlerOptions{Level: level, AddSource: verbose}\n\t\t\thandler := slog.NewTextHandler(os.Stderr, opts)\n\t\t\tyqlib.GetLogger().SetSlogger(slog.New(handler))\n\n\t\t\tyqlib.InitExpressionParser()\n\n\t\t\treturn nil\n\t\t},\n\t}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "b44b0b30d0906d0b9d8f6c75",
+        "revision": "341e2524b97e02755382b165b1bdf2af16d6815b",
+        "path": "cmd/root.go",
+        "start_byte": 2971,
+        "text": "var outputCompletions = []string{\"auto\"}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "6d861ca814a907f22ef152d1",
+        "revision": "341e2524b97e02755382b165b1bdf2af16d6815b",
+        "path": "cmd/root.go",
+        "start_byte": 3490,
+        "text": "var inputCompletions = []string{\"auto\"}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "5c6fe5628d5f0ab03b3d7938",
+        "revision": "341e2524b97e02755382b165b1bdf2af16d6815b",
+        "path": "cmd/unwrap_flag.go",
+        "start_byte": 63,
+        "text": "type boolFlag interface {\n\tpflag.Value\n\tIsExplicitlySet() bool\n\tIsSet() bool\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "b9cd98e47dc6ac2ab5ee1b3e",
+        "revision": "341e2524b97e02755382b165b1bdf2af16d6815b",
+        "path": "cmd/unwrap_flag.go",
+        "start_byte": 447,
+        "text": "func (f *unwrapScalarFlagStrc) String() string {\n\treturn strconv.FormatBool(f.value)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "7b942d9eb01106cabed8071f",
+        "revision": "341e2524b97e02755382b165b1bdf2af16d6815b",
+        "path": "cmd/unwrap_flag.go",
+        "start_byte": 535,
+        "text": "func (f *unwrapScalarFlagStrc) Set(value string) error {\n\n\tv, err := strconv.ParseBool(value)\n\tf.value = v\n\tf.explicitlySet = true\n\treturn err\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "fe982c17ae572c41d7ff88cf",
+        "revision": "341e2524b97e02755382b165b1bdf2af16d6815b",
+        "path": "cmd/unwrap_flag.go",
+        "start_byte": 681,
+        "text": "func (*unwrapScalarFlagStrc) Type() string {\n\treturn \"bool\"\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "f922388f30fec06c539b7963",
+        "revision": "341e2524b97e02755382b165b1bdf2af16d6815b",
+        "path": "cmd/utils.go",
+        "start_byte": 251,
+        "text": "func initCommand(cmd *cobra.Command, args []string) (string, []string, error) {\n\tcmd.SilenceUsage = true\n\n\tsetupColors()\n\n\texpression, args, err := processArgs(args)\n\tif err != nil {\n\t\treturn \"\", nil, err\n\t}\n\n\tif err := loadSplitFileExpression(); err != nil {\n\t\treturn \"\", nil, err\n\t}\n\n\thandleBackwardsCompatibility()\n\n\tif err := validateCommandFlags(args); err != nil {\n\t\treturn \"\", nil, err\n\t}\n\n\tif err := configureFormats(args); err != nil {\n\t\treturn \"\", nil, err\n\t}\n\n\tconfigureUnwrapScalar()\n\n\treturn expression, args, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "95673ee2ef159273eecec1ca",
+        "revision": "341e2524b97e02755382b165b1bdf2af16d6815b",
+        "path": "cmd/utils.go",
+        "start_byte": 945,
+        "text": "func loadSplitFileExpression() error {\n\tif splitFileExpFile != \"\" {\n\t\tsplitExpressionBytes, err := os.ReadFile(splitFileExpFile)\n\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n\t\tsplitFileExp = string(splitExpressionBytes)\n\t}\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "bbc1f20e38d5bf3bbc80e497",
+        "revision": "341e2524b97e02755382b165b1bdf2af16d6815b",
+        "path": "cmd/utils.go",
+        "start_byte": 1289,
+        "text": "func validateCommandFlags(args []string) error {\n\tif writeInplace && (len(args) == 0 || args[0] == \"-\") {\n\t\treturn fmt.Errorf(\"write in place flag only applicable when giving an expression and at least one file\")\n\t}\n\n\tif frontMatter != \"\" && len(args) == 0 {\n\t\treturn fmt.Errorf(\"front matter flag only applicable when giving an expression and at least one file\")\n\t}\n\n\tif writeInplace && splitFileExp != \"\" {\n\t\treturn fmt.Errorf(\"write in place cannot be used with split file\")\n\t}\n\n\tif nullInput && len(args) > 0 {\n\t\treturn fmt.Errorf(\"cannot pass files in when using null-input flag\")\n\t}\n\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "abc369e7236b2f305df77f85",
+        "revision": "341e2524b97e02755382b165b1bdf2af16d6815b",
+        "path": "cmd/utils.go",
+        "start_byte": 1894,
+        "text": "func configureFormats(args []string) error {\n\tinputFilename := \"\"\n\tif len(args) > 0 {\n\t\tinputFilename = args[0]\n\t}\n\n\tif err := configureInputFormat(inputFilename); err != nil {\n\t\treturn err\n\t}\n\n\tif err := configureOutputFormat(); err != nil {\n\t\treturn err\n\t}\n\n\tyqlib.GetLogger().Debugf(\"Using input format %v\", inputFormat)\n\tyqlib.GetLogger().Debugf(\"Using output format %v\", outputFormat)\n\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "0382df96c1a1e449f5980663",
+        "revision": "341e2524b97e02755382b165b1bdf2af16d6815b",
+        "path": "cmd/utils.go",
+        "start_byte": 2300,
+        "text": "func configureInputFormat(inputFilename string) error {\n\tif inputFormat == \"\" || inputFormat == \"auto\" || inputFormat == \"a\" {\n\t\tinputFormat = yqlib.FormatStringFromFilename(inputFilename)\n\n\t\t_, err := yqlib.FormatFromString(inputFormat)\n\t\tif err != nil {\n\t\t\t// unknown file type, default to yaml\n\t\t\tyqlib.GetLogger().Debugf(\"Unknown file format extension '%v', defaulting to yaml\", inputFormat)\n\t\t\tinputFormat = \"yaml\"\n\t\t\tif isAutomaticOutputFormat() {\n\t\t\t\toutputFormat = \"yaml\"\n\t\t\t}\n\t\t} else if isAutomaticOutputFormat() {\n\t\t\toutputFormat = inputFormat\n\t\t}\n\t} else if isAutomaticOutputFormat() {\n\t\t// backwards compatibility -\n\t\t// before this was introduced, `yq -pcsv things.csv`\n\t\t// would produce *yaml* output.\n\t\t//\n\t\toutputFormat = yqlib.FormatStringFromFilename(inputFilename)\n\t\tif inputFilename != \"-\" {\n\t\t\tyqlib.GetLogger().Warningf(\"yq default output is now 'auto' (based on the filename extension). Normally yq would output '%v', but for backwards compatibility 'yaml' has been set. Please use -oy to specify yaml, or drop the -p flag.\", outputFormat)\n\t\t}\n\t\toutputFormat = \"yaml\"\n\t}\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "ec4afe22e7c615f8532206b1",
+        "revision": "341e2524b97e02755382b165b1bdf2af16d6815b",
+        "path": "cmd/utils.go",
+        "start_byte": 6424,
+        "text": "func maybeFile(str string) bool {\n\tyqlib.GetLogger().Debugf(\"checking '%v' is a file\", str)\n\tstat, err := os.Stat(str) // #nosec\n\tresult := err == nil && !stat.IsDir()\n\tif yqlib.GetLogger().IsEnabledFor(slog.LevelDebug) {\n\t\tif err != nil {\n\t\t\tyqlib.GetLogger().Debugf(\"error: %v\", err)\n\t\t} else {\n\t\t\tyqlib.GetLogger().Debugf(\"error: %v, dir: %v\", err, stat.IsDir())\n\t\t}\n\t\tyqlib.GetLogger().Debugf(\"result: %v\", result)\n\t}\n\treturn result\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "06d71f798e806540833d4a34",
+        "revision": "341e2524b97e02755382b165b1bdf2af16d6815b",
+        "path": "cmd/utils.go",
+        "start_byte": 6864,
+        "text": "func processStdInArgs(args []string) []string {\n\tstat, err := os.Stdin.Stat()\n\tif err != nil {\n\t\tyqlib.GetLogger().Debugf(\"error getting stdin: %v\", err)\n\t}\n\tpipingStdin := stat != nil && (stat.Mode()&os.ModeCharDevice) == 0\n\n\t// if we've been given a file, don't automatically\n\t// read from stdin.\n\t// this happens if there is more th",
+        "rank": 2,
+        "truncated": true
+      }
+    ]
+  },
+  "retrieval": {
+    "unresolved": [
+      {
+        "side": "ours",
+        "identifier": "lhsNode",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "firstNumber",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "int",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "secondNumber",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "runes",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "rune",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Value",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "len",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "relativeFirstNumber",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "relativeSecondNumber",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "slicedString",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "string",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "replacement",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "pkg/yqlib/operator_omit.go",
+            "start": 1815
+          },
+          {
+            "path": "pkg/yqlib/operator_pick.go",
+            "start": 1844
+          }
+        ]
+      },
+      {
+        "side": "ours",
+        "identifier": "ScalarNode",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Tag",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "index",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "pkg/yqlib/operator_split_document.go",
+            "start": 158
+          },
+          {
+            "path": "pkg/yqlib/operator_traverse_path.go",
+            "start": 6549
+          }
+        ]
+      },
+      {
+        "side": "theirs",
+        "identifier": "int",
+        "reason": "no-unique-declaration-established"
+      }
+    ],
+    "method": "syntax-ranges-and-identifier-candidates/3",
+    "budget_bytes": 32768,
+    "libraries": {
+      "C": "cbbd4827ee02cd5c018ab41f10d8404ff8741159054b352d9a6d763c506ba3c7",
+      "Go": "1612f8fd958ba1ec981bf4b91e2ff399f1e54d26a9da68e5b60b0d7cd00616fc"
+    }
+  }
+}

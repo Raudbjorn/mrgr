@@ -1,5 +1,13 @@
 *Part of the [canonical planning document](../canonical-final-planning-document.md).*
 
+## Current scope — 2026-09-06
+
+**Ready for fresh reconstruction proof.** Phase 4 is complete and its [outputs, residue and pinned inputs are preserved](../../../../evidence/m2a/2026-09-06/README.md). The existing public synthetic tests and private imported-join-tree audit pass locally. The historical “done” claims below apply to that audit, not fresh derivation of the join tree from all five original refs.
+
+Next, reconstruct from those five pinned refs with a reproducible recipe; derive candidates before consulting final refs; verify the four monoliths and exact byte accounting; exercise post-edit absence and zero candidates; preserve the public topology test. Keep the historical join as a comparison artifact. Unexpected candidates or tree differences must be explained rather than filtered using final outcomes. Private inputs remain local; a skipped private test cannot close this gate elsewhere.
+
+## Historical audit and original specification
+
 ### 3.7 Resurrection proof
 - **State (2026-09-02): both gates done.** See `phase-5-resurrection-proof/work-package.md` for the full acceptance-gate-by-gate evidence, including the exact private-gate result (4 candidates, 949,331 bytes, verified against the real reconstructed inputs on this machine only). Text below describes the pre-WP6 state, kept for provenance.
 - **State (verified against repo, 2026-08-30):** not started — **confirmed accurate**; no `resurrection.test.ts` or `resurrection-topology` fixture exists anywhere in the repo (confirmed by `find`). The project's stated reason to exist. Scheduled before the oracle, before M1b/M2b consume M2a residue.

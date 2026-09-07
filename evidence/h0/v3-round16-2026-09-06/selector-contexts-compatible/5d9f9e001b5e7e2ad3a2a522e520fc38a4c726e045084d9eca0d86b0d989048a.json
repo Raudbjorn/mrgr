@@ -1,0 +1,1927 @@
+{
+  "id": "5d9f9e001b5e7e2ad3a2a522e520fc38a4c726e045084d9eca0d86b0d989048a",
+  "source_protocol_sha256": "86ffe38086e217acf6e1a4aa4162e226862463d1bde3160478f9a6f4d2b968ce",
+  "repair_module_sha256": "475070c72aaadf08fe1cbd1ec90cde5210664924e6b0589d61d2226e86f3da7f",
+  "contexts": {
+    "local-context": [
+      {
+        "id": "556623f38d006123a555a34f",
+        "revision": "a210601c0342f799ba2a0faf075649ab63f5a277",
+        "path": "flag_bool.go",
+        "start_byte": 0,
+        "text": "package cli\n\nimport (\n\t\"errors\"\n\t\"flag\"\n\t\"fmt\"\n\t\"strconv\"\n)\n\n// boolValue needs to implement the boolFlag internal interface in flag\n// to be able to capture bool fields and values\n//\n//\ttype boolFlag interface {\n//\t\t  Value\n//\t\t  IsBoolFlag() bool\n//\t}\ntype boolValue struct {\n\tdestination *bool\n\tcount       *int\n}\n\nfunc newBoolValue(val bool, p *bool, count *int) *boolValue {\n\t*p = val\n\treturn &boolValue{\n\t\tdestination: p,\n\t\tcount:       count,\n\t}\n}\n\nfunc (b *boolValue) Set(s string) error {\n\tv, err := strconv.ParseBool(s)\n\tif err != nil {\n\t\terr = errors.New(\"parse error\")\n\t\treturn err\n\t}\n\t*b.destination = v\n\tif b.count != nil {\n\t\t*b.count = *b.count + 1\n\t}\n\treturn err\n}\n\nfunc (b *boolValue) Get() interface{} { return *b.destination }\n\nfunc (b *boolValue) String() string {\n\tif b.destination != nil {\n\t\treturn strconv.FormatBool(*b.destination)\n\t}\n\treturn strconv.FormatBool(false)\n}\n\nfunc (b *boolValue) IsBoolFlag() bool { return true }\n\nfunc (b *boolValue) Count() int {\n\tif b.count != nil {\n\t\treturn *b.count\n\t}\n\treturn 0\n}\n\n// GetValue returns the flags value as string representation and an empty\n// string if the flag takes no value at all.\nfunc (f *BoolFlag) GetValue() string {\n\treturn \"\"\n}\n\n// GetDefaultText returns the default text for this flag\nfunc (f *BoolFlag) GetDefaultText() string {\n\tif f.DefaultText != \"\" {\n\t\treturn f.DefaultText\n\t}\n\treturn fmt.Sprintf(\"%v\", f.Value)\n}\n\n// RunAction executes flag action if set\nfunc (f *BoolFlag) RunAction(c *Context) error {\n\tif f.Action != nil {\n\t\treturn f.Action(c, c.Bool(f.Name))\n\t}\n\n\treturn nil\n}\n\n// Apply populates the flag given the flag set and environment\nfunc (f *BoolFlag) Apply(set *flag.FlagSet) error {\n\tif val, source, found := flagFromEnvOrFile(f.EnvVars, f.FilePath); found {\n\t\tif val != \"\" {\n\t\t\tvalBool, err := strconv.ParseBool(val)\n\n\t\t\tif err != nil {\n\t\t\t\treturn fmt.Errorf(\"could not parse %q as bool value from %s for flag %s: %s\", val, source, f.Name, err)\n\t\t\t}\n\n\t\t\tf.Value = valBool\n\t\t} else {\n\t\t\t// empty value implies that the env is defined but set to empty string, we have to assume that this is\n\t\t\t// what the user wants. If user doesnt want this then the env needs to be deleted or the flag removed from\n\t\t\t// file\n\t\t\tf.Value = false\n\t\t}\n\t\tf.HasBeenSet = true\n\t}\n\n\tcount := f.Count\n\tdest := f.Destination\n\n\tif count == nil {\n\t\tcount = new(int)\n\t}\n\tif dest == nil {\n\t\tdest = new(bool)\n\t}\n\n\tfor _, name := range f.Names() {\n\t\tvalue := newBoolValue(f.Value, dest, count)\n\t\tset.Var(value, name, f.Usage)\n\t}\n\n\treturn nil\n}\n\n// Get returns the flag’s value in the given Context.\nfunc (f *BoolFlag) Get(ctx *Context) bool {\n\treturn ctx.Bool(f.Name)\n}\n\n// Bool looks up the value of a local BoolFlag, returns\n// false if not found\nfunc (cCtx *Context) Bool(name string) bool {\n\tif fs := cCtx.lookupFlagSet(name); fs != nil {\n\t\treturn lookupBool(name, fs)\n\t}\n\treturn false\n}\n\nfunc lookupBool(name string, set *flag.FlagSet) bool {\n\tf := set.Lookup(name)\n\tif f != nil {\n\t\tparsed, err := strconv.ParseBool(f.Value.String())\n\t\tif err != nil {\n\t\t\treturn false\n\t\t}\n\t\treturn parsed\n\t}\n\treturn false\n}\n",
+        "rank": 0,
+        "truncated": false
+      },
+      {
+        "id": "a6f912ecc01798e80298b020",
+        "revision": "f451dead129aca91ad493d042ba504773c5ad8fa",
+        "path": "flag_bool.go",
+        "start_byte": 0,
+        "text": "package cli\n\nimport (\n\t\"flag\"\n\t\"fmt\"\n\t\"strconv\"\n)\n\n// TakesValue returns true of the flag takes a value, otherwise false\nfunc (f *BoolFlag) TakesValue() bool {\n\treturn false\n}\n\n// GetUsage returns the usage string for the flag\nfunc (f *BoolFlag) GetUsage() string {\n\treturn f.Usage\n}\n\n// GetCategory returns the category for the flag\nfunc (f *BoolFlag) GetCategory() string {\n\treturn f.Category\n}\n\n// GetValue returns the flags value as string representation and an empty\n// string if the flag takes no value at all.\nfunc (f *BoolFlag) GetValue() string {\n\treturn \"\"\n}\n\n// GetDefaultText returns the default text for this flag\nfunc (f *BoolFlag) GetDefaultText() string {\n\tif f.DefaultText != \"\" {\n\t\treturn f.DefaultText\n\t}\n\treturn fmt.Sprintf(\"%v\", f.Value)\n}\n\n// GetEnvVars returns the env vars for this flag\nfunc (f *BoolFlag) GetEnvVars() []string {\n\treturn f.EnvVars\n}\n\n// Apply populates the flag given the flag set and environment\nfunc (f *BoolFlag) Apply(set *flag.FlagSet) error {\n\tif val, source, found := flagFromEnvOrFile(f.EnvVars, f.FilePath); found {\n\t\tif val != \"\" {\n\t\t\tvalBool, err := strconv.ParseBool(val)\n\n\t\t\tif err != nil {\n\t\t\t\treturn fmt.Errorf(\"could not parse %q as bool value from %s for flag %s: %s\", val, source, f.Name, err)\n\t\t\t}\n\n\t\t\tf.Value = valBool\n\t\t} else {\n\t\t\t// empty value implies that the env is defined but set to empty string, we have to assume that this is\n\t\t\t// what the user wants. If user doesnt want this then the env needs to be deleted or the flag removed from\n\t\t\t// file\n\t\t\tf.Value = false\n\t\t}\n\t\tf.HasBeenSet = true\n\t}\n\n\tfor _, name := range f.Names() {\n\t\tif f.Destination != nil {\n\t\t\tset.BoolVar(f.Destination, name, f.Value, f.Usage)\n\t\t\tcontinue\n\t\t}\n\t\tset.Bool(name, f.Value, f.Usage)\n\t}\n\n\treturn nil\n}\n\n// Get returns the flag’s value in the given Context.\nfunc (f *BoolFlag) Get(ctx *Context) bool {\n\treturn ctx.Bool(f.Name)\n}\n\n// Bool looks up the value of a local BoolFlag, returns\n// false if not found\nfunc (cCtx *Context) Bool(name string) bool {\n\tif fs := cCtx.lookupFlagSet(name); fs != nil {\n\t\treturn lookupBool(name, fs)\n\t}\n\treturn false\n}\n\nfunc lookupBool(name string, set *flag.FlagSet) bool {\n\tf := set.Lookup(name)\n\tif f != nil {\n\t\tparsed, err := strconv.ParseBool(f.Value.String())\n\t\tif err != nil {\n\t\t\treturn false\n\t\t}\n\t\treturn parsed\n\t}\n\treturn false\n}\n",
+        "rank": 0,
+        "truncated": false
+      }
+    ],
+    "selected": [
+      {
+        "id": "ab1058eba02487069ce23ade",
+        "revision": "a210601c0342f799ba2a0faf075649ab63f5a277",
+        "path": "flag_bool.go",
+        "start_byte": 1635,
+        "text": "func (f *BoolFlag) Apply(set *flag.FlagSet) error {\n\tif val, source, found := flagFromEnvOrFile(f.EnvVars, f.FilePath); found {\n\t\tif val != \"\" {\n\t\t\tvalBool, err := strconv.ParseBool(val)\n\n\t\t\tif err != nil {\n\t\t\t\treturn fmt.Errorf(\"could not parse %q as bool value from %s for flag %s: %s\", val, source, f.Name, err)\n\t\t\t}\n\n\t\t\tf.Value = valBool\n\t\t} else {\n\t\t\t// empty value implies that the env is defined but set to empty string, we have to assume that this is\n\t\t\t// what the user wants. If user doesnt want this then the env needs to be deleted or the flag removed from\n\t\t\t// file\n\t\t\tf.Value = false\n\t\t}\n\t\tf.HasBeenSet = true\n\t}\n\n\tcount := f.Count\n\tdest := f.Destination\n\n\tif count == nil {\n\t\tcount = new(int)\n\t}\n\tif dest == nil {\n\t\tdest = new(bool)\n\t}\n\n\tfor _, name := range f.Names() {\n\t\tvalue := newBoolValue(f.Value, dest, count)\n\t\tset.Var(value, name, f.Usage)\n\t}\n\n\treturn nil\n}",
+        "rank": 0,
+        "truncated": false
+      },
+      {
+        "id": "4c359cffd602c70dcbc58051",
+        "revision": "f451dead129aca91ad493d042ba504773c5ad8fa",
+        "path": "flag_bool.go",
+        "start_byte": 938,
+        "text": "func (f *BoolFlag) Apply(set *flag.FlagSet) error {\n\tif val, source, found := flagFromEnvOrFile(f.EnvVars, f.FilePath); found {\n\t\tif val != \"\" {\n\t\t\tvalBool, err := strconv.ParseBool(val)\n\n\t\t\tif err != nil {\n\t\t\t\treturn fmt.Errorf(\"could not parse %q as bool value from %s for flag %s: %s\", val, source, f.Name, err)\n\t\t\t}\n\n\t\t\tf.Value = valBool\n\t\t} else {\n\t\t\t// empty value implies that the env is defined but set to empty string, we have to assume that this is\n\t\t\t// what the user wants. If user doesnt want this then the env needs to be deleted or the flag removed from\n\t\t\t// file\n\t\t\tf.Value = false\n\t\t}\n\t\tf.HasBeenSet = true\n\t}\n\n\tfor _, name := range f.Names() {\n\t\tif f.Destination != nil {\n\t\t\tset.BoolVar(f.Destination, name, f.Value, f.Usage)\n\t\t\tcontinue\n\t\t}\n\t\tset.Bool(name, f.Value, f.Usage)\n\t}\n\n\treturn nil\n}",
+        "rank": 0,
+        "truncated": false
+      },
+      {
+        "id": "918aef4f8303e30f816b5355",
+        "revision": "a210601c0342f799ba2a0faf075649ab63f5a277",
+        "path": "altsrc/flag_generated.go",
+        "start_byte": 202,
+        "text": "type BoolFlag struct {\n\t*cli.BoolFlag\n\tset *flag.FlagSet\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "8209ae9d7097c3e8f2319a2b",
+        "revision": "a210601c0342f799ba2a0faf075649ab63f5a277",
+        "path": "altsrc/flag_generated.go",
+        "start_byte": 483,
+        "text": "func (f *BoolFlag) Apply(set *flag.FlagSet) error {\n\tf.set = set\n\treturn f.BoolFlag.Apply(set)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "3126e3e563ab25af80b897c5",
+        "revision": "a210601c0342f799ba2a0faf075649ab63f5a277",
+        "path": "altsrc/flag_generated.go",
+        "start_byte": 1008,
+        "text": "func (f *DurationFlag) Apply(set *flag.FlagSet) error {\n\tf.set = set\n\treturn f.DurationFlag.Apply(set)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "39c5eede86b6ad0b07748e76",
+        "revision": "a210601c0342f799ba2a0faf075649ab63f5a277",
+        "path": "altsrc/flag_generated.go",
+        "start_byte": 1529,
+        "text": "func (f *Float64Flag) Apply(set *flag.FlagSet) error {\n\tf.set = set\n\treturn f.Float64Flag.Apply(set)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "54d2c774697556490529eb57",
+        "revision": "a210601c0342f799ba2a0faf075649ab63f5a277",
+        "path": "altsrc/flag_generated.go",
+        "start_byte": 2048,
+        "text": "func (f *GenericFlag) Apply(set *flag.FlagSet) error {\n\tf.set = set\n\treturn f.GenericFlag.Apply(set)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "c632bfd2715fd08845c4cee6",
+        "revision": "a210601c0342f799ba2a0faf075649ab63f5a277",
+        "path": "altsrc/flag_generated.go",
+        "start_byte": 2543,
+        "text": "func (f *Int64Flag) Apply(set *flag.FlagSet) error {\n\tf.set = set\n\treturn f.Int64Flag.Apply(set)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "80b163aa913357326451a28f",
+        "revision": "a210601c0342f799ba2a0faf075649ab63f5a277",
+        "path": "altsrc/flag_generated.go",
+        "start_byte": 3010,
+        "text": "func (f *IntFlag) Apply(set *flag.FlagSet) error {\n\tf.set = set\n\treturn f.IntFlag.Apply(set)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "d98b6bb66fea8ae4f9c7b3b7",
+        "revision": "a210601c0342f799ba2a0faf075649ab63f5a277",
+        "path": "altsrc/flag_generated.go",
+        "start_byte": 3533,
+        "text": "func (f *IntSliceFlag) Apply(set *flag.FlagSet) error {\n\tf.set = set\n\treturn f.IntSliceFlag.Apply(set)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "28dd7ed508a34847a9d9c5a6",
+        "revision": "a210601c0342f799ba2a0faf075649ab63f5a277",
+        "path": "altsrc/flag_generated.go",
+        "start_byte": 4090,
+        "text": "func (f *Int64SliceFlag) Apply(set *flag.FlagSet) error {\n\tf.set = set\n\treturn f.Int64SliceFlag.Apply(set)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "762eb7fbf14fb3b9592aff53",
+        "revision": "a210601c0342f799ba2a0faf075649ab63f5a277",
+        "path": "altsrc/flag_generated.go",
+        "start_byte": 4675,
+        "text": "func (f *Float64SliceFlag) Apply(set *flag.FlagSet) error {\n\tf.set = set\n\treturn f.Float64SliceFlag.Apply(set)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "d285155442a0d8edf171a84e",
+        "revision": "a210601c0342f799ba2a0faf075649ab63f5a277",
+        "path": "altsrc/flag_generated.go",
+        "start_byte": 5192,
+        "text": "func (f *StringFlag) Apply(set *flag.FlagSet) error {\n\tf.set = set\n\treturn f.StringFlag.Apply(set)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "5e7758b457129240915696f1",
+        "revision": "a210601c0342f799ba2a0faf075649ab63f5a277",
+        "path": "altsrc/flag_generated.go",
+        "start_byte": 5673,
+        "text": "func (f *PathFlag) Apply(set *flag.FlagSet) error {\n\tf.set = set\n\treturn f.PathFlag.Apply(set)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "44356c4ca8d7e02eb7e65e56",
+        "revision": "a210601c0342f799ba2a0faf075649ab63f5a277",
+        "path": "altsrc/flag_generated.go",
+        "start_byte": 6234,
+        "text": "func (f *StringSliceFlag) Apply(set *flag.FlagSet) error {\n\tf.set = set\n\treturn f.StringSliceFlag.Apply(set)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "d052e577fa4eda6e41476c28",
+        "revision": "a210601c0342f799ba2a0faf075649ab63f5a277",
+        "path": "altsrc/flag_generated.go",
+        "start_byte": 6749,
+        "text": "func (f *Uint64Flag) Apply(set *flag.FlagSet) error {\n\tf.set = set\n\treturn f.Uint64Flag.Apply(set)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "197d3ec78002439f2771f933",
+        "revision": "a210601c0342f799ba2a0faf075649ab63f5a277",
+        "path": "altsrc/flag_generated.go",
+        "start_byte": 7230,
+        "text": "func (f *UintFlag) Apply(set *flag.FlagSet) error {\n\tf.set = set\n\treturn f.UintFlag.Apply(set)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "550492785e59eac10272f72e",
+        "revision": "a210601c0342f799ba2a0faf075649ab63f5a277",
+        "path": "category.go",
+        "start_byte": 1609,
+        "text": "func (c *commandCategory) Name() string {\n\treturn c.name\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "ae7165cceeb6006bbbc26c7e",
+        "revision": "a210601c0342f799ba2a0faf075649ab63f5a277",
+        "path": "category.go",
+        "start_byte": 3521,
+        "text": "func (fc *defaultVisibleFlagCategory) Name() string {\n\treturn fc.name\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "e5fab1880d423de8ad779b18",
+        "revision": "a210601c0342f799ba2a0faf075649ab63f5a277",
+        "path": "command.go",
+        "start_byte": 5193,
+        "text": "func (c *Command) Names() []string {\n\treturn append([]string{c.Name}, c.Aliases...)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "35a9534c0aaf7d6632b7b29d",
+        "revision": "a210601c0342f799ba2a0faf075649ab63f5a277",
+        "path": "context.go",
+        "start_byte": 2444,
+        "text": "func (cCtx *Context) Count(name string) int {\n\tif fs := cCtx.lookupFlagSet(name); fs != nil {\n\t\tif cf, ok := fs.Lookup(name).Value.(Countable); ok {\n\t\t\treturn cf.Count()\n\t\t}\n\t}\n\treturn 0\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "127c10c8704b5994a3245f0d",
+        "revision": "a210601c0342f799ba2a0faf075649ab63f5a277",
+        "path": "context.go",
+        "start_byte": 2697,
+        "text": "func (cCtx *Context) Value(name string) interface{} {\n\tif fs := cCtx.lookupFlagSet(name); fs != nil {\n\t\treturn fs.Lookup(name).Value.(flag.Getter).Get()\n\t}\n\treturn nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "1fd1294126ac51d6ed2d3788",
+        "revision": "a210601c0342f799ba2a0faf075649ab63f5a277",
+        "path": "docs.go",
+        "start_byte": 1277,
+        "text": "const name = \"cli\"",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "66c30559f4926b185e3a9526",
+        "revision": "a210601c0342f799ba2a0faf075649ab63f5a277",
+        "path": "fish.go",
+        "start_byte": 559,
+        "text": "const name = \"cli\"",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "a9b54f3b17fdb5f3624b27b4",
+        "revision": "a210601c0342f799ba2a0faf075649ab63f5a277",
+        "path": "flag_bool.go",
+        "start_byte": 318,
+        "text": "func newBoolValue(val bool, p *bool, count *int) *boolValue {\n\t*p = val\n\treturn &boolValue{\n\t\tdestination: p,\n\t\tcount:       count,\n\t}\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "373c42fc004b455c38ad12db",
+        "revision": "a210601c0342f799ba2a0faf075649ab63f5a277",
+        "path": "flag_bool.go",
+        "start_byte": 951,
+        "text": "func (b *boolValue) Count() int {\n\tif b.count != nil {\n\t\treturn *b.count\n\t}\n\treturn 0\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "35f4f6e10a813c3529ff4075",
+        "revision": "a210601c0342f799ba2a0faf075649ab63f5a277",
+        "path": "flag_duration.go",
+        "start_byte": 483,
+        "text": "func (f *DurationFlag) Apply(set *flag.FlagSet) error {\n\tif val, source, found := flagFromEnvOrFile(f.EnvVars, f.FilePath); found {\n\t\tif val != \"\" {\n\t\t\tvalDuration, err := time.ParseDuration(val)\n\n\t\t\tif err != nil {\n\t\t\t\treturn fmt.Errorf(\"could not parse %q as duration value from %s for flag %s: %s\", val, source, f.Name, err)\n\t\t\t}\n\n\t\t\tf.Value = valDuration\n\t\t\tf.HasBeenSet = true\n\t\t}\n\t}\n\n\tfor _, name := range f.Names() {\n\t\tif f.Destination != nil {\n\t\t\tset.DurationVar(f.Destination, name, f.Value, f.Usage)\n\t\t\tcontinue\n\t\t}\n\t\tset.Duration(name, f.Value, f.Usage)\n\t}\n\treturn nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "7ab125f90411651018c7be16",
+        "revision": "a210601c0342f799ba2a0faf075649ab63f5a277",
+        "path": "flag_float64_slice.go",
+        "start_byte": 1698,
+        "text": "func (f *Float64Slice) Value() []float64 {\n\treturn f.slice\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "d44a6f71c7c4aaca1475a4a0",
+        "revision": "a210601c0342f799ba2a0faf075649ab63f5a277",
+        "path": "flag_float64_slice.go",
+        "start_byte": 2824,
+        "text": "func (f *Float64SliceFlag) Apply(set *flag.FlagSet) error {\n\t// apply any default\n\tif f.Destination != nil && f.Value != nil {\n\t\tf.Destination.slice = make([]float64, len(f.Value.slice))\n\t\tcopy(f.Destination.slice, f.Value.slice)\n\t}\n\n\t// resolve setValue (what we will assign to the set)\n\tvar setValue *Float64Slice\n\tswitch {\n\tcase f.Destination != nil:\n\t\tsetValue = f.Destination\n\tcase f.Value != nil:\n\t\tsetValue = f.Value.clone()\n\tdefault:\n\t\tsetValue = new(Float64Slice)\n\t}\n\n\tif val, source, found := flagFromEnvOrFile(f.EnvVars, f.FilePath); found {\n\t\tif val != \"\" {\n\t\t\tfor _, s := range flagSplitMultiValues(val) {\n\t\t\t\tif err := setValue.Set(strings.TrimSpace(s)); err != nil {\n\t\t\t\t\treturn fmt.Errorf(\"could not parse %q as float64 slice value from %s for flag %s: %s\", val, source, f.Name, err)\n\t\t\t\t}\n\t\t\t}\n\n\t\t\t// Set this to false so that we reset the slice if we then set values from\n\t\t\t// flags that have already been set by the environment.\n\t\t\tsetValue.hasBeenSet = false\n\t\t\tf.HasBeenSet = true\n\t\t}\n\t}\n\n\tfor _, name := range f.Names() {\n\t\tset.Var(setValue, name, f.Usage)\n\t}\n\n\treturn nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "638d023926337329efbbda64",
+        "revision": "a210601c0342f799ba2a0faf075649ab63f5a277",
+        "path": "flag_float64.go",
+        "start_byte": 494,
+        "text": "func (f *Float64Flag) Apply(set *flag.FlagSet) error {\n\tif val, source, found := flagFromEnvOrFile(f.EnvVars, f.FilePath); found {\n\t\tif val != \"\" {\n\t\t\tvalFloat, err := strconv.ParseFloat(val, 64)\n\t\t\tif err != nil {\n\t\t\t\treturn fmt.Errorf(\"could not parse %q as float64 value from %s for flag %s: %s\", val, source, f.Name, err)\n\t\t\t}\n\n\t\t\tf.Value = valFloat\n\t\t\tf.HasBeenSet = true\n\t\t}\n\t}\n\n\tfor _, name := range f.Names() {\n\t\tif f.Destination != nil {\n\t\t\tset.Float64Var(f.Destination, name, f.Value, f.Usage)\n\t\t\tcontinue\n\t\t}\n\t\tset.Float64(name, f.Value, f.Usage)\n\t}\n\n\treturn nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "1fd5b2dd389806d42eb7056e",
+        "revision": "a210601c0342f799ba2a0faf075649ab63f5a277",
+        "path": "flag_generic.go",
+        "start_byte": 709,
+        "text": "func (f *GenericFlag) Apply(set *flag.FlagSet) error {\n\tif val, source, found := flagFromEnvOrFile(f.EnvVars, f.FilePath); found {\n\t\tif val != \"\" {\n\t\t\tif err := f.Value.Set(val); err != nil {\n\t\t\t\treturn fmt.Errorf(\"could not parse %q from %s as value for flag %s: %s\", val, source, f.Name, err)\n\t\t\t}\n\n\t\t\tf.HasBeenSet = true\n\t\t}\n\t}\n\n\tfor _, name := range f.Names() {\n\t\tif f.Destination != nil {\n\t\t\tset.Var(f.Destination, name, f.Usage)\n\t\t\tcontinue\n\t\t}\n\t\tset.Var(f.Value, name, f.Usage)\n\t}\n\n\treturn nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "54e5901343cb85018f23d5ce",
+        "revision": "a210601c0342f799ba2a0faf075649ab63f5a277",
+        "path": "flag_int_slice.go",
+        "start_byte": 1891,
+        "text": "func (i *IntSlice) Value() []int {\n\treturn i.slice\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "daf4fb1717f59aa2506cf5d4",
+        "revision": "a210601c0342f799ba2a0faf075649ab63f5a277",
+        "path": "flag_int_slice.go",
+        "start_byte": 2932,
+        "text": "func (f *IntSliceFlag) Apply(set *flag.FlagSet) error {\n\t// apply any default\n\tif f.Destination != nil && f.Value != nil {\n\t\tf.Destination.slice = make([]int, len(f.Value.slice))\n\t\tcopy(f.Destination.slice, f.Value.slice)\n\t}\n\n\t// resolve setValue (what we will assign to the set)\n\tvar setValue *IntSlice\n\tswitch {\n\tcase f.Destination != nil:\n\t\tsetValue = f.Destination\n\tcase f.Value != nil:\n\t\tsetValue = f.Value.clone()\n\tdefault:\n\t\tsetValue = new(IntSlice)\n\t}\n\n\tif val, source, ok := flagFromEnvOrFile(f.EnvVars, f.FilePath); ok && val != \"\" {\n\t\tfor _, s := range flagSplitMultiValues(val) {\n\t\t\tif err := setValue.Set(strings.TrimSpace(s)); err != nil {\n\t\t\t\treturn fmt.Errorf(\"could not parse %q as int slice value from %s for flag %s: %s\", val, source, f.Name, err)\n\t\t\t}\n\t\t}\n\n\t\t// Set this to false so that we reset the slice if we then set values from\n\t\t// flags that have already been set by the environment.\n\t\tsetValue.hasBeenSet = false\n\t\tf.HasBeenSet = true\n\t}\n\n\tfor _, name := range f.Names() {\n\t\tset.Var(setValue, name, f.Usage)\n\t}\n\n\treturn nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "63ba60d578d63ef47ec73673",
+        "revision": "a210601c0342f799ba2a0faf075649ab63f5a277",
+        "path": "flag_int.go",
+        "start_byte": 486,
+        "text": "func (f *IntFlag) Apply(set *flag.FlagSet) error {\n\tif val, source, found := flagFromEnvOrFile(f.EnvVars, f.FilePath); found {\n\t\tif val != \"\" {\n\t\t\tvalInt, err := strconv.ParseInt(val, f.Base, 64)\n\n\t\t\tif err != nil {\n\t\t\t\treturn fmt.Errorf(\"could not parse %q as int value from %s for flag %s: %s\", val, source, f.Name, err)\n\t\t\t}\n\n\t\t\tf.Value = int(valInt)\n\t\t\tf.HasBeenSet = true\n\t\t}\n\t}\n\n\tfor _, name := range f.Names() {\n\t\tif f.Destination != nil {\n\t\t\tset.IntVar(f.Destination, name, f.Value, f.Usage)\n\t\t\tcontinue\n\t\t}\n\t\tset.Int(name, f.Value, f.Usage)\n\t}\n\n\treturn nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "d5529e05c64b4b6c1f152d9f",
+        "revision": "a210601c0342f799ba2a0faf075649ab63f5a277",
+        "path": "flag_int64_slice.go",
+        "start_byte": 1656,
+        "text": "func (i *Int64Slice) Value() []int64 {\n\treturn i.slice\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "8ae39f04b10258a72cb2660a",
+        "revision": "a210601c0342f799ba2a0faf075649ab63f5a277",
+        "path": "flag_int64_slice.go",
+        "start_byte": 2720,
+        "text": "func (f *Int64SliceFlag) Apply(set *flag.FlagSet) error {\n\t// apply any default\n\tif f.Destination != nil && f.Value != nil {\n\t\tf.Destination.slice = make([]int64, len(f.Value.slice))\n\t\tcopy(f.Destination.slice, f.Value.slice)\n\t}\n\n\t// resolve setValue (what we will assign to the set)\n\tvar setValue *Int64Slice\n\tswitch {\n\tcase f.Destination != nil:\n\t\tsetValue = f.Destination\n\tcase f.Value != nil:\n\t\tsetValue = f.Value.clone()\n\tdefault:\n\t\tsetValue = new(Int64Slice)\n\t}\n\n\tif val, source, ok := flagFromEnvOrFile(f.EnvVars, f.FilePath); ok && val != \"\" {\n\t\tfor _, s := range flagSplitMultiValues(val) {\n\t\t\tif err := setValue.Set(strings.TrimSpace(s)); err != nil {\n\t\t\t\treturn fmt.Errorf(\"could not parse %q as int64 slice value from %s for flag %s: %s\", val, source, f.Name, err)\n\t\t\t}\n\t\t}\n\n\t\t// Set this to false so that we reset the slice if we then set values from\n\t\t// flags that have already been set by the environment.\n\t\tsetValue.hasBeenSet = false\n\t\tf.HasBeenSet = true\n\t}\n\n\tfor _, name := range f.Names() {\n\t\tset.Var(setValue, name, f.Usage)\n\t}\n\n\treturn nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "93fc50b930736c18914221f8",
+        "revision": "a210601c0342f799ba2a0faf075649ab63f5a277",
+        "path": "flag_int64.go",
+        "start_byte": 490,
+        "text": "func (f *Int64Flag) Apply(set *flag.FlagSet) error {\n\tif val, source, found := flagFromEnvOrFile(f.EnvVars, f.FilePath); found {\n\t\tif val != \"\" {\n\t\t\tvalInt, err := strconv.ParseInt(val, f.Base, 64)\n\n\t\t\tif err != nil {\n\t\t\t\treturn fmt.Errorf(\"could not parse %q as int value from %s for flag %s: %s\", val, source, f.Name, err)\n\t\t\t}\n\n\t\t\tf.Value = valInt\n\t\t\tf.HasBeenSet = true\n\t\t}\n\t}\n\n\tfor _, name := range f.Names() {\n\t\tif f.Destination != nil {\n\t\t\tset.Int64Var(f.Destination, name, f.Value, f.Usage)\n\t\t\tcontinue\n\t\t}\n\t\tset.Int64(name, f.Value, f.Usage)\n\t}\n\treturn nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "c311f2ff467c3dcdf6eff52c",
+        "revision": "a210601c0342f799ba2a0faf075649ab63f5a277",
+        "path": "flag_path.go",
+        "start_byte": 532,
+        "text": "func (f *PathFlag) Apply(set *flag.FlagSet) error {\n\tif val, _, found := flagFromEnvOrFile(f.EnvVars, f.FilePath); found {\n\t\tf.Value = val\n\t\tf.HasBeenSet = true\n\t}\n\n\tfor _, name := range f.Names() {\n\t\tif f.Destination != nil {\n\t\t\tset.StringVar(f.Destination, name, f.Value, f.Usage)\n\t\t\tcontinue\n\t\t}\n\t\tset.String(name, f.Value, f.Usage)\n\t}\n\n\treturn nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "95ead0133681866eab307d24",
+        "revision": "a210601c0342f799ba2a0faf075649ab63f5a277",
+        "path": "flag_string_slice.go",
+        "start_byte": 1482,
+        "text": "func (s *StringSlice) Value() []string {\n\treturn s.slice\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "1942c05f8fa1fb6da7015448",
+        "revision": "a210601c0342f799ba2a0faf075649ab63f5a277",
+        "path": "flag_string_slice.go",
+        "start_byte": 2573,
+        "text": "func (f *StringSliceFlag) Apply(set *flag.FlagSet) error {\n\t// apply any default\n\tif f.Destination != nil && f.Value != nil {\n\t\tf.Destination.slice = make([]string, len(f.Value.slice))\n\t\tcopy(f.Destination.slice, f.Value.slice)\n\t}\n\n\t// resolve setValue (what we will assign to the set)\n\tvar setValue *StringSlice\n\tswitch {\n\tcase f.Destination != nil:\n\t\tsetValue = f.Destination\n\tcase f.Value != nil:\n\t\tsetValue = f.Value.clone()\n\tdefault:\n\t\tsetValue = new(StringSlice)\n\t}\n\n\tif val, source, found := flagFromEnvOrFile(f.EnvVars, f.FilePath); found {\n\t\tfor _, s := range flagSplitMultiValues(val) {\n\t\t\tif err := setValue.Set(strings.TrimSpace(s)); err != nil {\n\t\t\t\treturn fmt.Errorf(\"could not parse %q as string value from %s for flag %s: %s\", val, source, f.Name, err)\n\t\t\t}\n\t\t}\n\n\t\t// Set this to false so that we reset the slice if we then set values from\n\t\t// flags that have already been set by the environment.\n\t\tsetValue.hasBeenSet = false\n\t\tf.HasBeenSet = true\n\t}\n\n\tfor _, name := range f.Names() {\n\t\tset.Var(setValue, name, f.Usage)\n\t}\n\n\treturn nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "f57060c349ce06a10b42ec10",
+        "revision": "a210601c0342f799ba2a0faf075649ab63f5a277",
+        "path": "flag_string.go",
+        "start_byte": 516,
+        "text": "func (f *StringFlag) Apply(set *flag.FlagSet) error {\n\tif val, _, found := flagFromEnvOrFile(f.EnvVars, f.FilePath); found {\n\t\tf.Value = val\n\t\tf.HasBeenSet = true\n\t}\n\n\tfor _, name := range f.Names() {\n\t\tif f.Destination != nil {\n\t\t\tset.StringVar(f.Destination, name, f.Value, f.Usage)\n\t\t\tcontinue\n\t\t}\n\t\tset.String(name, f.Value, f.Usage)\n\t}\n\n\treturn nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "377b45dbba10d9acfbf097ea",
+        "revision": "a210601c0342f799ba2a0faf075649ab63f5a277",
+        "path": "flag_timestamp.go",
+        "start_byte": 864,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "53399c25f59e2a5b21819269",
+        "revision": "a210601c0342f799ba2a0faf075649ab63f5a277",
+        "path": "flag_timestamp.go",
+        "start_byte": 1345,
+        "text": "func (t *Timestamp) Value() *time.Time {\n\treturn t.timestamp\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "96eb2e2dfddcc063e245fcce",
+        "revision": "a210601c0342f799ba2a0faf075649ab63f5a277",
+        "path": "flag_timestamp.go",
+        "start_byte": 2008,
+        "text": "func (f *TimestampFlag) Apply(set *flag.FlagSet) error {\n\tif f.Layout == \"\" {\n\t\treturn fmt.Errorf(\"timestamp Layout is required\")\n\t}\n\tif f.Value == nil {\n\t\tf.Value = &Timestamp{}\n\t}\n\tf.Value.SetLayout(f.Layout)\n\tf.Value.SetLocation(f.Timezone)\n\n\tif f.Destination != nil {\n\t\tf.Destination.SetLayout(f.Layout)\n\t\tf.Destination.SetLocation(f.Timezone)\n\t}\n\n\tif val, source, found := flagFromEnvOrFile(f.EnvVars, f.FilePath); found {\n\t\tif err := f.Value.Set(val); err != nil {\n\t\t\treturn fmt.Errorf(\"could not parse %q as timestamp value from %s for flag %s: %s\", val, source, f.Name, err)\n\t\t}\n\t\tf.HasBeenSet = true\n\t}\n\n\tfor _, name := range f.Names() {\n\t\tif f.Destination != nil {\n\t\t\tset.Var(f.Destination, name, f.Usage)\n\t\t\tcontinue\n\t\t}\n\n\t\tset.Var(f.Value, name, f.Usage)\n\t}\n\treturn nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "45b2bc5317af38ba3a042585",
+        "revision": "a210601c0342f799ba2a0faf075649ab63f5a277",
+        "path": "flag_uint_slice.go",
+        "start_byte": 2080,
+        "text": "func (i *UintSlice) Value() []uint {\n\treturn i.slice\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "1abc55f1fd622fbe56ba7ca6",
+        "revision": "a210601c0342f799ba2a0faf075649ab63f5a277",
+        "path": "flag_uint_slice.go",
+        "start_byte": 3146,
+        "text": "func (f *UintSliceFlag) Apply(set *flag.FlagSet) error {\n\t// apply any default\n\tif f.Destination != nil && f.Value != nil {\n\t\tf.Destination.slice = make([]uint, len(f.Value.slice))\n\t\tcopy(f.Destination.slice, f.Value.slice)\n\t}\n\n\t// resolve setValue (what we will assign to the set)\n\tvar setValue *UintSlice\n\tswitch {\n\tcase f.Destination != nil:\n\t\tsetValue = f.Destination\n\tcase f.Value != nil:\n\t\tsetValue = f.Value.clone()\n\tdefault:\n\t\tsetValue = new(UintSlice)\n\t}\n\n\tif val, source, ok := flagFromEnvOrFile(f.EnvVars, f.FilePath); ok && val != \"\" {\n\t\tfor _, s := range flagSplitMultiValues(val) {\n\t\t\tif err := setValue.Set(strings.TrimSpace(s)); err != nil {\n\t\t\t\treturn fmt.Errorf(\"could not parse %q as uint slice value from %s for flag %s: %s\", val, source, f.Name, err)\n\t\t\t}\n\t\t}\n\n\t\t// Set this to false so that we reset the slice if we then set values from\n\t\t// flags that have already been set by the environment.\n\t\tsetValue.hasBeenSet = false\n\t\tf.HasBeenSet = true\n\t}\n\n\tfor _, name := range f.Names() {\n\t\tset.Var(setValue, name, f.Usage)\n\t}\n\n\treturn nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "9bcefa58a79ff6ce8fe1995b",
+        "revision": "a210601c0342f799ba2a0faf075649ab63f5a277",
+        "path": "flag_uint.go",
+        "start_byte": 114,
+        "text": "func (f *UintFlag) Apply(set *flag.FlagSet) error {\n\tif val, source, found := flagFromEnvOrFile(f.EnvVars, f.FilePath); found {\n\t\tif val != \"\" {\n\t\t\tvalInt, err := strconv.ParseUint(val, f.Base, 64)\n\t\t\tif err != nil {\n\t\t\t\treturn fmt.Errorf(\"could not parse %q as uint value from %s for flag %s: %s\", val, source, f.Name, err)\n\t\t\t}\n\n\t\t\tf.Value = uint(valInt)\n\t\t\tf.HasBeenSet = true\n\t\t}\n\t}\n\n\tfor _, name := range f.Names() {\n\t\tif f.Destination != nil {\n\t\t\tset.UintVar(f.Destination, name, f.Value, f.Usage)\n\t\t\tcontinue\n\t\t}\n\t\tset.Uint(name, f.Value, f.Usage)\n\t}\n\n\treturn nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "575740b744690377735eafa4",
+        "revision": "a210601c0342f799ba2a0faf075649ab63f5a277",
+        "path": "flag_uint64_slice.go",
+        "start_byte": 1842,
+        "text": "func (i *Uint64Slice) Value() []uint64 {\n\treturn i.slice\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "51e8679e5becdd08303b9f76",
+        "revision": "a210601c0342f799ba2a0faf075649ab63f5a277",
+        "path": "flag_uint64_slice.go",
+        "start_byte": 2914,
+        "text": "func (f *Uint64SliceFlag) Apply(set *flag.FlagSet) error {\n\t// apply any default\n\tif f.Destination != nil && f.Value != nil {\n\t\tf.Destination.slice = make([]uint64, len(f.Value.slice))\n\t\tcopy(f.Destination.slice, f.Value.slice)\n\t}\n\n\t// resolve setValue (what we will assign to the set)\n\tvar setValue *Uint64Slice\n\tswitch {\n\tcase f.Destination != nil:\n\t\tsetValue = f.Destination\n\tcase f.Value != nil:\n\t\tsetValue = f.Value.clone()\n\tdefault:\n\t\tsetValue = new(Uint64Slice)\n\t}\n\n\tif val, source, ok := flagFromEnvOrFile(f.EnvVars, f.FilePath); ok && val != \"\" {\n\t\tfor _, s := range flagSplitMultiValues(val) {\n\t\t\tif err := setValue.Set(strings.TrimSpace(s)); err != nil {\n\t\t\t\treturn fmt.Errorf(\"could not parse %q as uint64 slice value from %s for flag %s: %s\", val, source, f.Name, err)\n\t\t\t}\n\t\t}\n\n\t\t// Set this to false so that we reset the slice if we then set values from\n\t\t// flags that have already been set by the environment.\n\t\tsetValue.hasBeenSet = false\n\t\tf.HasBeenSet = true\n\t}\n\n\tfor _, name := range f.Names() {\n\t\tset.Var(setValue, name, f.Usage)\n\t}\n\n\treturn nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "9020113f55b6e9cfeab5844c",
+        "revision": "a210601c0342f799ba2a0faf075649ab63f5a277",
+        "path": "flag_uint64.go",
+        "start_byte": 114,
+        "text": "func (f *Uint64Flag) Apply(set *flag.FlagSet) error {\n\tif val, source, found := flagFromEnvOrFile(f.EnvVars, f.FilePath); found {\n\t\tif val != \"\" {\n\t\t\tvalInt, err := strconv.ParseUint(val, f.Base, 64)\n\t\t\tif err != nil {\n\t\t\t\treturn fmt.Errorf(\"could not parse %q as uint64 value from %s for flag %s: %s\", val, source, f.Name, err)\n\t\t\t}\n\n\t\t\tf.Value = valInt\n\t\t\tf.HasBeenSet = true\n\t\t}\n\t}\n\n\tfor _, name := range f.Names() {\n\t\tif f.Destination != nil {\n\t\t\tset.Uint64Var(f.Destination, name, f.Value, f.Usage)\n\t\t\tcontinue\n\t\t}\n\t\tset.Uint64(name, f.Value, f.Usage)\n\t}\n\n\treturn nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "7091e736c8587b295168f314",
+        "revision": "a210601c0342f799ba2a0faf075649ab63f5a277",
+        "path": "flag.go",
+        "start_byte": 8648,
+        "text": "func flagFromEnvOrFile(envVars []string, filePath string) (value string, fromWhere string, found bool) {\n\tfor _, envVar := range envVars {\n\t\tenvVar = strings.TrimSpace(envVar)\n\t\tif value, found := syscall.Getenv(envVar); found {\n\t\t\treturn value, fmt.Sprintf(\"environment variable %q\", envVar), true\n\t\t}\n\t}\n\tfor _, fileVar := range strings.Split(filePath, \",\") {\n\t\tif fileVar != \"\" {\n\t\t\tif data, err := ioutil.ReadFile(fileVar); err == nil {\n\t\t\t\treturn string(data), fmt.Sprintf(\"file %q\", filePath), true\n\t\t\t}\n\t\t}\n\t}\n\treturn \"\", \"\", false\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "37e2bda347a9be5cebee7f6d",
+        "revision": "a210601c0342f799ba2a0faf075649ab63f5a277",
+        "path": "sliceflag.go",
+        "start_byte": 2206,
+        "text": "var (\n\t// compile time assertions\n\n\t_ SliceFlagTarget[string]  = (*StringSliceFlag)(nil)\n\t_ SliceFlagTarget[string]  = (*SliceFlag[*StringSliceFlag, []string, string])(nil)\n\t_ SliceFlagTarget[string]  = (*MultiStringFlag)(nil)\n\t_ SliceFlagTarget[float64] = (*MultiFloat64Flag)(nil)\n\t_ SliceFlagTarget[int64]   = (*MultiInt64Flag)(nil)\n\t_ SliceFlagTarget[int]     = (*MultiIntFlag)(nil)\n\n\t_ Generic    = (*flagValueHook)(nil)\n\t_ Serializer = (*flagValueHook)(nil)\n)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "f5fb3fcf4c393442fbdfce25",
+        "revision": "a210601c0342f799ba2a0faf075649ab63f5a277",
+        "path": "sliceflag.go",
+        "start_byte": 2672,
+        "text": "func (x *SliceFlag[T, S, E]) Apply(set *flag.FlagSet) error {\n\tx.Target.SetValue(x.convertSlice(x.Value))\n\n\tdestination := x.Destination\n\tif destination == nil {\n\t\tx.Target.SetDestination(nil)\n\n\t\treturn x.Target.Apply(set)\n\t}\n\n\tx.Target.SetDestination(x.convertSlice(*destination))\n\n\treturn applyFlagValueHook(set, x.Target.Apply, func() {\n\t\t*destination = x.Target.GetDestination()\n\t})\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "21925a0472eb38ea33a47f14",
+        "revision": "a210601c0342f799ba2a0faf075649ab63f5a277",
+        "path": "sliceflag.go",
+        "start_byte": 3624,
+        "text": "func (x *SliceFlag[T, S, E]) Names() []string        { return x.Target.Names() }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "a17cefb82f9fee6664390146",
+        "revision": "a210601c0342f799ba2a0faf075649ab63f5a277",
+        "path": "zz_generated.flags.go",
+        "start_byte": 623,
+        "text": "func (f *Float64SliceFlag) Names() []string {\n\treturn FlagNames(f.Name, f.Aliases)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "fb40f078df465a032b2ce431",
+        "revision": "a210601c0342f799ba2a0faf075649ab63f5a277",
+        "path": "zz_generated.flags.go",
+        "start_byte": 2168,
+        "text": "func (f *GenericFlag) Names() []string {\n\treturn FlagNames(f.Name, f.Aliases)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "a468c4fe8790dc3960954484",
+        "revision": "a210601c0342f799ba2a0faf075649ab63f5a277",
+        "path": "zz_generated.flags.go",
+        "start_byte": 3527,
+        "text": "func (f *Int64SliceFlag) Names() []string {\n\treturn FlagNames(f.Name, f.Aliases)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "e3bdf402e7b4a39d3d73d863",
+        "revision": "a210601c0342f799ba2a0faf075649ab63f5a277",
+        "path": "zz_generated.flags.go",
+        "start_byte": 4896,
+        "text": "func (f *IntSliceFlag) Names() []string {\n\treturn FlagNames(f.Name, f.Aliases)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "facbae4f08f6423d5d18cc9b",
+        "revision": "a210601c0342f799ba2a0faf075649ab63f5a277",
+        "path": "zz_generated.flags.go",
+        "start_byte": 6382,
+        "text": "func (f *PathFlag) Names() []string {\n\treturn FlagNames(f.Name, f.Aliases)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "1372baacf41d5da8473ba9d5",
+        "revision": "a210601c0342f799ba2a0faf075649ab63f5a277",
+        "path": "zz_generated.flags.go",
+        "start_byte": 7741,
+        "text": "func (f *StringSliceFlag) Names() []string {\n\treturn FlagNames(f.Name, f.Aliases)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "dfce8ada86a36891433b5519",
+        "revision": "a210601c0342f799ba2a0faf075649ab63f5a277",
+        "path": "zz_generated.flags.go",
+        "start_byte": 9319,
+        "text": "func (f *TimestampFlag) Names() []string {\n\treturn FlagNames(f.Name, f.Aliases)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "f9e68b8e9d739dd94fea27e8",
+        "revision": "a210601c0342f799ba2a0faf075649ab63f5a277",
+        "path": "zz_generated.flags.go",
+        "start_byte": 10701,
+        "text": "func (f *Uint64SliceFlag) Names() []string {\n\treturn FlagNames(f.Name, f.Aliases)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "eabc034a63c4ca7b1911ce4a",
+        "revision": "a210601c0342f799ba2a0faf075649ab63f5a277",
+        "path": "zz_generated.flags.go",
+        "start_byte": 12085,
+        "text": "func (f *UintSliceFlag) Names() []string {\n\treturn FlagNames(f.Name, f.Aliases)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "e6e65134409c41c62e9d9485",
+        "revision": "a210601c0342f799ba2a0faf075649ab63f5a277",
+        "path": "zz_generated.flags.go",
+        "start_byte": 12965,
+        "text": "type BoolFlag struct {\n\tName string\n\n\tCategory    string\n\tDefaultText string\n\tFilePath    string\n\tUsage       string\n\n\tRequired   bool\n\tHidden     bool\n\tHasBeenSet bool\n\n\tValue       bool\n\tDestination *bool\n\n\tAliases []string\n\tEnvVars []string\n\n\tCount *int\n\n\tAction func(*Context, bool) error\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "3a61415f8f3c4c189cd9fb3c",
+        "revision": "a210601c0342f799ba2a0faf075649ab63f5a277",
+        "path": "zz_generated.flags.go",
+        "start_byte": 13575,
+        "text": "func (f *BoolFlag) Names() []string {\n\treturn FlagNames(f.Name, f.Aliases)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "6db69961bcf9ffe17db83e01",
+        "revision": "a210601c0342f799ba2a0faf075649ab63f5a277",
+        "path": "zz_generated.flags.go",
+        "start_byte": 15036,
+        "text": "func (f *Float64Flag) Names() []string {\n\treturn FlagNames(f.Name, f.Aliases)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "ab2cad559323fdf955d4e953",
+        "revision": "a210601c0342f799ba2a0faf075649ab63f5a277",
+        "path": "zz_generated.flags.go",
+        "start_byte": 16500,
+        "text": "func (f *IntFlag) Names() []string {\n\treturn FlagNames(f.Name, f.Aliases)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "71450eea94aede8f51c746d7",
+        "revision": "a210601c0342f799ba2a0faf075649ab63f5a277",
+        "path": "zz_generated.flags.go",
+        "start_byte": 17948,
+        "text": "func (f *Int64Flag) Names() []string {\n\treturn FlagNames(f.Name, f.Aliases)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "f73a3a3125184954f9f2ff4b",
+        "revision": "a210601c0342f799ba2a0faf075649ab63f5a277",
+        "path": "zz_generated.flags.go",
+        "start_byte": 19426,
+        "text": "func (f *StringFlag) Names() []string {\n\treturn FlagNames(f.Name, f.Aliases)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "c3b40ac7f4f17d0e87cf0a67",
+        "revision": "a210601c0342f799ba2a0faf075649ab63f5a277",
+        "path": "zz_generated.flags.go",
+        "start_byte": 20931,
+        "text": "func (f *DurationFlag) Names() []string {\n\treturn FlagNames(f.Name, f.Aliases)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "082aacd01fdf86a1183d3a62",
+        "revision": "a210601c0342f799ba2a0faf075649ab63f5a277",
+        "path": "zz_generated.flags.go",
+        "start_byte": 22411,
+        "text": "func (f *UintFlag) Names() []string {\n\treturn FlagNames(f.Name, f.Aliases)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "f670e83ee59c4b49bb79cfc1",
+        "revision": "a210601c0342f799ba2a0faf075649ab63f5a277",
+        "path": "zz_generated.flags.go",
+        "start_byte": 23875,
+        "text": "func (f *Uint64Flag) Names() []string {\n\treturn FlagNames(f.Name, f.Aliases)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "86442da47bf21c23b29a9203",
+        "revision": "f451dead129aca91ad493d042ba504773c5ad8fa",
+        "path": "altsrc/flag_generated.go",
+        "start_byte": 202,
+        "text": "type BoolFlag struct {\n\t*cli.BoolFlag\n\tset *flag.FlagSet\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "30ee62fa93ae541393f5e644",
+        "revision": "f451dead129aca91ad493d042ba504773c5ad8fa",
+        "path": "altsrc/flag_generated.go",
+        "start_byte": 483,
+        "text": "func (f *BoolFlag) Apply(set *flag.FlagSet) error {\n\tf.set = set\n\treturn f.BoolFlag.Apply(set)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "01668821104666f325a4a00d",
+        "revision": "f451dead129aca91ad493d042ba504773c5ad8fa",
+        "path": "altsrc/flag_generated.go",
+        "start_byte": 1008,
+        "text": "func (f *DurationFlag) Apply(set *flag.FlagSet) error {\n\tf.set = set\n\treturn f.DurationFlag.Apply(set)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "dd8286d74f20f41a9d60641d",
+        "revision": "f451dead129aca91ad493d042ba504773c5ad8fa",
+        "path": "altsrc/flag_generated.go",
+        "start_byte": 1529,
+        "text": "func (f *Float64Flag) Apply(set *flag.FlagSet) error {\n\tf.set = set\n\treturn f.Float64Flag.Apply(set)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "9b47175c03e97d1cf900c3a5",
+        "revision": "f451dead129aca91ad493d042ba504773c5ad8fa",
+        "path": "altsrc/flag_generated.go",
+        "start_byte": 2048,
+        "text": "func (f *GenericFlag) Apply(set *flag.FlagSet) error {\n\tf.set = set\n\treturn f.GenericFlag.Apply(set)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "41095b1238243c55c42f59f0",
+        "revision": "f451dead129aca91ad493d042ba504773c5ad8fa",
+        "path": "altsrc/flag_generated.go",
+        "start_byte": 2543,
+        "text": "func (f *Int64Flag) Apply(set *flag.FlagSet) error {\n\tf.set = set\n\treturn f.Int64Flag.Apply(set)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "6f47b5efc76ef140a8848256",
+        "revision": "f451dead129aca91ad493d042ba504773c5ad8fa",
+        "path": "altsrc/flag_generated.go",
+        "start_byte": 3010,
+        "text": "func (f *IntFlag) Apply(set *flag.FlagSet) error {\n\tf.set = set\n\treturn f.IntFlag.Apply(set)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "b6c21017aeeeac52c997ba0f",
+        "revision": "f451dead129aca91ad493d042ba504773c5ad8fa",
+        "path": "altsrc/flag_generated.go",
+        "start_byte": 3533,
+        "text": "func (f *IntSliceFlag) Apply(set *flag.FlagSet) error {\n\tf.set = set\n\treturn f.IntSliceFlag.Apply(set)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "d0a144fe989ae9ab75952c06",
+        "revision": "f451dead129aca91ad493d042ba504773c5ad8fa",
+        "path": "altsrc/flag_generated.go",
+        "start_byte": 4090,
+        "text": "func (f *Int64SliceFlag) Apply(set *flag.FlagSet) error {\n\tf.set = set\n\treturn f.Int64SliceFlag.Apply(set)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "fd88d1cce74c3c011de2408a",
+        "revision": "f451dead129aca91ad493d042ba504773c5ad8fa",
+        "path": "altsrc/flag_generated.go",
+        "start_byte": 4675,
+        "text": "func (f *Float64SliceFlag) Apply(set *flag.FlagSet) error {\n\tf.set = set\n\treturn f.Float64SliceFlag.Apply(set)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "4caa5dc40a5453d39631324c",
+        "revision": "f451dead129aca91ad493d042ba504773c5ad8fa",
+        "path": "altsrc/flag_generated.go",
+        "start_byte": 5192,
+        "text": "func (f *StringFlag) Apply(set *flag.FlagSet) error {\n\tf.set = set\n\treturn f.StringFlag.Apply(set)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "3f7de952154d9e9a89f725b7",
+        "revision": "f451dead129aca91ad493d042ba504773c5ad8fa",
+        "path": "altsrc/flag_generated.go",
+        "start_byte": 5673,
+        "text": "func (f *PathFlag) Apply(set *flag.FlagSet) error {\n\tf.set = set\n\treturn f.PathFlag.Apply(set)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "02fe76f0058bb316409da39d",
+        "revision": "f451dead129aca91ad493d042ba504773c5ad8fa",
+        "path": "altsrc/flag_generated.go",
+        "start_byte": 6234,
+        "text": "func (f *StringSliceFlag) Apply(set *flag.FlagSet) error {\n\tf.set = set\n\treturn f.StringSliceFlag.Apply(set)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "7b29767367d725f047bba139",
+        "revision": "f451dead129aca91ad493d042ba504773c5ad8fa",
+        "path": "altsrc/flag_generated.go",
+        "start_byte": 6749,
+        "text": "func (f *Uint64Flag) Apply(set *flag.FlagSet) error {\n\tf.set = set\n\treturn f.Uint64Flag.Apply(set)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "8b84dc00e231c819c0f5fd88",
+        "revision": "f451dead129aca91ad493d042ba504773c5ad8fa",
+        "path": "altsrc/flag_generated.go",
+        "start_byte": 7230,
+        "text": "func (f *UintFlag) Apply(set *flag.FlagSet) error {\n\tf.set = set\n\treturn f.UintFlag.Apply(set)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "6f2842efa1bad3581c6874ce",
+        "revision": "f451dead129aca91ad493d042ba504773c5ad8fa",
+        "path": "altsrc/json_source_context.go",
+        "start_byte": 3943,
+        "text": "func (x *jsonSource) Bool(name string) (bool, error) {\n\ti, err := x.getValue(name)\n\tif err != nil {\n\t\treturn false, err\n\t}\n\tv, ok := i.(bool)\n\tif !ok {\n\t\treturn false, fmt.Errorf(\"unexpected type %T for %q\", i, name)\n\t}\n\treturn v, nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "19c036fc8f083521e01d1ccd",
+        "revision": "f451dead129aca91ad493d042ba504773c5ad8fa",
+        "path": "altsrc/map_input_source.go",
+        "start_byte": 6438,
+        "text": "func (fsm *MapInputSource) Bool(name string) (bool, error) {\n\totherGenericValue, exists := fsm.valueMap[name]\n\tif exists {\n\t\totherValue, isType := otherGenericValue.(bool)\n\t\tif !isType {\n\t\t\treturn false, incorrectTypeForFlagError(name, \"bool\", otherGenericValue)\n\t\t}\n\t\treturn otherValue, nil\n\t}\n\tnestedGenericValue, exists := nestedVal(name, fsm.valueMap)\n\tif exists {\n\t\totherValue, isType := nestedGenericValue.(bool)\n\t\tif !isType {\n\t\t\treturn false, incorrectTypeForFlagError(name, \"bool\", nestedGenericValue)\n\t\t}\n\t\treturn otherValue, nil\n\t}\n\n\treturn false, nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "0acf49d6f395f6a139cb6263",
+        "revision": "f451dead129aca91ad493d042ba504773c5ad8fa",
+        "path": "category.go",
+        "start_byte": 1609,
+        "text": "func (c *commandCategory) Name() string {\n\treturn c.name\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "e612236a6cbdefdb19d579cc",
+        "revision": "f451dead129aca91ad493d042ba504773c5ad8fa",
+        "path": "category.go",
+        "start_byte": 3521,
+        "text": "func (fc *defaultVisibleFlagCategory) Name() string {\n\treturn fc.name\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "aabb979d5c8d8f3bf46e65c7",
+        "revision": "f451dead129aca91ad493d042ba504773c5ad8fa",
+        "path": "command.go",
+        "start_byte": 5125,
+        "text": "func (c *Command) Names() []string {\n\treturn append([]string{c.Name}, c.Aliases...)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "6d378cffa2ab73afaaee614f",
+        "revision": "f451dead129aca91ad493d042ba504773c5ad8fa",
+        "path": "context.go",
+        "start_byte": 2429,
+        "text": "func (cCtx *Context) Value(name string) interface{} {\n\tif fs := cCtx.lookupFlagSet(name); fs != nil {\n\t\treturn fs.Lookup(name).Value.(flag.Getter).Get()\n\t}\n\treturn nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "d01763b7d32f9e7ecf230e4e",
+        "revision": "f451dead129aca91ad493d042ba504773c5ad8fa",
+        "path": "docs.go",
+        "start_byte": 1277,
+        "text": "const name = \"cli\"",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "082a5c5a5cc95375d920b92a",
+        "revision": "f451dead129aca91ad493d042ba504773c5ad8fa",
+        "path": "fish.go",
+        "start_byte": 559,
+        "text": "const name = \"cli\"",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "d47f747ed52463f8e27c1d11",
+        "revision": "f451dead129aca91ad493d042ba504773c5ad8fa",
+        "path": "flag_bool.go",
+        "start_byte": 1959,
+        "text": "func (cCtx *Context) Bool(name string) bool {\n\tif fs := cCtx.lookupFlagSet(name); fs != nil {\n\t\treturn lookupBool(name, fs)\n\t}\n\treturn false\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "bfeeb55e2f97f373e1a01b01",
+        "revision": "f451dead129aca91ad493d042ba504773c5ad8fa",
+        "path": "flag_duration.go",
+        "start_byte": 958,
+        "text": "func (f *DurationFlag) Apply(set *flag.FlagSet) error {\n\tif val, source, found := flagFromEnvOrFile(f.EnvVars, f.FilePath); found {\n\t\tif val != \"\" {\n\t\t\tvalDuration, err := time.ParseDuration(val)\n\n\t\t\tif err != nil {\n\t\t\t\treturn fmt.Errorf(\"could not parse %q as duration value from %s for flag %s: %s\", val, source, f.Name, err)\n\t\t\t}\n\n\t\t\tf.Value = valDuration\n\t\t\tf.HasBeenSet = true\n\t\t}\n\t}\n\n\tfor _, name := range f.Names() {\n\t\tif f.Destination != nil {\n\t\t\tset.DurationVar(f.Destination, name, f.Value, f.Usage)\n\t\t\tcontinue\n\t\t}\n\t\tset.Duration(name, f.Value, f.Usage)\n\t}\n\treturn nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "f22e950fb31e9bcd225cf2a1",
+        "revision": "f451dead129aca91ad493d042ba504773c5ad8fa",
+        "path": "flag_float64_slice.go",
+        "start_byte": 1698,
+        "text": "func (f *Float64Slice) Value() []float64 {\n\treturn f.slice\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "da6a00346ae205490ae27224",
+        "revision": "f451dead129aca91ad493d042ba504773c5ad8fa",
+        "path": "flag_float64_slice.go",
+        "start_byte": 3022,
+        "text": "func (f *Float64SliceFlag) Apply(set *flag.FlagSet) error {\n\t// apply any default\n\tif f.Destination != nil && f.Value != nil {\n\t\tf.Destination.slice = make([]float64, len(f.Value.slice))\n\t\tcopy(f.Destination.slice, f.Value.slice)\n\t}\n\n\t// resolve setValue (what we will assign to the set)\n\tvar setValue *Float64Slice\n\tswitch {\n\tcase f.Destination != nil:\n\t\tsetValue = f.Destination\n\tcase f.Value != nil:\n\t\tsetValue = f.Value.clone()\n\tdefault:\n\t\tsetValue = new(Float64Slice)\n\t}\n\n\tif val, source, found := flagFromEnvOrFile(f.EnvVars, f.FilePath); found {\n\t\tif val != \"\" {\n\t\t\tfor _, s := range flagSplitMultiValues(val) {\n\t\t\t\tif err := setValue.Set(strings.TrimSpace(s)); err != nil {\n\t\t\t\t\treturn fmt.Errorf(\"could not parse %q as float64 slice value from %s for flag %s: %s\", val, source, f.Name, err)\n\t\t\t\t}\n\t\t\t}\n\n\t\t\t// Set this to false so that we reset the slice if we then set values from\n\t\t\t// flags that have already been set by the environment.\n\t\t\tsetValue.hasBeenSet = false\n\t\t\tf.HasBeenSet = true\n\t\t}\n\t}\n\n\tfor _, name := range f.Names() {\n\t\tset.Var(setValue, name, f.Usage)\n\t}\n\n\treturn nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "18222e7636527980ba38a7cd",
+        "revision": "f451dead129aca91ad493d042ba504773c5ad8fa",
+        "path": "flag_float64.go",
+        "start_byte": 965,
+        "text": "func (f *Float64Flag) Apply(set *flag.FlagSet) error {\n\tif val, source, found := flagFromEnvOrFile(f.EnvVars, f.FilePath); found {\n\t\tif val != \"\" {\n\t\t\tvalFloat, err := strconv.ParseFloat(val, 64)\n\t\t\tif err != nil {\n\t\t\t\treturn fmt.Errorf(\"could not parse %q as float64 value from %s for flag %s: %s\", val, source, f.Name, err)\n\t\t\t}\n\n\t\t\tf.Value = valFloat\n\t\t\tf.HasBeenSet = true\n\t\t}\n\t}\n\n\tfor _, name := range f.Names() {\n\t\tif f.Destination != nil {\n\t\t\tset.Float64Var(f.Destination, name, f.Value, f.Usage)\n\t\t\tcontinue\n\t\t}\n\t\tset.Float64(name, f.Value, f.Usage)\n\t}\n\n\treturn nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "41071a6823ff2e12cdc5b924",
+        "revision": "f451dead129aca91ad493d042ba504773c5ad8fa",
+        "path": "flag_generic.go",
+        "start_byte": 1180,
+        "text": "func (f *GenericFlag) Apply(set *flag.FlagSet) error {\n\tif val, source, found := flagFromEnvOrFile(f.EnvVars, f.FilePath); found {\n\t\tif val != \"\" {\n\t\t\tif err := f.Value.Set(val); err != nil {\n\t\t\t\treturn fmt.Errorf(\"could not parse %q from %s as value for flag %s: %s\", val, source, f.Name, err)\n\t\t\t}\n\n\t\t\tf.HasBeenSet = true\n\t\t}\n\t}\n\n\tfor _, name := range f.Names() {\n\t\tset.Var(f.Value, name, f.Usage)\n\t}\n\n\treturn nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "01d54a381d5c1f173cd49409",
+        "revision": "f451dead129aca91ad493d042ba504773c5ad8fa",
+        "path": "flag_int_slice.go",
+        "start_byte": 1891,
+        "text": "func (i *IntSlice) Value() []int {\n\treturn i.slice\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "5875796eb11ae06746173101",
+        "revision": "f451dead129aca91ad493d042ba504773c5ad8fa",
+        "path": "flag_int_slice.go",
+        "start_byte": 3171,
+        "text": "func (f *IntSliceFlag) Apply(set *flag.FlagSet) error {\n\t// apply any default\n\tif f.Destination != nil && f.Value != nil {\n\t\tf.Destination.slice = make([]int, len(f.Value.slice))\n\t\tcopy(f.Destination.slice, f.Value.slice)\n\t}\n\n\t// resolve setValue (what we will assign to the set)\n\tvar setValue *IntSlice\n\tswitch {\n\tcase f.Destination != nil:\n\t\tsetValue = f.Destination\n\tcase f.Value != nil:\n\t\tsetValue = f.Value.clone()\n\tdefault:\n\t\tsetValue = new(IntSlice)\n\t}\n\n\tif val, source, ok := flagFromEnvOrFile(f.EnvVars, f.FilePath); ok && val != \"\" {\n\t\tfor _, s := range flagSplitMultiValues(val) {\n\t\t\tif err := setValue.Set(strings.TrimSpace(s)); err != nil {\n\t\t\t\treturn fmt.Errorf(\"could not parse %q as int slice value from %s for flag %s: %s\", val, source, f.Name, err)\n\t\t\t}\n\t\t}\n\n\t\t// Set this to false so that we reset the slice if we then set values from\n\t\t// flags that have already been set by the environment.\n\t\tsetValue.hasBeenSet = false\n\t\tf.HasBeenSet = true\n\t}\n\n\tfor _, name := range f.Names() {\n\t\tset.Var(setValue, name, f.Usage)\n\t}\n\n\treturn nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "18af289e16904fb568152a45",
+        "revision": "f451dead129aca91ad493d042ba504773c5ad8fa",
+        "path": "flag_int.go",
+        "start_byte": 941,
+        "text": "func (f *IntFlag) Apply(set *flag.FlagSet) error {\n\tif val, source, found := flagFromEnvOrFile(f.EnvVars, f.FilePath); found {\n\t\tif val != \"\" {\n\t\t\tvalInt, err := strconv.ParseInt(val, f.Base, 64)\n\n\t\t\tif err != nil {\n\t\t\t\treturn fmt.Errorf(\"could not parse %q as int value from %s for flag %s: %s\", val, source, f.Name, err)\n\t\t\t}\n\n\t\t\tf.Value = int(valInt)\n\t\t\tf.HasBeenSet = true\n\t\t}\n\t}\n\n\tfor _, name := range f.Names() {\n\t\tif f.Destination != nil {\n\t\t\tset.IntVar(f.Destination, name, f.Value, f.Usage)\n\t\t\tcontinue\n\t\t}\n\t\tset.Int(name, f.Value, f.Usage)\n\t}\n\n\treturn nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "cdcc4015e595f6e310b091a0",
+        "revision": "f451dead129aca91ad493d042ba504773c5ad8fa",
+        "path": "flag_int64_slice.go",
+        "start_byte": 1656,
+        "text": "func (i *Int64Slice) Value() []int64 {\n\treturn i.slice\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "3c45a4eedbb4c92b7e0b10fa",
+        "revision": "f451dead129aca91ad493d042ba504773c5ad8fa",
+        "path": "flag_int64_slice.go",
+        "start_byte": 2956,
+        "text": "func (f *Int64SliceFlag) Apply(set *flag.FlagSet) error {\n\t// apply any default\n\tif f.Destination != nil && f.Value != nil {\n\t\tf.Destination.slice = make([]int64, len(f.Value.slice))\n\t\tcopy(f.Destination.slice, f.Value.slice)\n\t}\n\n\t// resolve setValue (what we will assign to the set)\n\tvar setValue *Int64Slice\n\tswitch {\n\tcase f.Destination != nil:\n\t\tsetValue = f.Destination\n\tcase f.Value != nil:\n\t\tsetValue = f.Value.clone()\n\tdefault:\n\t\tsetValue = new(Int64Slice)\n\t}\n\n\tif val, source, ok := flagFromEnvOrFile(f.EnvVars, f.FilePath); ok && val != \"\" {\n\t\tfor _, s := range flagSplitMultiValues(val) {\n\t\t\tif err := setValue.Set(strings.TrimSpace(s)); err != nil {\n\t\t\t\treturn fmt.Errorf(\"could not parse %q as int64 slice value from %s for flag %s: %s\", val, source, f.Name, err)\n\t\t\t}\n\t\t}\n\n\t\t// Set this to false so that we reset the slice if we then set values from\n\t\t// flags that have already been set by the environment.\n\t\tsetValue.hasBeenSet = false\n\t\tf.HasBeenSet = true\n\t}\n\n\tfor _, name := range f.Names() {\n\t\tset.Var(setValue, name, f.Usage)\n\t}\n\n\treturn nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "270658c5c1f5badd00e7d2e5",
+        "revision": "f451dead129aca91ad493d042ba504773c5ad8fa",
+        "path": "flag_int64.go",
+        "start_byte": 953,
+        "text": "func (f *Int64Flag) Apply(set *flag.FlagSet) error {\n\tif val, source, found := flagFromEnvOrFile(f.EnvVars, f.FilePath); found {\n\t\tif val != \"\" {\n\t\t\tvalInt, err := strconv.ParseInt(val, f.Base, 64)\n\n\t\t\tif err != nil {\n\t\t\t\treturn fmt.Errorf(\"could not parse %q as int value from %s for flag %s: %s\", val, source, f.Name, err)\n\t\t\t}\n\n\t\t\tf.Value = valInt\n\t\t\tf.HasBeenSet = true\n\t\t}\n\t}\n\n\tfor _, name := range f.Names() {\n\t\tif f.Destination != nil {\n\t\t\tset.Int64Var(f.Destination, name, f.Value, f.Usage)\n\t\t\tcontinue\n\t\t}\n\t\tset.Int64(name, f.Value, f.Usage)\n\t}\n\treturn nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "7f5c39bc5105b6055fbb3a6f",
+        "revision": "f451dead129aca91ad493d042ba504773c5ad8fa",
+        "path": "flag_path.go",
+        "start_byte": 991,
+        "text": "func (f *PathFlag) Apply(set *flag.FlagSet) error {\n\tif val, _, found := flagFromEnvOrFile(f.EnvVars, f.FilePath); found {\n\t\tf.Value = val\n\t\tf.HasBeenSet = true\n\t}\n\n\tfor _, name := range f.Names() {\n\t\tif f.Destination != nil {\n\t\t\tset.StringVar(f.Destination, name, f.Value, f.Usage)\n\t\t\tcontinue\n\t\t}\n\t\tset.String(name, f.Value, f.Usage)\n\t}\n\n\treturn nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "638f621edc896d86f3bfd3a4",
+        "revision": "f451dead129aca91ad493d042ba504773c5ad8fa",
+        "path": "flag_string_slice.go",
+        "start_byte": 1482,
+        "text": "func (s *StringSlice) Value() []string {\n\treturn s.slice\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "0ac1dacd9620711e926d278e",
+        "revision": "f451dead129aca91ad493d042ba504773c5ad8fa",
+        "path": "flag_string_slice.go",
+        "start_byte": 2795,
+        "text": "func (f *StringSliceFlag) Apply(set *flag.FlagSet) error {\n\t// apply any default\n\tif f.Destination != nil && f.Value != nil {\n\t\tf.Destination.slice = make([]string, len(f.Value.slice))\n\t\tcopy(f.Destination.slice, f.Value.slice)\n\t}\n\n\t// resolve setValue (what we will assign to the set)\n\tvar setValue *StringSlice\n\tswitch {\n\tcase f.Destination != nil:\n\t\tsetValue = f.Destination\n\tcase f.Value != nil:\n\t\tsetValue = f.Value.clone()\n\tdefault:\n\t\tsetValue = new(StringSlice)\n\t}\n\n\tif val, source, found := flagFromEnvOrFile(f.EnvVars, f.FilePath); found {\n\t\tfor _, s := range flagSplitMultiValues(val) {\n\t\t\tif err := setValue.Set(strings.TrimSpace(s)); err != nil {\n\t\t\t\treturn fmt.Errorf(\"could not parse %q as string value from %s for flag %s: %s\", val, source, f.Name, err)\n\t\t\t}\n\t\t}\n\n\t\t// Set this to false so that we reset the slice if we then set values from\n\t\t// flags that have already been set by the environment.\n\t\tsetValue.hasBeenSet = false\n\t\tf.HasBeenSet = true\n\t}\n\n\tfor _, name := range f.Names() {\n\t\tset.Var(setValue, name, f.Usage)\n\t}\n\n\treturn nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "ae9ab84704f3bb94d525d11b",
+        "revision": "f451dead129aca91ad493d042ba504773c5ad8fa",
+        "path": "flag_string.go",
+        "start_byte": 983,
+        "text": "func (f *StringFlag) Apply(set *flag.FlagSet) error {\n\tif val, _, found := flagFromEnvOrFile(f.EnvVars, f.FilePath); found {\n\t\tf.Value = val\n\t\tf.HasBeenSet = true\n\t}\n\n\tfor _, name := range f.Names() {\n\t\tif f.Destination != nil {\n\t\t\tset.StringVar(f.Destination, name, f.Value, f.Usage)\n\t\t\tcontinue\n\t\t}\n\t\tset.String(name, f.Value, f.Usage)\n\t}\n\n\treturn nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "07eb7bc0e2e0b7a02ecaeceb",
+        "revision": "f451dead129aca91ad493d042ba504773c5ad8fa",
+        "path": "flag_timestamp.go",
+        "start_byte": 864,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "819956b9dba5c875599dd3a8",
+        "revision": "f451dead129aca91ad493d042ba504773c5ad8fa",
+        "path": "flag_timestamp.go",
+        "start_byte": 1345,
+        "text": "func (t *Timestamp) Value() *time.Time {\n\treturn t.timestamp\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "74e18430599c47acf6e789c3",
+        "revision": "f451dead129aca91ad493d042ba504773c5ad8fa",
+        "path": "flag_timestamp.go",
+        "start_byte": 2487,
+        "text": "func (f *TimestampFlag) Apply(set *flag.FlagSet) error {\n\tif f.Layout == \"\" {\n\t\treturn fmt.Errorf(\"timestamp Layout is required\")\n\t}\n\tif f.Value == nil {\n\t\tf.Value = &Timestamp{}\n\t}\n\tf.Value.SetLayout(f.Layout)\n\tf.Value.SetLocation(f.Timezone)\n\n\tif f.Destination != nil {\n\t\tf.Destination.SetLayout(f.Layout)\n\t\tf.Destination.SetLocation(f.Timezone)\n\t}\n\n\tif val, source, found := flagFromEnvOrFile(f.EnvVars, f.FilePath); found {\n\t\tif err := f.Value.Set(val); err != nil {\n\t\t\treturn fmt.Errorf(\"could not parse %q as timestamp value from %s for flag %s: %s\", val, source, f.Name, err)\n\t\t}\n\t\tf.HasBeenSet = true\n\t}\n\n\tfor _, name := range f.Names() {\n\t\tif f.Destination != nil {\n\t\t\tset.Var(f.Destination, name, f.Usage)\n\t\t\tcontinue\n\t\t}\n\n\t\tset.Var(f.Value, name, f.Usage)\n\t}\n\treturn nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "a5c938833749a79307217d8e",
+        "revision": "f451dead129aca91ad493d042ba504773c5ad8fa",
+        "path": "flag_uint.go",
+        "start_byte": 460,
+        "text": "func (f *UintFlag) Apply(set *flag.FlagSet) error {\n\tif val, source, found := flagFromEnvOrFile(f.EnvVars, f.FilePath); found {\n\t\tif val != \"\" {\n\t\t\tvalInt, err := strconv.ParseUint(val, f.Base, 64)\n\t\t\tif err != nil {\n\t\t\t\treturn fmt.Errorf(\"could not parse %q as uint value from %s for flag %s: %s\", val, source, f.Name, err)\n\t\t\t}\n\n\t\t\tf.Value = uint(valInt)\n\t\t\tf.HasBeenSet = true\n\t\t}\n\t}\n\n\tfor _, name := range f.Names() {\n\t\tif f.Destination != nil {\n\t\t\tset.UintVar(f.Destination, name, f.Value, f.Usage)\n\t\t\tcontinue\n\t\t}\n\t\tset.Uint(name, f.Value, f.Usage)\n\t}\n\n\treturn nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "693354bedd539a882104b09e",
+        "revision": "f451dead129aca91ad493d042ba504773c5ad8fa",
+        "path": "flag_uint64.go",
+        "start_byte": 466,
+        "text": "func (f *Uint64Flag) Apply(set *flag.FlagSet) error {\n\tif val, source, found := flagFromEnvOrFile(f.EnvVars, f.FilePath); found {\n\t\tif val != \"\" {\n\t\t\tvalInt, err := strconv.ParseUint(val, f.Base, 64)\n\t\t\tif err != nil {\n\t\t\t\treturn fmt.Errorf(\"could not parse %q as uint64 value from %s for flag %s: %s\", val, source, f.Name, err)\n\t\t\t}\n\n\t\t\tf.Value = valInt\n\t\t\tf.HasBeenSet = true\n\t\t}\n\t}\n\n\tfor _, name := range f.Names() {\n\t\tif f.Destination != nil {\n\t\t\tset.Uint64Var(f.Destination, name, f.Value, f.Usage)\n\t\t\tcontinue\n\t\t}\n\t\tset.Uint64(name, f.Value, f.Usage)\n\t}\n\n\treturn nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "caf646bc1f0011b10f95fc63",
+        "revision": "f451dead129aca91ad493d042ba504773c5ad8fa",
+        "path": "flag.go",
+        "start_byte": 8333,
+        "text": "func flagFromEnvOrFile(envVars []string, filePath string) (value string, fromWhere string, found bool) {\n\tfor _, envVar := range envVars {\n\t\tenvVar = strings.TrimSpace(envVar)\n\t\tif value, found := syscall.Getenv(envVar); found {\n\t\t\treturn value, fmt.Sprintf(\"environment variable %q\", envVar), true\n\t\t}\n\t}\n\tfor _, fileVar := range strings.Split(filePath, \",\") {\n\t\tif fileVar != \"\" {\n\t\t\tif data, err := ioutil.ReadFile(fileVar); err == nil {\n\t\t\t\treturn string(data), fmt.Sprintf(\"file %q\", filePath), true\n\t\t\t}\n\t\t}\n\t}\n\treturn \"\", \"\", false\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "84a5a0ba90ba52cca0d1ce9c",
+        "revision": "f451dead129aca91ad493d042ba504773c5ad8fa",
+        "path": "sliceflag.go",
+        "start_byte": 2242,
+        "text": "var (\n\t// compile time assertions\n\n\t_ SliceFlagTarget[string]  = (*StringSliceFlag)(nil)\n\t_ SliceFlagTarget[str",
+        "rank": 1,
+        "truncated": true
+      }
+    ]
+  },
+  "retrieval": {
+    "unresolved": [
+      {
+        "side": "ours",
+        "identifier": "f",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "BoolFlag",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "altsrc/flag_generated.go",
+            "start": 202
+          },
+          {
+            "path": "zz_generated.flags.go",
+            "start": 12965
+          }
+        ]
+      },
+      {
+        "side": "ours",
+        "identifier": "Apply",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "altsrc/flag_generated.go",
+            "start": 483
+          },
+          {
+            "path": "altsrc/flag_generated.go",
+            "start": 1008
+          },
+          {
+            "path": "altsrc/flag_generated.go",
+            "start": 1529
+          },
+          {
+            "path": "altsrc/flag_generated.go",
+            "start": 2048
+          },
+          {
+            "path": "altsrc/flag_generated.go",
+            "start": 2543
+          },
+          {
+            "path": "altsrc/flag_generated.go",
+            "start": 3010
+          },
+          {
+            "path": "altsrc/flag_generated.go",
+            "start": 3533
+          },
+          {
+            "path": "altsrc/flag_generated.go",
+            "start": 4090
+          },
+          {
+            "path": "altsrc/flag_generated.go",
+            "start": 4675
+          },
+          {
+            "path": "altsrc/flag_generated.go",
+            "start": 5192
+          },
+          {
+            "path": "altsrc/flag_generated.go",
+            "start": 5673
+          },
+          {
+            "path": "altsrc/flag_generated.go",
+            "start": 6234
+          },
+          {
+            "path": "altsrc/flag_generated.go",
+            "start": 6749
+          },
+          {
+            "path": "altsrc/flag_generated.go",
+            "start": 7230
+          },
+          {
+            "path": "flag_duration.go",
+            "start": 483
+          },
+          {
+            "path": "flag_float64.go",
+            "start": 494
+          },
+          {
+            "path": "flag_float64_slice.go",
+            "start": 2824
+          },
+          {
+            "path": "flag_generic.go",
+            "start": 709
+          },
+          {
+            "path": "flag_int.go",
+            "start": 486
+          },
+          {
+            "path": "flag_int64.go",
+            "start": 490
+          },
+          {
+            "path": "flag_int64_slice.go",
+            "start": 2720
+          },
+          {
+            "path": "flag_int_slice.go",
+            "start": 2932
+          },
+          {
+            "path": "flag_path.go",
+            "start": 532
+          },
+          {
+            "path": "flag_string.go",
+            "start": 516
+          },
+          {
+            "path": "flag_string_slice.go",
+            "start": 2573
+          },
+          {
+            "path": "flag_timestamp.go",
+            "start": 2008
+          },
+          {
+            "path": "flag_uint.go",
+            "start": 114
+          },
+          {
+            "path": "flag_uint64.go",
+            "start": 114
+          },
+          {
+            "path": "flag_uint64_slice.go",
+            "start": 2914
+          },
+          {
+            "path": "flag_uint_slice.go",
+            "start": 3146
+          },
+          {
+            "path": "sliceflag.go",
+            "start": 2672
+          }
+        ]
+      },
+      {
+        "side": "ours",
+        "identifier": "set",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "flag",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "FlagSet",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "error",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "val",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "source",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "found",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "EnvVars",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "FilePath",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "valBool",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "strconv",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "ParseBool",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "fmt",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Errorf",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Name",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "category.go",
+            "start": 1609
+          },
+          {
+            "path": "category.go",
+            "start": 3521
+          }
+        ]
+      },
+      {
+        "side": "ours",
+        "identifier": "Value",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "context.go",
+            "start": 2697
+          },
+          {
+            "path": "flag_float64_slice.go",
+            "start": 1698
+          },
+          {
+            "path": "flag_int64_slice.go",
+            "start": 1656
+          },
+          {
+            "path": "flag_int_slice.go",
+            "start": 1891
+          },
+          {
+            "path": "flag_string_slice.go",
+            "start": 1482
+          },
+          {
+            "path": "flag_timestamp.go",
+            "start": 1345
+          },
+          {
+            "path": "flag_uint64_slice.go",
+            "start": 1842
+          },
+          {
+            "path": "flag_uint_slice.go",
+            "start": 2080
+          }
+        ]
+      },
+      {
+        "side": "ours",
+        "identifier": "HasBeenSet",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "count",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Count",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "context.go",
+            "start": 2444
+          },
+          {
+            "path": "flag_bool.go",
+            "start": 951
+          }
+        ]
+      },
+      {
+        "side": "ours",
+        "identifier": "dest",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Destination",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "new",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "int",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "bool",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "name",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "docs.go",
+            "start": 1277
+          },
+          {
+            "path": "fish.go",
+            "start": 559
+          }
+        ]
+      },
+      {
+        "side": "ours",
+        "identifier": "Names",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "command.go",
+            "start": 5193
+          },
+          {
+            "path": "sliceflag.go",
+            "start": 3624
+          },
+          {
+            "path": "zz_generated.flags.go",
+            "start": 623
+          },
+          {
+            "path": "zz_generated.flags.go",
+            "start": 2168
+          },
+          {
+            "path": "zz_generated.flags.go",
+            "start": 3527
+          },
+          {
+            "path": "zz_generated.flags.go",
+            "start": 4896
+          },
+          {
+            "path": "zz_generated.flags.go",
+            "start": 6382
+          },
+          {
+            "path": "zz_generated.flags.go",
+            "start": 7741
+          },
+          {
+            "path": "zz_generated.flags.go",
+            "start": 9319
+          },
+          {
+            "path": "zz_generated.flags.go",
+            "start": 10701
+          },
+          {
+            "path": "zz_generated.flags.go",
+            "start": 12085
+          },
+          {
+            "path": "zz_generated.flags.go",
+            "start": 13575
+          },
+          {
+            "path": "zz_generated.flags.go",
+            "start": 15036
+          },
+          {
+            "path": "zz_generated.flags.go",
+            "start": 16500
+          },
+          {
+            "path": "zz_generated.flags.go",
+            "start": 17948
+          },
+          {
+            "path": "zz_generated.flags.go",
+            "start": 19426
+          },
+          {
+            "path": "zz_generated.flags.go",
+            "start": 20931
+          },
+          {
+            "path": "zz_generated.flags.go",
+            "start": 22411
+          },
+          {
+            "path": "zz_generated.flags.go",
+            "start": 23875
+          }
+        ]
+      },
+      {
+        "side": "ours",
+        "identifier": "value",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Var",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Usage",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "f",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "BoolFlag",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "altsrc/flag_generated.go",
+            "start": 202
+          },
+          {
+            "path": "zz_generated.flags.go",
+            "start": 6411
+          }
+        ]
+      },
+      {
+        "side": "theirs",
+        "identifier": "Apply",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "altsrc/flag_generated.go",
+            "start": 483
+          },
+          {
+            "path": "altsrc/flag_generated.go",
+            "start": 1008
+          },
+          {
+            "path": "altsrc/flag_generated.go",
+            "start": 1529
+          },
+          {
+            "path": "altsrc/flag_generated.go",
+            "start": 2048
+          },
+          {
+            "path": "altsrc/flag_generated.go",
+            "start": 2543
+          },
+          {
+            "path": "altsrc/flag_generated.go",
+            "start": 3010
+          },
+          {
+            "path": "altsrc/flag_generated.go",
+            "start": 3533
+          },
+          {
+            "path": "altsrc/flag_generated.go",
+            "start": 4090
+          },
+          {
+            "path": "altsrc/flag_generated.go",
+            "start": 4675
+          },
+          {
+            "path": "altsrc/flag_generated.go",
+            "start": 5192
+          },
+          {
+            "path": "altsrc/flag_generated.go",
+            "start": 5673
+          },
+          {
+            "path": "altsrc/flag_generated.go",
+            "start": 6234
+          },
+          {
+            "path": "altsrc/flag_generated.go",
+            "start": 6749
+          },
+          {
+            "path": "altsrc/flag_generated.go",
+            "start": 7230
+          },
+          {
+            "path": "flag_duration.go",
+            "start": 958
+          },
+          {
+            "path": "flag_float64.go",
+            "start": 965
+          },
+          {
+            "path": "flag_float64_slice.go",
+            "start": 3022
+          },
+          {
+            "path": "flag_generic.go",
+            "start": 1180
+          },
+          {
+            "path": "flag_int.go",
+            "start": 941
+          },
+          {
+            "path": "flag_int64.go",
+            "start": 953
+          },
+          {
+            "path": "flag_int64_slice.go",
+            "start": 2956
+          },
+          {
+            "path": "flag_int_slice.go",
+            "start": 3171
+          },
+          {
+            "path": "flag_path.go",
+            "start": 991
+          },
+          {
+            "path": "flag_string.go",
+            "start": 983
+          },
+          {
+            "path": "flag_string_slice.go",
+            "start": 2795
+          },
+          {
+            "path": "flag_timestamp.go",
+            "start": 2487
+          },
+          {
+            "path": "flag_uint.go",
+            "start": 460
+          },
+          {
+            "path": "flag_uint64.go",
+            "start": 466
+          },
+          {
+            "path": "sliceflag.go",
+            "start": 2708
+          }
+        ]
+      },
+      {
+        "side": "theirs",
+        "identifier": "set",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "flag",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "FlagSet",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "error",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "val",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "source",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "found",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "EnvVars",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "FilePath",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "valBool",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "strconv",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "ParseBool",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "fmt",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Errorf",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Name",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "category.go",
+            "start": 1609
+          },
+          {
+            "path": "category.go",
+            "start": 3521
+          }
+        ]
+      },
+      {
+        "side": "theirs",
+        "identifier": "Value",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "context.go",
+            "start": 2429
+          },
+          {
+            "path": "flag_float64_slice.go",
+            "start": 1698
+          },
+          {
+            "path": "flag_int64_slice.go",
+            "start": 1656
+          },
+          {
+            "path": "flag_int_slice.go",
+            "start": 1891
+          },
+          {
+            "path": "flag_string_slice.go",
+            "start": 1482
+          },
+          {
+            "path": "flag_timestamp.go",
+            "start": 1345
+          }
+        ]
+      },
+      {
+        "side": "theirs",
+        "identifier": "HasBeenSet",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "name",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "docs.go",
+            "start": 1277
+          },
+          {
+            "path": "fish.go",
+            "start": 559
+          }
+        ]
+      },
+      {
+        "side": "theirs",
+        "identifier": "Names",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "command.go",
+            "start": 5125
+          },
+          {
+            "path": "sliceflag.go",
+            "start": 3660
+          },
+          {
+            "path": "zz_generated.flags.go",
+            "start": 582
+          },
+          {
+            "path": "zz_generated.flags.go",
+            "start": 1567
+          },
+          {
+            "path": "zz_generated.flags.go",
+            "start": 2394
+          },
+          {
+            "path": "zz_generated.flags.go",
+            "start": 3218
+          },
+          {
+            "path": "zz_generated.flags.go",
+            "start": 4170
+          },
+          {
+            "path": "zz_generated.flags.go",
+            "start": 5011
+          },
+          {
+            "path": "zz_generated.flags.go",
+            "start": 6034
+          },
+          {
+            "path": "zz_generated.flags.go",
+            "start": 6972
+          },
+          {
+            "path": "zz_generated.flags.go",
+            "start": 7916
+          },
+          {
+            "path": "zz_generated.flags.go",
+            "start": 8852
+          },
+          {
+            "path": "zz_generated.flags.go",
+            "start": 9790
+          },
+          {
+            "path": "zz_generated.flags.go",
+            "start": 10747
+          },
+          {
+            "path": "zz_generated.flags.go",
+            "start": 11719
+          },
+          {
+            "path": "zz_generated.flags.go",
+            "start": 12665
+          },
+          {
+            "path": "zz_generated.flags.go",
+            "start": 13613
+          }
+        ]
+      },
+      {
+        "side": "theirs",
+        "identifier": "Destination",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "BoolVar",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Usage",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Bool",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "altsrc/json_source_context.go",
+            "start": 3943
+          },
+          {
+            "path": "altsrc/map_input_source.go",
+            "start": 6438
+          },
+          {
+            "path": "flag_bool.go",
+            "start": 1959
+          }
+        ]
+      }
+    ],
+    "method": "syntax-ranges-and-identifier-candidates/3",
+    "budget_bytes": 32768,
+    "libraries": {
+      "C": "cbbd4827ee02cd5c018ab41f10d8404ff8741159054b352d9a6d763c506ba3c7",
+      "Go": "1612f8fd958ba1ec981bf4b91e2ff399f1e54d26a9da68e5b60b0d7cd00616fc"
+    }
+  }
+}

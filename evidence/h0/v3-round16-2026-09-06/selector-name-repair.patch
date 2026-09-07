@@ -1,0 +1,29 @@
+--- a/evidence/h0/v3-data.mjs
++++ b/evidence/h0/v3-data.mjs
+@@ -61,7 +61,7 @@
+     const r=spawnSync('tree-sitter',['parse','--lib-path',library,'--lang-name',language==='C'?'c':'go',f],{encoding:'utf8',timeout:30000,maxBuffer:16*1024*1024});
+     assert(!r.error&&[0,1].includes(r.status)&&r.stdout.includes('['),'source parse failed');
+     const bytes=Buffer.from(text),starts=[0];for(let i=0;i<bytes.length;i++)if(bytes[i]===10)starts.push(i+1);
+-    return r.stdout.split('\n').flatMap(line=>{const m=line.match(/\(([\w]+) \[(\d+), (\d+)\] - \[(\d+), (\d+)\]/);if(!m)return[];const start=starts[+m[2]]+(+m[3]),end=starts[+m[4]]+(+m[5]);return[{type:m[1],field:line.match(/(\w+): \(/)?.[1]??null,start,end,text:bytes.subarray(start,end).toString('utf8')}];});
++    return r.stdout.split('\n').flatMap(line=>{const m=line.match(/\(([\w]+) \[(\d+), (\d+)\] - \[(\d+), (\d+)\]/);if(!m)return[];const start=starts[+m[2]]+(+m[3]),end=starts[+m[4]]+(+m[5]);return[{depth:line.match(/^\s*/)[0].length,type:m[1],field:line.match(/(\w+): \(/)?.[1]??null,start,end,text:bytes.subarray(start,end).toString('utf8')}];});
+   }finally{rmSync(d,{recursive:true,force:true});}
+ }
+ const identifiers=nodes=>new Set(nodes.filter(n=>/identifier$/.test(n.type)).map(n=>n.text));
+@@ -93,7 +93,7 @@
+         if(path===input.path&&scope&&n.start===scope.start&&n.end===scope.end)continue;
+         const ids=identifiers(ns.filter(x=>x.start>=n.start&&x.end<=n.end));const overlap=[...refs].filter(id=>ids.has(id));if(!overlap.length)continue;
+         const test=/(^|\/)(test|tests)\/|_test\.|test_/.test(path);
+-        const name=ns.find(x=>x.type==='identifier'&&['name','declarator'].includes(x.field)&&x.start>=n.start&&x.end<=n.end)?.text;
++        const name=ns.filter(x=>(input.language==='Go'?/identifier$/.test(x.type):x.type==='identifier')&&['name','declarator'].includes(x.field)&&x.start>=n.start&&x.end<=n.end).sort((a,b)=>(input.language==='Go'?a.depth-b.depth:0)||a.start-b.start)[0]?.text;
+         const rank=test?3:refs.has(name)?1:2;
+         if(rank===1){const hits=found.get(name)??[];hits.push({path,start:n.start});found.set(name,hits);}
+         selected.push(source(path,n.text,n.start,rank));
+@@ -102,7 +102,7 @@
+     for(const id of refs)if(!found.has(id))unresolved.push({side,identifier:id,reason:'no-unique-declaration-established'});else if(found.get(id).length>1)unresolved.push({side,identifier:id,reason:'ambiguous',candidates:found.get(id)});
+   }
+   const order=(a,b)=>a.rank-b.rank||a.revision.localeCompare(b.revision)||a.path.localeCompare(b.path)||a.start_byte-b.start_byte;
+-  return {contexts:{'local-context':budget(local),'selected':budget([...new Map(selected.sort(order).map(s=>[s.id,s])).values()])},retrieval:{unresolved,method:'syntax-ranges-and-identifier-candidates/2',budget_bytes:BUDGET,libraries:Object.fromEntries(Object.entries(libraries).map(([k,p])=>[k,hash(readFileSync(p))]))}};
++  return {contexts:{'local-context':budget(local),'selected':budget([...new Map(selected.sort(order).map(s=>[s.id,s])).values()])},retrieval:{unresolved,method:'syntax-ranges-and-identifier-candidates/3',budget_bytes:BUDGET,libraries:Object.fromEntries(Object.entries(libraries).map(([k,p])=>[k,hash(readFileSync(p))]))}};
+ }
+ 
+ export function applyCandidate(original,start,end,replacement){

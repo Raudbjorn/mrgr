@@ -1,0 +1,2427 @@
+{
+  "id": "9ba2abc3618408c4a30c06df4dfae69289db1f55cbaa617d30dbe17031470e81",
+  "source_protocol_sha256": "86ffe38086e217acf6e1a4aa4162e226862463d1bde3160478f9a6f4d2b968ce",
+  "repair_module_sha256": "b6a7cf123b0ac50001e1498cdf64964b8ac56e8e6a68cbbc6dcc01c8517b4a20",
+  "contexts": {
+    "local-context": [
+      {
+        "id": "711359e6aa8388bd0aefbdd8",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "internal/table/sql_query.go",
+        "start_byte": 0,
+        "text": "/*\nMaddy Mail Server - Composable all-in-one email server.\nCopyright © 2019-2020 Max Mazurov <fox.cpp@disroot.org>, Maddy Mail Server contributors\n\nThis program is free software: you can redistribute it and/or modify\nit under the terms of the GNU General Public License as published by\nthe Free Software Foundation, either version 3 of the License, or\n(at your option) any later version.\n\nThis program is distributed in the hope that it will be useful,\nbut WITHOUT ANY WARRANTY; without even the implied warranty of\nMERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the\nGNU General Public License for more details.\n\nYou should have received a copy of the GNU General Public License\nalong with this program.  If not, see <https://www.gnu.org/licenses/>.\n*/\n\npackage table\n\nimport (\n\t\"database/sql\"\n\t\"fmt\"\n\t\"strings\"\n\n\t\"github.com/foxcpp/maddy/framework/config\"\n\t\"github.com/foxcpp/maddy/framework/module\"\n\t_ \"github.com/lib/pq\"\n)\n\ntype SQL struct {\n\tmodName  string\n\tinstName string\n\n\tnamedArgs bool\n\n\tdb     *sql.DB\n\tlookup *sql.Stmt\n\tadd    *sql.Stmt\n\tlist   *sql.Stmt\n\tset    *sql.Stmt\n\tdel    *sql.Stmt\n}\n\nfunc NewSQL(modName, instName string, _, _ []string) (module.Module, error) {\n\treturn &SQL{\n\t\tmodName:  modName,\n\t\tinstName: instName,\n\t}, nil\n}\n\nfunc (s *SQL) Name() string {\n\treturn s.modName\n}\n\nfunc (s *SQL) InstanceName() string {\n\treturn s.instName\n}\n\nfunc (s *SQL) Init(cfg *config.Map) error {\n\tvar (\n\t\tdriver      string\n\t\tinitQueries []string\n\t\tdsnParts    []string\n\t\tlookupQuery string\n\n\t\taddQuery    string\n\t\tlistQuery   string\n\t\tremoveQuery string\n\t\tsetQuery    string\n\t)\n\tcfg.StringList(\"init\", false, false, nil, &initQueries)\n\tcfg.String(\"driver\", false, true, \"\", &driver)\n\tcfg.StringList(\"dsn\", false, true, nil, &dsnParts)\n\tcfg.Bool(\"named_args\", false, false, &s.namedArgs)\n\n\tcfg.String(\"lookup\", false, true, \"\", &lookupQuery)\n\n\tcfg.String(\"add\", false, false, \"\", &addQuery)\n\tcfg.String(\"list\", false, false, \"\", &listQuery)\n\tcfg.String(\"del\", false, false, \"\", &removeQuery)\n\tcfg.String(\"set\", false, false, \"\", &setQuery)\n\tif _, err := cfg.Process(); err != nil {\n\t\treturn err\n\t}\n\n\tif driver == \"postgres\" && s.namedArgs {\n\t\treturn config.NodeErr(cfg.Block, \"PostgreSQL driver does not support named_args\")\n\t}\n\n\tdb, err := sql.Open(driver, strings.Join(dsnParts, \" \"))\n\tif err != nil {\n\t\treturn config.NodeErr(cfg.Block, \"failed to open db: %v\", err)\n\t}\n\ts.db = db\n\n\tfor _, init := range initQueries {\n\t\tif _, err := db.Exec(init); err != nil {\n\t\t\treturn config.NodeErr(cfg.Block, \"init query failed: %v\", err)\n\t\t}\n\t}\n\n\ts.lookup, err = db.Prepare(lookupQuery)\n\tif err != nil {\n\t\treturn config.NodeErr(cfg.Block, \"failed to prepare lookup query: %v\", err)\n\t}\n\tif addQuery != \"\" {\n\t\ts.add, err = db.Prepare(addQuery)\n\t\tif err != nil {\n\t\t\treturn config.NodeErr(cfg.Block, \"failed to prepare add query: %v\", err)\n\t\t}\n\t}\n\tif listQuery != \"\" {\n\t\ts.list, err = db.Prepare(listQuery)\n\t\tif err != nil {\n\t\t\treturn config.NodeErr(cfg.Block, \"failed to prepare list query: %v\", err)\n\t\t}\n\t}\n\tif setQuery != \"\" {\n\t\ts.set, err = db.Prepare(setQuery)\n\t\tif err != nil {\n\t\t\treturn config.NodeErr(cfg.Block, \"failed to prepare set query: %v\", err)\n\t\t}\n\t}\n\tif removeQuery != \"\" {\n\t\ts.del, err = db.Prepare(removeQuery)\n\t\tif err != nil {\n\t\t\treturn config.NodeErr(cfg.Block, \"failed to prepare del query: %v\", err)\n\t\t}\n\t}\n\n\treturn nil\n}\n\nfunc (s *SQL) Close() error {\n\ts.lookup.Close()\n\treturn s.db.Close()\n}\n\nfunc (s *SQL) Lookup(val string) (string, bool, error) {\n\tvar (\n\t\trepl string\n\t\trow  *sql.Row\n\t)\n\tif s.namedArgs {\n\t\trow = s.lookup.QueryRow(sql.Named(\"key\", val))\n\t} else {\n\t\trow = s.lookup.QueryRow(val)\n\t}\n\tif err := row.Scan(&repl); err != nil {\n\t\tif err == sql.ErrNoRows {\n\t\t\treturn \"\", false, nil\n\t\t}\n\t\treturn \"\", false, fmt.Errorf(\"%s: lookup %s: %w\", s.modName, val, err)\n\t}\n\treturn repl, true, nil\n}\n\nfunc (s *SQL) Keys() ([]string, error) {\n\tif s.list == nil {\n\t\treturn nil, fmt.Errorf(\"%s: table is not mutable (no 'list' query)\", s.modName)\n\t}\n\n\trows, err := s.list.Query()\n\tif err != nil {\n\t\treturn nil, fmt.Errorf(\"%s: list: %w\", s.modName, err)\n\t}\n\tdefer rows.Close()\n\tvar list []string\n\tfor rows.Next() {\n\t\tvar key string\n\t\tif err := rows.Scan(&key); err != nil {\n\t\t\treturn nil, fmt.Errorf(\"%s: list: %w\", s.modName, err)\n\t\t}\n\t\tlist = append(list, key)\n\t}\n\treturn list, nil\n}\n\nfunc (s *SQL) RemoveKey(k string) error {\n\tif s.del == nil {\n\t\treturn fmt.Errorf(\"%s: table is not mutable (no 'del' query)\", s.modName)\n\t}\n\n\tvar err error\n\tif s.namedArgs {\n\t\t_, err = s.del.Exec(sql.Named(\"key\", k))\n\t} else {\n\t\t_, err = s.del.Exec(k)\n\t}\n\tif err != nil {\n\t\treturn fmt.Errorf(\"%s: del %s: %w\", s.modName, k, err)\n\t}\n\treturn nil\n}\n\nfunc (s *SQL) SetKey(k, v string) error {\n\tif s.set == nil {\n\t\treturn fmt.Errorf(\"%s: table is not mutable (no 'set' query)\", s.modName)\n\t}\n\tif s.add == nil {\n\t\treturn fmt.Errorf(\"%s: table is not mutable (no 'add' query)\", s.modName)\n\t}\n\n\tvar args []interface{}\n\tif s.namedArgs {\n\t\targs = []interface{}{sql.Named(\"key\", k), sql.Named(\"value\", v)}\n\t} else {\n\t\targs = []interface{}{k, v}\n\t}\n\n\tif _, err := s.add.Exec(args...); err != nil {\n\t\tif _, err := s.set.Exec(args...); err != nil {\n\t\t\treturn fmt.Errorf(\"%s: add %s: %w\", s.modName, k, err)\n\t\t}\n\t\treturn nil\n\t}\n\treturn nil\n}\n\nfunc init() {\n\tmodule.RegisterDeprecated(\"sql_query\", \"table.sql_query\", NewSQL)\n\tmodule.Register(\"table.sql_query\", NewSQL)\n}\n",
+        "rank": 0,
+        "truncated": false
+      },
+      {
+        "id": "8a7d4763f221ba43e2000c00",
+        "revision": "e025d3b11c4e9f4751c90fe683a9d0a18cd94675",
+        "path": "internal/table/sql_query.go",
+        "start_byte": 0,
+        "text": "/*\nMaddy Mail Server - Composable all-in-one email server.\nCopyright © 2019-2020 Max Mazurov <fox.cpp@disroot.org>, Maddy Mail Server contributors\n\nThis program is free software: you can redistribute it and/or modify\nit under the terms of the GNU General Public License as published by\nthe Free Software Foundation, either version 3 of the License, or\n(at your option) any later version.\n\nThis program is distributed in the hope that it will be useful,\nbut WITHOUT ANY WARRANTY; without even the implied warranty of\nMERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the\nGNU General Public License for more details.\n\nYou should have received a copy of the GNU General Public License\nalong with this program.  If not, see <https://www.gnu.org/licenses/>.\n*/\n\npackage table\n\nimport (\n\t\"context\"\n\t\"database/sql\"\n\t\"fmt\"\n\t\"strings\"\n\n\t\"github.com/foxcpp/maddy/framework/config\"\n\t\"github.com/foxcpp/maddy/framework/module\"\n\t_ \"github.com/lib/pq\"\n)\n\ntype SQL struct {\n\tmodName  string\n\tinstName string\n\n\tdb     *sql.DB\n\tlookup *sql.Stmt\n\tadd    *sql.Stmt\n\tlist   *sql.Stmt\n\tset    *sql.Stmt\n\tdel    *sql.Stmt\n}\n\nfunc NewSQL(modName, instName string, _, _ []string) (module.Module, error) {\n\treturn &SQL{\n\t\tmodName:  modName,\n\t\tinstName: instName,\n\t}, nil\n}\n\nfunc (s *SQL) Name() string {\n\treturn s.modName\n}\n\nfunc (s *SQL) InstanceName() string {\n\treturn s.instName\n}\n\nfunc (s *SQL) Init(cfg *config.Map) error {\n\tvar (\n\t\tdriver      string\n\t\tinitQueries []string\n\t\tdsnParts    []string\n\t\tlookupQuery string\n\n\t\taddQuery    string\n\t\tlistQuery   string\n\t\tremoveQuery string\n\t\tsetQuery    string\n\t)\n\tcfg.StringList(\"init\", false, false, nil, &initQueries)\n\tcfg.String(\"driver\", false, true, \"\", &driver)\n\tcfg.StringList(\"dsn\", false, true, nil, &dsnParts)\n\n\tcfg.String(\"lookup\", false, true, \"\", &lookupQuery)\n\n\tcfg.String(\"add\", false, false, \"\", &addQuery)\n\tcfg.String(\"list\", false, false, \"\", &listQuery)\n\tcfg.String(\"del\", false, false, \"\", &removeQuery)\n\tcfg.String(\"set\", false, false, \"\", &setQuery)\n\tif _, err := cfg.Process(); err != nil {\n\t\treturn err\n\t}\n\n\tdb, err := sql.Open(driver, strings.Join(dsnParts, \" \"))\n\tif err != nil {\n\t\treturn config.NodeErr(cfg.Block, \"failed to open db: %v\", err)\n\t}\n\ts.db = db\n\n\tfor _, init := range initQueries {\n\t\tif _, err := db.Exec(init); err != nil {\n\t\t\treturn config.NodeErr(cfg.Block, \"init query failed: %v\", err)\n\t\t}\n\t}\n\n\ts.lookup, err = db.Prepare(lookupQuery)\n\tif err != nil {\n\t\treturn config.NodeErr(cfg.Block, \"failed to prepare lookup query: %v\", err)\n\t}\n\tif addQuery != \"\" {\n\t\ts.add, err = db.Prepare(addQuery)\n\t\tif err != nil {\n\t\t\treturn config.NodeErr(cfg.Block, \"failed to prepare add query: %v\", err)\n\t\t}\n\t}\n\tif listQuery != \"\" {\n\t\ts.list, err = db.Prepare(listQuery)\n\t\tif err != nil {\n\t\t\treturn config.NodeErr(cfg.Block, \"failed to prepare list query: %v\", err)\n\t\t}\n\t}\n\tif setQuery != \"\" {\n\t\ts.set, err = db.Prepare(setQuery)\n\t\tif err != nil {\n\t\t\treturn config.NodeErr(cfg.Block, \"failed to prepare set query: %v\", err)\n\t\t}\n\t}\n\tif removeQuery != \"\" {\n\t\ts.del, err = db.Prepare(removeQuery)\n\t\tif err != nil {\n\t\t\treturn config.NodeErr(cfg.Block, \"failed to prepare del query: %v\", err)\n\t\t}\n\t}\n\n\treturn nil\n}\n\nfunc (s *SQL) Close() error {\n\ts.lookup.Close()\n\treturn s.db.Close()\n}\n\nfunc (s *SQL) Lookup(ctx context.Context, val string) (string, bool, error) {\n\tvar repl string\n\trow := s.lookup.QueryRowContext(ctx, val)\n\tif err := row.Scan(&repl); err != nil {\n\t\tif err == sql.ErrNoRows {\n\t\t\treturn \"\", false, nil\n\t\t}\n\t\treturn \"\", false, fmt.Errorf(\"%s: lookup %s: %w\", s.modName, val, err)\n\t}\n\treturn repl, true, nil\n}\n\nfunc (s *SQL) LookupMulti(ctx context.Context, val string) ([]string, error) {\n\tvar repl []string\n\trows, err := s.lookup.QueryContext(ctx, val)\n\tif err != nil {\n\t\treturn nil, fmt.Errorf(\"%s; lookup %s: %w\", s.modName, val, err)\n\t}\n\tfor rows.Next() {\n\t\tvar res string\n\t\tif err := rows.Scan(&res); err != nil {\n\t\t\treturn nil, fmt.Errorf(\"%s; lookup %s: %w\", s.modName, val, err)\n\t\t}\n\t\trepl = append(repl, res)\n\t}\n\tif err := rows.Err(); err != nil {\n\t\treturn nil, fmt.Errorf(\"%s; lookup %s: %w\", s.modName, val, err)\n\t}\n\treturn repl, nil\n}\n\nfunc (s *SQL) Keys() ([]string, error) {\n\tif s.list == nil {\n\t\treturn nil, fmt.Errorf(\"%s: table is not mutable (no 'list' query)\", s.modName)\n\t}\n\n\trows, err := s.list.Query()\n\tif err != nil {\n\t\treturn nil, fmt.Errorf(\"%s: list: %w\", s.modName, err)\n\t}\n\tdefer rows.Close()\n\tvar list []string\n\tfor rows.Next() {\n\t\tvar key string\n\t\tif err := rows.Scan(&key); err != nil {\n\t\t\treturn nil, fmt.Errorf(\"%s: list: %w\", s.modName, err)\n\t\t}\n\t\tlist = append(list, key)\n\t}\n\treturn list, nil\n}\n\nfunc (s *SQL) RemoveKey(k string) error {\n\tif s.del == nil {\n\t\treturn fmt.Errorf(\"%s: table is not mutable (no 'del' query)\", s.modName)\n\t}\n\n\t_, err := s.del.Exec(sql.Named(\"key\", k))\n\tif err != nil {\n\t\treturn fmt.Errorf(\"%s: del %s: %w\", s.modName, k, err)\n\t}\n\treturn nil\n}\n\nfunc (s *SQL) SetKey(k, v string) error {\n\tif s.set == nil {\n\t\treturn fmt.Errorf(\"%s: table is not mutable (no 'set' query)\", s.modName)\n\t}\n\tif s.add == nil {\n\t\treturn fmt.Errorf(\"%s: table is not mutable (no 'add' query)\", s.modName)\n\t}\n\n\tif _, err := s.add.Exec(sql.Named(\"key\", k), sql.Named(\"value\", v)); err != nil {\n\t\tif _, err := s.set.Exec(sql.Named(\"key\", k), sql.Named(\"value\", v)); err != nil {\n\t\t\treturn fmt.Errorf(\"%s: add %s: %w\", s.modName, k, err)\n\t\t}\n\t\treturn nil\n\t}\n\treturn nil\n}\n\nfunc init() {\n\tmodule.Register(\"table.sql_query\", NewSQL)\n}\n",
+        "rank": 0,
+        "truncated": false
+      }
+    ],
+    "selected": [
+      {
+        "id": "5fb256e06618f2d30f492346",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "internal/table/sql_query.go",
+        "start_byte": 3429,
+        "text": "func (s *SQL) Lookup(val string) (string, bool, error) {\n\tvar (\n\t\trepl string\n\t\trow  *sql.Row\n\t)\n\tif s.namedArgs {\n\t\trow = s.lookup.QueryRow(sql.Named(\"key\", val))\n\t} else {\n\t\trow = s.lookup.QueryRow(val)\n\t}\n\tif err := row.Scan(&repl); err != nil {\n\t\tif err == sql.ErrNoRows {\n\t\t\treturn \"\", false, nil\n\t\t}\n\t\treturn \"\", false, fmt.Errorf(\"%s: lookup %s: %w\", s.modName, val, err)\n\t}\n\treturn repl, true, nil\n}",
+        "rank": 0,
+        "truncated": false
+      },
+      {
+        "id": "b750c89a67cb3279fe03ba91",
+        "revision": "e025d3b11c4e9f4751c90fe683a9d0a18cd94675",
+        "path": "internal/table/sql_query.go",
+        "start_byte": 3241,
+        "text": "func (s *SQL) Lookup(ctx context.Context, val string) (string, bool, error) {\n\tvar repl string\n\trow := s.lookup.QueryRowContext(ctx, val)\n\tif err := row.Scan(&repl); err != nil {\n\t\tif err == sql.ErrNoRows {\n\t\t\treturn \"\", false, nil\n\t\t}\n\t\treturn \"\", false, fmt.Errorf(\"%s: lookup %s: %w\", s.modName, val, err)\n\t}\n\treturn repl, true, nil\n}",
+        "rank": 0,
+        "truncated": false
+      },
+      {
+        "id": "96a53c2ea9dfce2cb565bcc3",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "cmd/maddyctl/appendlimit.go",
+        "start_byte": 1718,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "cae863d74daa66dcf65840d1",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "cmd/maddyctl/hash.go",
+        "start_byte": 2164,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "7e5e98f599361e0d6d9e9099",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "cmd/maddyctl/users.go",
+        "start_byte": 1483,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "4e87b6919cd59ee35b1ea041",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "cmd/maddyctl/users.go",
+        "start_byte": 2275,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "d5e29acf2ba296cbaf6012f0",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "framework/cfgparser/imports.go",
+        "start_byte": 3340,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "92e871d18dde8a026fb8c0e7",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "framework/cfgparser/parse.go",
+        "start_byte": 3623,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "40a165891f60f2744a25bf83",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "framework/config/lexer/lexer.go",
+        "start_byte": 2242,
+        "text": "func (l *lexer) err() error {\n\treturn l.lastErr\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "13e813bc8540abeba3281725",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "framework/config/lexer/lexer.go",
+        "start_byte": 2969,
+        "text": "var val []rune",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "3f9c581c7b4ccda1b7d10b8e",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "framework/config/map.go",
+        "start_byte": 19355,
+        "text": "var val interface{}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "76f6b75ca988d57baeeb3a1f",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "framework/config/module/check_action.go",
+        "start_byte": 2509,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "2445e26e9e3c5fceb986e117",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "framework/config/module/check_action.go",
+        "start_byte": 3709,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "384dbdf890e20926f7290257",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "framework/config/module/modconfig.go",
+        "start_byte": 4415,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "c94fd3962642e4371faab7f4",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "framework/log/syslog.go",
+        "start_byte": 966,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "160a68690002977a73eae321",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "framework/logparser/parse.go",
+        "start_byte": 2507,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "bb8151b28626d437f1fcd9e0",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "framework/module/dummy.go",
+        "start_byte": 1313,
+        "text": "func (d *Dummy) Lookup(_ string) (string, bool, error) {\n\treturn \"\", false, nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "8fde4baf633a293c3757f328",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "internal/auth/dovecot_sasl/dovecot_sasl.go",
+        "start_byte": 1285,
+        "text": "const modName = \"dovecot_sasl\"",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "c65a9b7e559fa05a0252091b",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "internal/auth/pass_table/table.go",
+        "start_byte": 1713,
+        "text": "func (a *Auth) Lookup(username string) (string, bool, error) {\n\tkey, err := precis.UsernameCaseMapped.CompareKey(username)\n\tif err != nil {\n\t\treturn \"\", false, nil\n\t}\n\n\treturn a.table.Lookup(key)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "c5407176480e7dd9eb3822ee",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "internal/auth/plain_separate/plain_separate.go",
+        "start_byte": 2300,
+        "text": "func (a *Auth) Lookup(username string) (string, bool, error) {\n\tok := len(a.userTbls) == 0\n\tfor _, tbl := range a.userTbls {\n\t\t_, tblOk, err := tbl.Lookup(username)\n\t\tif err != nil {\n\t\t\treturn \"\", false, fmt.Errorf(\"plain_separate: underlying table error: %w\", err)\n\t\t}\n\t\tif tblOk {\n\t\t\tok = true\n\t\t\tbreak\n\t\t}\n\t}\n\tif !ok {\n\t\treturn \"\", false, nil\n\t}\n\treturn \"\", true, nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "19f9533b84396b6707d7ab8d",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "internal/auth/shadow/module.go",
+        "start_byte": 2297,
+        "text": "func (a *Auth) Lookup(username string) (string, bool, error) {\n\tif a.useHelper {\n\t\treturn \"\", false, fmt.Errorf(\"shadow: table lookup are not possible when using a helper\")\n\t}\n\n\tent, err := Lookup(username)\n\tif err != nil {\n\t\treturn \"\", false, nil\n\t}\n\n\tif !ent.IsAccountValid() {\n\t\treturn \"\", false, nil\n\t}\n\n\treturn \"\", true, nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "616c3a04c50f4a8d69cc4f6f",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "internal/auth/shadow/read.go",
+        "start_byte": 1852,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "a7b87f288d02c3ceaeefc3da",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "internal/auth/shadow/read.go",
+        "start_byte": 2028,
+        "text": "func Lookup(name string) (*Entry, error) {\n\tentries, err := Read()\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\n\tfor _, entry := range entries {\n\t\tif entry.Name == name {\n\t\t\treturn &entry, nil\n\t\t}\n\t}\n\n\treturn nil, ErrNoSuchUser\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "a60da841397a7a415fc800d8",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "internal/check/command/command.go",
+        "start_byte": 1289,
+        "text": "const modName = \"check.command\"",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "80c8b7442b1674ca95bb91c1",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "internal/check/milter/milter.go",
+        "start_byte": 1192,
+        "text": "const modName = \"check.milter\"",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "4308a51321f764348d1cd809",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "internal/check/rspamd/rspamd.go",
+        "start_byte": 1321,
+        "text": "const modName = \"check.rspamd\"",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "fcc8a25340b0fd0b64810795",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "internal/check/skeleton.go",
+        "start_byte": 1238,
+        "text": "const modName = \"check_things\"",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "7e64c73a677015376d17be4f",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "internal/check/spf/spf.go",
+        "start_byte": 1500,
+        "text": "const modName = \"check.spf\"",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "49777c903e1cf6d00220bd9f",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "internal/endpoint/dovecot_sasld/dovecot_sasl.go",
+        "start_byte": 1098,
+        "text": "const modName = \"dovecot_sasld\"",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "0c1aec3a5f5975b48a9c6d88",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "internal/endpoint/imap/imap.go",
+        "start_byte": 4907,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "44603de3e14ac736bffa9022",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "internal/endpoint/openmetrics/om.go",
+        "start_byte": 1022,
+        "text": "const modName = \"openmetrics\"",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "1a6ef179c932a2b656b2ff63",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "internal/endpoint/smtp/session.go",
+        "start_byte": 3549,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "2fcba7731c6b4a38922dd012",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "internal/endpoint/smtp/smtp.go",
+        "start_byte": 6059,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "df309961e187a6f8c78630ce",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "internal/endpoint/smtp/smtp.go",
+        "start_byte": 10140,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "20223391a4a112bf926b5197",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "internal/imap_filter/command/command.go",
+        "start_byte": 1088,
+        "text": "const modName = \"imap.filter.command\"",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "1f450663bc6cf9755f405d47",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "internal/limits/limits.go",
+        "start_byte": 3712,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "496bc62737674801f6325056",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "internal/limits/limits.go",
+        "start_byte": 3864,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "970640f397110d35aab51de2",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "internal/modify/dkim/dkim.go",
+        "start_byte": 8310,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "53bb66de17e22295acb413d9",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "internal/modify/dkim/dkim.go",
+        "start_byte": 9113,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "392eb851636d0ab15f9a389e",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "internal/modify/dkim/keys.go",
+        "start_byte": 4249,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "f852102fde1086d006b73363",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "internal/modify/group.go",
+        "start_byte": 2264,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "40df473a2ab6d191119d7e5e",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "internal/modify/group.go",
+        "start_byte": 2522,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "004efa087c84d906970e3714",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "internal/msgpipeline/config.go",
+        "start_byte": 4251,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "e96a04440d9bfaaaf8e81b5c",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "internal/msgpipeline/config.go",
+        "start_byte": 4763,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "4da622aa17078115603e2b93",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "internal/msgpipeline/config.go",
+        "start_byte": 7286,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "854d3ce5ec2e11fa7f61155d",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "internal/msgpipeline/config.go",
+        "start_byte": 7803,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "39a3791770fbc737dd7dfdda",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "internal/msgpipeline/config.go",
+        "start_byte": 9279,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "9bf969be8a8a00732745edf4",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "internal/msgpipeline/config.go",
+        "start_byte": 9670,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "b24a7e3f3e547878af231234",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "internal/msgpipeline/msgpipeline.go",
+        "start_byte": 4651,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "2b41cab43c3ccdf0df1c1723",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "internal/msgpipeline/msgpipeline.go",
+        "start_byte": 6155,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "6d5965e03a31ea9a21444ff6",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "internal/smtpconn/smtpconn.go",
+        "start_byte": 7911,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "e07140cf36052b4bcdd64cd0",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "internal/smtpconn/smtpconn.go",
+        "start_byte": 9140,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "1977b1dce1b719d9c43cfa10",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "internal/storage/imapsql/imapsql.go",
+        "start_byte": 8551,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "b5f5407f0e3d1b53778c8a7f",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "internal/storage/imapsql/imapsql.go",
+        "start_byte": 12858,
+        "text": "func (store *Storage) Lookup(key string) (string, bool, error) {\n\taccountName, err := prepareUsername(key)\n\tif err != nil {\n\t\treturn \"\", false, nil\n\t}\n\n\tusr, err := store.Back.GetUser(accountName)\n\tif err != nil {\n\t\tif err == imapsql.ErrUserDoesntExists {\n\t\t\treturn \"\", false, nil\n\t\t}\n\t\treturn \"\", false, err\n\t}\n\tif err := usr.Logout(); err != nil {\n\t\tstore.Log.Error(\"logout failed\", err, \"username\", accountName)\n\t}\n\n\treturn \"\", true, nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "400556b9e4ee6d00a27baa74",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "internal/table/file.go",
+        "start_byte": 4476,
+        "text": "func (f *File) Lookup(val string) (string, bool, error) {\n\t// The existing map is never modified, instead it is replaced with a new\n\t// one if reload is performed.\n\tf.mLck.RLock()\n\tusedFile := f.m\n\tf.mLck.RUnlock()\n\n\tnewVal, ok := usedFile[val]\n\treturn newVal, ok, nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "b47491b235a416e52b0db0dd",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "internal/table/identity.go",
+        "start_byte": 1281,
+        "text": "func (s *Identity) Lookup(key string) (string, bool, error) {\n\treturn key, true, nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "2a0bfdb5e008cc5e24931512",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "internal/table/regexp.go",
+        "start_byte": 1997,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "deca8309d7993bc608c7a89f",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "internal/table/regexp.go",
+        "start_byte": 2243,
+        "text": "func (r *Regexp) Lookup(key string) (string, bool, error) {\n\tmatches := r.re.FindStringSubmatchIndex(key)\n\tif matches == nil {\n\t\treturn \"\", false, nil\n\t}\n\n\tif !r.expandPlaceholders {\n\t\treturn r.replacement, true, nil\n\t}\n\n\treturn string(r.re.ExpandString([]byte{}, r.replacement, key, matches)), true, nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "26de574006c0bb27ddfd373f",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "internal/table/sql_query.go",
+        "start_byte": 939,
+        "text": "type SQL struct {\n\tmodName  string\n\tinstName string\n\n\tnamedArgs bool\n\n\tdb     *sql.DB\n\tlookup *sql.Stmt\n\tadd    *sql.Stmt\n\tlist   *sql.Stmt\n\tset    *sql.Stmt\n\tdel    *sql.Stmt\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "cfe7fbf50134ab73ca2f5a06",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "internal/table/sql_query.go",
+        "start_byte": 3487,
+        "text": "var (\n\t\trepl string\n\t\trow  *sql.Row\n\t)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "94167db8060af8484f4f4028",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "internal/table/sql_query.go",
+        "start_byte": 4463,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "52361f4d7f9e33baa60490e9",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "internal/table/sql_table.go",
+        "start_byte": 3918,
+        "text": "func (s *SQLTable) Lookup(val string) (string, bool, error) {\n\treturn s.wrapped.Lookup(val)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "3ac864f47cb90b8abf6e754c",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "internal/table/static.go",
+        "start_byte": 1566,
+        "text": "func (s *Static) Lookup(key string) (string, bool, error) {\n\tval, ok := s.m[key]\n\treturn val, ok, nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "498ad67f8872f97d43f121a5",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "internal/target/queue/queue.go",
+        "start_byte": 9426,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "44f96445ec3ac7c9ce5b61f6",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "internal/target/queue/queue.go",
+        "start_byte": 21870,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "88d85acf1d945726751dc53c",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "internal/target/remote/remote.go",
+        "start_byte": 2725,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "c4199abe587ce17c96101866",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "internal/target/remote/security.go",
+        "start_byte": 9712,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "6886d782c335b36c1df62541",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "internal/target/smtp/smtp_downstream.go",
+        "start_byte": 3206,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "79bcf6e6098182a1bd22c4a4",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "internal/testutils/table.go",
+        "start_byte": 842,
+        "text": "func (m Table) Lookup(a string) (string, bool, error) {\n\tb, ok := m.M[a]\n\treturn b, ok, m.Err\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "861545a2fada091348565c07",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "maddy.go",
+        "start_byte": 4470,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "48b8b65ad633908e7c85c54f",
+        "revision": "e025d3b11c4e9f4751c90fe683a9d0a18cd94675",
+        "path": "cmd/maddyctl/appendlimit.go",
+        "start_byte": 1718,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "c3dee7029708c7b4dde4ff24",
+        "revision": "e025d3b11c4e9f4751c90fe683a9d0a18cd94675",
+        "path": "cmd/maddyctl/hash.go",
+        "start_byte": 2164,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "3b1da58bdf87927abe11ecca",
+        "revision": "e025d3b11c4e9f4751c90fe683a9d0a18cd94675",
+        "path": "cmd/maddyctl/users.go",
+        "start_byte": 1483,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "5a5b59ef76f73364f120654b",
+        "revision": "e025d3b11c4e9f4751c90fe683a9d0a18cd94675",
+        "path": "cmd/maddyctl/users.go",
+        "start_byte": 2275,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "c7661a8b09ad60ec8ddf54f3",
+        "revision": "e025d3b11c4e9f4751c90fe683a9d0a18cd94675",
+        "path": "framework/cfgparser/imports.go",
+        "start_byte": 3340,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "2356eed00b3c482174417a5b",
+        "revision": "e025d3b11c4e9f4751c90fe683a9d0a18cd94675",
+        "path": "framework/cfgparser/parse.go",
+        "start_byte": 3623,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "3ded11e3f7caa44d2550c8d6",
+        "revision": "e025d3b11c4e9f4751c90fe683a9d0a18cd94675",
+        "path": "framework/config/lexer/lexer.go",
+        "start_byte": 2242,
+        "text": "func (l *lexer) err() error {\n\treturn l.lastErr\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "9e56888ffa22ec95d07a064b",
+        "revision": "e025d3b11c4e9f4751c90fe683a9d0a18cd94675",
+        "path": "framework/config/lexer/lexer.go",
+        "start_byte": 2969,
+        "text": "var val []rune",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "3dce5bf7ad0f50e9da92bf85",
+        "revision": "e025d3b11c4e9f4751c90fe683a9d0a18cd94675",
+        "path": "framework/config/map.go",
+        "start_byte": 19355,
+        "text": "var val interface{}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "22c402b515cb63c37be8ff33",
+        "revision": "e025d3b11c4e9f4751c90fe683a9d0a18cd94675",
+        "path": "framework/config/module/check_action.go",
+        "start_byte": 2509,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "0f50c59584d20255c4087368",
+        "revision": "e025d3b11c4e9f4751c90fe683a9d0a18cd94675",
+        "path": "framework/config/module/check_action.go",
+        "start_byte": 3709,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "8a35f08ff6e97a7307b4427a",
+        "revision": "e025d3b11c4e9f4751c90fe683a9d0a18cd94675",
+        "path": "framework/config/module/modconfig.go",
+        "start_byte": 4415,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "574bf1513cb2770f6b2b28f4",
+        "revision": "e025d3b11c4e9f4751c90fe683a9d0a18cd94675",
+        "path": "framework/log/syslog.go",
+        "start_byte": 966,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "c2180c64634541ee7b5d4ab1",
+        "revision": "e025d3b11c4e9f4751c90fe683a9d0a18cd94675",
+        "path": "framework/logparser/parse.go",
+        "start_byte": 2507,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "6793e624ea92f495c6279296",
+        "revision": "e025d3b11c4e9f4751c90fe683a9d0a18cd94675",
+        "path": "framework/module/dummy.go",
+        "start_byte": 1313,
+        "text": "func (d *Dummy) Lookup(_ context.Context, _ string) (string, bool, error) {\n\treturn \"\", false, nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "971602ffad9041f1ab1c3a1a",
+        "revision": "e025d3b11c4e9f4751c90fe683a9d0a18cd94675",
+        "path": "internal/auth/dovecot_sasl/dovecot_sasl.go",
+        "start_byte": 1285,
+        "text": "const modName = \"dovecot_sasl\"",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "11c93f7de0270083cca4de49",
+        "revision": "e025d3b11c4e9f4751c90fe683a9d0a18cd94675",
+        "path": "internal/auth/ldap/ldap.go",
+        "start_byte": 316,
+        "text": "const modName = \"auth.ldap\"",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "8a3ab89c16120c8ef08b35f8",
+        "revision": "e025d3b11c4e9f4751c90fe683a9d0a18cd94675",
+        "path": "internal/auth/ldap/ldap.go",
+        "start_byte": 2222,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "0938817e61a9cec9b2f1c2f7",
+        "revision": "e025d3b11c4e9f4751c90fe683a9d0a18cd94675",
+        "path": "internal/auth/ldap/ldap.go",
+        "start_byte": 4661,
+        "text": "func (a *Auth) Lookup(_ context.Context, username string) (string, bool, error) {\n\tconn, err := a.getConn()\n\tif err != nil {\n\t\treturn \"\", false, err\n\t}\n\tdefer a.returnConn(conn)\n\n\tvar userDN string\n\tif a.dnTemplate != \"\" {\n\t\treturn \"\", false, fmt.Errorf(\"auth.ldap: lookups require search config but dn_template is used\")\n\t} else {\n\t\treq := ldap.NewSearchRequest(\n\t\t\ta.baseDN, ldap.ScopeWholeSubtree, ldap.NeverDerefAliases,\n\t\t\t2, 0, false,\n\t\t\tstrings.ReplaceAll(a.filterTemplate, \"{username}\", username),\n\t\t\t[]string{\"dn\"}, nil)\n\t\tres, err := conn.Search(req)\n\t\tif err != nil {\n\t\t\treturn \"\", false, fmt.Errorf(\"auth.ldap: search: %w\", err)\n\t\t}\n\t\tif len(res.Entries) > 1 {\n\t\t\treturn \"\", false, fmt.Errorf(\"auth.ldap: too manu entries returned (%d)\", len(res.Entries))\n\t\t}\n\t\tif len(res.Entries) == 0 {\n\t\t\treturn \"\", false, nil\n\t\t}\n\t\tuserDN = res.Entries[0].DN\n\t}\n\n\treturn userDN, true, nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "d6c6ba56e15467ea95817bad",
+        "revision": "e025d3b11c4e9f4751c90fe683a9d0a18cd94675",
+        "path": "internal/auth/pass_table/table.go",
+        "start_byte": 1724,
+        "text": "func (a *Auth) Lookup(ctx context.Context, username string) (string, bool, error) {\n\tkey, err := precis.UsernameCaseMapped.CompareKey(username)\n\tif err != nil {\n\t\treturn \"\", false, nil\n\t}\n\n\treturn a.table.Lookup(ctx, key)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "8dec4884762614a2f8089ac4",
+        "revision": "e025d3b11c4e9f4751c90fe683a9d0a18cd94675",
+        "path": "internal/auth/plain_separate/plain_separate.go",
+        "start_byte": 2311,
+        "text": "func (a *Auth) Lookup(ctx context.Context, username string) (string, bool, error) {\n\tok := len(a.userTbls) == 0\n\tfor _, tbl := range a.userTbls {\n\t\t_, tblOk, err := tbl.Lookup(ctx, username)\n\t\tif err != nil {\n\t\t\treturn \"\", false, fmt.Errorf(\"plain_separate: underlying table error: %w\", err)\n\t\t}\n\t\tif tblOk {\n\t\t\tok = true\n\t\t\tbreak\n\t\t}\n\t}\n\tif !ok {\n\t\treturn \"\", false, nil\n\t}\n\treturn \"\", true, nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "4cfdd4856eded56fa1342c29",
+        "revision": "e025d3b11c4e9f4751c90fe683a9d0a18cd94675",
+        "path": "internal/auth/shadow/module.go",
+        "start_byte": 2297,
+        "text": "func (a *Auth) Lookup(username string) (string, bool, error) {\n\tif a.useHelper {\n\t\treturn \"\", false, fmt.Errorf(\"shadow: table lookup are not possible when using a helper\")\n\t}\n\n\tent, err := Lookup(username)\n\tif err != nil {\n\t\treturn \"\", false, nil\n\t}\n\n\tif !ent.IsAccountValid() {\n\t\treturn \"\", false, nil\n\t}\n\n\treturn \"\", true, nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "43c3ddf71a1ebd3fed247732",
+        "revision": "e025d3b11c4e9f4751c90fe683a9d0a18cd94675",
+        "path": "internal/auth/shadow/read.go",
+        "start_byte": 1852,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "d30afdb2df74f138de3b84b3",
+        "revision": "e025d3b11c4e9f4751c90fe683a9d0a18cd94675",
+        "path": "internal/auth/shadow/read.go",
+        "start_byte": 2028,
+        "text": "func Lookup(name string) (*Entry, error) {\n\tentries, err := Read()\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\n\tfor _, entry := range entries {\n\t\tif entry.Name == name {\n\t\t\treturn &entry, nil\n\t\t}\n\t}\n\n\treturn nil, ErrNoSuchUser\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "0cef373143ae29f3616edaa3",
+        "revision": "e025d3b11c4e9f4751c90fe683a9d0a18cd94675",
+        "path": "internal/check/authorize_sender/authorize_sender.go",
+        "start_byte": 1287,
+        "text": "const modName = \"check.authorize_sender\"",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "251021581887fd7689f39ccb",
+        "revision": "e025d3b11c4e9f4751c90fe683a9d0a18cd94675",
+        "path": "internal/check/command/command.go",
+        "start_byte": 1289,
+        "text": "const modName = \"check.command\"",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "65322661e090689da74a9624",
+        "revision": "e025d3b11c4e9f4751c90fe683a9d0a18cd94675",
+        "path": "internal/check/milter/milter.go",
+        "start_byte": 1192,
+        "text": "const modName = \"check.milter\"",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "63faa96863dcc7092a335dc3",
+        "revision": "e025d3b11c4e9f4751c90fe683a9d0a18cd94675",
+        "path": "internal/check/rspamd/rspamd.go",
+        "start_byte": 1321,
+        "text": "const modName = \"check.rspamd\"",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "9e6967fa24ea2e2092a74327",
+        "revision": "e025d3b11c4e9f4751c90fe683a9d0a18cd94675",
+        "path": "internal/check/skeleton.go",
+        "start_byte": 1238,
+        "text": "const modName = \"check_things\"",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "003151cc567727225d03f0e9",
+        "revision": "e025d3b11c4e9f4751c90fe683a9d0a18cd94675",
+        "path": "internal/check/spf/spf.go",
+        "start_byte": 1500,
+        "text": "const modName = \"check.spf\"",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "aafd75e51bbf698c7f3b94d5",
+        "revision": "e025d3b11c4e9f4751c90fe683a9d0a18cd94675",
+        "path": "internal/endpoint/dovecot_sasld/dovecot_sasl.go",
+        "start_byte": 1098,
+        "text": "const modName = \"dovecot_sasld\"",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "a7fdbad4b2b9bcafa5b7e9f4",
+        "revision": "e025d3b11c4e9f4751c90fe683a9d0a18cd94675",
+        "path": "internal/endpoint/imap/imap.go",
+        "start_byte": 4907,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "10a47a2eea25aca85427b64c",
+        "revision": "e025d3b11c4e9f4751c90fe683a9d0a18cd94675",
+        "path": "internal/endpoint/openmetrics/om.go",
+        "start_byte": 1022,
+        "text": "const modName = \"openmetrics\"",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "a0072174d868f26fd2aa9d95",
+        "revision": "e025d3b11c4e9f4751c90fe683a9d0a18cd94675",
+        "path": "internal/endpoint/smtp/session.go",
+        "start_byte": 3026,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "1f0e725408f130ad2a7b0462",
+        "revision": "e025d3b11c4e9f4751c90fe683a9d0a18cd94675",
+        "path": "internal/endpoint/smtp/smtp.go",
+        "start_byte": 6034,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "fc4c4ead844621b19aaf9e2d",
+        "revision": "e025d3b11c4e9f4751c90fe683a9d0a18cd94675",
+        "path": "internal/endpoint/smtp/smtp.go",
+        "start_byte": 10040,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "d7adc434b0e84e7701eac0c9",
+        "revision": "e025d3b11c4e9f4751c90fe683a9d0a18cd94675",
+        "path": "internal/imap_filter/command/command.go",
+        "start_byte": 1088,
+        "text": "const modName = \"imap.filter.command\"",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "958f7346c1e955f76a4ae607",
+        "revision": "e025d3b11c4e9f4751c90fe683a9d0a18cd94675",
+        "path": "internal/limits/limits.go",
+        "start_byte": 3712,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "dbfdd39ee81c23adced12b85",
+        "revision": "e025d3b11c4e9f4751c90fe683a9d0a18cd94675",
+        "path": "internal/limits/limits.go",
+        "start_byte": 3864,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "55e42c944240731a07a80c91",
+        "revision": "e025d3b11c4e9f4751c90fe683a9d0a18cd94675",
+        "path": "internal/modify/dkim/dkim.go",
+        "start_byte": 8310,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "8f3c92be54ddc2deb7de2d3f",
+        "revision": "e025d3b11c4e9f4751c90fe683a9d0a18cd94675",
+        "path": "internal/modify/dkim/dkim.go",
+        "start_byte": 9113,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "7fff97eb29706bd941bd40bf",
+        "revision": "e025d3b11c4e9f4751c90fe683a9d0a18cd94675",
+        "path": "internal/modify/dkim/keys.go",
+        "start_byte": 4249,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "c9f236aebe653b6fdffda157",
+        "revision": "e025d3b11c4e9f4751c90fe683a9d0a18cd94675",
+        "path": "internal/modify/group.go",
+        "start_byte": 2264,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "1c0ad2867a31fe56a3c9b0f1",
+        "revision": "e025d3b11c4e9f4751c90fe683a9d0a18cd94675",
+        "path": "internal/modify/group.go",
+        "start_byte": 2522,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "b0d17d5b37e597927370eaaf",
+        "revision": "e025d3b11c4e9f4751c90fe683a9d0a18cd94675",
+        "path": "internal/msgpipeline/config.go",
+        "start_byte": 4251,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "24b18e9f54d93e134ae9c4b1",
+        "revision": "e025d3b11c4e9f4751c90fe683a9d0a18cd94675",
+        "path": "internal/msgpipeline/config.go",
+        "start_byte": 4763,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "44190fae5e8cfa58c8e682f8",
+        "revision": "e025d3b11c4e9f4751c90fe683a9d0a18cd94675",
+        "path": "internal/msgpipeline/config.go",
+        "start_byte": 7286,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "c32e99b514785f096d60cbf9",
+        "revision": "e025d3b11c4e9f4751c90fe683a9d0a18cd94675",
+        "path": "internal/msgpipeline/config.go",
+        "start_byte": 7803,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "622ac2746aab6f7515b020d0",
+        "revision": "e025d3b11c4e9f4751c90fe683a9d0a18cd94675",
+        "path": "internal/msgpipeline/config.go",
+        "start_byte": 9279,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "62d4d1bb96a7f7e0ef9d6970",
+        "revision": "e025d3b11c4e9f4751c90fe683a9d0a18cd94675",
+        "path": "internal/msgpipeline/config.go",
+        "start_byte": 9670,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "d795fcfbc7f05a25074ff1db",
+        "revision": "e025d3b11c4e9f4751c90fe683a9d0a18cd94675",
+        "path": "internal/msgpipeline/msgpipeline.go",
+        "start_byte": 4651,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "62d754bb40c0735190cef129",
+        "revision": "e025d3b11c4e9f4751c90fe683a9d0a18cd94675",
+        "path": "internal/msgpipeline/msgpipeline.go",
+        "start_byte": 6181,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "8f17b398761c5ab77d97bf13",
+        "revision": "e025d3b11c4e9f4751c90fe683a9d0a18cd94675",
+        "path": "internal/smtpconn/smtpconn.go",
+        "start_byte": 8651,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "84234426a6f2f64f3bbb41d3",
+        "revision": "e025d3b11c4e9f4751c90fe683a9d0a18cd94675",
+        "path": "internal/smtpconn/smtpconn.go",
+        "start_byte": 9880,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "2f55deda58f02bc8f5233dd4",
+        "revision": "e025d3b11c4e9f4751c90fe683a9d0a18cd94675",
+        "path": "internal/storage/blob/s3/s3.go",
+        "start_byte": 270,
+        "text": "const modName = \"storage.blob.s3\"",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "43ad2fb2e5fe0b94db0f1d98",
+        "revision": "e025d3b11c4e9f4751c90fe683a9d0a18cd94675",
+        "path": "internal/storage/imapsql/imapsql.go",
+        "start_byte": 6984,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "70dc48da0d9f8fe6b068231a",
+        "revision": "e025d3b11c4e9f4751c90fe683a9d0a18cd94675",
+        "path": "internal/storage/imapsql/imapsql.go",
+        "start_byte": 10498,
+        "text": "func (store *Storage) Lookup(ctx context.Context, key string) (string, bool, error) {\n\taccountName, err := store.authNormalize(ctx, key)\n\tif err != nil {\n\t\treturn \"\", false, nil\n\t}\n\n\tusr, err := store.Back.GetUser(accountName)\n\tif err != nil {\n\t\tif err == imapsql.ErrUserDoesntExists {\n\t\t\treturn \"\", false, nil\n\t\t}\n\t\treturn \"\", false, err\n\t}\n\tif err := usr.Logout(); err != nil {\n\t\tstore.Log.Error(\"logout failed\", err, \"username\", accountName)\n\t}\n\n\treturn \"\", true, nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "a1d00e2cbe51d1e6448f26e6",
+        "revision": "e025d3b11c4e9f4751c90fe683a9d0a18cd94675",
+        "path": "internal/table/chain.go",
+        "start_byte": 2006,
+        "text": "func (s *Chain) Lookup(ctx context.Context, key string) (string, bool, error) {\n\tfor i, step := range s.chain {\n\t\tval, ok, err := step.Lookup(ctx, key)\n\t\tif err != nil {\n\t\t\treturn \"\", false, err\n\t\t}\n\t\tif !ok {\n\t\t\tif s.optional[i] {\n\t\t\t\tcontinue\n\t\t\t}\n\t\t\treturn \"\", false, nil\n\t\t}\n\t\tkey = val\n\t}\n\treturn key, true, nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "6ab102e659bebdcdb05f039c",
+        "revision": "e025d3b11c4e9f4751c90fe683a9d0a18cd94675",
+        "path": "internal/table/email_localpart.go",
+        "start_byte": 1374,
+        "text": "func (s *EmailLocalpart) Lookup(ctx context.Context, key string) (string, bool, error) {\n\tmbox, _, err := address.Split(key)\n\tif err != nil {\n\t\t// Invalid email, no local part mapping.\n\t\treturn \"\", false, nil\n\t}\n\treturn mbox, true, nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "4cb2a1779f0e491bef56431c",
+        "revision": "e025d3b11c4e9f4751c90fe683a9d0a18cd94675",
+        "path": "internal/table/file.go",
+        "start_byte": 4525,
+        "text": "func (f *File) Lookup(_ context.Context, val string) (string, bool, error) {\n\t// The existing map is never modified, instead it is replaced with a new\n\t// one if reload is performed.\n\tf.mLck.RLock()\n\tusedFile := f.m\n\tf.mLck.RUnlock()\n\n\tnewVal, ok := usedFile[val]\n\n\tif len(newVal) == 0 {\n\t\treturn \"\", false, nil\n\t}\n\n\treturn newVal[0], ok, nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "8c0d80e5265d151faff9e124",
+        "revision": "e025d3b11c4e9f4751c90fe683a9d0a18cd94675",
+        "path": "internal/table/identity.go",
+        "start_byte": 1293,
+        "text": "func (s *Identity) Lookup(_ context.Context, key string) (string, bool, error) {\n\treturn key, true, nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "3137ed9cb50da2962d4c3b49",
+        "revision": "e025d3b11c4e9f4751c90fe683a9d0a18cd94675",
+        "path": "internal/table/regexp.go",
+        "start_byte": 2008,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "04c2107fce9a808e2199e81b",
+        "revision": "e025d3b11c4e9f4751c90fe683a9d0a18cd94675",
+        "path": "internal/table/regexp.go",
+        "start_byte": 2254,
+        "text": "func (r *Regexp) Lookup(_ context.Context, key string) (string, bool, error) {\n\tmatches := r.re.FindStringSubmatchIndex(key)\n\tif matches == nil {\n\t\treturn \"\", false, nil\n\t}\n\n\tif !r.expandPlaceholders {\n\t\treturn r.replacement, true, nil\n\t}\n\n\treturn string(r.re.ExpandString([]byte{}, r.replacement, key, matches)), true, nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "e2e5403ab0c3621e75b18511",
+        "revision": "e025d3b11c4e9f4751c90fe683a9d0a18cd94675",
+        "path": "internal/table/sql_query.go",
+        "start_byte": 950,
+        "text": "type SQL struct {\n\tmodName  string\n\tinstName string\n\n\tdb     *sql.DB\n\tlookup *sql.Stmt\n\tadd    *sql.Stmt\n\tlist   *sql.Stmt\n\tset    *sql.Stmt\n\tdel    *sql.Stmt\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "8a341e249d07a927fda77f21",
+        "revision": "e025d3b11c4e9f4751c90fe683a9d0a18cd94675",
+        "path": "internal/table/sql_query.go",
+        "start_byte": 3320,
+        "text": "var repl string",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "653b56d3d58378bea3f2df57",
+        "revision": "e025d3b11c4e9f4751c90fe683a9d0a18cd94675",
+        "path": "internal/table/sql_query.go",
+        "start_byte": 3660,
+        "text": "var repl []string",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "d87f80d0e60a23bf22b732e3",
+        "revision": "e025d3b11c4e9f4751c90fe683a9d0a18cd94675",
+        "path": "internal/table/sql_table.go",
+        "start_byte": 3073,
+        "text": "func (s *SQLTable) Lookup(ctx context.Context, val string) (string, bool, error) {\n\treturn s.wrapped.Lookup(ctx, val)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "f89a9bf4f559cb389fbbf841",
+        "revision": "e025d3b11c4e9f4751c90fe683a9d0a18cd94675",
+        "path": "internal/table/static.go",
+        "start_byte": 1579,
+        "text": "func (s *Static) Lookup(ctx context.Context, key string) (string, bool, error) {\n\tval := s.m[key]\n\tif len(val) == 0 {\n\t\treturn \"\", false, nil\n\t}\n\treturn val[0], true, nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "af943d5f4ff803747208d60f",
+        "revision": "e025d3b11c4e9f4751c90fe683a9d0a18cd94675",
+        "path": "internal/target/queue/queue.go",
+        "start_byte": 9426,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "b5890b8fe2b1fb50df340f4e",
+        "revision": "e025d3b11c4e9f4751c90fe683a9d0a18cd94675",
+        "path": "internal/target/queue/queue.go",
+        "start_byte": 21870,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "02a97c970b6b3e0d8e1570dc",
+        "revision": "e025d3b11c4e9f4751c90fe683a9d0a18cd94675",
+        "path": "internal/target/remote/remote.go",
+        "start_byte": 2833,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "d3e020dc502d4498074d8352",
+        "revision": "e025d3b11c4e9f4751c90fe683a9d0a18cd94675",
+        "path": "internal/target/remote/security.go",
+        "start_byte": 9975,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "6ff7b122ae63c8b75e48b218",
+        "revision": "e025d3b11c4e9f4751c90fe683a9d0a18cd94675",
+        "path": "internal/target/smtp/smtp_downstream.go",
+        "start_byte": 3563,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "2a2e30d1079249f061d0eb9b",
+        "revision": "e025d3b11c4e9f4751c90fe683a9d0a18cd94675",
+        "path": "internal/testutils/table.go",
+        "start_byte": 860,
+        "text": "func (m Table) Lookup(_ context.Context, a string) (string, bool, error) {\n\tb, ok := m.M[a]\n\treturn b, ok, m.Err\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "14e2b1e4fa7d04aa21c3b962",
+        "revision": "e025d3b11c4e9f4751c90fe683a9d0a18cd94675",
+        "path": "internal/tls/acme/acme.go",
+        "start_byte": 345,
+        "text": "const modName = \"tls.loader.acme\"",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "acead6e133da961c457c31f7",
+        "revision": "e025d3b11c4e9f4751c90fe683a9d0a18cd94675",
+        "path": "maddy.go",
+        "start_byte": 4858,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "64b6bad5470b7cbb986453ad",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "cmd/maddy-shadow-helper/main.go",
+        "start_byte": 863,
+        "text": "func main() {\n\tscnr := bufio.NewScanner(os.Stdin)\n\n\tif !scnr.Scan() {\n\t\tfmt.Fprintln(os.Stderr, scnr.Err())\n\t\tos.Exit(2)\n\t}\n\tusername := scnr.Text()\n\n\tif !scnr.Scan() {\n\t\tfmt.Fprintln(os.Stderr, scnr.Err())\n\t\tos.Exit(2)\n\t}\n\tpassword := scnr.Text()\n\n\tent, err := shadow.Lookup(username)\n\tif err != nil {\n\t\tif err == shadow.ErrNoSuchUser {\n\t\t\tos.Exit(1)\n\t\t}\n\t\tfmt.Fprintln(os.Stderr, err)\n\t\tos.Exit(2)\n\t}\n\n\tif !ent.IsAccountValid() {\n\t\tfmt.Fprintln(os.Stderr, \"account is expired\")\n\t\tos.Exit(1)\n\t}\n\n\tif !ent.IsPasswordValid() {\n\t\tfmt.Fprintln(os.Stderr, \"password is expired\")\n\t\tos.Exit(1)\n\t}\n\n\tif err := ent.VerifyPassword(password); err != nil {\n\t\tif err == shadow.ErrWrongPassword {\n\t\t\tos.Exit(1)\n\t\t}\n\t\tfmt.Fprintln(os.Stderr, err)\n\t\tos.Exit(1)\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "91ad3d9a51449cf5d9436978",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "cmd/maddyctl/appendlimit.go",
+        "start_byte": 1115,
+        "text": "type AppendLimitUser interface {\n\tappendlimit.User\n\n\t// SetMessageLimit sets new value for limit.\n\t// nil pointer means no limit.\n\tSetMessageLimit(val *uint32) error\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "44cee0d198b91dd6301f353d",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "cmd/maddyctl/appendlimit.go",
+        "start_byte": 1284,
+        "text": "func imapAcctAppendlimit(be module.Storage, ctx *cli.Context) error {\n\tusername := ctx.Args().First()\n\tif username == \"\" {\n\t\treturn errors.New(\"Error: USERNAME is required\")\n\t}\n\n\tu, err := be.GetIMAPAcct(username)\n\tif err != nil {\n\t\treturn err\n\t}\n\tuserAL, ok := u.(AppendLimitUser)\n\tif !ok {\n\t\treturn errors.New(\"Error: module.Storage does not support per-user append limit\")\n\t}\n\n\tif ctx.IsSet(\"value\") {\n\t\tval := ctx.Int(\"value\")\n\n\t\tvar err error\n\t\tif val == -1 {\n\t\t\terr = userAL.SetMessageLimit(nil)\n\t\t} else {\n\t\t\tval32 := uint32(val)\n\t\t\terr = userAL.SetMessageLimit(&val32)\n\t\t}\n\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n\t} else {\n\t\tlim := userAL.CreateMessageLimit()\n\t\tif lim == nil {\n\t\t\tfmt.Println(\"No limit\")\n\t\t} else {\n\t\t\tfmt.Println(*lim)\n\t\t}\n\t}\n\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "b674fce3ce9b9c4ae2488b8d",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "cmd/maddyctl/clitools/clitools.go",
+        "start_byte": 875,
+        "text": "func Confirmation(prompt string, def bool) bool {\n\tselection := \"y/N\"\n\tif def {\n\t\tselection = \"Y/n\"\n\t}\n\n\tfmt.Fprintf(os.Stderr, \"%s [%s]: \", prompt, selection)\n\tif !stdinScanner.Scan() {\n\t\tfmt.Fprintln(os.Stderr, stdinScanner.Err())\n\t\treturn false\n\t}\n\n\tswitch stdinScanner.Text() {\n\tcase \"Y\", \"y\":\n\t\treturn true\n\tcase \"N\", \"n\":\n\t\treturn false\n\tdefault:\n\t\treturn def\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "f2842b21feb6e9b525854906",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "cmd/maddyctl/clitools/clitools.go",
+        "start_byte": 1247,
+        "text": "func readPass(tty *os.File, output []byte) ([]byte, error) {\n\tcursor := output[0:1]\n\treaden := 0\n\tfor {\n\t\tn, err := tty.Read(cursor)\n\t\tif n != 1 {\n\t\t\treturn nil, errors.New(\"ReadPassword: invalid read size when not in canonical mode\")\n\t\t}\n\t\tif err != nil {\n\t\t\treturn nil, errors.New(\"ReadPassword: \" + err.Error())\n\t\t}\n\t\tif cursor[0] == '\\n' {\n\t\t\tbreak\n\t\t}\n\t\t// Esc or Ctrl+D or Ctrl+C.\n\t\tif cursor[0] == '\\x1b' || cursor[0] == '\\x04' || cursor[0] == '\\x03' {\n\t\t\treturn nil, errors.New(\"ReadPassword: prompt rejected\")\n\t\t}\n\t\tif cursor[0] == '\\x7F' /* DEL */ {\n\t\t\tif readen != 0 {\n\t\t\t\treaden--\n\t\t\t\tcursor = output[readen : readen+1]\n\t\t\t}\n\t\t\tcontinue\n\t\t}\n\n\t\tif readen == cap(output) {\n\t\t\treturn nil, errors.New(\"ReadPassword: too long password\")\n\t\t}\n\n\t\treaden++\n\t\tcursor = output[readen : readen+1]\n\t}\n\n\treturn output[0:readen], nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "415df71fde2ab1236104396f",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "cmd/maddyctl/clitools/clitools.go",
+        "start_byte": 2081,
+        "text": "func ReadPassword(prompt string) (string, error) {\n\ttermios, err := TurnOnRawIO(os.Stdin)\n\thiddenPass := true\n\tif err != nil {\n\t\thiddenPass = false\n\t\tfmt.Fprintln(os.Stderr, \"Failed to disable terminal output:\", err)\n\t}\n\n\t// There is no meaningful way to handle error here.\n\t//nolint:errcheck\n\tdefer TcSetAttr(os.Stdin.Fd(), &termios)\n\n\tfmt.Fprintf(os.Stderr, \"%s: \", prompt)\n\n\tif hiddenPass {\n\t\tbuf := make([]byte, 512)\n\t\tbuf, err = readPass(os.Stdin, buf)\n\t\tif err != nil {\n\t\t\treturn \"\", err\n\t\t}\n\t\tfmt.Println()\n\n\t\treturn string(buf), nil\n\t} else {\n\t\tif !stdinScanner.Scan() {\n\t\t\treturn \"\", stdinScanner.Err()\n\t\t}\n\n\t\treturn stdinScanner.Text(), nil\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "7ac27cc963560ce148a56175",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "cmd/maddyctl/clitools/termios_stub.go",
+        "start_byte": 961,
+        "text": "func TurnOnRawIO(tty *os.File) (orig Termios, err error) {\n\treturn Termios{}, errors.New(\"not implemented\")\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "d43391bbe03b8bb52cfb8460",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "cmd/maddyctl/clitools/termios_stub.go",
+        "start_byte": 1072,
+        "text": "func TcSetAttr(fd uintptr, termios *Termios) error {\n\treturn errors.New(\"not implemented\")\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "b4c4c42a3ab3e6ea281e05d5",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "cmd/maddyctl/clitools/termios_stub.go",
+        "start_byte": 1166,
+        "text": "func TcGetAttr(fd uintptr) (*Termios, error) {\n\treturn nil, errors.New(\"not implemented\")\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "26c36360416539488e408a5a",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "cmd/maddyctl/clitools/termios.go",
+        "start_byte": 1178,
+        "text": "func TurnOnRawIO(tty *os.File) (orig Termios, err error) {\n\ttermios, err := TcGetAttr(tty.Fd())\n\tif err != nil {\n\t\treturn Termios{}, errors.New(\"TurnOnRawIO: failed to get flags: \" + err.Error())\n\t}\n\ttermiosOrig := *termios\n\n\ttermios.Lflag &^= syscall.ECHO\n\ttermios.Lflag &^= syscall.ICANON\n\ttermios.Iflag &^= syscall.IXON\n\ttermios.Lflag &^= syscall.ISIG\n\ttermios.Iflag |= syscall.IUTF8\n\terr = TcSetAttr(tty.Fd(), termios)\n\tif err != nil {\n\t\treturn Termios{}, errors.New(\"TurnOnRawIO: flags to set flags: \" + err.Error())\n\t}\n\treturn termiosOrig, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "f5ea7f076bea720fbb0fe14f",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "cmd/maddyctl/clitools/termios.go",
+        "start_byte": 1731,
+        "text": "func TcSetAttr(fd uintptr, termios *Termios) error {\n\t_, _, err := syscall.Syscall(syscall.SYS_IOCTL, fd, syscall.TCSETS, uintptr(unsafe.Pointer(termios)))\n\tif err != 0 {\n\t\treturn err\n\t}\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "ba3f487aae54ef931ab9db33",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "cmd/maddyctl/clitools/termios.go",
+        "start_byte": 1933,
+        "text": "func TcGetAttr(fd uintptr) (*Termios, error) {\n\ttermios := &Termios{}\n\t_, _, err := syscall.Syscall(syscall.SYS_IOCTL, fd, syscall.TCGETS, uintptr(unsafe.Pointer(termios)))\n\tif err != 0 {\n\t\treturn nil, err\n\t}\n\treturn termios, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "5b6d772b8049553d67dad3ce",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "cmd/maddyctl/hash.go",
+        "start_byte": 983,
+        "text": "func hashCommand(ctx *cli.Context) error {\n\thashFunc := ctx.String(\"hash\")\n\tif hashFunc == \"\" {\n\t\thashFunc = pass_table.DefaultHash\n\t}\n\n\thashCompute := pass_table.HashCompute[hashFunc]\n\tif hashCompute == nil {\n\t\tvar funcs []string\n\t\tfor k := range pass_table.HashCompute {\n\t\t\tfuncs = append(funcs, k)\n\t\t}\n\n\t\treturn fmt.Errorf(\"Error: Unknown hash function, available: %s\", strings.Join(funcs, \", \"))\n\t}\n\n\topts := pass_table.HashOpts{\n\t\tBcryptCost:    bcrypt.DefaultCost,\n\t\tArgon2Memory:  1024,\n\t\tArgon2Time:    2,\n\t\tArgon2Threads: 1,\n\t}\n\tif ctx.IsSet(\"bcrypt-cost\") {\n\t\tif ctx.Int(\"bcrypt-cost\") > bcrypt.MaxCost {\n\t\t\treturn errors.New(\"Error: too big bcrypt cost\")\n\t\t}\n\t\tif ctx.Int(\"bcrypt-cost\") < bcrypt.MinCost {\n\t\t\treturn errors.New(\"Error: too small bcrypt cost\")\n\t\t}\n\t\topts.BcryptCost = ctx.Int(\"bcrypt-cost\")\n\t}\n\tif ctx.IsSet(\"argon2-memory\") {\n\t\topts.Argon2Memory = uint32(ctx.Int(\"argon2-memory\"))\n\t}\n\tif ctx.IsSet(\"argon2-time\") {\n\t\topts.Argon2Memory = uint32(ctx.Int(\"argon2-time\"))\n\t}\n\tif ctx.IsSet(\"argon2-threads\") {\n\t\topts.Argon2Threads = uint8(ctx.Int(\"argon2-threads\"))\n\t}\n\n\tvar pass string\n\tif ctx.IsSet(\"password\") {\n\t\tpass = ctx.String(\"password\")\n\t} else {\n\t\tvar err error\n\t\tpass, err = clitools.ReadPassword(\"Password\")\n\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n\t}\n\n\tif pass == \"\" {\n\t\tfmt.Fprintln(os.Stderr, \"WARNING: This is the hash of empty string\")\n\t}\n\n\thash, err := hashCompute(opts, pass)\n\tif err != nil {\n\t\treturn err\n\t}\n\tfmt.Println(hashFunc + \":\" + hash)\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "0926f1a2bf7dab46e752ed3a",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "cmd/maddyctl/hash.go",
+        "start_byte": 1195,
+        "text": "var funcs []string",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "6bc9483c9be123e2712dc2dd",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "cmd/maddyctl/hash.go",
+        "start_byte": 2076,
+        "text": "var pass string",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "48756657fd52f29db0f4b502",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "cmd/maddyctl/imap.go",
+        "start_byte": 1040,
+        "text": "func FormatAddress(addr *imap.Address) string {\n\treturn fmt.Sprintf(\"%s <%s@%s>\", addr.PersonalName, addr.MailboxName, addr.HostName)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "d153525b08ba3c11c5ad7bc3",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "cmd/maddyctl/imap.go",
+        "start_byte": 1177,
+        "text": "func FormatAddressList(addrs []*imap.Address) string {\n\tres := make([]string, 0, len(addrs))\n\tfor _, addr := range addrs {\n\t\tres = append(res, FormatAddress(addr))\n\t}\n\treturn strings.Join(res, \", \")\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "62ce0566b1aa693c4f4addc2",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "cmd/maddyctl/imap.go",
+        "start_byte": 1379,
+        "text": "func mboxesList(be module.Storage, ctx *cli.Context) error {\n\tusername := ctx.Args().First()\n\tif username == \"\" {\n\t\treturn errors.New(\"Error: USERNAME is required\")\n\t}\n\n\tu, err := be.GetIMAPAcct(username)\n\tif err != nil {\n\t\treturn err\n\t}\n\n\tmboxes, err := u.ListMailboxes(ctx.Bool(\"subscribed,s\"))\n\tif err != nil {\n\t\treturn err\n\t}\n\n\tif len(mboxes) == 0 && !ctx.GlobalBool(\"quiet\") {\n\t\tfmt.Fprintln(os.Stderr, \"No mailboxes.\")\n\t}\n\n\tfor _, mbox := range mboxes {\n\t\tinfo, err := mbox.Info()\n\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n\n\t\tif len(info.Attributes) != 0 {\n\t\t\tfmt.Print(info.Name, \"\\t\", info.Attributes, \"\\n\")\n\t\t} else {\n\t\t\tfmt.Println(info.Name)\n\t\t}\n\t}\n\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "5cb4d8ac5f4811a187635915",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "cmd/maddyctl/imap.go",
+        "start_byte": 2049,
+        "text": "func mboxesCreate(be module.Storage, ctx *cli.Context) error {\n\tusername := ctx.Args().First()\n\tif username == \"\" {\n\t\treturn errors.New(\"Error: USERNAME is required\")\n\t}\n\tname := ctx.Args().Get(1)\n\tif name == \"\" {\n\t\treturn errors.New(\"Error: NAME is required\")\n\t}\n\n\tu, err := be.GetIMAPAcct(username)\n\tif err != nil {\n\t\treturn err\n\t}\n\n\tif ctx.IsSet(\"special\") {\n\t\tattr := \"\\\\\" + strings.Title(ctx.String(\"special\"))\n\n\t\tsuu, ok := u.(SpecialUseUser)\n\t\tif !ok {\n\t\t\treturn errors.New(\"Error: storage backend does not support SPECIAL-USE IMAP extension\")\n\t\t}\n\n\t\treturn suu.CreateMailboxSpecial(name, attr)\n\t}\n\n\treturn u.CreateMailbox(name)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "7ff0336a9a9dea57e37c0196",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "cmd/maddyctl/imap.go",
+        "start_byte": 2688,
+        "text": "func mboxesRemove(be module.Storage, ctx *cli.Context) error {\n\tusername := ctx.Args().First()\n\tif username == \"\" {\n\t\treturn errors.New(\"Error: USERNAME is required\")\n\t}\n\tname := ctx.Args().Get(1)\n\tif name == \"\" {\n\t\treturn errors.New(\"Error: NAME is required\")\n\t}\n\n\tu, err := be.GetIMAPAcct(username)\n\tif err != nil {\n\t\treturn err\n\t}\n\n\tmbox, err := u.GetMailbox(name)\n\tif err != nil {\n\t\treturn err\n\t}\n\n\tif !ctx.Bool(\"yes,y\") {\n\t\tstatus, err := mbox.Status([]imap.StatusItem{imap.StatusMessages})\n\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n\n\t\tif status.Messages != 0 {\n\t\t\tfmt.Fprintf(os.Stderr, \"Mailbox %s contains %d messages.\\n\", name, status.Messages)\n\t\t}\n\n\t\tif !clitools.Confirmation(\"Are you sure you want to delete that mailbox?\", false) {\n\t\t\treturn errors.New(\"Cancelled\")\n\t\t}\n\t}\n\n\tif err := u.DeleteMailbox(name); err != nil {\n\t\treturn err\n\t}\n\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "5ff67b096e5d62faa0daf30e",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "cmd/maddyctl/imap.go",
+        "start_byte": 3548,
+        "text": "func mboxesRename(be module.Storage, ctx *cli.Context) error {\n\tusername := ctx.Args().First()\n\tif username == \"\" {\n\t\treturn errors.New(\"Error: USERNAME is required\")\n\t}\n\toldName := ctx.Args().Get(1)\n\tif oldName == \"\" {\n\t\treturn errors.New(\"Error: OLDNAME is required\")\n\t}\n\tnewName := ctx.Args().Get(2)\n\tif newName == \"\" {\n\t\treturn errors.New(\"Error: NEWNAME is required\")\n\t}\n\n\tu, err := be.GetIMAPAcct(username)\n\tif err != nil {\n\t\treturn err\n\t}\n\n\treturn u.RenameMailbox(oldName, newName)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "362b2498ce5173eb10c597e6",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "cmd/maddyctl/imap.go",
+        "start_byte": 4040,
+        "text": "func msgsAdd(be module.Storage, ctx *cli.Context) error {\n\tusername := ctx.Args().First()\n\tif username == \"\" {\n\t\treturn errors.New(\"Error: USERNAME is required\")\n\t}\n\tname := ctx.Args().Get(1)\n\tif name == \"\" {\n\t\treturn errors.New(\"Error: MAILBOX is required\")\n\t}\n\n\tu, err := be.GetIMAPAcct(username)\n\tif err != nil {\n\t\treturn err\n\t}\n\n\tmbox, err := u.GetMailbox(name)\n\tif err != nil {\n\t\treturn err\n\t}\n\n\tflags := ctx.StringSlice(\"flag\")\n\tif flags == nil {\n\t\tflags = []string{}\n\t}\n\n\tdate := time.Now()\n\tif ctx.IsSet(\"date\") {\n\t\tdate = time.Unix(ctx.Int64(\"date\"), 0)\n\t}\n\n\tbuf := bytes.Buffer{}\n\tif _, err := io.Copy(&buf, os.Stdin); err != nil {\n\t\treturn err\n\t}\n\n\tif buf.Len() == 0 {\n\t\treturn errors.New(\"Error: Empty message, refusing to continue\")\n\t}\n\n\tstatus, err := mbox.Status([]imap.StatusItem{imap.StatusUidNext})\n\tif err != nil {\n\t\treturn err\n\t}\n\n\tif err := mbox.CreateMessage(flags, date, &buf); err != nil {\n\t\treturn err\n\t}\n\n\tfmt.Println(status.UidNext)\n\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "367373cb788637d3eff263c9",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "cmd/maddyctl/imap.go",
+        "start_byte": 5016,
+        "text": "func msgsRemove(be module.Storage, ctx *cli.Context) error {\n\tusername := ctx.Args().First()\n\tif username == \"\" {\n\t\treturn errors.New(\"Error: USERNAME is required\")\n\t}\n\tname := ctx.Args().Get(1)\n\tif name == \"\" {\n\t\treturn errors.New(\"Error: MAILBOX is required\")\n\t}\n\tseqset := ctx.Args().Get(2)\n\tif seqset == \"\" {\n\t\treturn errors.New(\"Error: SEQSET is required\")\n\t}\n\n\tseq, err := imap.ParseSeqSet(seqset)\n\tif err != nil {\n\t\treturn err\n\t}\n\n\tu, err := be.GetIMAPAcct(username)\n\tif err != nil {\n\t\treturn err\n\t}\n\n\tmbox, err := u.GetMailbox(name)\n\tif err != nil {\n\t\treturn err\n\t}\n\n\tif !ctx.Bool(\"yes\") {\n\t\tif !clitools.Confirmation(\"Are you sure you want to delete these messages?\", false) {\n\t\t\treturn errors.New(\"Cancelled\")\n\t\t}\n\t}\n\n\tmboxB := mbox.(*imapsql.Mailbox)\n\tif err := mboxB.DelMessages(ctx.Bool(\"uid\"), seq); err != nil {\n\t\treturn err\n\t}\n\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "ddf363b916fdd92caa949ef5",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "cmd/maddyctl/imap.go",
+        "start_byte": 5875,
+        "text": "func msgsCopy(be module.Storage, ctx *cli.Context) error {\n\tusername := ctx.Args().First()\n\tif username == \"\" {\n\t\treturn errors.New(\"Error: USERNAME is required\")\n\t}\n\tsrcName := ctx.Args().Get(1)\n\tif srcName == \"\" {\n\t\treturn errors.New(\"Error: SRCMAILBOX is required\")\n\t}\n\tseqset := ctx.Args().Get(2)\n\tif seqset == \"\" {\n\t\treturn errors.New(\"Error: SEQSET is required\")\n\t}\n\ttgtName := ctx.Args().Get(3)\n\tif tgtName == \"\" {\n\t\treturn errors.New(\"Error: TGTMAILBOX is required\")\n\t}\n\n\tseq, err := imap.ParseSeqSet(seqset)\n\tif err != nil {\n\t\treturn err\n\t}\n\n\tu, err := be.GetIMAPAcct(username)\n\tif err != nil {\n\t\treturn err\n\t}\n\n\tsrcMbox, err := u.GetMailbox(srcName)\n\tif err != nil {\n\t\treturn err\n\t}\n\n\treturn srcMbox.CopyMessages(ctx.Bool(\"uid\"), seq, tgtName)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "f7c7731af99744f8f2232cab",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "cmd/maddyctl/imap.go",
+        "start_byte": 6632,
+        "text": "func msgsMove(be module.Storage, ctx *cli.Context) error {\n\tif ctx.Bool(\"y,yes\") || !clitools.Confirmation(\"Currently, it is unsafe to remove messages from mailboxes used by connected clients, continue?\", false) {\n\t\treturn errors.New(\"Cancelled\")\n\t}\n\n\tusername := ctx.Args().First()\n\tif username == \"\" {\n\t\treturn errors.New(\"Error: USERNAME is required\")\n\t}\n\tsrcName := ctx.Args().Get(1)\n\tif srcName == \"\" {\n\t\treturn errors.New(\"Error: SRCMAILBOX is required\")\n\t}\n\tseqset := ctx.Args().Get(2)\n\tif seqset == \"\" {\n\t\treturn errors.New(\"Error: SEQSET is required\")\n\t}\n\ttgtName := ctx.Args().Get(3)\n\tif tgtName == \"\" {\n\t\treturn errors.New(\"Error: TGTMAILBOX is required\")\n\t}\n\n\tseq, err := imap.ParseSeqSet(seqset)\n\tif err != nil {\n\t\treturn err\n\t}\n\n\tu, err := be.GetIMAPAcct(username)\n\tif err != nil {\n\t\treturn err\n\t}\n\n\tsrcMbox, err := u.GetMailbox(srcName)\n\tif err != nil {\n\t\treturn err\n\t}\n\n\tmoveMbox := srcMbox.(*imapsql.Mailbox)\n\n\treturn moveMbox.MoveMessages(ctx.Bool(\"uid\"), seq, tgtName)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "b58511c52a0a332fdb92e0b9",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "cmd/maddyctl/imap.go",
+        "start_byte": 7623,
+        "text": "func msgsList(be module.Storage, ctx *cli.Context) error {\n\tusername := ctx.Args().First()\n\tif username == \"\" {\n\t\treturn errors.New(\"Error: USERNAME is required\")\n\t}\n\tmboxName := ctx.Args().Get(1)\n\tif mboxName == \"\" {\n\t\treturn errors.New(\"Error: MAILBOX is required\")\n\t}\n\tseqset := ctx.Args().Get(2)\n\tif seqset == \"\" {\n\t\tseqset = \"1:*\"\n\t}\n\n\tseq, err := imap.ParseSeqSet(seqset)\n\tif err != nil {\n\t\treturn err\n\t}\n\n\tu, err := be.GetIMAPAcct(username)\n\tif err != nil {\n\t\treturn err\n\t}\n\n\tmbox, err := u.GetMailbox(mboxName)\n\tif err != nil {\n\t\treturn err\n\t}\n\n\tch := make(chan *imap.Message, 10)\n\tgo func() {\n\t\terr = mbox.ListMessages(ctx.Bool(\"uid\"), seq, []imap.FetchItem{imap.FetchEnvelope, imap.FetchInternalDate, imap.FetchRFC822Size, imap.FetchFlags, imap.FetchUid}, ch)\n\t}()\n\n\tfor msg := range ch {\n\t\tif !ctx.Bool(\"full\") {\n\t\t\tfmt.Printf(\"UID %d: %s - %s\\n  %v, %v\\n\\n\", msg.Uid, FormatAddressList(msg.Envelope.From), msg.Envelope.Subject, msg.Flags, msg.Envelope.Date)\n\t\t\tcontinue\n\t\t}\n\n\t\tfmt.Println(\"- Server meta-data:\")\n\t\tfmt.Println(\"UID:\", msg.Uid)\n\t\tfmt.Println(\"Sequence number:\", msg.SeqNum)\n\t\tfmt.Println(\"Flags:\", msg.Flags)\n\t\tfmt.Println(\"Body size:\", msg.Size)\n\t\tfmt.Println(\"Internal date:\", msg.InternalDate.Unix(), msg.InternalDate)\n\t\tfmt.Println(\"- Envelope:\")\n\t\tif len(msg.Envelope.From) != 0 {\n\t\t\tfmt.Println(\"From:\", FormatAddressList(msg.Envelope.From))\n\t\t}\n\t\tif len(msg.Envelope.To) != 0 {\n\t\t\tfmt.Println(\"To:\", FormatAddressList(msg.Envelope.To))\n\t\t}\n\t\tif len(msg.Envelope.Cc) != 0 {\n\t\t\tfmt.Println(\"CC:\", FormatAddressList(msg.Envelope.Cc))\n\t\t}\n\t\tif len(msg.Envelope.Bcc) != 0 {\n\t\t\tfmt.Println(\"BCC:\", FormatAddressList(msg.Envelope.Bcc))\n\t\t}\n\t\tif msg.Envelope.InReplyTo != \"\" {\n\t\t\tfmt.Println(\"In-Reply-To:\", msg.Envelope.InReplyTo)\n\t\t}\n\t\tif msg.Envelope.MessageId != \"\" {\n\t\t\tfmt.Println(\"Message-Id:\", msg.Envelope.MessageId)\n\t\t}\n\t\tif !msg.Envelope.Date.IsZero() {\n\t\t\tfmt.Println(\"Date:\", msg.Envelope.Date.Unix(), msg.Envelope.Date)\n\t\t}\n\t\tif msg.Envelope.Subject != \"\" {\n\t\t\tfmt.Println(\"Subject:\", msg.Envelope.Subject)\n\t\t}\n\t\tfmt.Println()\n\t}\n\treturn err\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "05a5d242bbf9c4cb65166115",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "cmd/maddyctl/imap.go",
+        "start_byte": 9708,
+        "text": "func msgsDump(be module.Storage, ctx *cli.Context) error {\n\tusername := ctx.Args().First()\n\tif username == \"\" {\n\t\treturn errors.New(\"Error: USERNAME is required\")\n\t}\n\tmboxName := ctx.Args().Get(1)\n\tif mboxName == \"\" {\n\t\treturn errors.New(\"Error: MAILBOX is required\")\n\t}\n\tseqset := ctx.Args().Get(2)\n\tif seqset == \"\" {\n\t\tseqset = \"*\"\n\t}\n\n\tseq, err := imap.ParseSeqSet(seqset)\n\tif err != nil {\n\t\treturn err\n\t}\n\n\tu, err := be.GetIMAPAcct(username)\n\tif err != nil {\n\t\treturn err\n\t}\n\n\tmbox, err := u.GetMailbox(mboxName)\n\tif err != nil {\n\t\treturn err\n\t}\n\n\tch := make(chan *imap.Message, 10)\n\tgo func() {\n\t\terr = mbox.ListMessages(ctx.Bool(\"uid\"), seq, []imap.FetchItem{imap.FetchRFC822}, ch)\n\t}()\n\n\tfor msg := range ch {\n\t\tfor _, v := range msg.Body {\n\t\t\tif _, err := io.Copy(os.Stdout, v); err != nil {\n\t\t\t\treturn err\n\t\t\t}\n\t\t}\n\t}\n\treturn err\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "9ac3b691efe2061f07100714",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "cmd/maddyctl/imap.go",
+        "start_byte": 10550,
+        "text": "func msgsFlags(be module.Storage, ctx *cli.Context) error {\n\tusername := ctx.Args().First()\n\tif username == \"\" {\n\t\treturn errors.New(\"Error: USERNAME is required\")\n\t}\n\tname := ctx.Args().Get(1)\n\tif name == \"\" {\n\t\treturn errors.New(\"Error: MAILBOX is required\")\n\t}\n\tseqStr := ctx.Args().Get(2)\n\tif seqStr == \"\" {\n\t\treturn errors.New(\"Error: SEQ is required\")\n\t}\n\n\tseq, err := imap.ParseSeqSet(seqStr)\n\tif err != nil {\n\t\treturn err\n\t}\n\n\tu, err := be.GetIMAPAcct(username)\n\tif err != nil {\n\t\treturn err\n\t}\n\n\tmbox, err := u.GetMailbox(name)\n\tif err != nil {\n\t\treturn err\n\t}\n\n\tflags := ctx.Args()[3:]\n\tif len(flags) == 0 {\n\t\treturn errors.New(\"Error: at least once FLAG is required\")\n\t}\n\n\tvar op imap.FlagsOp\n\tswitch ctx.Command.Name {\n\tcase \"add-flags\":\n\t\top = imap.AddFlags\n\tcase \"rem-flags\":\n\t\top = imap.RemoveFlags\n\tcase \"set-flags\":\n\t\top = imap.SetFlags\n\tdefault:\n\t\tpanic(\"unknown command: \" + ctx.Command.Name)\n\t}\n\n\treturn mbox.UpdateMessagesFlags(ctx.IsSet(\"uid\"), seq, op, flags)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "6e03879dbddc3bd657250cdf",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "cmd/maddyctl/imapacct.go",
+        "start_byte": 987,
+        "text": "type SpecialUseUser interface {\n\tCreateMailboxSpecial(name, specialUseAttr string) error\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "9ad77a8e79065836b3cb14d0",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "cmd/maddyctl/imapacct.go",
+        "start_byte": 1079,
+        "text": "func imapAcctList(be module.Storage, ctx *cli.Context) error {\n\tmbe, ok := be.(module.ManageableStorage)\n\tif !ok {\n\t\treturn errors.New(\"Error: storage backend does not support accounts management using maddyctl\")\n\t}\n\n\tlist, err := mbe.ListIMAPAccts()\n\tif err != nil {\n\t\treturn err\n\t}\n\n\tif len(list) == 0 && !ctx.GlobalBool(\"quiet\") {\n\t\tfmt.Fprintln(os.Stderr, \"No users.\")\n\t}\n\n\tfor _, user := range list {\n\t\tfmt.Println(user)\n\t}\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "781356d3ea5fbc2255b6cd9a",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "cmd/maddyctl/imapacct.go",
+        "start_byte": 1523,
+        "text": "func imapAcctCreate(be module.Storage, ctx *cli.Context) error {\n\tmbe, ok := be.(module.ManageableStorage)\n\tif !ok {\n\t\treturn errors.New(\"Error: storage backend does not support accounts management using maddyctl\")\n\t}\n\n\tusername := ctx.Args().First()\n\tif username == \"\" {\n\t\treturn errors.New(\"Error: USERNAME is required\")\n\t}\n\n\tif err := mbe.CreateIMAPAcct(username); err != nil {\n\t\treturn err\n\t}\n\n\tact, err := mbe.GetIMAPAcct(username)\n\tif err != nil {\n\t\treturn fmt.Errorf(\"failed to get user: %w\", err)\n\t}\n\n\tsuu, ok := act.(SpecialUseUser)\n\tif !ok {\n\t\tfmt.Fprintf(os.Stderr, \"Note: Storage backend does not support SPECIAL-USE IMAP extension\")\n\t}\n\n\tcreateMbox := func(name, specialUseAttr string) error {\n\t\tif suu == nil {\n\t\t\treturn act.CreateMailbox(name)\n\t\t}\n\t\treturn suu.CreateMailboxSpecial(name, specialUseAttr)\n\t}\n\n\tif name := ctx.String(\"sent-name\"); name != \"\" {\n\t\tif err := createMbox(name, specialuse.Sent); err != nil {\n\t\t\tfmt.Fprintf(os.Stderr, \"Failed to create sent folder: %v\", err)\n\t\t}\n\t}\n\tif name := ctx.String(\"trash-name\"); name != \"\" {\n\t\tif err := createMbox(name, specialuse.Trash); err != nil {\n\t\t\tfmt.Fprintf(os.Stderr, \"Failed to create trash folder: %v\", err)\n\t\t}\n\t}\n\tif name := ctx.String(\"junk-name\"); name != \"\" {\n\t\tif err := createMbox(name, specialuse.Junk); err != nil {\n\t\t\tfmt.Fprintf(os.Stderr, \"Failed to create junk folder: %v\", err)\n\t\t}\n\t}\n\tif name := ctx.String(\"drafts-name\"); name != \"\" {\n\t\tif err := createMbox(name, specialuse.Drafts); err != nil {\n\t\t\tfmt.Fprintf(os.Stderr, \"Failed to create drafts folder: %v\", err)\n\t\t}\n\t}\n\tif name := ctx.String(\"archive-name\"); name != \"\" {\n\t\tif err := createMbox(name, specialuse.Archive); err != nil {\n\t\t\tfmt.Fprintf(os.Stderr, \"Failed to create archive folder: %v\", err)\n\t\t}\n\t}\n\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "ccb01b0c22ca0e171e2b5de1",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "cmd/maddyctl/imapacct.go",
+        "start_byte": 3300,
+        "text": "func imapAcctRemove(be module.Storage, ctx *cli.Context) error {\n\tmbe, ok := be.(module.ManageableStorage)\n\tif !ok {\n\t\treturn errors.New(\"Error: storage backend does not support accounts management using maddyctl\")\n\t}\n\n\tusername := ctx.Args().First()\n\tif username == \"\" {\n\t\treturn errors.New(\"Error: USERNAME is required\")\n\t}\n\n\tif !ctx.Bool(\"yes\") {\n\t\tif !clitools.Confirmation(\"Are you sure you want to delete this user account?\", false) {\n\t\t\treturn errors.New(\"Cancelled\")\n\t\t}\n\t}\n\n\treturn mbe.DeleteIMAPAcct(username)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "a6ec718bf4e64aa0097f37fa",
+        "revision": "d0928d2743e6fcab820af0ccb8ab58342c2204d4",
+        "path": "cmd/maddyctl/main.go",
+        "start_byte": 1240,
+        "text": "func main() {\n\tapp := cli.NewApp()\n\tapp.Name = \"maddyctl\"\n\tapp.Usage = \"maddy mail server administration utility\"\n\tapp.Version = maddy.BuildInfo()\n\n\tapp.Flags = []cli.Flag{\n\t\tcli.StringFlag{\n\t\t\tName:   \"config\",\n\t\t\tUsage:  \"Configuration file to use\",\n\t\t\tEnvVar: \"MADDY_CONFIG\",\n\t\t\tValue:  filepath.Join(maddy.ConfigDirectory, \"maddy.conf\"),\n\t\t},\n\t}\n\n\tapp.Commands = []cli.Command{\n\t\t{\n\t\t\tName:  \"creds\",\n\t\t\tUsage: \"Local credentials management\",\n\t\t\tSubcommands: []cli.Command{\n\t\t\t\t{\n\t\t\t\t\tName:  \"list\",\n\t\t\t\t\tUsage: \"List created credentials\",\n\t\t\t\t\tFlags: []cli.Flag{\n\t\t\t\t\t\tcli.StringFlag{\n\t\t\t\t\t\t\tName:   \"cfg-block\",\n\t\t\t\t\t\t\tUsage:  \"Module configuration block to use\",\n\t\t\t\t\t\t\tEnvVar: \"MADDY_CFGBLOCK\",\n\t\t\t\t\t\t\tValue:  \"local_authdb\",\n\t\t\t\t\t\t},\n\t\t\t\t\t},\n\t\t\t\t\tAction: func(ctx *cli.Context) error {\n\t\t\t\t\t\tbe, err := openUserDB(ctx)\n\t\t\t\t\t\tif err != nil {\n\t\t\t\t\t\t\treturn err\n\t\t\t\t\t\t}\n\t\t\t\t\t\tdefer closeIfNeeded(be)\n\t\t\t\t\t\treturn usersList(be, ctx)\n\t\t\t\t\t},\n\t\t\t\t},\n\t\t\t\t{\n\t\t\t\t\tName:        \"create\",\n\t\t\t\t\tUsage:       \"Create user account\",\n\t\t\t\t\tDescription: \"Reads password from stdin\",\n\t\t\t\t\tArgsUsage:   \"USERNAME\",\n\t\t\t\t\tFlags: []cli.Flag{\n\t\t\t\t\t\tcli.StringFlag{\n\t\t\t\t\t\t\tName:   \"cfg-block\",\n\t\t\t\t\t\t\tUsage:  \"Module configuration block to use\",\n\t\t\t\t\t\t\tEnvVar: \"MADDY_CFGBLOCK\",\n\t\t\t\t\t\t\tValue:  \"local_authdb\",\n\t\t\t\t\t\t},\n\t\t\t\t\t\tcli.StringFlag{\n\t\t\t\t\t\t\tName:  \"password,p\",\n\t\t\t\t\t\t\tUsage: \"Use `PASSWORD instead of reading password from stdin.\\n\\t\\tWARNING: Provided only for debugging convenience. Don't leave your passwords in shell history!\",\n\t\t\t\t\t\t},\n\t\t\t\t\t\tcli.BoolFlag{\n\t\t\t\t\t\t\tName:  \"null,n\",\n\t\t\t\t\t\t\tUsage: \"Create account with null password\",\n\t\t\t\t\t\t},\n\t\t\t\t\t\tcli.StringFlag{\n\t\t\t\t\t\t\tName:  \"hash\",\n\t\t\t\t\t\t\tUsage: \"Use specified hash algorithm. Valid values: sha3-512, bcrypt\",\n\t\t\t\t\t\t\tValue: \"bcrypt\",\n\t\t\t\t\t\t},\n\t\t\t\t\t\tcli.IntFlag{\n\t\t\t\t\t\t\tName:  \"bcrypt-cost\",\n\t\t\t\t\t\t\tUsage: \"Specify bcrypt cost value\",\n\t\t\t\t\t\t\tValue: bcrypt.DefaultCost,\n\t\t\t\t\t\t},\n\t\t\t\t\t},\n\t\t\t\t\tAction: func(ctx *cli.Context) error {\n\t\t\t\t\t\tbe, err := openUserDB(ctx)\n\t\t\t\t\t\tif err != nil {\n\t\t\t\t\t\t\treturn err\n\t\t\t\t\t\t}\n\t\t\t\t\t\tdefer closeIfNeeded(be)\n\t\t\t\t\t\treturn usersCreate(be, ctx)\n\t\t\t\t\t},\n\t\t\t\t},\n\t\t\t\t{\n\t\t\t\t\tName:      \"remove\",\n\t\t\t\t\tUsage:     \"Delete user account\",\n\t\t\t\t\tArgsUsage: \"USERNAME\",\n\t\t\t\t\tFlags: []cli.Flag{\n\t\t\t\t\t\tcli.StringFlag{\n\t\t\t\t\t\t\tName:   \"cfg-block\",\n\t\t\t\t\t\t\tUsage:  \"Module configuration block to use\",\n\t\t\t\t\t\t\tEnvVar: \"MADDY_CFGBLOCK\",\n\t\t\t\t\t\t\tValue:  \"local_authdb\",\n\t\t\t\t\t\t},\n\t\t\t\t\t\tcli.BoolFlag{\n\t\t\t\t\t\t\tName:  \"yes,y\",\n\t\t\t\t\t\t\tUsage: \"Don't ask for confirmation\",\n\t\t\t\t\t\t},\n\t\t\t\t\t},\n\t\t\t\t\tAction: func(ctx *cli.Context) error {\n\t\t\t\t\t\tbe, err := openUserDB(ctx)\n\t\t\t\t\t\tif err != nil {\n\t\t\t\t\t\t\treturn err\n\t\t\t\t\t\t}\n\t\t\t\t\t\tdefer closeIfNeeded(be)\n\t\t\t\t\t\treturn usersRemove(be, ctx)\n\t\t\t\t\t},\n\t\t\t\t},\n\t\t\t\t{\n\t\t\t\t\tName:        \"password\",\n\t\t\t\t\tUsage:       \"Change account password\",\n\t\t\t\t\tDescription: \"Reads password from stdin\",\n\t\t\t\t\tArgsUsage:   \"USERNAME\",\n\t\t\t\t\tFlags: []cli.Flag{\n\t\t\t\t\t\tcli.StringFlag{\n\t\t\t\t\t\t\tName:   \"cfg-block\",\n\t\t\t\t\t\t\tUsage:  \"Module configuration block to use\",\n\t\t\t\t\t\t\tEnvVar: \"MADDY_CFGBLOCK\",\n\t\t\t\t\t\t\tVal",
+        "rank": 2,
+        "truncated": true
+      }
+    ]
+  },
+  "retrieval": {
+    "unresolved": [
+      {
+        "side": "ours",
+        "identifier": "s",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Lookup",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "framework/module/dummy.go",
+            "start": 1313
+          },
+          {
+            "path": "internal/auth/pass_table/table.go",
+            "start": 1713
+          },
+          {
+            "path": "internal/auth/plain_separate/plain_separate.go",
+            "start": 2300
+          },
+          {
+            "path": "internal/auth/shadow/module.go",
+            "start": 2297
+          },
+          {
+            "path": "internal/auth/shadow/read.go",
+            "start": 2028
+          },
+          {
+            "path": "internal/storage/imapsql/imapsql.go",
+            "start": 12858
+          },
+          {
+            "path": "internal/table/file.go",
+            "start": 4476
+          },
+          {
+            "path": "internal/table/identity.go",
+            "start": 1281
+          },
+          {
+            "path": "internal/table/regexp.go",
+            "start": 2243
+          },
+          {
+            "path": "internal/table/sql_table.go",
+            "start": 3918
+          },
+          {
+            "path": "internal/table/static.go",
+            "start": 1566
+          },
+          {
+            "path": "internal/testutils/table.go",
+            "start": 842
+          }
+        ]
+      },
+      {
+        "side": "ours",
+        "identifier": "val",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "framework/config/lexer/lexer.go",
+            "start": 2969
+          },
+          {
+            "path": "framework/config/map.go",
+            "start": 19355
+          }
+        ]
+      },
+      {
+        "side": "ours",
+        "identifier": "string",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "bool",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "error",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "row",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "sql",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Row",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "namedArgs",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "lookup",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "QueryRow",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Named",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "err",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "cmd/maddyctl/appendlimit.go",
+            "start": 1718
+          },
+          {
+            "path": "cmd/maddyctl/hash.go",
+            "start": 2164
+          },
+          {
+            "path": "cmd/maddyctl/users.go",
+            "start": 1483
+          },
+          {
+            "path": "cmd/maddyctl/users.go",
+            "start": 2275
+          },
+          {
+            "path": "framework/cfgparser/imports.go",
+            "start": 3340
+          },
+          {
+            "path": "framework/cfgparser/parse.go",
+            "start": 3623
+          },
+          {
+            "path": "framework/config/lexer/lexer.go",
+            "start": 2242
+          },
+          {
+            "path": "framework/config/module/check_action.go",
+            "start": 2509
+          },
+          {
+            "path": "framework/config/module/check_action.go",
+            "start": 3709
+          },
+          {
+            "path": "framework/config/module/modconfig.go",
+            "start": 4415
+          },
+          {
+            "path": "framework/log/syslog.go",
+            "start": 966
+          },
+          {
+            "path": "framework/logparser/parse.go",
+            "start": 2507
+          },
+          {
+            "path": "internal/auth/shadow/read.go",
+            "start": 1852
+          },
+          {
+            "path": "internal/endpoint/imap/imap.go",
+            "start": 4907
+          },
+          {
+            "path": "internal/endpoint/smtp/session.go",
+            "start": 3549
+          },
+          {
+            "path": "internal/endpoint/smtp/smtp.go",
+            "start": 6059
+          },
+          {
+            "path": "internal/endpoint/smtp/smtp.go",
+            "start": 10140
+          },
+          {
+            "path": "internal/limits/limits.go",
+            "start": 3712
+          },
+          {
+            "path": "internal/limits/limits.go",
+            "start": 3864
+          },
+          {
+            "path": "internal/modify/dkim/dkim.go",
+            "start": 8310
+          },
+          {
+            "path": "internal/modify/dkim/dkim.go",
+            "start": 9113
+          },
+          {
+            "path": "internal/modify/dkim/keys.go",
+            "start": 4249
+          },
+          {
+            "path": "internal/modify/group.go",
+            "start": 2264
+          },
+          {
+            "path": "internal/modify/group.go",
+            "start": 2522
+          },
+          {
+            "path": "internal/msgpipeline/config.go",
+            "start": 4251
+          },
+          {
+            "path": "internal/msgpipeline/config.go",
+            "start": 4763
+          },
+          {
+            "path": "internal/msgpipeline/config.go",
+            "start": 7286
+          },
+          {
+            "path": "internal/msgpipeline/config.go",
+            "start": 7803
+          },
+          {
+            "path": "internal/msgpipeline/config.go",
+            "start": 9279
+          },
+          {
+            "path": "internal/msgpipeline/config.go",
+            "start": 9670
+          },
+          {
+            "path": "internal/msgpipeline/msgpipeline.go",
+            "start": 4651
+          },
+          {
+            "path": "internal/msgpipeline/msgpipeline.go",
+            "start": 6155
+          },
+          {
+            "path": "internal/smtpconn/smtpconn.go",
+            "start": 7911
+          },
+          {
+            "path": "internal/smtpconn/smtpconn.go",
+            "start": 9140
+          },
+          {
+            "path": "internal/storage/imapsql/imapsql.go",
+            "start": 8551
+          },
+          {
+            "path": "internal/table/regexp.go",
+            "start": 1997
+          },
+          {
+            "path": "internal/table/sql_query.go",
+            "start": 4463
+          },
+          {
+            "path": "internal/target/queue/queue.go",
+            "start": 9426
+          },
+          {
+            "path": "internal/target/queue/queue.go",
+            "start": 21870
+          },
+          {
+            "path": "internal/target/remote/remote.go",
+            "start": 2725
+          },
+          {
+            "path": "internal/target/remote/security.go",
+            "start": 9712
+          },
+          {
+            "path": "internal/target/smtp/smtp_downstream.go",
+            "start": 3206
+          },
+          {
+            "path": "maddy.go",
+            "start": 4470
+          }
+        ]
+      },
+      {
+        "side": "ours",
+        "identifier": "Scan",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "ErrNoRows",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "fmt",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Errorf",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "modName",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "internal/auth/dovecot_sasl/dovecot_sasl.go",
+            "start": 1285
+          },
+          {
+            "path": "internal/check/command/command.go",
+            "start": 1289
+          },
+          {
+            "path": "internal/check/milter/milter.go",
+            "start": 1192
+          },
+          {
+            "path": "internal/check/rspamd/rspamd.go",
+            "start": 1321
+          },
+          {
+            "path": "internal/check/skeleton.go",
+            "start": 1238
+          },
+          {
+            "path": "internal/check/spf/spf.go",
+            "start": 1500
+          },
+          {
+            "path": "internal/endpoint/dovecot_sasld/dovecot_sasl.go",
+            "start": 1098
+          },
+          {
+            "path": "internal/endpoint/openmetrics/om.go",
+            "start": 1022
+          },
+          {
+            "path": "internal/imap_filter/command/command.go",
+            "start": 1088
+          }
+        ]
+      },
+      {
+        "side": "theirs",
+        "identifier": "s",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Lookup",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "framework/module/dummy.go",
+            "start": 1313
+          },
+          {
+            "path": "internal/auth/ldap/ldap.go",
+            "start": 4661
+          },
+          {
+            "path": "internal/auth/pass_table/table.go",
+            "start": 1724
+          },
+          {
+            "path": "internal/auth/plain_separate/plain_separate.go",
+            "start": 2311
+          },
+          {
+            "path": "internal/auth/shadow/module.go",
+            "start": 2297
+          },
+          {
+            "path": "internal/auth/shadow/read.go",
+            "start": 2028
+          },
+          {
+            "path": "internal/storage/imapsql/imapsql.go",
+            "start": 10498
+          },
+          {
+            "path": "internal/table/chain.go",
+            "start": 2006
+          },
+          {
+            "path": "internal/table/email_localpart.go",
+            "start": 1374
+          },
+          {
+            "path": "internal/table/file.go",
+            "start": 4525
+          },
+          {
+            "path": "internal/table/identity.go",
+            "start": 1293
+          },
+          {
+            "path": "internal/table/regexp.go",
+            "start": 2254
+          },
+          {
+            "path": "internal/table/sql_table.go",
+            "start": 3073
+          },
+          {
+            "path": "internal/table/static.go",
+            "start": 1579
+          },
+          {
+            "path": "internal/testutils/table.go",
+            "start": 860
+          }
+        ]
+      },
+      {
+        "side": "theirs",
+        "identifier": "ctx",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "context",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Context",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "val",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "framework/config/lexer/lexer.go",
+            "start": 2969
+          },
+          {
+            "path": "framework/config/map.go",
+            "start": 19355
+          }
+        ]
+      },
+      {
+        "side": "theirs",
+        "identifier": "string",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "bool",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "error",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "repl",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "internal/table/sql_query.go",
+            "start": 3320
+          },
+          {
+            "path": "internal/table/sql_query.go",
+            "start": 3660
+          }
+        ]
+      },
+      {
+        "side": "theirs",
+        "identifier": "row",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "lookup",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "QueryRowContext",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "err",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "cmd/maddyctl/appendlimit.go",
+            "start": 1718
+          },
+          {
+            "path": "cmd/maddyctl/hash.go",
+            "start": 2164
+          },
+          {
+            "path": "cmd/maddyctl/users.go",
+            "start": 1483
+          },
+          {
+            "path": "cmd/maddyctl/users.go",
+            "start": 2275
+          },
+          {
+            "path": "framework/cfgparser/imports.go",
+            "start": 3340
+          },
+          {
+            "path": "framework/cfgparser/parse.go",
+            "start": 3623
+          },
+          {
+            "path": "framework/config/lexer/lexer.go",
+            "start": 2242
+          },
+          {
+            "path": "framework/config/module/check_action.go",
+            "start": 2509
+          },
+          {
+            "path": "framework/config/module/check_action.go",
+            "start": 3709
+          },
+          {
+            "path": "framework/config/module/modconfig.go",
+            "start": 4415
+          },
+          {
+            "path": "framework/log/syslog.go",
+            "start": 966
+          },
+          {
+            "path": "framework/logparser/parse.go",
+            "start": 2507
+          },
+          {
+            "path": "internal/auth/ldap/ldap.go",
+            "start": 2222
+          },
+          {
+            "path": "internal/auth/shadow/read.go",
+            "start": 1852
+          },
+          {
+            "path": "internal/endpoint/imap/imap.go",
+            "start": 4907
+          },
+          {
+            "path": "internal/endpoint/smtp/session.go",
+            "start": 3026
+          },
+          {
+            "path": "internal/endpoint/smtp/smtp.go",
+            "start": 6034
+          },
+          {
+            "path": "internal/endpoint/smtp/smtp.go",
+            "start": 10040
+          },
+          {
+            "path": "internal/limits/limits.go",
+            "start": 3712
+          },
+          {
+            "path": "internal/limits/limits.go",
+            "start": 3864
+          },
+          {
+            "path": "internal/modify/dkim/dkim.go",
+            "start": 8310
+          },
+          {
+            "path": "internal/modify/dkim/dkim.go",
+            "start": 9113
+          },
+          {
+            "path": "internal/modify/dkim/keys.go",
+            "start": 4249
+          },
+          {
+            "path": "internal/modify/group.go",
+            "start": 2264
+          },
+          {
+            "path": "internal/modify/group.go",
+            "start": 2522
+          },
+          {
+            "path": "internal/msgpipeline/config.go",
+            "start": 4251
+          },
+          {
+            "path": "internal/msgpipeline/config.go",
+            "start": 4763
+          },
+          {
+            "path": "internal/msgpipeline/config.go",
+            "start": 7286
+          },
+          {
+            "path": "internal/msgpipeline/config.go",
+            "start": 7803
+          },
+          {
+            "path": "internal/msgpipeline/config.go",
+            "start": 9279
+          },
+          {
+            "path": "internal/msgpipeline/config.go",
+            "start": 9670
+          },
+          {
+            "path": "internal/msgpipeline/msgpipeline.go",
+            "start": 4651
+          },
+          {
+            "path": "internal/msgpipeline/msgpipeline.go",
+            "start": 6181
+          },
+          {
+            "path": "internal/smtpconn/smtpconn.go",
+            "start": 8651
+          },
+          {
+            "path": "internal/smtpconn/smtpconn.go",
+            "start": 9880
+          },
+          {
+            "path": "internal/storage/imapsql/imapsql.go",
+            "start": 6984
+          },
+          {
+            "path": "internal/table/regexp.go",
+            "start": 2008
+          },
+          {
+            "path": "internal/target/queue/queue.go",
+            "start": 9426
+          },
+          {
+            "path": "internal/target/queue/queue.go",
+            "start": 21870
+          },
+          {
+            "path": "internal/target/remote/remote.go",
+            "start": 2833
+          },
+          {
+            "path": "internal/target/remote/security.go",
+            "start": 9975
+          },
+          {
+            "path": "internal/target/smtp/smtp_downstream.go",
+            "start": 3563
+          },
+          {
+            "path": "maddy.go",
+            "start": 4858
+          }
+        ]
+      },
+      {
+        "side": "theirs",
+        "identifier": "Scan",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "sql",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "ErrNoRows",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "fmt",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Errorf",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "modName",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "internal/auth/dovecot_sasl/dovecot_sasl.go",
+            "start": 1285
+          },
+          {
+            "path": "internal/auth/ldap/ldap.go",
+            "start": 316
+          },
+          {
+            "path": "internal/check/authorize_sender/authorize_sender.go",
+            "start": 1287
+          },
+          {
+            "path": "internal/check/command/command.go",
+            "start": 1289
+          },
+          {
+            "path": "internal/check/milter/milter.go",
+            "start": 1192
+          },
+          {
+            "path": "internal/check/rspamd/rspamd.go",
+            "start": 1321
+          },
+          {
+            "path": "internal/check/skeleton.go",
+            "start": 1238
+          },
+          {
+            "path": "internal/check/spf/spf.go",
+            "start": 1500
+          },
+          {
+            "path": "internal/endpoint/dovecot_sasld/dovecot_sasl.go",
+            "start": 1098
+          },
+          {
+            "path": "internal/endpoint/openmetrics/om.go",
+            "start": 1022
+          },
+          {
+            "path": "internal/imap_filter/command/command.go",
+            "start": 1088
+          },
+          {
+            "path": "internal/storage/blob/s3/s3.go",
+            "start": 270
+          },
+          {
+            "path": "internal/tls/acme/acme.go",
+            "start": 345
+          }
+        ]
+      }
+    ],
+    "method": "syntax-ranges-and-identifier-candidates/3",
+    "budget_bytes": 32768,
+    "libraries": {
+      "C": "cbbd4827ee02cd5c018ab41f10d8404ff8741159054b352d9a6d763c506ba3c7",
+      "Go": "1612f8fd958ba1ec981bf4b91e2ff399f1e54d26a9da68e5b60b0d7cd00616fc"
+    }
+  }
+}

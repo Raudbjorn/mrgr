@@ -1,0 +1,998 @@
+{
+  "id": "1ef47c17386e0c6585ca4c3bd2c8ea58d4a63c18cdfedd13ffbf9d2e6f21dc6f",
+  "source_protocol_sha256": "86ffe38086e217acf6e1a4aa4162e226862463d1bde3160478f9a6f4d2b968ce",
+  "repair_module_sha256": "b6a7cf123b0ac50001e1498cdf64964b8ac56e8e6a68cbbc6dcc01c8517b4a20",
+  "contexts": {
+    "local-context": [
+      {
+        "id": "e25251649bed671756a16586",
+        "revision": "709382e9c1ea35d82f074793d5db89dd8536c283",
+        "path": "queryparser.go",
+        "start_byte": 0,
+        "text": "/*\n  Based on the \"jsonpath\" spec/concept.\n\n  http://goessner.net/articles/JsonPath/\n  https://code.google.com/p/json-path/\n*/\n\npackage toml\n\nimport (\n\t\"fmt\"\n\t\"math\"\n)\n\ntype queryParser struct {\n\tflow         chan token\n\ttokensBuffer []token\n\tquery        *Query\n\tunion        []pathFn\n\terr          error\n}\n\ntype queryParserStateFn func() queryParserStateFn\n\n// Formats and panics an error message based on a token\nfunc (p *queryParser) parseError(tok *token, msg string, args ...interface{}) queryParserStateFn {\n\tp.err = fmt.Errorf(tok.Position.String()+\": \"+msg, args...)\n\treturn nil // trigger parse to end\n}\n\nfunc (p *queryParser) run() {\n\tfor state := p.parseStart; state != nil; {\n\t\tstate = state()\n\t}\n}\n\nfunc (p *queryParser) backup(tok *token) {\n\tp.tokensBuffer = append(p.tokensBuffer, *tok)\n}\n\nfunc (p *queryParser) peek() *token {\n\tif len(p.tokensBuffer) != 0 {\n\t\treturn &(p.tokensBuffer[0])\n\t}\n\n\ttok, ok := <-p.flow\n\tif !ok {\n\t\treturn nil\n\t}\n\tp.backup(&tok)\n\treturn &tok\n}\n\nfunc (p *queryParser) lookahead(types ...tokenType) bool {\n\tresult := true\n\tbuffer := []token{}\n\n\tfor _, typ := range types {\n\t\ttok := p.getToken()\n\t\tif tok == nil {\n\t\t\tresult = false\n\t\t\tbreak\n\t\t}\n\t\tbuffer = append(buffer, *tok)\n\t\tif tok.typ != typ {\n\t\t\tresult = false\n\t\t\tbreak\n\t\t}\n\t}\n\t// add the tokens back to the buffer, and return\n\tp.tokensBuffer = append(p.tokensBuffer, buffer...)\n\treturn result\n}\n\nfunc (p *queryParser) getToken() *token {\n\tif len(p.tokensBuffer) != 0 {\n\t\ttok := p.tokensBuffer[0]\n\t\tp.tokensBuffer = p.tokensBuffer[1:]\n\t\treturn &tok\n\t}\n\ttok, ok := <-p.flow\n\tif !ok {\n\t\treturn nil\n\t}\n\treturn &tok\n}\n\nfunc (p *queryParser) parseStart() queryParserStateFn {\n\ttok := p.getToken()\n\n\tif tok == nil || tok.typ == tokenEOF {\n\t\treturn nil\n\t}\n\n\tif tok.typ != tokenDollar {\n\t\treturn p.parseError(tok, \"Expected '$' at start of expression\")\n\t}\n\n\treturn p.parseMatchExpr\n}\n\n// handle '.' prefix, '[]', and '..'\nfunc (p *queryParser) parseMatchExpr() queryParserStateFn {\n\ttok := p.getToken()\n\tswitch tok.typ {\n\tcase tokenDotDot:\n\t\tp.query.appendPath(&matchRecursiveFn{})\n\t\t// nested parse for '..'\n\t\ttok := p.getToken()\n\t\tswitch tok.typ {\n\t\tcase tokenKey:\n\t\t\tp.query.appendPath(newMatchKeyFn(tok.val))\n\t\t\treturn p.parseMatchExpr\n\t\tcase tokenLeftBracket:\n\t\t\treturn p.parseBracketExpr\n\t\tcase tokenStar:\n\t\t\t// do nothing - the recursive predicate is enough\n\t\t\treturn p.parseMatchExpr\n\t\t}\n\n\tcase tokenDot:\n\t\t// nested parse for '.'\n\t\ttok := p.getToken()\n\t\tswitch tok.typ {\n\t\tcase tokenKey:\n\t\t\tp.query.appendPath(newMatchKeyFn(tok.val))\n\t\t\treturn p.parseMatchExpr\n\t\tcase tokenStar:\n\t\t\tp.query.appendPath(&matchAnyFn{})\n\t\t\treturn p.parseMatchExpr\n\t\t}\n\n\tcase tokenLeftBracket:\n\t\treturn p.parseBracketExpr\n\n\tcase tokenEOF:\n\t\treturn nil // allow EOF at this stage\n\t}\n\treturn p.parseError(tok, \"expected match expression\")\n\treturn nil\n}\n\nfunc (p *queryParser) parseBracketExpr() queryParserStateFn {\n\tif p.lookahead(tokenInteger, tokenColon) {\n\t\treturn p.parseSliceExpr\n\t}\n\tif p.peek().typ == tokenColon {\n\t\treturn p.parseSliceExpr\n\t}\n\treturn p.parseUnionExpr\n}\n\nfunc (p *queryParser) parseUnionExpr() queryParserStateFn {\n\tvar tok *token\n\n\t// this state can be traversed after some sub-expressions\n\t// so be careful when setting up state in the parser\n\tif p.union == nil {\n\t\tp.union = []pathFn{}\n\t}\n\nloop: // labeled loop for easy breaking\n\tfor {\n\t\tif len(p.union) > 0 {\n\t\t\t// parse delimiter or terminator\n\t\t\ttok = p.getToken()\n\t\t\tswitch tok.typ {\n\t\t\tcase tokenComma:\n\t\t\t\t// do nothing\n\t\t\tcase tokenRightBracket:\n\t\t\t\tbreak loop\n\t\t\tdefault:\n\t\t\t\treturn p.parseError(tok, \"expected ',' or ']', not '%s'\", tok.val)\n\t\t\t}\n\t\t}\n\n\t\t// parse sub expression\n\t\ttok = p.getToken()\n\t\tswitch tok.typ {\n\t\tcase tokenInteger:\n\t\t\tp.union = append(p.union, newMatchIndexFn(tok.Int()))\n\t\tcase tokenKey:\n\t\t\tp.union = append(p.union, newMatchKeyFn(tok.val))\n\t\tcase tokenString:\n\t\t\tp.union = append(p.union, newMatchKeyFn(tok.val))\n\t\tcase tokenQuestion:\n\t\t\treturn p.parseFilterExpr\n\t\tdefault:\n\t\t\treturn p.parseError(tok, \"expected union sub expression, not '%s', %d\", tok.val, len(p.union))\n\t\t}\n\t}\n\n\t// if there is only one sub-expression, use that instead\n\tif len(p.union) == 1 {\n\t\tp.query.appendPath(p.union[0])\n\t} else {\n\t\tp.query.appendPath(&matchUnionFn{p.union})\n\t}\n\n\tp.union = nil // clear out state\n\treturn p.parseMatchExpr\n}\n\nfunc (p *queryParser) parseSliceExpr() queryParserStateFn {\n\t// init slice to grab all elements\n\tstart, end, step := 0, math.MaxInt32, 1\n\n\t// parse optional start\n\ttok := p.getToken()\n\tif tok.typ == tokenInteger {\n\t\tstart = tok.Int()\n\t\ttok = p.getToken()\n\t}\n\tif tok.typ != tokenColon {\n\t\treturn p.parseError(tok, \"expected ':'\")\n\t}\n\n\t// parse optional end\n\ttok = p.getToken()\n\tif tok.typ == tokenInteger {\n\t\tend = tok.Int()\n\t\ttok = p.getToken()\n\t}\n\tif tok.typ == tokenRightBracket {\n\t\tp.query.appendPath(newMatchSliceFn(start, end, step))\n\t\treturn p.parseMatchExpr\n\t}\n\tif tok.typ != tokenColon {\n\t\treturn p.parseError(tok, \"expected ']' or ':'\")\n\t}\n\n\t// parse optional step\n\ttok = p.getToken()\n\tif tok.typ == tokenInteger {\n\t\tstep = tok.Int()\n\t\tif step < 0 {\n\t\t\treturn p.parseError(tok, \"step must be a positive value\")\n\t\t}\n\t\ttok = p.getToken()\n\t}\n\tif tok.typ != tokenRightBracket {\n\t\treturn p.parseError(tok, \"expected ']'\")\n\t}\n\n\tp.query.appendPath(newMatchSliceFn(start, end, step))\n\treturn p.parseMatchExpr\n}\n\nfunc (p *queryParser) parseFilterExpr() queryParserStateFn {\n\ttok := p.getToken()\n\tif tok.typ != tokenLeftParen {\n\t\treturn p.parseError(tok, \"expected left-parenthesis for filter expression\")\n\t}\n\ttok = p.getToken()\n\tif tok.typ != tokenKey && tok.typ != tokenString {\n\t\treturn p.parseError(tok, \"expected key or string for filter funciton name\")\n\t}\n\tname := tok.val\n\ttok = p.getToken()\n\tif tok.typ != tokenRightParen {\n\t\treturn p.parseError(tok, \"expected right-parenthesis for filter expression\")\n\t}\n\tp.union = append(p.union, newMatchFilterFn(name, tok.Position))\n\treturn p.parseUnionExpr\n}\n\nfunc parseQuery(flow chan token) (*Query, error) {\n\tparser := &queryParser{\n\t\tflow:         flow,\n\t\ttokensBuffer: []token{},\n\t\tquery:        newQuery(),\n\t}\n\tparser.run()\n\treturn parser.query, parser.err\n}\n",
+        "rank": 0,
+        "truncated": false
+      },
+      {
+        "id": "0dc2db17d7b1de6488c04e0d",
+        "revision": "db15f8a481e7dc5bc3423754ce6e351964f4b8d3",
+        "path": "queryparser.go",
+        "start_byte": 0,
+        "text": "/*\n  Based on the \"jsonpath\" spec/concept.\n\n  http://goessner.net/articles/JsonPath/\n  https://code.google.com/p/json-path/\n*/\n\npackage toml\n\nimport (\n\t\"fmt\"\n)\n\nconst MaxInt = int(^uint(0) >> 1)\n\ntype queryParser struct {\n\tflow         chan token\n\ttokensBuffer []token\n\tquery        *Query\n\tunion        []pathFn\n\terr          error\n}\n\ntype queryParserStateFn func() queryParserStateFn\n\n// Formats and panics an error message based on a token\nfunc (p *queryParser) parseError(tok *token, msg string, args ...interface{}) queryParserStateFn {\n\tp.err = fmt.Errorf(tok.Position.String()+\": \"+msg, args...)\n\treturn nil // trigger parse to end\n}\n\nfunc (p *queryParser) run() {\n\tfor state := p.parseStart; state != nil; {\n\t\tstate = state()\n\t}\n}\n\nfunc (p *queryParser) backup(tok *token) {\n\tp.tokensBuffer = append(p.tokensBuffer, *tok)\n}\n\nfunc (p *queryParser) peek() *token {\n\tif len(p.tokensBuffer) != 0 {\n\t\treturn &(p.tokensBuffer[0])\n\t}\n\n\ttok, ok := <-p.flow\n\tif !ok {\n\t\treturn nil\n\t}\n\tp.backup(&tok)\n\treturn &tok\n}\n\nfunc (p *queryParser) lookahead(types ...tokenType) bool {\n\tresult := true\n\tbuffer := []token{}\n\n\tfor _, typ := range types {\n\t\ttok := p.getToken()\n\t\tif tok == nil {\n\t\t\tresult = false\n\t\t\tbreak\n\t\t}\n\t\tbuffer = append(buffer, *tok)\n\t\tif tok.typ != typ {\n\t\t\tresult = false\n\t\t\tbreak\n\t\t}\n\t}\n\t// add the tokens back to the buffer, and return\n\tp.tokensBuffer = append(p.tokensBuffer, buffer...)\n\treturn result\n}\n\nfunc (p *queryParser) getToken() *token {\n\tif len(p.tokensBuffer) != 0 {\n\t\ttok := p.tokensBuffer[0]\n\t\tp.tokensBuffer = p.tokensBuffer[1:]\n\t\treturn &tok\n\t}\n\ttok, ok := <-p.flow\n\tif !ok {\n\t\treturn nil\n\t}\n\treturn &tok\n}\n\nfunc (p *queryParser) parseStart() queryParserStateFn {\n\ttok := p.getToken()\n\n\tif tok == nil || tok.typ == tokenEOF {\n\t\treturn nil\n\t}\n\n\tif tok.typ != tokenDollar {\n\t\treturn p.parseError(tok, \"Expected '$' at start of expression\")\n\t}\n\n\treturn p.parseMatchExpr\n}\n\n// handle '.' prefix, '[]', and '..'\nfunc (p *queryParser) parseMatchExpr() queryParserStateFn {\n\ttok := p.getToken()\n\tswitch tok.typ {\n\tcase tokenDotDot:\n\t\tp.query.appendPath(&matchRecursiveFn{})\n\t\t// nested parse for '..'\n\t\ttok := p.getToken()\n\t\tswitch tok.typ {\n\t\tcase tokenKey:\n\t\t\tp.query.appendPath(newMatchKeyFn(tok.val))\n\t\t\treturn p.parseMatchExpr\n\t\tcase tokenLeftBracket:\n\t\t\treturn p.parseBracketExpr\n\t\tcase tokenStar:\n\t\t\t// do nothing - the recursive predicate is enough\n\t\t\treturn p.parseMatchExpr\n\t\t}\n\n\tcase tokenDot:\n\t\t// nested parse for '.'\n\t\ttok := p.getToken()\n\t\tswitch tok.typ {\n\t\tcase tokenKey:\n\t\t\tp.query.appendPath(newMatchKeyFn(tok.val))\n\t\t\treturn p.parseMatchExpr\n\t\tcase tokenStar:\n\t\t\tp.query.appendPath(&matchAnyFn{})\n\t\t\treturn p.parseMatchExpr\n\t\t}\n\n\tcase tokenLeftBracket:\n\t\treturn p.parseBracketExpr\n\n\tcase tokenEOF:\n\t\treturn nil // allow EOF at this stage\n\t}\n\treturn p.parseError(tok, \"expected match expression\")\n\treturn nil\n}\n\nfunc (p *queryParser) parseBracketExpr() queryParserStateFn {\n\tif p.lookahead(tokenInteger, tokenColon) {\n\t\treturn p.parseSliceExpr\n\t}\n\tif p.peek().typ == tokenColon {\n\t\treturn p.parseSliceExpr\n\t}\n\treturn p.parseUnionExpr\n}\n\nfunc (p *queryParser) parseUnionExpr() queryParserStateFn {\n\tvar tok *token\n\n\t// this state can be traversed after some sub-expressions\n\t// so be careful when setting up state in the parser\n\tif p.union == nil {\n\t\tp.union = []pathFn{}\n\t}\n\nloop: // labeled loop for easy breaking\n\tfor {\n\t\tif len(p.union) > 0 {\n\t\t\t// parse delimiter or terminator\n\t\t\ttok = p.getToken()\n\t\t\tswitch tok.typ {\n\t\t\tcase tokenComma:\n\t\t\t\t// do nothing\n\t\t\tcase tokenRightBracket:\n\t\t\t\tbreak loop\n\t\t\tdefault:\n\t\t\t\treturn p.parseError(tok, \"expected ',' or ']', not '%s'\", tok.val)\n\t\t\t}\n\t\t}\n\n\t\t// parse sub expression\n\t\ttok = p.getToken()\n\t\tswitch tok.typ {\n\t\tcase tokenInteger:\n\t\t\tp.union = append(p.union, newMatchIndexFn(tok.Int()))\n\t\tcase tokenKey:\n\t\t\tp.union = append(p.union, newMatchKeyFn(tok.val))\n\t\tcase tokenString:\n\t\t\tp.union = append(p.union, newMatchKeyFn(tok.val))\n\t\tcase tokenQuestion:\n\t\t\treturn p.parseFilterExpr\n\t\tdefault:\n\t\t\treturn p.parseError(tok, \"expected union sub expression, not '%s', %d\", tok.val, len(p.union))\n\t\t}\n\t}\n\n\t// if there is only one sub-expression, use that instead\n\tif len(p.union) == 1 {\n\t\tp.query.appendPath(p.union[0])\n\t} else {\n\t\tp.query.appendPath(&matchUnionFn{p.union})\n\t}\n\n\tp.union = nil // clear out state\n\treturn p.parseMatchExpr\n}\n\nfunc (p *queryParser) parseSliceExpr() queryParserStateFn {\n\t// init slice to grab all elements\n\tstart, end, step := 0, MaxInt, 1\n\n\t// parse optional start\n\ttok := p.getToken()\n\tif tok.typ == tokenInteger {\n\t\tstart = tok.Int()\n\t\ttok = p.getToken()\n\t}\n\tif tok.typ != tokenColon {\n\t\treturn p.parseError(tok, \"expected ':'\")\n\t}\n\n\t// parse optional end\n\ttok = p.getToken()\n\tif tok.typ == tokenInteger {\n\t\tend = tok.Int()\n\t\ttok = p.getToken()\n\t}\n\tif tok.typ == tokenRightBracket {\n\t\tp.query.appendPath(newMatchSliceFn(start, end, step))\n\t\treturn p.parseMatchExpr\n\t}\n\tif tok.typ != tokenColon {\n\t\treturn p.parseError(tok, \"expected ']' or ':'\")\n\t}\n\n\t// parse optional step\n\ttok = p.getToken()\n\tif tok.typ == tokenInteger {\n\t\tstep = tok.Int()\n\t\tif step < 0 {\n\t\t\treturn p.parseError(tok, \"step must be a positive value\")\n\t\t}\n\t\ttok = p.getToken()\n\t}\n\tif tok.typ != tokenRightBracket {\n\t\treturn p.parseError(tok, \"expected ']'\")\n\t}\n\n\tp.query.appendPath(newMatchSliceFn(start, end, step))\n\treturn p.parseMatchExpr\n}\n\nfunc (p *queryParser) parseFilterExpr() queryParserStateFn {\n\ttok := p.getToken()\n\tif tok.typ != tokenLeftParen {\n\t\treturn p.parseError(tok, \"expected left-parenthesis for filter expression\")\n\t}\n\ttok = p.getToken()\n\tif tok.typ != tokenKey && tok.typ != tokenString {\n\t\treturn p.parseError(tok, \"expected key or string for filter funciton name\")\n\t}\n\tname := tok.val\n\ttok = p.getToken()\n\tif tok.typ != tokenRightParen {\n\t\treturn p.parseError(tok, \"expected right-parenthesis for filter expression\")\n\t}\n\tp.union = append(p.union, newMatchFilterFn(name, tok.Position))\n\treturn p.parseUnionExpr\n}\n\nfunc parseQuery(flow chan token) (*Query, error) {\n\tparser := &queryParser{\n\t\tflow:         flow,\n\t\ttokensBuffer: []token{},\n\t\tquery:        newQuery(),\n\t}\n\tparser.run()\n\treturn parser.query, parser.err\n}\n",
+        "rank": 0,
+        "truncated": false
+      }
+    ],
+    "selected": [
+      {
+        "id": "9ed0a9c018afbee343297691",
+        "revision": "709382e9c1ea35d82f074793d5db89dd8536c283",
+        "path": "queryparser.go",
+        "start_byte": 4302,
+        "text": "func (p *queryParser) parseSliceExpr() queryParserStateFn {\n\t// init slice to grab all elements\n\tstart, end, step := 0, math.MaxInt32, 1\n\n\t// parse optional start\n\ttok := p.getToken()\n\tif tok.typ == tokenInteger {\n\t\tstart = tok.Int()\n\t\ttok = p.getToken()\n\t}\n\tif tok.typ != tokenColon {\n\t\treturn p.parseError(tok, \"expected ':'\")\n\t}\n\n\t// parse optional end\n\ttok = p.getToken()\n\tif tok.typ == tokenInteger {\n\t\tend = tok.Int()\n\t\ttok = p.getToken()\n\t}\n\tif tok.typ == tokenRightBracket {\n\t\tp.query.appendPath(newMatchSliceFn(start, end, step))\n\t\treturn p.parseMatchExpr\n\t}\n\tif tok.typ != tokenColon {\n\t\treturn p.parseError(tok, \"expected ']' or ':'\")\n\t}\n\n\t// parse optional step\n\ttok = p.getToken()\n\tif tok.typ == tokenInteger {\n\t\tstep = tok.Int()\n\t\tif step < 0 {\n\t\t\treturn p.parseError(tok, \"step must be a positive value\")\n\t\t}\n\t\ttok = p.getToken()\n\t}\n\tif tok.typ != tokenRightBracket {\n\t\treturn p.parseError(tok, \"expected ']'\")\n\t}\n\n\tp.query.appendPath(newMatchSliceFn(start, end, step))\n\treturn p.parseMatchExpr\n}",
+        "rank": 0,
+        "truncated": false
+      },
+      {
+        "id": "0f1c10204b33cc604accfb83",
+        "revision": "db15f8a481e7dc5bc3423754ce6e351964f4b8d3",
+        "path": "queryparser.go",
+        "start_byte": 4329,
+        "text": "func (p *queryParser) parseSliceExpr() queryParserStateFn {\n\t// init slice to grab all elements\n\tstart, end, step := 0, MaxInt, 1\n\n\t// parse optional start\n\ttok := p.getToken()\n\tif tok.typ == tokenInteger {\n\t\tstart = tok.Int()\n\t\ttok = p.getToken()\n\t}\n\tif tok.typ != tokenColon {\n\t\treturn p.parseError(tok, \"expected ':'\")\n\t}\n\n\t// parse optional end\n\ttok = p.getToken()\n\tif tok.typ == tokenInteger {\n\t\tend = tok.Int()\n\t\ttok = p.getToken()\n\t}\n\tif tok.typ == tokenRightBracket {\n\t\tp.query.appendPath(newMatchSliceFn(start, end, step))\n\t\treturn p.parseMatchExpr\n\t}\n\tif tok.typ != tokenColon {\n\t\treturn p.parseError(tok, \"expected ']' or ':'\")\n\t}\n\n\t// parse optional step\n\ttok = p.getToken()\n\tif tok.typ == tokenInteger {\n\t\tstep = tok.Int()\n\t\tif step < 0 {\n\t\t\treturn p.parseError(tok, \"step must be a positive value\")\n\t\t}\n\t\ttok = p.getToken()\n\t}\n\tif tok.typ != tokenRightBracket {\n\t\treturn p.parseError(tok, \"expected ']'\")\n\t}\n\n\tp.query.appendPath(newMatchSliceFn(start, end, step))\n\treturn p.parseMatchExpr\n}",
+        "rank": 0,
+        "truncated": false
+      },
+      {
+        "id": "78a2d32eb49bbbecd9c53198",
+        "revision": "709382e9c1ea35d82f074793d5db89dd8536c283",
+        "path": "match.go",
+        "start_byte": 1983,
+        "text": "func newMatchSliceFn(start, end, step int) *matchSliceFn {\n\treturn &matchSliceFn{Start: start, End: end, Step: step}\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "dde5b7479e429494634d1775",
+        "revision": "709382e9c1ea35d82f074793d5db89dd8536c283",
+        "path": "parser.go",
+        "start_byte": 1068,
+        "text": "func (p *tomlParser) getToken() *token {\n\tif len(p.tokensBuffer) != 0 {\n\t\ttok := p.tokensBuffer[0]\n\t\tp.tokensBuffer = p.tokensBuffer[1:]\n\t\treturn &tok\n\t}\n\ttok, ok := <-p.flow\n\tif !ok {\n\t\treturn nil\n\t}\n\treturn &tok\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "f05a7b7e985832b1fa2db30a",
+        "revision": "709382e9c1ea35d82f074793d5db89dd8536c283",
+        "path": "query.go",
+        "start_byte": 1830,
+        "text": "func (q *Query) appendPath(next pathFn) {\n\tif q.root == nil {\n\t\tq.root = next\n\t} else {\n\t\tq.tail.setNext(next)\n\t}\n\tq.tail = next\n\tnext.setNext(newTerminatingFn()) // init the next functor\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "675b7619417e8557c48e1723",
+        "revision": "709382e9c1ea35d82f074793d5db89dd8536c283",
+        "path": "queryparser.go",
+        "start_byte": 169,
+        "text": "type queryParser struct {\n\tflow         chan token\n\ttokensBuffer []token\n\tquery        *Query\n\tunion        []pathFn\n\terr          error\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "a66eeaacc9bdc440da9ea1ce",
+        "revision": "709382e9c1ea35d82f074793d5db89dd8536c283",
+        "path": "queryparser.go",
+        "start_byte": 309,
+        "text": "type queryParserStateFn func() queryParserStateFn",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "7713dc83db548264224957e8",
+        "revision": "709382e9c1ea35d82f074793d5db89dd8536c283",
+        "path": "queryparser.go",
+        "start_byte": 416,
+        "text": "func (p *queryParser) parseError(tok *token, msg string, args ...interface{}) queryParserStateFn {\n\tp.err = fmt.Errorf(tok.Position.String()+\": \"+msg, args...)\n\treturn nil // trigger parse to end\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "a67bf4fe1e3bab1d87a2bda2",
+        "revision": "709382e9c1ea35d82f074793d5db89dd8536c283",
+        "path": "queryparser.go",
+        "start_byte": 1393,
+        "text": "func (p *queryParser) getToken() *token {\n\tif len(p.tokensBuffer) != 0 {\n\t\ttok := p.tokensBuffer[0]\n\t\tp.tokensBuffer = p.tokensBuffer[1:]\n\t\treturn &tok\n\t}\n\ttok, ok := <-p.flow\n\tif !ok {\n\t\treturn nil\n\t}\n\treturn &tok\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "c316aa7e42c4e3d9c6f7f235",
+        "revision": "709382e9c1ea35d82f074793d5db89dd8536c283",
+        "path": "queryparser.go",
+        "start_byte": 1910,
+        "text": "func (p *queryParser) parseMatchExpr() queryParserStateFn {\n\ttok := p.getToken()\n\tswitch tok.typ {\n\tcase tokenDotDot:\n\t\tp.query.appendPath(&matchRecursiveFn{})\n\t\t// nested parse for '..'\n\t\ttok := p.getToken()\n\t\tswitch tok.typ {\n\t\tcase tokenKey:\n\t\t\tp.query.appendPath(newMatchKeyFn(tok.val))\n\t\t\treturn p.parseMatchExpr\n\t\tcase tokenLeftBracket:\n\t\t\treturn p.parseBracketExpr\n\t\tcase tokenStar:\n\t\t\t// do nothing - the recursive predicate is enough\n\t\t\treturn p.parseMatchExpr\n\t\t}\n\n\tcase tokenDot:\n\t\t// nested parse for '.'\n\t\ttok := p.getToken()\n\t\tswitch tok.typ {\n\t\tcase tokenKey:\n\t\t\tp.query.appendPath(newMatchKeyFn(tok.val))\n\t\t\treturn p.parseMatchExpr\n\t\tcase tokenStar:\n\t\t\tp.query.appendPath(&matchAnyFn{})\n\t\t\treturn p.parseMatchExpr\n\t\t}\n\n\tcase tokenLeftBracket:\n\t\treturn p.parseBracketExpr\n\n\tcase tokenEOF:\n\t\treturn nil // allow EOF at this stage\n\t}\n\treturn p.parseError(tok, \"expected match expression\")\n\treturn nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "aa354a81bfdbf1a7b50c6eb4",
+        "revision": "709382e9c1ea35d82f074793d5db89dd8536c283",
+        "path": "queryparser.go",
+        "start_byte": 3113,
+        "text": "var tok *token",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "27416e13265458cba948ae95",
+        "revision": "709382e9c1ea35d82f074793d5db89dd8536c283",
+        "path": "token.go",
+        "start_byte": 979,
+        "text": "func (t token) Int() int {\n\tif result, err := strconv.Atoi(t.val); err != nil {\n\t\tpanic(err)\n\t} else {\n\t\treturn result\n\t}\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "34492fad7e885de367d7f9c0",
+        "revision": "db15f8a481e7dc5bc3423754ce6e351964f4b8d3",
+        "path": "match.go",
+        "start_byte": 1983,
+        "text": "func newMatchSliceFn(start, end, step int) *matchSliceFn {\n\treturn &matchSliceFn{Start: start, End: end, Step: step}\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "b66b8b260a3ea18e2665ca0f",
+        "revision": "db15f8a481e7dc5bc3423754ce6e351964f4b8d3",
+        "path": "parser.go",
+        "start_byte": 1068,
+        "text": "func (p *tomlParser) getToken() *token {\n\tif len(p.tokensBuffer) != 0 {\n\t\ttok := p.tokensBuffer[0]\n\t\tp.tokensBuffer = p.tokensBuffer[1:]\n\t\treturn &tok\n\t}\n\ttok, ok := <-p.flow\n\tif !ok {\n\t\treturn nil\n\t}\n\treturn &tok\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "6224579798a923b89c541d0e",
+        "revision": "db15f8a481e7dc5bc3423754ce6e351964f4b8d3",
+        "path": "query.go",
+        "start_byte": 1830,
+        "text": "func (q *Query) appendPath(next pathFn) {\n\tif q.root == nil {\n\t\tq.root = next\n\t} else {\n\t\tq.tail.setNext(next)\n\t}\n\tq.tail = next\n\tnext.setNext(newTerminatingFn()) // init the next functor\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "1678207e322137e918215586",
+        "revision": "db15f8a481e7dc5bc3423754ce6e351964f4b8d3",
+        "path": "queryparser.go",
+        "start_byte": 161,
+        "text": "const MaxInt = int(^uint(0) >> 1)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "47215942d12f03a47d1d005b",
+        "revision": "db15f8a481e7dc5bc3423754ce6e351964f4b8d3",
+        "path": "queryparser.go",
+        "start_byte": 196,
+        "text": "type queryParser struct {\n\tflow         chan token\n\ttokensBuffer []token\n\tquery        *Query\n\tunion        []pathFn\n\terr          error\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "eb9e7a9a3a6929e421ae577c",
+        "revision": "db15f8a481e7dc5bc3423754ce6e351964f4b8d3",
+        "path": "queryparser.go",
+        "start_byte": 336,
+        "text": "type queryParserStateFn func() queryParserStateFn",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "7ecc99acd56baebbd2b9181e",
+        "revision": "db15f8a481e7dc5bc3423754ce6e351964f4b8d3",
+        "path": "queryparser.go",
+        "start_byte": 443,
+        "text": "func (p *queryParser) parseError(tok *token, msg string, args ...interface{}) queryParserStateFn {\n\tp.err = fmt.Errorf(tok.Position.String()+\": \"+msg, args...)\n\treturn nil // trigger parse to end\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "8c42176e9715b27efa5be885",
+        "revision": "db15f8a481e7dc5bc3423754ce6e351964f4b8d3",
+        "path": "queryparser.go",
+        "start_byte": 1420,
+        "text": "func (p *queryParser) getToken() *token {\n\tif len(p.tokensBuffer) != 0 {\n\t\ttok := p.tokensBuffer[0]\n\t\tp.tokensBuffer = p.tokensBuffer[1:]\n\t\treturn &tok\n\t}\n\ttok, ok := <-p.flow\n\tif !ok {\n\t\treturn nil\n\t}\n\treturn &tok\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "c3ee1917660271a186bdb563",
+        "revision": "db15f8a481e7dc5bc3423754ce6e351964f4b8d3",
+        "path": "queryparser.go",
+        "start_byte": 1937,
+        "text": "func (p *queryParser) parseMatchExpr() queryParserStateFn {\n\ttok := p.getToken()\n\tswitch tok.typ {\n\tcase tokenDotDot:\n\t\tp.query.appendPath(&matchRecursiveFn{})\n\t\t// nested parse for '..'\n\t\ttok := p.getToken()\n\t\tswitch tok.typ {\n\t\tcase tokenKey:\n\t\t\tp.query.appendPath(newMatchKeyFn(tok.val))\n\t\t\treturn p.parseMatchExpr\n\t\tcase tokenLeftBracket:\n\t\t\treturn p.parseBracketExpr\n\t\tcase tokenStar:\n\t\t\t// do nothing - the recursive predicate is enough\n\t\t\treturn p.parseMatchExpr\n\t\t}\n\n\tcase tokenDot:\n\t\t// nested parse for '.'\n\t\ttok := p.getToken()\n\t\tswitch tok.typ {\n\t\tcase tokenKey:\n\t\t\tp.query.appendPath(newMatchKeyFn(tok.val))\n\t\t\treturn p.parseMatchExpr\n\t\tcase tokenStar:\n\t\t\tp.query.appendPath(&matchAnyFn{})\n\t\t\treturn p.parseMatchExpr\n\t\t}\n\n\tcase tokenLeftBracket:\n\t\treturn p.parseBracketExpr\n\n\tcase tokenEOF:\n\t\treturn nil // allow EOF at this stage\n\t}\n\treturn p.parseError(tok, \"expected match expression\")\n\treturn nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "1ea099933e931f2794430a4c",
+        "revision": "db15f8a481e7dc5bc3423754ce6e351964f4b8d3",
+        "path": "queryparser.go",
+        "start_byte": 3140,
+        "text": "var tok *token",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "510ea2bbfff900c27a7f59e7",
+        "revision": "db15f8a481e7dc5bc3423754ce6e351964f4b8d3",
+        "path": "token.go",
+        "start_byte": 979,
+        "text": "func (t token) Int() int {\n\tif result, err := strconv.Atoi(t.val); err != nil {\n\t\tpanic(err)\n\t} else {\n\t\treturn result\n\t}\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "fcebdbf60b5b9d4612de569e",
+        "revision": "709382e9c1ea35d82f074793d5db89dd8536c283",
+        "path": "lexer.go",
+        "start_byte": 320,
+        "text": "type tomlLexer struct {\n\tinput  string\n\tstart  int\n\tpos    int\n\twidth  int\n\ttokens chan token\n\tdepth  int\n\tline   int\n\tcol    int\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "5fbe9ce733d4368c901dda3b",
+        "revision": "709382e9c1ea35d82f074793d5db89dd8536c283",
+        "path": "lexer.go",
+        "start_byte": 563,
+        "text": "func (l *tomlLexer) nextStart() {\n\t// iterate by runes (utf8 characters)\n\t// search for newlines and advance line/col counts\n\tfor i := l.start; i < l.pos; {\n\t\tr, width := utf8.DecodeRuneInString(l.input[i:])\n\t\tif r == '\\n' {\n\t\t\tl.line++\n\t\t\tl.col = 1\n\t\t} else {\n\t\t\tl.col++\n\t\t}\n\t\ti += width\n\t}\n\t// advance start position to next token\n\tl.start = l.pos\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "6dc7900ec661ae7c3a1ce0e1",
+        "revision": "709382e9c1ea35d82f074793d5db89dd8536c283",
+        "path": "lexer.go",
+        "start_byte": 916,
+        "text": "func (l *tomlLexer) emit(t tokenType) {\n\tl.tokens <- token{\n\t\tPosition: Position{l.line, l.col},\n\t\ttyp:      t,\n\t\tval:      l.input[l.start:l.pos],\n\t}\n\tl.nextStart()\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "19dd8d6c08df6ecaa730d9dd",
+        "revision": "709382e9c1ea35d82f074793d5db89dd8536c283",
+        "path": "lexer.go",
+        "start_byte": 1085,
+        "text": "func (l *tomlLexer) emitWithValue(t tokenType, value string) {\n\tl.tokens <- token{\n\t\tPosition: Position{l.line, l.col},\n\t\ttyp:      t,\n\t\tval:      value,\n\t}\n\tl.nextStart()\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "7a280ea70c7fc70b5794f09d",
+        "revision": "709382e9c1ea35d82f074793d5db89dd8536c283",
+        "path": "lexer.go",
+        "start_byte": 1551,
+        "text": "func (l *tomlLexer) errorf(format string, args ...interface{}) tomlLexStateFn {\n\tl.tokens <- token{\n\t\tPosition: Position{l.line, l.col},\n\t\ttyp:      tokenError,\n\t\tval:      fmt.Sprintf(format, args...),\n\t}\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "e5dbf6c61328ad43e28eeb4f",
+        "revision": "709382e9c1ea35d82f074793d5db89dd8536c283",
+        "path": "lexer.go",
+        "start_byte": 6206,
+        "text": "func (l *tomlLexer) lexInsideKeyGroupArray() tomlLexStateFn {\n\tfor {\n\t\tif l.peek() == ']' {\n\t\t\tif l.pos > l.start {\n\t\t\t\tl.emit(tokenKeyGroupArray)\n\t\t\t}\n\t\t\tl.ignore()\n\t\t\tl.pos++\n\t\t\tif l.peek() != ']' {\n\t\t\t\tbreak // error\n\t\t\t}\n\t\t\tl.pos++\n\t\t\tl.emit(tokenDoubleRightBracket)\n\t\t\treturn l.lexVoid\n\t\t} else if l.peek() == '[' {\n\t\t\treturn l.errorf(\"group name cannot contain ']'\")\n\t\t}\n\n\t\tif l.next() == eof {\n\t\t\tbreak\n\t\t}\n\t}\n\treturn l.errorf(\"unclosed key group array\")\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "9119ded622b57ce016aca342",
+        "revision": "709382e9c1ea35d82f074793d5db89dd8536c283",
+        "path": "lexer.go",
+        "start_byte": 6671,
+        "text": "func (l *tomlLexer) lexInsideKeyGroup() tomlLexStateFn {\n\tfor {\n\t\tif l.peek() == ']' {\n\t\t\tif l.pos > l.start {\n\t\t\t\tl.emit(tokenKeyGroup)\n\t\t\t}\n\t\t\tl.ignore()\n\t\t\tl.pos++\n\t\t\tl.emit(tokenRightBracket)\n\t\t\treturn l.lexVoid\n\t\t} else if l.peek() == '[' {\n\t\t\treturn l.errorf(\"group name cannot contain ']'\")\n\t\t}\n\n\t\tif l.next() == eof {\n\t\t\tbreak\n\t\t}\n\t}\n\treturn l.errorf(\"unclosed key group\")\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "c3294d6f892820c9b1c8286a",
+        "revision": "709382e9c1ea35d82f074793d5db89dd8536c283",
+        "path": "lexer.go",
+        "start_byte": 7055,
+        "text": "func (l *tomlLexer) lexRightBracket() tomlLexStateFn {\n\tl.ignore()\n\tl.pos++\n\tl.emit(tokenRightBracket)\n\treturn l.lexRvalue\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "bd5e878f52ca060829b58210",
+        "revision": "709382e9c1ea35d82f074793d5db89dd8536c283",
+        "path": "lexer.go",
+        "start_byte": 7181,
+        "text": "func (l *tomlLexer) lexNumber() tomlLexStateFn {\n\tl.ignore()\n\tif !l.accept(\"+\") {\n\t\tl.accept(\"-\")\n\t}\n\tpointSeen := false\n\tdigitSeen := false\n\tfor {\n\t\tnext := l.next()\n\t\tif next == '.' {\n\t\t\tif pointSeen {\n\t\t\t\treturn l.errorf(\"cannot have two dots in one float\")\n\t\t\t}\n\t\t\tif !isDigit(l.peek()) {\n\t\t\t\treturn l.errorf(\"float cannot end with a dot\")\n\t\t\t}\n\t\t\tpointSeen = true\n\t\t} else if isDigit(next) {\n\t\t\tdigitSeen = true\n\t\t} else {\n\t\t\tl.backup()\n\t\t\tbreak\n\t\t}\n\t\tif pointSeen && !digitSeen {\n\t\t\treturn l.errorf(\"cannot start float with a dot\")\n\t\t}\n\t}\n\n\tif !digitSeen {\n\t\treturn l.errorf(\"no digit in that number\")\n\t}\n\tif pointSeen {\n\t\tl.emit(tokenFloat)\n\t} else {\n\t\tl.emit(tokenInteger)\n\t}\n\treturn l.lexRvalue\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "fb347722ed500fadde55bd25",
+        "revision": "709382e9c1ea35d82f074793d5db89dd8536c283",
+        "path": "parser.go",
+        "start_byte": 346,
+        "text": "func (p *tomlParser) raiseError(tok *token, msg string, args ...interface{}) {\n\tpanic(tok.Position.String() + \": \" + fmt.Sprintf(msg, args...))\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "21d31921272580b25899d769",
+        "revision": "709382e9c1ea35d82f074793d5db89dd8536c283",
+        "path": "parser.go",
+        "start_byte": 493,
+        "text": "func (p *tomlParser) run() {\n\tfor state := p.parseStart; state != nil; {\n\t\tstate = state()\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "7c89179ba033a46005adcbed",
+        "revision": "709382e9c1ea35d82f074793d5db89dd8536c283",
+        "path": "parser.go",
+        "start_byte": 590,
+        "text": "func (p *tomlParser) peek() *token {\n\tif len(p.tokensBuffer) != 0 {\n\t\treturn &(p.tokensBuffer[0])\n\t}\n\n\ttok, ok := <-p.flow\n\tif !ok {\n\t\treturn nil\n\t}\n\tp.tokensBuffer = append(p.tokensBuffer, tok)\n\treturn &tok\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "0402d5d93e0b57bc173a2dc7",
+        "revision": "709382e9c1ea35d82f074793d5db89dd8536c283",
+        "path": "parser.go",
+        "start_byte": 801,
+        "text": "func (p *tomlParser) assume(typ tokenType) {\n\ttok := p.getToken()\n\tif tok == nil {\n\t\tp.raiseError(tok, \"was expecting token %s, but token stream is empty\", tok)\n\t}\n\tif tok.typ != typ {\n\t\tp.raiseError(tok, \"was expecting token %s, but got %s instead\", typ, tok)\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "712fff2c1091d7cbc3bee51f",
+        "revision": "709382e9c1ea35d82f074793d5db89dd8536c283",
+        "path": "parser.go",
+        "start_byte": 1285,
+        "text": "func (p *tomlParser) parseStart() tomlParserStateFn {\n\ttok := p.peek()\n\n\t// end of stream, parsing is finished\n\tif tok == nil {\n\t\treturn nil\n\t}\n\n\tswitch tok.typ {\n\tcase tokenDoubleLeftBracket:\n\t\treturn p.parseGroupArray\n\tcase tokenLeftBracket:\n\t\treturn p.parseGroup\n\tcase tokenKey:\n\t\treturn p.parseAssign\n\tcase tokenEOF:\n\t\treturn nil\n\tdefault:\n\t\tp.raiseError(tok, \"unexpected token\")\n\t}\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "001987c2d6177ed1ad5986e7",
+        "revision": "709382e9c1ea35d82f074793d5db89dd8536c283",
+        "path": "parser.go",
+        "start_byte": 1687,
+        "text": "func (p *tomlParser) parseGroupArray() tomlParserStateFn {\n\tstartToken := p.getToken() // discard the [[\n\tkey := p.getToken()\n\tif key.typ != tokenKeyGroupArray {\n\t\tp.raiseError(key, \"unexpected token %s, was expecting a key group array\", key)\n\t}\n\n\t// get or create group array element at the indicated part in the path\n\tkeys := strings.Split(key.val, \".\")\n\tp.tree.createSubTree(keys[:len(keys)-1], startToken.Position) // create parent entries\n\tdestTree := p.tree.GetPath(keys)\n\tvar array []*TomlTree\n\tif destTree == nil {\n\t\tarray = make([]*TomlTree, 0)\n\t} else if destTree.([]*TomlTree) != nil {\n\t\tarray = destTree.([]*TomlTree)\n\t} else {\n\t\tp.raiseError(key, \"key %s is already assigned and not of type group array\", key)\n\t}\n\tp.currentGroup = keys\n\n\t// add a new tree to the end of the group array\n\tnewTree := newTomlTree()\n\tnewTree.position = startToken.Position\n\tarray = append(array, newTree)\n\tp.tree.SetPath(p.currentGroup, array)\n\n\t// remove all keys that were children of this group array\n\tprefix := key.val + \".\"\n\tfound := false\n\tfor ii := 0; ii < len(p.seenGroupKeys); {\n\t\tgroupKey := p.seenGroupKeys[ii]\n\t\tif strings.HasPrefix(groupKey, prefix) {\n\t\t\tp.seenGroupKeys = append(p.seenGroupKeys[:ii], p.seenGroupKeys[ii+1:]...)\n\t\t} else {\n\t\t\tfound = (groupKey == key.val)\n\t\t\tii++\n\t\t}\n\t}\n\n\t// keep this key name from use by other kinds of assignments\n\tif !found {\n\t\tp.seenGroupKeys = append(p.seenGroupKeys, key.val)\n\t}\n\n\t// move to next parser state\n\tp.assume(tokenDoubleRightBracket)\n\treturn p.parseStart\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "7275cd3f9b07abb4a7fd1346",
+        "revision": "709382e9c1ea35d82f074793d5db89dd8536c283",
+        "path": "parser.go",
+        "start_byte": 3202,
+        "text": "func (p *tomlParser) parseGroup() tomlParserStateFn {\n\tstartToken := p.getToken() // discard the [\n\tkey := p.getToken()\n\tif key.typ != tokenKeyGroup {\n\t\tp.raiseError(key, \"unexpected token %s, was expecting a key group\", key)\n\t}\n\tfor _, item := range p.seenGroupKeys {\n\t\tif item == key.val {\n\t\t\tp.raiseError(key, \"duplicated tables\")\n\t\t}\n\t}\n\n\tp.seenGroupKeys = append(p.seenGroupKeys, key.val)\n\tkeys := strings.Split(key.val, \".\")\n\tif err := p.tree.createSubTree(keys, startToken.Position); err != nil {\n\t\tp.raiseError(key, \"%s\", err)\n\t}\n\tp.assume(tokenRightBracket)\n\tp.currentGroup = keys\n\treturn p.parseStart\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "3a802a887f2d946e945d3759",
+        "revision": "709382e9c1ea35d82f074793d5db89dd8536c283",
+        "path": "parser.go",
+        "start_byte": 3816,
+        "text": "func (p *tomlParser) parseAssign() tomlParserStateFn {\n\tkey := p.getToken()\n\tp.assume(tokenEqual)\n\tvalue := p.parseRvalue()\n\tvar groupKey []string\n\tif len(p.currentGroup) > 0 {\n\t\tgroupKey = p.currentGroup\n\t} else {\n\t\tgroupKey = []string{}\n\t}\n\n\t// find the group to assign, looking out for arrays of groups\n\tvar targetNode *TomlTree\n\tswitch node := p.tree.GetPath(groupKey).(type) {\n\tcase []*TomlTree:\n\t\ttargetNode = node[len(node)-1]\n\tcase *TomlTree:\n\t\ttargetNode = node\n\tdefault:\n\t\tp.raiseError(key, \"Unknown group type for path: %s\",\n\t\t\tstrings.Join(groupKey, \".\"))\n\t}\n\n\t// assign value to the found group\n\tlocalKey := []string{key.val}\n\tfinalKey := append(groupKey, key.val)\n\tif targetNode.GetPath(localKey) != nil {\n\t\tp.raiseError(key, \"The following key was defined twice: %s\",\n\t\t\tstrings.Join(finalKey, \".\"))\n\t}\n\ttargetNode.values[key.val] = &tomlValue{value, key.Position}\n\treturn p.parseStart\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "3f294887abee438fdd8c5727",
+        "revision": "709382e9c1ea35d82f074793d5db89dd8536c283",
+        "path": "parser.go",
+        "start_byte": 4720,
+        "text": "func (p *tomlParser) parseRvalue() interface{} {\n\ttok := p.getToken()\n\tif tok == nil || tok.typ == tokenEOF {\n\t\tp.raiseError(tok, \"expecting a value\")\n\t}\n\n\tswitch tok.typ {\n\tcase tokenString:\n\t\treturn tok.val\n\tcase tokenTrue:\n\t\treturn true\n\tcase tokenFalse:\n\t\treturn false\n\tcase tokenInteger:\n\t\tval, err := strconv.ParseInt(tok.val, 10, 64)\n\t\tif err != nil {\n\t\t\tp.raiseError(tok, \"%s\", err)\n\t\t}\n\t\treturn val\n\tcase tokenFloat:\n\t\tval, err := strconv.ParseFloat(tok.val, 64)\n\t\tif err != nil {\n\t\t\tp.raiseError(tok, \"%s\", err)\n\t\t}\n\t\treturn val\n\tcase tokenDate:\n\t\tval, err := time.Parse(time.RFC3339, tok.val)\n\t\tif err != nil {\n\t\t\tp.raiseError(tok, \"%s\", err)\n\t\t}\n\t\treturn val\n\tcase tokenLeftBracket:\n\t\treturn p.parseArray()\n\tcase tokenError:\n\t\tp.raiseError(tok, \"%s\", tok)\n\t}\n\n\tp.raiseError(tok, \"never reached\")\n\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "2fe3b2338810d652eacb3486",
+        "revision": "709382e9c1ea35d82f074793d5db89dd8536c283",
+        "path": "parser.go",
+        "start_byte": 5544,
+        "text": "func (p *tomlParser) parseArray() []interface{} {\n\tvar array []interface{}\n\tarrayType := reflect.TypeOf(nil)\n\tfor {\n\t\tfollow := p.peek()\n\t\tif follow == nil || follow.typ == tokenEOF {\n\t\t\tp.raiseError(follow, \"unterminated array\")\n\t\t}\n\t\tif follow.typ == tokenRightBracket {\n\t\t\tp.getToken()\n\t\t\treturn array\n\t\t}\n\t\tval := p.parseRvalue()\n\t\tif arrayType == nil {\n\t\t\tarrayType = reflect.TypeOf(val)\n\t\t}\n\t\tif reflect.TypeOf(val) != arrayType {\n\t\t\tp.raiseError(follow, \"mixed types in array\")\n\t\t}\n\t\tarray = append(array, val)\n\t\tfollow = p.peek()\n\t\tif follow == nil {\n\t\t\tp.raiseError(follow, \"unterminated array\")\n\t\t}\n\t\tif follow.typ != tokenRightBracket && follow.typ != tokenComma {\n\t\t\tp.raiseError(follow, \"missing comma\")\n\t\t}\n\t\tif follow.typ == tokenComma {\n\t\t\tp.getToken()\n\t\t}\n\t}\n\treturn array\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "e1df382d2ccec280efb04ffb",
+        "revision": "709382e9c1ea35d82f074793d5db89dd8536c283",
+        "path": "position.go",
+        "start_byte": 492,
+        "text": "func (p *Position) String() string {\n\treturn fmt.Sprintf(\"(%d, %d)\", p.Line, p.Col)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "5645511cdb9990348da7f061",
+        "revision": "709382e9c1ea35d82f074793d5db89dd8536c283",
+        "path": "position.go",
+        "start_byte": 666,
+        "text": "func (p *Position) Invalid() bool {\n\treturn p.Line <= 0 || p.Col <= 0\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "d83449295edda54fddf15ea6",
+        "revision": "709382e9c1ea35d82f074793d5db89dd8536c283",
+        "path": "querylexer.go",
+        "start_byte": 291,
+        "text": "type queryLexer struct {\n\tinput      string\n\tstart      int\n\tpos        int\n\twidth      int\n\ttokens     chan token\n\tdepth      int\n\tline       int\n\tcol        int\n\tstringTerm string\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "4e67f631185c36fae42ec3ef",
+        "revision": "709382e9c1ea35d82f074793d5db89dd8536c283",
+        "path": "querylexer.go",
+        "start_byte": 587,
+        "text": "func (l *queryLexer) nextStart() {\n\t// iterate by runes (utf8 characters)\n\t// search for newlines and advance line/col counts\n\tfor i := l.start; i < l.pos; {\n\t\tr, width := utf8.DecodeRuneInString(l.input[i:])\n\t\tif r == '\\n' {\n\t\t\tl.line++\n\t\t\tl.col = 1\n\t\t} else {\n\t\t\tl.col++\n\t\t}\n\t\ti += width\n\t}\n\t// advance start position to next token\n\tl.start = l.pos\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "6553f3c180fd23ab6547e12d",
+        "revision": "709382e9c1ea35d82f074793d5db89dd8536c283",
+        "path": "querylexer.go",
+        "start_byte": 941,
+        "text": "func (l *queryLexer) emit(t tokenType) {\n\tl.tokens <- token{\n\t\tPosition: Position{l.line, l.col},\n\t\ttyp:      t,\n\t\tval:      l.input[l.start:l.pos],\n\t}\n\tl.nextStart()\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "781f9b3d6fd554f052e47fae",
+        "revision": "709382e9c1ea35d82f074793d5db89dd8536c283",
+        "path": "querylexer.go",
+        "start_byte": 1111,
+        "text": "func (l *queryLexer) emitWithValue(t tokenType, value string) {\n\tl.tokens <- token{\n\t\tPosition: Position{l.line, l.col},\n\t\ttyp:      t,\n\t\tval:      value,\n\t}\n\tl.nextStart()\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "ea89f7f401d18d6978f4cdec",
+        "revision": "709382e9c1ea35d82f074793d5db89dd8536c283",
+        "path": "querylexer.go",
+        "start_byte": 1581,
+        "text": "func (l *queryLexer) errorf(format string, args ...interface{}) queryLexStateFn {\n\tl.tokens <- token{\n\t\tPosition: Position{l.line, l.col},\n\t\ttyp:      tokenError,\n\t\tval:      fmt.Sprintf(format, args...),\n\t}\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "96d87eec1a4f48ae6145527d",
+        "revision": "709382e9c1ea35d82f074793d5db89dd8536c283",
+        "path": "querylexer.go",
+        "start_byte": 2120,
+        "text": "func (l *queryLexer) lexVoid() queryLexStateFn {\n\tfor {\n\t\tnext := l.peek()\n\t\tswitch next {\n\t\tcase '$':\n\t\t\tl.pos++\n\t\t\tl.emit(tokenDollar)\n\t\t\tcontinue\n\t\tcase '.':\n\t\t\tif l.follow(\"..\") {\n\t\t\t\tl.pos += 2\n\t\t\t\tl.emit(tokenDotDot)\n\t\t\t} else {\n\t\t\t\tl.pos++\n\t\t\t\tl.emit(tokenDot)\n\t\t\t}\n\t\t\tcontinue\n\t\tcase '[':\n\t\t\tl.pos++\n\t\t\tl.emit(tokenLeftBracket)\n\t\t\tcontinue\n\t\tcase ']':\n\t\t\tl.pos++\n\t\t\tl.emit(tokenRightBracket)\n\t\t\tcontinue\n\t\tcase ',':\n\t\t\tl.pos++\n\t\t\tl.emit(tokenComma)\n\t\t\tcontinue\n\t\tcase '*':\n\t\t\tl.pos++\n\t\t\tl.emit(tokenStar)\n\t\t\tcontinue\n\t\tcase '(':\n\t\t\tl.pos++\n\t\t\tl.emit(tokenLeftParen)\n\t\t\tcontinue\n\t\tcase ')':\n\t\t\tl.pos++\n\t\t\tl.emit(tokenRightParen)\n\t\t\tcontinue\n\t\tcase '?':\n\t\t\tl.pos++\n\t\t\tl.emit(tokenQuestion)\n\t\t\tcontinue\n\t\tcase ':':\n\t\t\tl.pos++\n\t\t\tl.emit(tokenColon)\n\t\t\tcontinue\n\t\tcase '\\'':\n\t\t\tl.ignore()\n\t\t\tl.stringTerm = string(next)\n\t\t\treturn l.lexString\n\t\tcase '\"':\n\t\t\tl.ignore()\n\t\t\tl.stringTerm = string(next)\n\t\t\treturn l.lexString\n\t\t}\n\n\t\tif isSpace(next) {\n\t\t\tl.next()\n\t\t\tl.ignore()\n\t\t\tcontinue\n\t\t}\n\n\t\tif isAlphanumeric(next) {\n\t\t\treturn l.lexKey\n\t\t}\n\n\t\tif next == '+' || next == '-' || isDigit(next) {\n\t\t\treturn l.lexNumber\n\t\t}\n\n\t\tif l.next() == eof {\n\t\t\tbreak\n\t\t}\n\n\t\treturn l.errorf(\"unexpected char: '%v'\", next)\n\t}\n\tl.emit(tokenEOF)\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "ddde6132cad14110c854b33b",
+        "revision": "709382e9c1ea35d82f074793d5db89dd8536c283",
+        "path": "querylexer.go",
+        "start_byte": 5055,
+        "text": "func (l *queryLexer) lexNumber() queryLexStateFn {\n\tl.ignore()\n\tif !l.accept(\"+\") {\n\t\tl.accept(\"-\")\n\t}\n\tpointSeen := false\n\tdigitSeen := false\n\tfor {\n\t\tnext := l.next()\n\t\tif next == '.' {\n\t\t\tif pointSeen {\n\t\t\t\treturn l.errorf(\"cannot have two dots in one float\")\n\t\t\t}\n\t\t\tif !isDigit(l.peek()) {\n\t\t\t\treturn l.errorf(\"float cannot end with a dot\")\n\t\t\t}\n\t\t\tpointSeen = true\n\t\t} else if isDigit(next) {\n\t\t\tdigitSeen = true\n\t\t} else {\n\t\t\tl.backup()\n\t\t\tbreak\n\t\t}\n\t\tif pointSeen && !digitSeen {\n\t\t\treturn l.errorf(\"cannot start float with a dot\")\n\t\t}\n\t}\n\n\tif !digitSeen {\n\t\treturn l.errorf(\"no digit in that number\")\n\t}\n\tif pointSeen {\n\t\tl.emit(tokenFloat)\n\t} else {\n\t\tl.emit(tokenInteger)\n\t}\n\treturn l.lexVoid\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "9428ca21fb3934f06e28f795",
+        "revision": "709382e9c1ea35d82f074793d5db89dd8536c283",
+        "path": "queryparser.go",
+        "start_byte": 615,
+        "text": "func (p *queryParser) run() {\n\tfor state := p.parseStart; state != nil; {\n\t\tstate = state()\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "b689e98187d769b64888fc31",
+        "revision": "709382e9c1ea35d82f074793d5db89dd8536c283",
+        "path": "queryparser.go",
+        "start_byte": 713,
+        "text": "func (p *queryParser) backup(tok *token) {\n\tp.tokensBuffer = append(p.tokensBuffer, *tok)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "53a6443cd49cd78230bf6162",
+        "revision": "709382e9c1ea35d82f074793d5db89dd8536c283",
+        "path": "queryparser.go",
+        "start_byte": 806,
+        "text": "func (p *queryParser) peek() *token {\n\tif len(p.tokensBuffer) != 0 {\n\t\treturn &(p.tokensBuffer[0])\n\t}\n\n\ttok, ok := <-p.flow\n\tif !ok {\n\t\treturn nil\n\t}\n\tp.backup(&tok)\n\treturn &tok\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "623c20bb71fd148df49d8f33",
+        "revision": "709382e9c1ea35d82f074793d5db89dd8536c283",
+        "path": "queryparser.go",
+        "start_byte": 988,
+        "text": "func (p *queryParser) lookahead(types ...tokenType) bool {\n\tresult := true\n\tbuffer := []token{}\n\n\tfor _, typ := range types {\n\t\ttok := p.getToken()\n\t\tif tok == nil {\n\t\t\tresult = false\n\t\t\tbreak\n\t\t}\n\t\tbuffer = append(buffer, *tok)\n\t\tif tok.typ != typ {\n\t\t\tresult = false\n\t\t\tbreak\n\t\t}\n\t}\n\t// add the tokens back to the buffer, and return\n\tp.tokensBuffer = append(p.tokensBuffer, buffer...)\n\treturn result\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "b079bf59445867d88a108ab2",
+        "revision": "709382e9c1ea35d82f074793d5db89dd8536c283",
+        "path": "queryparser.go",
+        "start_byte": 1611,
+        "text": "func (p *queryParser) parseStart() queryParserStateFn {\n\ttok := p.getToken()\n\n\tif tok == nil || tok.typ == tokenEOF {\n\t\treturn nil\n\t}\n\n\tif tok.typ != tokenDollar {\n\t\treturn p.parseError(tok, \"Expected '$' at start of expression\")\n\t}\n\n\treturn p.parseMatchExpr\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "ae39766439db325927a524c5",
+        "revision": "709382e9c1ea35d82f074793d5db89dd8536c283",
+        "path": "queryparser.go",
+        "start_byte": 2827,
+        "text": "func (p *queryParser) parseBracketExpr() queryParserStateFn {\n\tif p.lookahead(tokenInteger, tokenColon) {\n\t\treturn p.parseSliceExpr\n\t}\n\tif p.peek().typ == tokenColon {\n\t\treturn p.parseSliceExpr\n\t}\n\treturn p.parseUnionExpr\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "276ad5ddc045b3d3e0db6a31",
+        "revision": "709382e9c1ea35d82f074793d5db89dd8536c283",
+        "path": "queryparser.go",
+        "start_byte": 3052,
+        "text": "func (p *queryParser) parseUnionExpr() queryParserStateFn {\n\tvar tok *token\n\n\t// this state can be traversed after some sub-expressions\n\t// so be careful when setting up state in the parser\n\tif p.union == nil {\n\t\tp.union = []pathFn{}\n\t}\n\nloop: // labeled loop for easy breaking\n\tfor {\n\t\tif len(p.union) > 0 {\n\t\t\t// parse delimiter or terminator\n\t\t\ttok = p.getToken()\n\t\t\tswitch tok.typ {\n\t\t\tcase tokenComma:\n\t\t\t\t// do nothing\n\t\t\tcase tokenRightBracket:\n\t\t\t\tbreak loop\n\t\t\tdefault:\n\t\t\t\treturn p.parseError(tok, \"expected ',' or ']', not '%s'\", tok.val)\n\t\t\t}\n\t\t}\n\n\t\t// parse sub expression\n\t\ttok = p.getToken()\n\t\tswitch tok.typ {\n\t\tcase tokenInteger:\n\t\t\tp.union = append(p.union, newMatchIndexFn(tok.Int()))\n\t\tcase tokenKey:\n\t\t\tp.union = append(p.union, newMatchKeyFn(tok.val))\n\t\tcase tokenString:\n\t\t\tp.union = append(p.union, newMatchKeyFn(tok.val))\n\t\tcase tokenQuestion:\n\t\t\treturn p.parseFilterExpr\n\t\tdefault:\n\t\t\treturn p.parseError(tok, \"expected union sub expression, not '%s', %d\", tok.val, len(p.union))\n\t\t}\n\t}\n\n\t// if there is only one sub-expression, use that instead\n\tif len(p.union) == 1 {\n\t\tp.query.appendPath(p.union[0])\n\t} else {\n\t\tp.query.appendPath(&matchUnionFn{p.union})\n\t}\n\n\tp.union = nil // clear out state\n\treturn p.parseMatchExpr\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "b5dd52c589ab2dcde316dbc3",
+        "revision": "709382e9c1ea35d82f074793d5db89dd8536c283",
+        "path": "queryparser.go",
+        "start_byte": 5315,
+        "text": "func (p *queryParser) parseFilterExpr() queryParserStateFn {\n\ttok := p.getToken()\n\tif tok.typ != tokenLeftParen {\n\t\treturn p.parseError(tok, \"expected left-parenthesis for filter expression\")\n\t}\n\ttok = p.getToken()\n\tif tok.typ != tokenKey && tok.typ != tokenString {\n\t\treturn p.parseError(tok, \"expected key or string for filter funciton name\")\n\t}\n\tname := tok.val\n\ttok = p.getToken()\n\tif tok.typ != tokenRightParen {\n\t\treturn p.parseError(tok, \"expected right-parenthesis for filter expression\")\n\t}\n\tp.union = append(p.union, newMatchFilterFn(name, tok.Position))\n\treturn p.parseUnionExpr\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "159f72f2e8ecfa976e739da1",
+        "revision": "709382e9c1ea35d82f074793d5db89dd8536c283",
+        "path": "queryparser.go",
+        "start_byte": 5908,
+        "text": "func parseQuery(flow chan token) (*Query, error) {\n\tparser := &queryParser{\n\t\tflow:         flow,\n\t\ttokensBuffer: []token{},\n\t\tquery:        newQuery(),\n\t}\n\tparser.run()\n\treturn parser.query, parser.err\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "9ec1c749e305753ff4829837",
+        "revision": "709382e9c1ea35d82f074793d5db89dd8536c283",
+        "path": "token.go",
+        "start_byte": 122,
+        "text": "const (\n\ttokenError tokenType = iota\n\ttokenEOF\n\ttokenComment\n\ttokenKey\n\ttokenString\n\ttokenInteger\n\ttokenTrue\n\ttokenFalse\n\ttokenFloat\n\ttokenEqual\n\ttokenLeftBracket\n\ttokenRightBracket\n\ttokenLeftParen\n\ttokenRightParen\n\ttokenDoubleLeftBracket\n\ttokenDoubleRightBracket\n\ttokenDate\n\ttokenKeyGroup\n\ttokenKeyGroupArray\n\ttokenComma\n\ttokenColon\n\ttokenDollar\n\ttokenStar\n\ttokenQuestion\n\ttokenDot\n\ttokenDotDot\n\ttokenEOL\n)",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "d7118d0d65261c08f5514cb5",
+        "revision": "709382e9c1ea35d82f074793d5db89dd8536c283",
+        "path": "token.go",
+        "start_byte": 780,
+        "text": "type token struct {\n\tPosition\n\ttyp tokenType\n\tval string\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "0175a416edfc0eeafa1d36af",
+        "revision": "709382e9c1ea35d82f074793d5db89dd8536c283",
+        "path": "token.go",
+        "start_byte": 1104,
+        "text": "func (t token) String() string {\n\tswitch t.typ {\n\tcase tokenEOF:\n\t\treturn \"EOF\"\n\tcase tokenError:\n\t\treturn t.val\n\t}\n\n\tif len(t.val) > 10 {\n\t\treturn fmt.Sprintf(\"%.10q...\", t.val)\n\t}\n\treturn fmt.Sprintf(\"%q\", t.val)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "de6c813b19c7813c5d40a666",
+        "revision": "709382e9c1ea35d82f074793d5db89dd8536c283",
+        "path": "toml.go",
+        "start_byte": 8310,
+        "text": "func (t *TomlTree) Query(query string) (*QueryResult, error) {\n\tif q, err := CompileQuery(query); err != nil {\n\t\treturn nil, err\n\t} else {\n\t\treturn q.Execute(t), nil\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "8148eba46e25e4874869176d",
+        "revision": "db15f8a481e7dc5bc3423754ce6e351964f4b8d3",
+        "path": "lexer.go",
+        "start_byte": 320,
+        "text": "type tomlLexer struct {\n\tinput  string\n\tstart  int\n\tpos    int\n\twidth  int\n\ttokens chan token\n\tdepth  int\n\tline   int\n\tcol    int\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "56d1a46162c36ae4b8d312eb",
+        "revision": "db15f8a481e7dc5bc3423754ce6e351964f4b8d3",
+        "path": "lexer.go",
+        "start_byte": 563,
+        "text": "func (l *tomlLexer) nextStart() {\n\t// iterate by runes (utf8 characters)\n\t// search for newlines and advance line/col counts\n\tfor i := l.start; i < l.pos; {\n\t\tr, width := utf8.DecodeRuneInString(l.input[i:])\n\t\tif r == '\\n' {\n\t\t\tl.line++\n\t\t\tl.col = 1\n\t\t} else {\n\t\t\tl.col++\n\t\t}\n\t\ti += width\n\t}\n\t// advance start position to next token\n\tl.start = l.pos\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "96d058f2c6ea58886949e8c7",
+        "revision": "db15f8a481e7dc5bc3423754ce6e351964f4b8d3",
+        "path": "lexer.go",
+        "start_byte": 916,
+        "text": "func (l *tomlLexer) emit(t tokenType) {\n\tl.tokens <- token{\n\t\tPosition: Position{l.line, l.col},\n\t\ttyp:      t,\n\t\tval:      l.input[l.start:l.pos],\n\t}\n\tl.nextStart()\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "cdf8d6d6b2d6dd11054a331b",
+        "revision": "db15f8a481e7dc5bc3423754ce6e351964f4b8d3",
+        "path": "lexer.go",
+        "start_byte": 1085,
+        "text": "func (l *tomlLexer) emitWithValue(t tokenType, value string) {\n\tl.tokens <- token{\n\t\tPosition: Position{l.line, l.col},\n\t\ttyp:      t,\n\t\tval:      value,\n\t}\n\tl.nextStart()\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "8e6d1658fcba513cdedc74fe",
+        "revision": "db15f8a481e7dc5bc3423754ce6e351964f4b8d3",
+        "path": "lexer.go",
+        "start_byte": 1551,
+        "text": "func (l *tomlLexer) errorf(format string, args ...interface{}) tomlLexStateFn {\n\tl.tokens <- token{\n\t\tPosition: Position{l.line, l.col},\n\t\ttyp:      tokenError,\n\t\tval:      fmt.Sprintf(format, args...),\n\t}\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "57b366ea5abd56a185eadfbc",
+        "revision": "db15f8a481e7dc5bc3423754ce6e351964f4b8d3",
+        "path": "lexer.go",
+        "start_byte": 6206,
+        "text": "func (l *tomlLexer) lexInsideKeyGroupArray() tomlLexStateFn {\n\tfor {\n\t\tif l.peek() == ']' {\n\t\t\tif l.pos > l.start {\n\t\t\t\tl.emit(tokenKeyGroupArray)\n\t\t\t}\n\t\t\tl.ignore()\n\t\t\tl.pos++\n\t\t\tif l.peek() != ']' {\n\t\t\t\tbreak // error\n\t\t\t}\n\t\t\tl.pos++\n\t\t\tl.emit(tokenDoubleRightBracket)\n\t\t\treturn l.lexVoid\n\t\t} else if l.peek() == '[' {\n\t\t\treturn l.errorf(\"group name cannot contain ']'\")\n\t\t}\n\n\t\tif l.next() == eof {\n\t\t\tbreak\n\t\t}\n\t}\n\treturn l.errorf(\"unclosed key group array\")\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "1381a14bbfcdb436992ca963",
+        "revision": "db15f8a481e7dc5bc3423754ce6e351964f4b8d3",
+        "path": "lexer.go",
+        "start_byte": 6671,
+        "text": "func (l *tomlLexer) lexInsideKeyGroup() tomlLexStateFn {\n\tfor {\n\t\tif l.peek() == ']' {\n\t\t\tif l.pos > l.start {\n\t\t\t\tl.emit(tokenKeyGroup)\n\t\t\t}\n\t\t\tl.ignore()\n\t\t\tl.pos++\n\t\t\tl.emit(tokenRightBracket)\n\t\t\treturn l.lexVoid\n\t\t} else if l.peek() == '[' {\n\t\t\treturn l.errorf(\"group name cannot contain ']'\")\n\t\t}\n\n\t\tif l.next() == eof {\n\t\t\tbreak\n\t\t}\n\t}\n\treturn l.errorf(\"unclosed key group\")\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "055bd76a4507cd891ef90080",
+        "revision": "db15f8a481e7dc5bc3423754ce6e351964f4b8d3",
+        "path": "lexer.go",
+        "start_byte": 7055,
+        "text": "func (l *tomlLexer) lexRightBracket() tomlLexStateFn {\n\tl.ignore()\n\tl.pos++\n\tl.emit(tokenRightBracket)\n\treturn l.lexRvalue\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "2932c79056415f8fdcc81ce1",
+        "revision": "db15f8a481e7dc5bc3423754ce6e351964f4b8d3",
+        "path": "lexer.go",
+        "start_byte": 7181,
+        "text": "func (l *tomlLexer) lexNumber() tomlLexStateFn {\n\tl.ignore()\n\tif !l.accept(\"+\") {\n\t\tl.accept(\"-\")\n\t}\n\tpointSeen := false\n\tdigitSeen := false\n\tfor {\n\t\tnext := l.next()\n\t\tif next == '.' {\n\t\t\tif pointSeen {\n\t\t\t\treturn l.errorf(\"cannot have two dots in one float\")\n\t\t\t}\n\t\t\tif !isDigit(l.peek()) {\n\t\t\t\treturn l.errorf(\"float cannot end with a dot\")\n\t\t\t}\n\t\t\tpointSeen = true\n\t\t} else if isDigit(next) {\n\t\t\tdigitSeen = true\n\t\t} else {\n\t\t\tl.backup()\n\t\t\tbreak\n\t\t}\n\t\tif pointSeen && !digitSeen {\n\t\t\treturn l.errorf(\"cannot start float with a dot\")\n\t\t}\n\t}\n\n\tif !digitSeen {\n\t\treturn l.errorf(\"no digit in that number\")\n\t}\n\tif pointSeen {\n\t\tl.emit(tokenFloat)\n\t} else {\n\t\tl.emit(tokenInteger)\n\t}\n\treturn l.lexRvalue\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "45bd64b30dcd377228ecdffd",
+        "revision": "db15f8a481e7dc5bc3423754ce6e351964f4b8d3",
+        "path": "parser.go",
+        "start_byte": 346,
+        "text": "func (p *tomlParser) raiseError(tok *token, msg string, args ...interface{}) {\n\tpanic(tok.Position.String() + \": \" + fmt.Sprintf(msg, args...))\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "7b42216fa01320d55721c829",
+        "revision": "db15f8a481e7dc5bc3423754ce6e351964f4b8d3",
+        "path": "parser.go",
+        "start_byte": 493,
+        "text": "func (p *tomlParser) run() {\n\tfor state := p.parseStart; state != nil; {\n\t\tstate = state()\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "f523b3fb5f028fd57656ede1",
+        "revision": "db15f8a481e7dc5bc3423754ce6e351964f4b8d3",
+        "path": "parser.go",
+        "start_byte": 590,
+        "text": "func (p *tomlParser) peek() *token {\n\tif len(p.tokensBuffer) != 0 {\n\t\treturn &(p.tokensBuffer[0])\n\t}\n\n\ttok, ok := <-p.flow\n\tif !ok {\n\t\treturn nil\n\t}\n\tp.tokensBuffer = append(p.tokensBuffer, tok)\n\treturn &tok\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "e49515ecb086713a81a7fcf4",
+        "revision": "db15f8a481e7dc5bc3423754ce6e351964f4b8d3",
+        "path": "parser.go",
+        "start_byte": 801,
+        "text": "func (p *tomlParser) assume(typ tokenType) {\n\ttok := p.getToken()\n\tif tok == nil {\n\t\tp.raiseError(tok, \"was expecting token %s, but token stream is empty\", tok)\n\t}\n\tif tok.typ != typ {\n\t\tp.raiseError(tok, \"was expecting token %s, but got %s instead\", typ, tok)\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "a82aa5b2f1297f88b1bef2db",
+        "revision": "db15f8a481e7dc5bc3423754ce6e351964f4b8d3",
+        "path": "parser.go",
+        "start_byte": 1285,
+        "text": "func (p *tomlParser) parseStart() tomlParserStateFn {\n\ttok := p.peek()\n\n\t// end of stream, parsing is finished\n\tif tok == nil {\n\t\treturn nil\n\t}\n\n\tswitch tok.typ {\n\tcase tokenDoubleLeftBracket:\n\t\treturn p.parseGroupArray\n\tcase tokenLeftBracket:\n\t\treturn p.parseGroup\n\tcase tokenKey:\n\t\treturn p.parseAssign\n\tcase tokenEOF:\n\t\treturn nil\n\tdefault:\n\t\tp.raiseError(tok, \"unexpected token\")\n\t}\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "35aec35eccd600aee99a14f6",
+        "revision": "db15f8a481e7dc5bc3423754ce6e351964f4b8d3",
+        "path": "parser.go",
+        "start_byte": 1687,
+        "text": "func (p *tomlParser) parseGroupArray() tomlParserStateFn {\n\tstartToken := p.getToken() // discard the [[\n\tkey := p.getToken()\n\tif key.typ != tokenKeyGroupArray {\n\t\tp.raiseError(key, \"unexpected token %s, was expecting a key group array\", key)\n\t}\n\n\t// get or create group array element at the indicated part in the path\n\tkeys := strings.Split(key.val, \".\")\n\tp.tree.createSubTree(keys[:len(keys)-1], startToken.Position) // create parent entries\n\tdestTree := p.tree.GetPath(keys)\n\tvar array []*TomlTree\n\tif destTree == nil {\n\t\tarray = make([]*TomlTree, 0)\n\t} else if destTree.([]*TomlTree) != nil {\n\t\tarray = destTree.([]*TomlTree)\n\t} else {\n\t\tp.raiseError(key, \"key %s is already assigned and not of type group array\", key)\n\t}\n\tp.currentGroup = keys\n\n\t// add a new tree to the end of the group array\n\tnewTree := newTomlTree()\n\tnewTree.position = startToken.Position\n\tarray = append(array, newTree)\n\tp.tree.SetPath(p.currentGroup, array)\n\n\t// remove all keys that were children of this group array\n\tprefix := key.val + \".\"\n\tfound := false\n\tfor ii := 0; ii < len(p.seenGroupKeys); {\n\t\tgroupKey := p.seenGroupKeys[ii]\n\t\tif strings.HasPrefix(groupKey, prefix) {\n\t\t\tp.seenGroupKeys = append(p.seenGroupKeys[:ii], p.seenGroupKeys[ii+1:]...)\n\t\t} else {\n\t\t\tfound = (groupKey == key.val)\n\t\t\tii++\n\t\t}\n\t}\n\n\t// keep this key name from use by other kinds of assignments\n\tif !found {\n\t\tp.seenGroupKeys = append(p.seenGroupKeys, key.val)\n\t}\n\n\t// move to next parser state\n\tp.assume(tokenDoubleRightBracket)\n\treturn p.parseStart\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "3e96dfef31b811ce29cd4df7",
+        "revision": "db15f8a481e7dc5bc3423754ce6e351964f4b8d3",
+        "path": "parser.go",
+        "start_byte": 3202,
+        "text": "func (p *tomlParser) parseGroup() tomlParserStateFn {\n\tstartToken := p.getToken() // discard the [\n\tkey := p.getToken()\n\tif key.typ != tokenKeyGroup {\n\t\tp.raiseError(key, \"unexpected token %s, was expecting a key group\", key)\n\t}\n\tfor _, item := range p.seenGroupKeys {\n\t\tif item == key.val {\n\t\t\tp.raiseError(key, \"duplicated tables\")\n\t\t}\n\t}\n\n\tp.seenGroupKeys = append(p.seenGroupKeys, key.val)\n\tkeys := strings.Split(key.val, \".\")\n\tif err := p.tree.createSubTree(keys, startToken.Position); err != nil {\n\t\tp.raiseError(key, \"%s\", err)\n\t}\n\tp.assume(tokenRightBracket)\n\tp.currentGroup = keys\n\treturn p.parseStart\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "0a78efd43d08f6547738dde3",
+        "revision": "db15f8a481e7dc5bc3423754ce6e351964f4b8d3",
+        "path": "parser.go",
+        "start_byte": 3816,
+        "text": "func (p *tomlParser) parseAssign() tomlParserStateFn {\n\tkey := p.getToken()\n\tp.assume(tokenEqual)\n\tvalue := p.parseRvalue()\n\tvar groupKey []string\n\tif len(p.currentGroup) > 0 {\n\t\tgroupKey = p.currentGroup\n\t} else {\n\t\tgroupKey = []string{}\n\t}\n\n\t// find the group to assign, looking out for arrays of groups\n\tvar targetNode *TomlTree\n\tswitch node := p.tree.GetPath(groupKey).(type) {\n\tcase []*TomlTree:\n\t\ttargetNode = node[len(node)-1]\n\tcase *TomlTree:\n\t\ttargetNode = node\n\tdefault:\n\t\tp.raiseError(key, \"Unknown group type for path: %s\",\n\t\t\tstrings.Join(groupKey, \".\"))\n\t}\n\n\t// assign value to the found group\n\tlocalKey := []string{key.val}\n\tfinalKey := append(groupKey, key.val)\n\tif targetNode.GetPath(localKey) != nil {\n\t\tp.raiseError(key, \"The following key was defined twice: %s\",\n\t\t\tstrings.Join(finalKey, \".\"))\n\t}\n\ttargetNode.values[key.val] = &tomlValue{value, key.Position}\n\treturn p.parseStart\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "5d6c6b111d1caa4eec97cf3b",
+        "revision": "db15f8a481e7dc5bc3423754ce6e351964f4b8d3",
+        "path": "parser.go",
+        "start_byte": 4720,
+        "text": "func (p *tomlParser) parseRvalue() interface{} {\n\ttok := p.getToken()\n\tif tok == nil || tok.typ == tokenEOF {\n\t\tp.raiseError(tok, \"expecting a value\")\n\t}\n\n\tswitch tok.typ {\n\tcase tokenString:\n\t\treturn tok.val\n\tcase tokenTrue:\n\t\treturn true\n\tcase tokenFalse:\n\t\treturn false\n\tcase tokenInteger:\n\t\tval, err := strconv.ParseInt(tok.val, 10, 64)\n\t\tif err != nil {\n\t\t\tp.raiseError(tok, \"%s\", err)\n\t\t}\n\t\treturn val\n\tcase tokenFloat:\n\t\tval, err := strconv.ParseFloat(tok.val, 64)\n\t\tif err != nil {\n\t\t\tp.raiseError(tok, \"%s\", err)\n\t\t}\n\t\treturn val\n\tcase tokenDate:\n\t\tval, err := time.Parse(time.RFC3339, tok.val)\n\t\tif err != nil {\n\t\t\tp.raiseError(tok, \"%s\", err)\n\t\t}\n\t\treturn val\n\tcase tokenLeftBracket:\n\t\treturn p.parseArray()\n\tcase tokenError:\n\t\tp.raiseError(tok, \"%s\", tok)\n\t}\n\n\tp.raiseError(tok, \"never reached\")\n\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "f0e04667f5e27ad404469190",
+        "revision": "db15f8a481e7dc5bc3423754ce6e351964f4b8d3",
+        "path": "parser.go",
+        "start_byte": 5544,
+        "text": "func (p *tomlParser) parseArray() []interface{} {\n\tvar array []interface{}\n\tarrayType := reflect.TypeOf(nil)\n\tfor {\n\t\tfollow := p.peek()\n\t\tif follow == nil || follow.typ == tokenEOF {\n\t\t\tp.raiseError(follow, \"unterminated array\")\n\t\t}\n\t\tif follow.typ == tokenRightBracket {\n\t\t\tp.getToken()\n\t\t\treturn array\n\t\t}\n\t\tval := p.parseRvalue()\n\t\tif arrayType == nil {\n\t\t\tarrayType = reflect.TypeOf(val)\n\t\t}\n\t\tif reflect.TypeOf(val) != arrayType {\n\t\t\tp.raiseError(follow, \"mixed types in array\")\n\t\t}\n\t\tarray = append(array, val)\n\t\tfollow = p.peek()\n\t\tif follow == nil {\n\t\t\tp.raiseError(follow, \"unterminated array\")\n\t\t}\n\t\tif follow.typ != tokenRightBracket && follow.typ != tokenComma {\n\t\t\tp.raiseError(follow, \"missing comma\")\n\t\t}\n\t\tif follow.typ == tokenComma {\n\t\t\tp.getToken()\n\t\t}\n\t}\n\treturn array\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "a8f036dd91035424bd27b779",
+        "revision": "db15f8a481e7dc5bc3423754ce6e351964f4b8d3",
+        "path": "position.go",
+        "start_byte": 492,
+        "text": "func (p *Position) String() string {\n\treturn fmt.Sprintf(\"(%d, %d)\", p.Line, p.Col)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "595f7effcd67709f1fca68c8",
+        "revision": "db15f8a481e7dc5bc3423754ce6e351964f4b8d3",
+        "path": "position.go",
+        "start_byte": 666,
+        "text": "func (p *Position) Invalid() bool {\n\treturn p.Line <= 0 || p.Col <= 0\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "0f505a3f44d61c6e85084c51",
+        "revision": "db15f8a481e7dc5bc3423754ce6e351964f4b8d3",
+        "path": "querylexer.go",
+        "start_byte": 291,
+        "text": "type queryLexer struct {\n\tinput      string\n\tstart      int\n\tpos        int\n\twidth      int\n\ttokens     chan token\n\tdepth      int\n\tline       int\n\tcol        int\n\tstringTerm string\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "4af0f3cdfb67c46f45a1b64f",
+        "revision": "db15f8a481e7dc5bc3423754ce6e351964f4b8d3",
+        "path": "querylexer.go",
+        "start_byte": 587,
+        "text": "func (l *queryLexer) nextStart() {\n\t// iterate by runes (utf8 characters)\n\t// search for newlines and advance line/col counts\n\tfor i := l.start; i < l.pos; {\n\t\tr, width := utf8.DecodeRuneInString(l.input[i:])\n\t\tif r == '\\n' {\n\t\t\tl.line++\n\t\t\tl.col = 1\n\t\t} else {\n\t\t\tl.col++\n\t\t}\n\t\ti += width\n\t}\n\t// advance start position to next token\n\tl.start = l.pos\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "d0a771eea064c64fea7404c2",
+        "revision": "db15f8a481e7dc5bc3423754ce6e351964f4b8d3",
+        "path": "querylexer.go",
+        "start_byte": 941,
+        "text": "func (l *queryLexer) emit(t tokenType) {\n\tl.tokens <- token{\n\t\tPosition: Position{l.line, l.col},\n\t\ttyp:      t,\n\t\tval:      l.input[l.start:l.pos],\n\t}\n\tl.nextStart()\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "9f9741864d8f354a3c3ad0d4",
+        "revision": "db15f8a481e7dc5bc3423754ce6e351964f4b8d3",
+        "path": "querylexer.go",
+        "start_byte": 1111,
+        "text": "func (l *queryLexer) emitWithValue(t tokenType, value string) {\n\tl.tokens <- token{\n\t\tPosition: Position{l.line, l.col},\n\t\ttyp:      t,\n\t\tval:      value,\n\t}\n\tl.nextStart()\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "18d060ce2230ce5017b1f68b",
+        "revision": "db15f8a481e7dc5bc3423754ce6e351964f4b8d3",
+        "path": "querylexer.go",
+        "start_byte": 1581,
+        "text": "func (l *queryLexer) errorf(format string, args ...interface{}) queryLexStateFn {\n\tl.tokens <- token{\n\t\tPosition: Position{l.line, l.col},\n\t\ttyp:      tokenError,\n\t\tval:      fmt.Sprintf(format, args...),\n\t}\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "8347934dc85f80a5ffc68b3a",
+        "revision": "db15f8a481e7dc5bc3423754ce6e351964f4b8d3",
+        "path": "querylexer.go",
+        "start_byte": 2120,
+        "text": "func (l *queryLexer) lexVoid() queryLexStateFn {\n\tfor {\n\t\tnext := l.peek()\n\t\tswitch next {\n\t\tcase '$':\n\t\t\tl.pos++\n\t\t\tl.emit(tokenDollar)\n\t\t\tcontinue\n\t\tcase '.':\n\t\t\tif l.follow(\"..\") {\n\t\t\t\tl.pos += 2\n\t\t\t\tl.emit(tokenDotDot)\n\t\t\t} else {\n\t\t\t\tl.pos++\n\t\t\t\tl.emit(tokenDot)\n\t\t\t}\n\t\t\tcontinue\n\t\tcase '[':\n\t\t\tl.pos++\n\t\t\tl.emit(tokenLeftBracket)\n\t\t\tcontinue\n\t\tcase ']':\n\t\t\tl.pos++\n\t\t\tl.emit(tokenRightBracket)\n\t\t\tcontinue\n\t\tcase ',':\n\t\t\tl.pos++\n\t\t\tl.emit(tokenComma)\n\t\t\tcontinue\n\t\tcase '*':\n\t\t\tl.pos++\n\t\t\tl.emit(tokenStar)\n\t\t\tcontinue\n\t\tcase '(':\n\t\t\tl.pos++\n\t\t\tl.emit(tokenLeftParen)\n\t\t\tcontinue\n\t\tcase ')':\n\t\t\tl.pos++\n\t\t\tl.emit(tokenRightParen)\n\t\t\tcontinue\n\t\tcase '?':\n\t\t\tl.pos++\n\t\t\tl.emit(tokenQuestion)\n\t\t\tcontinue\n\t\tcase ':':\n\t\t\tl.pos++\n\t\t\tl.emit(tokenColon)\n\t\t\tcontinue\n\t\tcase '\\'':\n\t\t\tl.ignore()\n\t\t\tl.stringTerm = string(next)\n\t\t\tretur",
+        "rank": 2,
+        "truncated": true
+      }
+    ]
+  },
+  "retrieval": {
+    "unresolved": [
+      {
+        "side": "ours",
+        "identifier": "p",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "parseSliceExpr",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "start",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "end",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "step",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "math",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "MaxInt32",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "getToken",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "parser.go",
+            "start": 1068
+          },
+          {
+            "path": "queryparser.go",
+            "start": 1393
+          }
+        ]
+      },
+      {
+        "side": "ours",
+        "identifier": "typ",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "tokenInteger",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "tokenColon",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "tokenRightBracket",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "query",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "p",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "parseSliceExpr",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "start",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "end",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "step",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "getToken",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "parser.go",
+            "start": 1068
+          },
+          {
+            "path": "queryparser.go",
+            "start": 1420
+          }
+        ]
+      },
+      {
+        "side": "theirs",
+        "identifier": "typ",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "tokenInteger",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "tokenColon",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "tokenRightBracket",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "query",
+        "reason": "no-unique-declaration-established"
+      }
+    ],
+    "method": "syntax-ranges-and-identifier-candidates/3",
+    "budget_bytes": 32768,
+    "libraries": {
+      "C": "cbbd4827ee02cd5c018ab41f10d8404ff8741159054b352d9a6d763c506ba3c7",
+      "Go": "1612f8fd958ba1ec981bf4b91e2ff399f1e54d26a9da68e5b60b0d7cd00616fc"
+    }
+  }
+}

@@ -1,0 +1,3855 @@
+{
+  "id": "c95701d2c65722bddb7bb427302ecc62f5fc0c635c82dd0e9b1374d04f25ac07",
+  "source_protocol_sha256": "86ffe38086e217acf6e1a4aa4162e226862463d1bde3160478f9a6f4d2b968ce",
+  "repair_module_sha256": "b6a7cf123b0ac50001e1498cdf64964b8ac56e8e6a68cbbc6dcc01c8517b4a20",
+  "contexts": {
+    "local-context": [
+      {
+        "id": "f7cd1a483f0928d65e559d83",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "config.go",
+        "start_byte": 2481,
+        "text": "\tSessionCookieLifeTime int\n\tSessionAutoSetCookie  bool\n\tSessionDomain         string\n}\n\n// LogConfig holds Log related config\ntype LogConfig struct {\n\tAccessLogs  bool\n\tFileLineNum bool\n\tOutputs     map[string]string // Store Adaptor : config\n}\n\nvar (\n\t// BConfig is the default config for Application\n\tBConfig *Config\n\t// AppConfig is the instance of Config, store the config information from file\n\tAppConfig *beegoAppConfig\n\t// AppPath is the absolute path to the app\n\tAppPath string\n\t// GlobalSessions is the instance for the session manager\n\tGlobalSessions *session.Manager\n\n\t// appConfigPath is the path to the config files\n\tappConfigPath string\n\t// appConfigProvider is the provider for the config, default is ini\n\tappConfigProvider = \"ini\"\n)\n\nfunc init() {\n\tAppPath, _ = filepath.Abs(filepath.Dir(os.Args[0]))\n\n\tos.Chdir(AppPath)\n\n\tBConfig = &Config{\n\t\tAppName:             \"beego\",\n\t\tRunMode:             DEV,\n\t\tRouterCaseSensitive: true,\n\t\tServerName:          \"beegoServer:\" + VERSION,\n\t\tRecoverPanic:        true,\n\t\tCopyRequestBody:     false,\n\t\tEnableGzip:          false,\n\t\tMaxMemory:           1 << 26, //64MB\n\t\tEnableErrorsShow:    true,\n\t\tListen: Listen{\n\t\t\tGraceful:      false,\n\t\t\tServerTimeOut: 0,\n\t\t\tListenTCP4:    false,\n\t\t\tEnableHTTP:    true,\n\t\t\tHTTPAddr:      \"\",\n\t\t\tHTTPPort:      8080,\n\t\t\tEnableHTTPS:   false,\n\t\t\tHTTPSAddr:     \"\",\n\t\t\tHTTPSPort:     10443,\n\t\t\tHTTPSCertFile: \"\",\n\t\t\tHTTPSKeyFile:  \"\",\n\t\t\tEnableAdmin:   false,\n\t\t\tAdminAddr:     \"\",\n\t\t\tAdminPort:     8088,\n\t\t\tEnableFcgi:    false,\n\t\t\tEnableStdIo:   false,\n\t\t},\n\t\tWebConfig: WebConfig{\n\t\t\tAutoRender:             true,\n\t\t\tEnableDocs:             false,\n\t\t\tFlashName:              \"BEEGO_FLASH\",\n\t\t\tFlashSeparator:         \"BEEGOFLASH\",\n\t\t\tDirectoryIndex:         false,\n\t\t\tStaticDir:              map[string]string{\"/static\": \"static\"},\n\t\t\tStaticExtensionsToGzip: []string{\".css\", \".js\"},\n\t\t\tTemplateLeft:           \"{{\",\n\t\t\tTemplateRight:          \"}}\",\n\t\t\tViewsPath:              \"views\",\n\t\t\tEnableXSRF:             false,\n\t\t\tXSRFKey:                \"beegoxsrf\",\n\t\t\tXSRFExpire:             0,\n\t\t\tSession: SessionConfig{\n\t\t\t\tSessionOn:             false,\n\t\t\t\tSessionProvider:       \"memory\",\n\t\t\t\tSessionName:           \"beegosessionID\",\n\t\t\t\tSessionGCMaxLifetime:  3600,\n\t\t\t\tSessionProviderConfig: \"\",\n\t\t\t\tSessionCookieLifeTime: 0, //set cookie default is the browser life\n\t\t\t\tSessionAutoSetCookie:  true,\n\t\t\t\tSessionDomain:         \"\",\n\t\t\t},\n\t\t},\n\t\tLog: LogConfig{\n\t\t\tAccessLogs:  false,\n\t\t\tFileLineNum: true,\n\t\t\tOutputs:     map[string]string{\"console\": \"\"},\n\t\t},\n\t}\n\n\tappConfigPath = filepath.Join(AppPath, \"conf\", \"app.conf\")\n\tif !utils.FileExists(appConfigPath) {\n\t\tAppConfig = &beegoAppConfig{innerConfig: config.NewFakeConfig()}\n\t\treturn\n\t}\n\n\tif err := parseConfig(appConfigPath); err != nil {\n\t\tpanic(err)\n\t}\n}\n\n// now only support ini, next will support json.\nfunc parseConfig(appConfigPath string) (err error) {\n\tAppConfig, err = newAppConfig(appConfigProvider, appConfigPath)\n\tif err != nil {\n\t\treturn err\n\t}\n\t// set the run mode first\n\tif envRunMode := os.Getenv(\"BEEGO_RUNMODE\"); envRunMode != \"\" {\n\t\tBConfig.RunMode = envRunMode\n\t} else if runMode := AppConfig.String(\"RunMode\"); runMode != \"\" {\n\t\tBConfig.RunMode = runMode\n\t}\n\n\tBConfig.AppName = AppConfig.DefaultString(\"AppName\", BConfig.AppName)\n\tBConfig.RecoverPanic = AppConfig.DefaultBool(\"RecoverPanic\", BConfig.RecoverPanic)\n\tBConfig.RouterCaseSensitive = AppConfig.DefaultBool(\"RouterCaseSensitive\", BConfig.RouterCaseSensitive)\n\tBConfig.ServerName = AppConfig.DefaultString(\"ServerName\", BConfig.ServerName)\n\tBConfig.EnableGzip = AppConfig.DefaultBool(\"EnableGzip\", BConfig.EnableGzip)\n\tBConfig.EnableErrorsShow = AppConfig.DefaultBool(\"EnableErrorsShow\", BConfig.EnableErrorsShow)\n\tBConfig.CopyRequestBody = AppConfig.DefaultBool(\"CopyRequestBody\", BConfig.CopyRequestBody)\n\tBConfig.MaxMemory = AppConfig.DefaultInt64(\"MaxMemory\", BConfig.MaxMemory)\n\tBConfig.Listen.Graceful = AppConfig.DefaultBool(\"Graceful\", BConfig.Listen.Graceful)\n\tBConfig.Listen.HTTPAddr = AppConfig.String(\"HTTPAddr\")\n\tBConfig.Listen.HTTPPort = AppConfig.DefaultInt(\"HTTPPort\", BConfig.Listen.HTTPPort)\n\tBConfig.Listen.ListenTCP4 = AppConfig.DefaultBool(\"ListenTCP4\", BConfig.Listen.ListenTCP4)\n\tBConfig.Listen.EnableHTTP = AppConfig.DefaultBool(\"EnableHTTP\", BConfig.Listen.EnableHTTP)\n\tBConfig.Listen.EnableHTTPS = AppConfig.DefaultBool(\"EnableHTTPS\", BConfig.Listen.EnableHTTPS)\n\tBConfig.Listen.HTTPSAddr = AppConfig.DefaultString(\"HTTPSAddr\", BConfig.Listen.HTTPSAddr)\n\tBConfig.Listen.HTTPSPort = AppConfig.DefaultInt(\"HTTPSPort\", BConfig.Listen.HTTPSPort)\n\tBConfig.Listen.HTTPSCertFile = AppConfig.DefaultString(\"HTTPSCertFile\", BConfig.Listen.HTTPSCertFile)\n\tBConfig.Listen.HTTPSKeyFile = AppConfig.DefaultString(\"HTTPSKeyFile\", BConfig.Listen.HTTPSKeyFile)\n\tBConfig.Listen.EnableAdmin = AppConfig.DefaultBool(\"EnableAdmin\", BConfig.Listen.EnableAdmin)\n\tBConfig.Listen.AdminAddr = AppConfig.DefaultString(\"AdminAddr\", BConfig.Listen.AdminAddr)\n\tBConfig.Listen.AdminPort = AppConfig.DefaultInt(\"AdminPort\", BConfig.Listen.AdminPort)\n\tBConfig.Listen.EnableFcgi = AppConfig.DefaultBool(\"EnableFcgi\", BConfig.Listen.EnableFcgi)\n\tBConfig.Listen.EnableStdIo = AppConfig.DefaultBool(\"EnableStdIo\", BConfig.Listen.EnableStdIo)\n\tBConfig.Listen.ServerTimeOut = AppConfig.DefaultInt64(\"ServerTimeOut\", BConfig.Listen.ServerTimeOut)\n\tBConfig.WebConfig.AutoRender = AppConfig.DefaultBool(\"AutoRender\", BConfig.WebConfig.AutoRender)\n\tBConfig.WebConfig.ViewsPath = AppConfig.DefaultString(\"ViewsPath\", BConfig.WebConfig.ViewsPath)\n\tBConfig.WebConfig.DirectoryIndex = AppConfig.DefaultBool(\"DirectoryIndex\", BConfig.WebConfig.DirectoryIndex)\n\tBConfig.WebConfig.FlashName = AppConfig.DefaultString(\"FlashName\", BConfig.WebConfig.FlashName)\n\tBConfig.WebConfig.FlashSeparator = AppConfig.DefaultString(\"FlashSeparator\", BConfig.WebConfig.FlashSeparator)\n\tBConfig.WebConfig.EnableDocs = AppConfig.DefaultBool(\"EnableDocs\", BConfig.WebConfig.EnableDocs)\n\tBConfig.WebConfig.XSRFKey = AppConfig.DefaultString(\"XSRFKEY\", BConfig.WebConfig.XSRFKey)\n\tBConfig.WebConfig.EnableXSRF = AppConfig.DefaultBool(\"EnableXSRF\", BConfig.WebConfig.EnableXSRF)\n\tBConfig.WebConfig.XSRFExpire = AppConfig.DefaultInt(\"XSRFExpire\", BConfig.WebConfig.XSRFExpire)\n\tBConfig.WebConfig.TemplateLeft = AppConfig.DefaultString(\"TemplateLeft\", BConfig.WebConfig.TemplateLeft)\n\tBConfig.WebConfig.TemplateRight = AppConfig.DefaultString(\"TemplateRight\", BConfig.WebConfig.TemplateRight)\n\tBConfig.WebConfig.Session.SessionOn = AppConfig.DefaultBool(\"SessionOn\", BConfig.WebConfig.Session.SessionOn)\n\tBConfig.WebConfig.Session.SessionProvider = AppConfig.DefaultString(\"SessionProvider\", BConfig.WebConfig.Session.SessionProvider)\n\tBConfig.WebConfig.Session.SessionName = AppConfig.DefaultString(\"SessionName\", BConfig.WebConfig.Session.SessionName)\n\tBConfig.WebConfig.Session.SessionProviderConfig = AppConfig.DefaultString(\"SessionProviderConfig\", BConfig.WebConfig.Session.SessionProviderConfig)\n\tBConfig.WebConfig.Session.SessionGCMaxLifetime = AppConfig.DefaultInt64(\"SessionGCMaxLifetime\", BConfig.WebConfig.Session.SessionGCMaxLifetime)\n\tBConfig.WebConfig.Session.SessionCookieLifeTime = AppConfig.DefaultInt(\"SessionCookieLifeTime\", BConfig.WebConfig.Session.SessionCookieLifeTime)\n\tBConfig.WebConfig.Session.SessionAutoSetCookie = AppConfig.DefaultBool(\"SessionAutoSetCookie\", BConfig.WebConfig.Session.SessionAutoSetCookie)\n\tBConfig.WebConfig.Session.SessionDomain = AppConfig.DefaultString(\"SessionDomain\", BConfig.WebConfig.Session.SessionDomain)\n\tBConfig.Log.AccessLogs = AppConfig.DefaultBool(\"LogAccessLogs\", BConfig.Log.AccessLogs)\n\tBConfig.Log.FileLineNum = AppConfig.DefaultBool(\"LogFileLineNum\", BConfig.Log.FileLineNum)\n\n\tif sd := AppConfig.String(\"StaticDir\"); sd != \"\" {\n\t\tfor k := range BConfig.WebConfig.StaticDir {\n\t\t\tdelete(BConfig.WebConfig.StaticDir, k)\n\t\t}\n\t\tsds := strings.Fields(sd)\n\t\tfor _, v := range sds {\n\t\t\tif url2fsmap := strings.SplitN(v, \":\", 2); len(url2fsmap) == 2 {\n\t\t\t\tBConfig.WebConfig.StaticDir[\"/\"+strings.Trim(url2fsmap[0], \"/\")] = url2fsmap[1]\n\t\t\t} else {\n\t\t\t\tBConfig.WebConfig.StaticDir[\"/\"+strings.Trim(url2fsmap[0], \"/\")] = url2fsmap[0]\n\t\t\t}\n\t\t}\n\t}\n\tif sgz := AppConfig.String(\"StaticExtensionsToGzip\"); sgz != \"\" {\n\t\textensions := strings.Split(sgz, \",\")\n\t\tfileExts := []string{}\n\t\tfor _, ext := range extensions {\n\t\t\text = strings.TrimSpace(ext)\n\t\t\tif ext == \"\" {\n\t\t\t\tcontinue\n\t\t\t}\n\t\t\tif !strings.HasPrefix(ext, \".\") {\n\t\t\t\text = \".\" + ext\n\t\t\t}\n\t\t\tfileExts = append(fileExts, ext)\n\t\t}\n\t\tif len(fileExts) > 0 {\n\t\t\tBConfig.WebConfig.StaticExtensionsToGzip = fileExts\n\t\t}\n\t}\n\n\tif lo := AppConfig.String(\"LogOutputs\"); lo != \"\" {\n\t\tlos := strings.Split(lo, \";\")\n\t\tfor _, v := range los {\n\t\t\tif logType2Config := strings.SplitN(v, \",\", 2); len(logType2Config) == 2 {\n\t\t\t\tBConfig.Log.Outputs[logType2Config[0]] = logType2Config[1]\n\t\t\t} else {\n\t\t\t\tcontinue\n\t\t\t}\n\t\t}\n\t}\n\n\t//init log\n\tBeeLogger.Reset()\n\tfor adaptor, config := range BConfig.Log.Outputs {\n\t\terr = BeeLogger.SetLogger(adaptor, config)\n\t\tif err != nil {\n\t\t\tfmt.Printf(\"%s with the config `%s` got err:%s\\n\", adaptor, config, err)\n\t\t}\n\t}\n\tSetLogFuncCall(BConfig.Log.FileLineNum)\n\n\treturn nil\n}\n\n// LoadAppConfig allow developer to apply a config file\nfunc LoadAppConfig(adapterName, configPath string) error {\n\tabsConfigPath, err := filepath.Abs(configPath)\n\tif err != nil {\n\t\treturn err\n\t}\n\n\tif !utils.FileExists(absConfigPath) {\n\t\treturn fmt.Errorf(\"the target config file: %s don't exist\", configPath)\n\t}\n\n\tif absConfigPath == appConfigPath {\n\t\treturn nil\n\t}\n\n\tappConfigPath = absConfigPath\n\tappConfigProvider = adapterName\n\n\treturn parseConfig(appConfigPath)\n}\n\ntype beegoAppConfig struct {\n\tinnerConfig config.Configer\n}\n\nfunc newAppConfig(appConfigProvider, appConfigPath string) (*beegoAppConfig, error) {\n\tac, err := config.NewConfig(appConfigProvider, appConfigPath)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\treturn &beegoAppConfig{ac}, nil\n}\n\nfunc (b *beegoAppConfig) Set(key, val string) error {\n\tif err := b.innerConfig.Set(BConfig.RunMode+\"::\"+key, val); err != nil {\n\t\treturn err\n\t}\n\treturn b.innerConfig.Set(key, val)\n}\n\nfunc (b *beegoAppConfig) String(key string) string {\n\tif v := b.innerConfig.String(BConfig.RunMode + \"::\" + key); v != \"\" {\n\t\treturn v\n\t}\n\treturn b.innerConfig.String(key)\n}\n\nfunc (b *beegoAppConfig) Strings(key string) []string {\n\tif v := b.innerConfig.Strings(BConfig.RunMode + \"::\" + key); v[0] != \"\" {\n\t\treturn v\n\t}\n\treturn b.innerConfig.Strings(key)\n}\n\nfunc (b *beegoAppConfig) Int(key string) (int, error) {\n\tif v, err := b.innerConfig.Int(BConfig.RunMode + \"::\" + key); err == nil {\n\t\treturn v, nil\n\t}\n\treturn b.innerConfig.Int(key)\n}\n\nfunc (b *beegoAppConfig) Int64(key string) (int64, error) {\n\tif v, err := b.innerConfig.Int64(BConfig.RunMode + \"::\" + key); err == nil {\n\t\treturn v, nil\n\t}\n\treturn b.innerConfig.Int64(key)\n}\n\nfunc (b *beegoAppConfig) Bool(key string) (bool, error) {\n\tif v, err := b.innerConfig.Bool(BConfig.RunMode + \"::\" + key); err == nil {\n\t\treturn v, nil\n\t}\n\treturn b.innerConfig.Bool(key)\n}\n\nfunc (b *beegoAppConfig) Float(key string) (float64, error) {\n\tif v, err := b.innerConfig.Float(BConfig.RunMode + \"::\" + key); err == nil {\n\t\treturn v, nil\n\t}\n\treturn b.innerConfig.Float(key)\n}\n\nfunc (b *beegoAppConfig) DefaultString(key string, defaultVal string) string {\n\tif v := b.String(key); v != \"\" {\n\t\treturn v\n\t}\n\treturn defaultVal\n}\n\nfunc (b *beegoAppConfig) DefaultStrings(key string, defaultVal []string) []string {\n\tif v := b.Strings(key); len(v) != 0 {\n\t\treturn v\n\t}\n\treturn defaultVal\n}\n\nfunc (b *beegoAppConfig) DefaultInt(key string, defaultVal int) int {\n\tif v, err := b.Int(key); err == nil {\n\t\treturn v\n\t}\n\treturn defaultVal\n}\n\nfunc (b *beegoAppConfig) DefaultInt64(key string, defaultVal int64) int64 {\n\tif v, err := b.Int64(key); err == nil {\n\t\treturn v\n\t}\n\treturn defaultVal\n}\n\nfunc (b *beegoAppConfig) DefaultBool(key string, defaultVal bool) bool {\n\tif v, err := b.Bool(key); err == nil {\n\t\treturn v\n\t}\n\treturn defaultVal\n}\n\nfunc (b *beegoAppConfig) DefaultFloat(key string, defaultVal float64) float64 {\n\tif v, err := b.Float(key); err == nil {\n\t\treturn v\n\t}\n\treturn defaultVal\n}\n\nfunc (b *beegoAppConfig) DIY(key string) (interface{}, error) {\n\treturn b.innerConfig.DIY(key)\n}\n\nfunc (b *beegoAppConfig) GetSection(section string) (map[string]string, error) {\n\treturn b.innerConfig.GetSection(section)\n}\n\nfunc (b *beegoAppConfig) SaveConfigFile(filename string) error {\n\treturn b.innerConfig.SaveConfigFile(filename)\n}\n",
+        "rank": 0,
+        "truncated": false
+      },
+      {
+        "id": "c2c0ddc71c9a59e514ff6cbe",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "config.go",
+        "start_byte": 0,
+        "text": "// Copyright 2014 beego Author. All Rights Reserved.\n//\n// Licensed under the Apache License, Version 2.0 (the \"License\");\n// you may not use this file except in compliance with the License.\n// You may obtain a copy of the License at\n//\n//      http://www.apache.org/licenses/LICENSE-2.0\n//\n// Unless required by applicable law or agreed to in writing, software\n// distributed under the License is distributed on an \"AS IS\" BASIS,\n// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.\n// See the License for the specific language governing permissions and\n// limitations under the License.\n\npackage beego\n\nimport (\n\t\"fmt\"\n\t\"os\"\n\t\"path/filepath\"\n\t\"reflect\"\n\t\"strings\"\n\n\t\"github.com/astaxie/beego/config\"\n\t\"github.com/astaxie/beego/logs\"\n\t\"github.com/astaxie/beego/session\"\n\t\"github.com/astaxie/beego/utils\"\n)\n\n// Config is the main struct for BConfig\ntype Config struct {\n\tAppName             string //Application name\n\tRunMode             string //Running Mode: dev | prod\n\tRouterCaseSensitive bool\n\tServerName          string\n\tRecoverPanic        bool\n\tCopyRequestBody     bool\n\tEnableGzip          bool\n\tMaxMemory           int64\n\tEnableErrorsShow    bool\n\tListen              Listen\n\tWebConfig           WebConfig\n\tLog                 LogConfig\n}\n\n// Listen holds for http and https related config\ntype Listen struct {\n\tGraceful      bool // Graceful means use graceful module to start the server\n\tServerTimeOut int64\n\tListenTCP4    bool\n\tEnableHTTP    bool\n\tHTTPAddr      string\n\tHTTPPort      int\n\tEnableHTTPS   bool\n\tHTTPSAddr     string\n\tHTTPSPort     int\n\tHTTPSCertFile string\n\tHTTPSKeyFile  string\n\tEnableAdmin   bool\n\tAdminAddr     string\n\tAdminPort     int\n\tEnableFcgi    bool\n\tEnableStdIo   bool // EnableStdIo works with EnableFcgi Use FCGI via standard I/O\n}\n\n// WebConfig holds web related config\ntype WebConfig struct {\n\tAutoRender             bool\n\tEnableDocs             bool\n\tFlashName              string\n\tFlashSeparator         string\n\tDirectoryIndex         bool\n\tStaticDir              map[string]string\n\tStaticExtensionsToGzip []string\n\tTemplateLeft           string\n\tTemplateRight          string\n\tViewsPath              string\n\tEnableXSRF             bool\n\tXSRFKey                string\n\tXSRFExpire             int\n\tSession                SessionConfig\n}\n\n// SessionConfig holds session related config\ntype SessionConfig struct {\n\tSessionOn               bool\n\tSessionProvider         string\n\tSessionName             string\n\tSessionGCMaxLifetime    int64\n\tSessionProviderConfig   string\n\tSessionCookieLifeTime   int\n\tSessionAutoSetCookie    bool\n\tSessionDomain           string\n\tEnableSidInHttpHeader   bool //\tenable store/get the sessionId into/from http headers\n\tSessionNameInHttpHeader string\n\tEnableSidInUrlQuery     bool //\tenable get the sessionId from Url Query params\n}\n\n// LogConfig holds Log related config\ntype LogConfig struct {\n\tAccessLogs  bool\n\tFileLineNum bool\n\tOutputs     map[string]string // Store Adaptor : config\n}\n\nvar (\n\t// BConfig is the default config for Application\n\tBConfig *Config\n\t// AppConfig is the instance of Config, store the config information from file\n\tAppConfig *beegoAppConfig\n\t// AppPath is the absolute path to the app\n\tAppPath string\n\t// GlobalSessions is the instance for the session manager\n\tGlobalSessions *session.Manager\n\n\t// appConfigPath is the path to the config files\n\tappConfigPath string\n\t// appConfigProvider is the provider for the config, default is ini\n\tappConfigProvider = \"ini\"\n)\n\nfunc init() {\n\tBConfig = newBConfig()\n\tvar err error\n\tif AppPath, err = filepath.Abs(filepath.Dir(os.Args[0])); err != nil {\n\t\tpanic(err)\n\t}\n\tworkPath, err := os.Getwd()\n\tif err != nil {\n\t\tpanic(err)\n\t}\n\tappConfigPath = filepath.Join(workPath, \"conf\", \"app.conf\")\n\tif !utils.FileExists(appConfigPath) {\n\t\tappConfigPath = filepath.Join(AppPath, \"conf\", \"app.conf\")\n\t\tif !utils.FileExists(appConfigPath) {\n\t\t\tAppConfig = &beegoAppConfig{innerConfig: config.NewFakeConfig()}\n\t\t\treturn\n\t\t}\n\t}\n\tif err = parseConfig(appConfigPath); err != nil {\n\t\tpanic(err)\n\t}\n}\n\nfunc newBConfig() *Config {\n\treturn &Config{\n\t\tAppName:             \"beego\",\n\t\tRunMode:             DEV,\n\t\tRouterCaseSensitive: true,\n\t\tServerName:          \"beegoServer:\" + VERSION,\n\t\tRecoverPanic:        true,\n\t\tCopyRequestBody:     false,\n\t\tEnableGzip:          false,\n\t\tMaxMemory:           1 << 26, //64MB\n\t\tEnableErrorsShow:    true,\n\t\tListen: Listen{\n\t\t\tGraceful:      false,\n\t\t\tServerTimeOut: 0,\n\t\t\tListenTCP4:    false,\n\t\t\tEnableHTTP:    true,\n\t\t\tHTTPAddr:      \"\",\n\t\t\tHTTPPort:      8080,\n\t\t\tEnableHTTPS:   false,\n\t\t\tHTTPSAddr:     \"\",\n\t\t\tHTTPSPort:     10443,\n\t\t\tHTTPSCertFile: \"\",\n\t\t\tHTTPSKeyFile:  \"\",\n\t\t\tEnableAdmin:   false,\n\t\t\tAdminAddr:     \"\",\n\t\t\tAdminPort:     8088,\n\t\t\tEnableFcgi:    false,\n\t\t\tEnableStdIo:   false,\n\t\t},\n\t\tWebConfig: WebConfig{\n\t\t\tAutoRender:             true,\n\t\t\tEnableDocs:             false,\n\t\t\tFlashName:              \"BEEGO_FLASH\",\n\t\t\tFlashSeparator:         \"BEEGOFLASH\",\n\t\t\tDirectoryIndex:         false,\n\t\t\tStaticDir:              map[string]string{\"/static\": \"static\"},\n\t\t\tStaticExtensionsToGzip: []string{\".css\", \".js\"},\n\t\t\tTemplateLeft:           \"{{\",\n\t\t\tTemplateRight:          \"}}\",\n\t\t\tViewsPath:              \"views\",\n\t\t\tEnableXSRF:             false,\n\t\t\tXSRFKey:                \"beegoxsrf\",\n\t\t\tXSRFExpire:             0,\n\t\t\tSession: SessionConfig{\n\t\t\t\tSessionOn:               false,\n\t\t\t\tSessionProvider:         \"memory\",\n\t\t\t\tSessionName:             \"beegosessionID\",\n\t\t\t\tSessionGCMaxLifetime:    3600,\n\t\t\t\tSessionProviderConfig:   \"\",\n\t\t\t\tSessionCookieLifeTime:   0, //set cookie default is the browser life\n\t\t\t\tSessionAutoSetCookie:    true,\n\t\t\t\tSessionDomain:           \"\",\n\t\t\t\tEnableSidInHttpHeader:   false, //\tenable store/get the sessionId into/from http headers\n\t\t\t\tSessionNameInHttpHeader: \"Beegosessionid\",\n\t\t\t\tEnableSidInUrlQuery:     false, //\tenable get the sessionId from Url Query params\n\t\t\t},\n\t\t},\n\t\tLog: LogConfig{\n\t\t\tAccessLogs:  false,\n\t\t\tFileLineNum: true,\n\t\t\tOutputs:     map[string]string{\"console\": \"\"},\n\t\t},\n\t}\n}\n\n// now only support ini, next will support json.\nfunc parseConfig(appConfigPath string) (err error) {\n\tAppConfig, err = newAppConfig(appConfigProvider, appConfigPath)\n\tif err != nil {\n\t\treturn err\n\t}\n\treturn assignConfig(AppConfig)\n}\n\nfunc assignConfig(ac config.Configer) error {\n\t// set the run mode first\n\tif envRunMode := os.Getenv(\"BEEGO_RUNMODE\"); envRunMode != \"\" {\n\t\tBConfig.RunMode = envRunMode\n\t} else if runMode := ac.String(\"RunMode\"); runMode != \"\" {\n\t\tBConfig.RunMode = runMode\n\t}\n\n\tfor _, i := range []interface{}{BConfig, &BConfig.Listen, &BConfig.WebConfig, &BConfig.Log, &BConfig.WebConfig.Session} {\n\t\tassignSingleConfig(i, ac)\n\t}\n\n\tif sd := ac.String(\"StaticDir\"); sd != \"\" {\n\t\tBConfig.WebConfig.StaticDir = map[string]string{}\n\t\tsds := strings.Fields(sd)\n\t\tfor _, v := range sds {\n\t\t\tif url2fsmap := strings.SplitN(v, \":\", 2); len(url2fsmap) == 2 {\n\t\t\t\tBConfig.WebConfig.StaticDir[\"/\"+strings.TrimRight(url2fsmap[0], \"/\")] = url2fsmap[1]\n\t\t\t} else {\n\t\t\t\tBConfig.WebConfig.StaticDir[\"/\"+strings.TrimRight(url2fsmap[0], \"/\")] = url2fsmap[0]\n\t\t\t}\n\t\t}\n\t}\n\n\tif sgz := ac.String(\"StaticExtensionsToGzip\"); sgz != \"\" {\n\t\textensions := strings.Split(sgz, \",\")\n\t\tfileExts := []string{}\n\t\tfor _, ext := range extensions {\n\t\t\text = strings.TrimSpace(ext)\n\t\t\tif ext == \"\" {\n\t\t\t\tcontinue\n\t\t\t}\n\t\t\tif !strings.HasPrefix(ext, \".\") {\n\t\t\t\text = \".\" + ext\n\t\t\t}\n\t\t\tfileExts = append(fileExts, ext)\n\t\t}\n\t\tif len(fileExts) > 0 {\n\t\t\tBConfig.WebConfig.StaticExtensionsToGzip = fileExts\n\t\t}\n\t}\n\n\tif lo := ac.String(\"LogOutputs\"); lo != \"\" {\n\t\tlos := strings.Split(lo, \";\")\n\t\tfor _, v := range los {\n\t\t\tif logType2Config := strings.SplitN(v, \",\", 2); len(logType2Config) == 2 {\n\t\t\t\tBConfig.Log.Outputs[logType2Config[0]] = logType2Config[1]\n\t\t\t} else {\n\t\t\t\tcontinue\n\t\t\t}\n\t\t}\n\t}\n\n\t//init log\n\tlogs.Reset()\n\tfor adaptor, config := range BConfig.Log.Outputs {\n\t\terr := logs.SetLogger(adaptor, config)\n\t\tif err != nil {\n\t\t\tfmt.Fprintln(os.Stderr, fmt.Sprintf(\"%s with the config %q got err:%s\", adaptor, config, err.Error()))\n\t\t}\n\t}\n\tlogs.SetLogFuncCall(BConfig.Log.FileLineNum)\n\n\treturn nil\n}\n\nfunc assignSingleConfig(p interface{}, ac config.Configer) {\n\tpt := reflect.TypeOf(p)\n\tif pt.Kind() != reflect.Ptr {\n\t\treturn\n\t}\n\tpt = pt.Elem()\n\tif pt.Kind() != reflect.Struct {\n\t\treturn\n\t}\n\tpv := reflect.ValueOf(p).Elem()\n\n\tfor i := 0; i < pt.NumField(); i++ {\n\t\tpf := pv.Field(i)\n\t\tif !pf.CanSet() {\n\t\t\tcontinue\n\t\t}\n\t\tname := pt.Field(i).Name\n\t\tswitch pf.Kind() {\n\t\tcase reflect.String:\n\t\t\tpf.SetString(ac.DefaultString(name, pf.String()))\n\t\tcase reflect.Int, reflect.Int64:\n\t\t\tpf.SetInt(int64(ac.DefaultInt64(name, pf.Int())))\n\t\tcase reflect.Bool:\n\t\t\tpf.SetBool(ac.DefaultBool(name, pf.Bool()))\n\t\tcase reflect.Struct:\n\t\tdefault:\n\t\t\t//do nothing here\n\t\t}\n\t}\n\n}\n\n// LoadAppConfig allow developer to apply a config file\nfunc LoadAppConfig(adapterName, configPath string) error {\n\tabsConfigPath, err := filepath.Abs(configPath)\n\tif err != nil {\n\t\treturn err\n\t}\n\n\tif !utils.FileExists(absConfigPath) {\n\t\treturn fmt.Errorf(\"the target config file: %s don't exist\", configPath)\n\t}\n\n\tappConfigPath = absConfigPath\n\tappConfigProvider = adapterName\n\n\treturn parseConfig(appConfigPath)\n}\n\ntype beegoAppConfig struct {\n\tinnerConfig config.Configer\n}\n\nfunc newAppConfig(appConfigProvider, appConfigPath string) (*beegoAppConfig, error) {\n\tac, err := config.NewConfig(appConfigProvider, appConfigPath)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\treturn &beegoAppConfig{ac}, nil\n}\n\nfunc (b *beegoAppConfig) Set(key, val string) error {\n\tif err := b.innerConfig.Set(BConfig.RunMode+\"::\"+key, val); err != nil {\n\t\treturn err\n\t}\n\treturn b.innerConfig.Set(key, val)\n}\n\nfunc (b *beegoAppConfig) String(key string) string {\n\tif v := b.innerConfig.String(BConfig.RunMode + \"::\" + key); v != \"\" {\n\t\treturn v\n\t}\n\treturn b.innerConfig.String(key)\n}\n\nfunc (b *beegoAppConfig) Strings(key string) []string {\n\tif v := b.innerConfig.Strings(BConfig.RunMode + \"::\" + key); len(v) > 0 {\n\t\treturn v\n\t}\n\treturn b.innerConfig.Strings(key)\n}\n\nfunc (b *beegoAppConfig) Int(key string) (int, error) {\n\tif v, err := b.innerConfig.Int(BConfig.RunMode + \"::\" + key); err == nil {\n\t\treturn v, nil\n\t}\n\treturn b.innerConfig.Int(key)\n}\n\nfunc (b *beegoAppConfig) Int64(key string) (int64, error) {\n\tif v, err := b.innerConfig.Int64(BConfig.RunMode + \"::\" + key); err == nil {\n\t\treturn v, nil\n\t}\n\treturn b.innerConfig.Int64(key)\n}\n\nfunc (b *beegoAppConfig) Bool(key string) (bool, error) {\n\tif v, err := b.innerConfig.Bool(BConfig.RunMode + \"::\" + key); err == nil {\n\t\treturn v, nil\n\t}\n\treturn b.innerConfig.Bool(key)\n}\n\nfunc (b *beegoAppConfig) Float(key string) (float64, error) {\n\tif v, err := b.innerConfig.Float(BConfig.RunMode + \"::\" + key); err == nil {\n\t\treturn v, nil\n\t}\n\treturn b.innerConfig.Float(key)\n}\n\nfunc (b *beegoAppConfig) DefaultString(key string, defaultVal string) string {\n\tif v := b.String(key); v != \"\" {\n\t\treturn v\n\t}\n\treturn defaultVal\n}\n\nfunc (b *beegoAppConfig) DefaultStrings(key string, defaultVal []string) []string {\n\tif v := b.Strings(key); len(v) != 0 {\n\t\treturn v\n\t}\n\treturn defaultVal\n}\n\nfunc (b *beegoAppConfig) DefaultInt(key string, defaultVal int) int {\n\tif v, err := b.Int(key); err == nil {\n\t\treturn v\n\t}\n\treturn defaultVal\n}\n\nfunc (b *beegoAppConfig) DefaultInt64(key string, defaultVal int64) int64 {\n\tif v, err := b.Int64(key); err == nil {\n\t\treturn v\n\t}\n\treturn defaultVal\n}\n\nfunc (b *beegoAppConfig) DefaultBool(key string, defaultVal bool) bool {\n\tif v, err := b.Bool(key); err == nil {\n\t\treturn v\n\t}\n\treturn defaultVal\n}\n\nfunc (b *beegoAppConfig) DefaultFloat(key string, defaultVal float64) float64 {\n\tif v, err := b.Float(key); err == nil {\n\t\treturn v\n\t}\n\treturn defaultVal\n}\n\nfunc (b *beegoAppConfig) DIY(key string) (interface{}, error) {\n\treturn b.innerConfig.DIY(key)\n}\n\nfunc (b *beegoAppConfig) GetSection(section string) (map[string]string, error) {\n\treturn b.innerConfig.GetSection(section)\n}\n\nfunc (b *beegoAppConfig) SaveConfigFile(filename string) error {\n\treturn b.innerConfig.SaveConfigFile(filename)\n}\n",
+        "rank": 0,
+        "truncated": false
+      }
+    ],
+    "selected": [
+      {
+        "id": "8a84a736204cdb903e6314d9",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "config.go",
+        "start_byte": 5342,
+        "text": "func parseConfig(appConfigPath string) (err error) {\n\tAppConfig, err = newAppConfig(appConfigProvider, appConfigPath)\n\tif err != nil {\n\t\treturn err\n\t}\n\t// set the run mode first\n\tif envRunMode := os.Getenv(\"BEEGO_RUNMODE\"); envRunMode != \"\" {\n\t\tBConfig.RunMode = envRunMode\n\t} else if runMode := AppConfig.String(\"RunMode\"); runMode != \"\" {\n\t\tBConfig.RunMode = runMode\n\t}\n\n\tBConfig.AppName = AppConfig.DefaultString(\"AppName\", BConfig.AppName)\n\tBConfig.RecoverPanic = AppConfig.DefaultBool(\"RecoverPanic\", BConfig.RecoverPanic)\n\tBConfig.RouterCaseSensitive = AppConfig.DefaultBool(\"RouterCaseSensitive\", BConfig.RouterCaseSensitive)\n\tBConfig.ServerName = AppConfig.DefaultString(\"ServerName\", BConfig.ServerName)\n\tBConfig.EnableGzip = AppConfig.DefaultBool(\"EnableGzip\", BConfig.EnableGzip)\n\tBConfig.EnableErrorsShow = AppConfig.DefaultBool(\"EnableErrorsShow\", BConfig.EnableErrorsShow)\n\tBConfig.CopyRequestBody = AppConfig.DefaultBool(\"CopyRequestBody\", BConfig.CopyRequestBody)\n\tBConfig.MaxMemory = AppConfig.DefaultInt64(\"MaxMemory\", BConfig.MaxMemory)\n\tBConfig.Listen.Graceful = AppConfig.DefaultBool(\"Graceful\", BConfig.Listen.Graceful)\n\tBConfig.Listen.HTTPAddr = AppConfig.String(\"HTTPAddr\")\n\tBConfig.Listen.HTTPPort = AppConfig.DefaultInt(\"HTTPPort\", BConfig.Listen.HTTPPort)\n\tBConfig.Listen.ListenTCP4 = AppConfig.DefaultBool(\"ListenTCP4\", BConfig.Listen.ListenTCP4)\n\tBConfig.Listen.EnableHTTP = AppConfig.DefaultBool(\"EnableHTTP\", BConfig.Listen.EnableHTTP)\n\tBConfig.Listen.EnableHTTPS = AppConfig.DefaultBool(\"EnableHTTPS\", BConfig.Listen.EnableHTTPS)\n\tBConfig.Listen.HTTPSAddr = AppConfig.DefaultString(\"HTTPSAddr\", BConfig.Listen.HTTPSAddr)\n\tBConfig.Listen.HTTPSPort = AppConfig.DefaultInt(\"HTTPSPort\", BConfig.Listen.HTTPSPort)\n\tBConfig.Listen.HTTPSCertFile = AppConfig.DefaultString(\"HTTPSCertFile\", BConfig.Listen.HTTPSCertFile)\n\tBConfig.Listen.HTTPSKeyFile = AppConfig.DefaultString(\"HTTPSKeyFile\", BConfig.Listen.HTTPSKeyFile)\n\tBConfig.Listen.EnableAdmin = AppConfig.DefaultBool(\"EnableAdmin\", BConfig.Listen.EnableAdmin)\n\tBConfig.Listen.AdminAddr = AppConfig.DefaultString(\"AdminAddr\", BConfig.Listen.AdminAddr)\n\tBConfig.Listen.AdminPort = AppConfig.DefaultInt(\"AdminPort\", BConfig.Listen.AdminPort)\n\tBConfig.Listen.EnableFcgi = AppConfig.DefaultBool(\"EnableFcgi\", BConfig.Listen.EnableFcgi)\n\tBConfig.Listen.EnableStdIo = AppConfig.DefaultBool(\"EnableStdIo\", BConfig.Listen.EnableStdIo)\n\tBConfig.Listen.ServerTimeOut = AppConfig.DefaultInt64(\"ServerTimeOut\", BConfig.Listen.ServerTimeOut)\n\tBConfig.WebConfig.AutoRender = AppConfig.DefaultBool(\"AutoRender\", BConfig.WebConfig.AutoRender)\n\tBConfig.WebConfig.ViewsPath = AppConfig.DefaultString(\"ViewsPath\", BConfig.WebConfig.ViewsPath)\n\tBConfig.WebConfig.DirectoryIndex = AppConfig.DefaultBool(\"DirectoryIndex\", BConfig.WebConfig.DirectoryIndex)\n\tBConfig.WebConfig.FlashName = AppConfig.DefaultString(\"FlashName\", BConfig.WebConfig.FlashName)\n\tBConfig.WebConfig.FlashSeparator = AppConfig.DefaultString(\"FlashSeparator\", BConfig.WebConfig.FlashSeparator)\n\tBConfig.WebConfig.EnableDocs = AppConfig.DefaultBool(\"EnableDocs\", BConfig.WebConfig.EnableDocs)\n\tBConfig.WebConfig.XSRFKey = AppConfig.DefaultString(\"XSRFKEY\", BConfig.WebConfig.XSRFKey)\n\tBConfig.WebConfig.EnableXSRF = AppConfig.DefaultBool(\"EnableXSRF\", BConfig.WebConfig.EnableXSRF)\n\tBConfig.WebConfig.XSRFExpire = AppConfig.DefaultInt(\"XSRFExpire\", BConfig.WebConfig.XSRFExpire)\n\tBConfig.WebConfig.TemplateLeft = AppConfig.DefaultString(\"TemplateLeft\", BConfig.WebConfig.TemplateLeft)\n\tBConfig.WebConfig.TemplateRight = AppConfig.DefaultString(\"TemplateRight\", BConfig.WebConfig.TemplateRight)\n\tBConfig.WebConfig.Session.SessionOn = AppConfig.DefaultBool(\"SessionOn\", BConfig.WebConfig.Session.SessionOn)\n\tBConfig.WebConfig.Session.SessionProvider = AppConfig.DefaultString(\"SessionProvider\", BConfig.WebConfig.Session.SessionProvider)\n\tBConfig.WebConfig.Session.SessionName = AppConfig.DefaultString(\"SessionName\", BConfig.WebConfig.Session.SessionName)\n\tBConfig.WebConfig.Session.SessionProviderConfig = AppConfig.DefaultString(\"SessionProviderConfig\", BConfig.WebConfig.Session.SessionProviderConfig)\n\tBConfig.WebConfig.Session.SessionGCMaxLifetime = AppConfig.DefaultInt64(\"SessionGCMaxLifetime\", BConfig.WebConfig.Session.SessionGCMaxLifetime)\n\tBConfig.WebConfig.Session.SessionCookieLifeTime = AppConfig.DefaultInt(\"SessionCookieLifeTime\", BConfig.WebConfig.Session.SessionCookieLifeTime)\n\tBConfig.WebConfig.Session.SessionAutoSetCookie = AppConfig.DefaultBool(\"SessionAutoSetCookie\", BConfig.WebConfig.Session.SessionAutoSetCookie)\n\tBConfig.WebConfig.Session.SessionDomain = AppConfig.DefaultString(\"SessionDomain\", BConfig.WebConfig.Session.SessionDomain)\n\tBConfig.Log.AccessLogs = AppConfig.DefaultBool(\"LogAccessLogs\", BConfig.Log.AccessLogs)\n\tBConfig.Log.FileLineNum = AppConfig.DefaultBool(\"LogFileLineNum\", BConfig.Log.FileLineNum)\n\n\tif sd := AppConfig.String(\"StaticDir\"); sd != \"\" {\n\t\tfor k := range BConfig.WebConfig.StaticDir {\n\t\t\tdelete(BConfig.WebConfig.StaticDir, k)\n\t\t}\n\t\tsds := strings.Fields(sd)\n\t\tfor _, v := range sds {\n\t\t\tif url2fsmap := strings.SplitN(v, \":\", 2); len(url2fsmap) == 2 {\n\t\t\t\tBConfig.WebConfig.StaticDir[\"/\"+strings.Trim(url2fsmap[0], \"/\")] = url2fsmap[1]\n\t\t\t} else {\n\t\t\t\tBConfig.WebConfig.StaticDir[\"/\"+strings.Trim(url2fsmap[0], \"/\")] = url2fsmap[0]\n\t\t\t}\n\t\t}\n\t}\n\tif sgz := AppConfig.String(\"StaticExtensionsToGzip\"); sgz != \"\" {\n\t\textensions := strings.Split(sgz, \",\")\n\t\tfileExts := []string{}\n\t\tfor _, ext := range extensions {\n\t\t\text = strings.TrimSpace(ext)\n\t\t\tif ext == \"\" {\n\t\t\t\tcontinue\n\t\t\t}\n\t\t\tif !strings.HasPrefix(ext, \".\") {\n\t\t\t\text = \".\" + ext\n\t\t\t}\n\t\t\tfileExts = append(fileExts, ext)\n\t\t}\n\t\tif len(fileExts) > 0 {\n\t\t\tBConfig.WebConfig.StaticExtensionsToGzip = fileExts\n\t\t}\n\t}\n\n\tif lo := AppConfig.String(\"LogOutputs\"); lo != \"\" {\n\t\tlos := strings.Split(lo, \";\")\n\t\tfor _, v := range los {\n\t\t\tif logType2Config := strings.SplitN(v, \",\", 2); len(logType2Config) == 2 {\n\t\t\t\tBConfig.Log.Outputs[logType2Config[0]] = logType2Config[1]\n\t\t\t} else {\n\t\t\t\tcontinue\n\t\t\t}\n\t\t}\n\t}\n\n\t//init log\n\tBeeLogger.Reset()\n\tfor adaptor, config := range BConfig.Log.Outputs {\n\t\terr = BeeLogger.SetLogger(adaptor, config)\n\t\tif err != nil {\n\t\t\tfmt.Printf(\"%s with the config `%s` got err:%s\\n\", adaptor, config, err)\n\t\t}\n\t}\n\tSetLogFuncCall(BConfig.Log.FileLineNum)\n\n\treturn nil\n}",
+        "rank": 0,
+        "truncated": false
+      },
+      {
+        "id": "61b096df3c435b02b56b45cc",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "config.go",
+        "start_byte": 6277,
+        "text": "func assignConfig(ac config.Configer) error {\n\t// set the run mode first\n\tif envRunMode := os.Getenv(\"BEEGO_RUNMODE\"); envRunMode != \"\" {\n\t\tBConfig.RunMode = envRunMode\n\t} else if runMode := ac.String(\"RunMode\"); runMode != \"\" {\n\t\tBConfig.RunMode = runMode\n\t}\n\n\tfor _, i := range []interface{}{BConfig, &BConfig.Listen, &BConfig.WebConfig, &BConfig.Log, &BConfig.WebConfig.Session} {\n\t\tassignSingleConfig(i, ac)\n\t}\n\n\tif sd := ac.String(\"StaticDir\"); sd != \"\" {\n\t\tBConfig.WebConfig.StaticDir = map[string]string{}\n\t\tsds := strings.Fields(sd)\n\t\tfor _, v := range sds {\n\t\t\tif url2fsmap := strings.SplitN(v, \":\", 2); len(url2fsmap) == 2 {\n\t\t\t\tBConfig.WebConfig.StaticDir[\"/\"+strings.TrimRight(url2fsmap[0], \"/\")] = url2fsmap[1]\n\t\t\t} else {\n\t\t\t\tBConfig.WebConfig.StaticDir[\"/\"+strings.TrimRight(url2fsmap[0], \"/\")] = url2fsmap[0]\n\t\t\t}\n\t\t}\n\t}\n\n\tif sgz := ac.String(\"StaticExtensionsToGzip\"); sgz != \"\" {\n\t\textensions := strings.Split(sgz, \",\")\n\t\tfileExts := []string{}\n\t\tfor _, ext := range extensions {\n\t\t\text = strings.TrimSpace(ext)\n\t\t\tif ext == \"\" {\n\t\t\t\tcontinue\n\t\t\t}\n\t\t\tif !strings.HasPrefix(ext, \".\") {\n\t\t\t\text = \".\" + ext\n\t\t\t}\n\t\t\tfileExts = append(fileExts, ext)\n\t\t}\n\t\tif len(fileExts) > 0 {\n\t\t\tBConfig.WebConfig.StaticExtensionsToGzip = fileExts\n\t\t}\n\t}\n\n\tif lo := ac.String(\"LogOutputs\"); lo != \"\" {\n\t\tlos := strings.Split(lo, \";\")\n\t\tfor _, v := range los {\n\t\t\tif logType2Config := strings.SplitN(v, \",\", 2); len(logType2Config) == 2 {\n\t\t\t\tBConfig.Log.Outputs[logType2Config[0]] = logType2Config[1]\n\t\t\t} else {\n\t\t\t\tcontinue\n\t\t\t}\n\t\t}\n\t}\n\n\t//init log\n\tlogs.Reset()\n\tfor adaptor, config := range BConfig.Log.Outputs {\n\t\terr := logs.SetLogger(adaptor, config)\n\t\tif err != nil {\n\t\t\tfmt.Fprintln(os.Stderr, fmt.Sprintf(\"%s with the config %q got err:%s\", adaptor, config, err.Error()))\n\t\t}\n\t}\n\tlogs.SetLogFuncCall(BConfig.Log.FileLineNum)\n\n\treturn nil\n}",
+        "rank": 0,
+        "truncated": false
+      },
+      {
+        "id": "de92f6362b5fa31be29c6525",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "admin.go",
+        "start_byte": 13270,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "5175f9905a281128c4bb30bf",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "app.go",
+        "start_byte": 1399,
+        "text": "var (\n\t\terr        error\n\t\tl          net.Listener\n\t\tendRunning = make(chan bool, 1)\n\t)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "303940f4753606b966ddc3e9",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "cache/redis/redis.go",
+        "start_byte": 2053,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "31eb468cb389a77a5fa42e1c",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "cache/redis/redis.go",
+        "start_byte": 2565,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "f228c25553b64b83cd2e59aa",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "cache/redis/redis.go",
+        "start_byte": 2845,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "0e492e7253cb497145e1c5c8",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "cache/ssdb/ssdb.go",
+        "start_byte": 1717,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "1faeaf801ba961c8e41f8bab",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "cache/ssdb/ssdb.go",
+        "start_byte": 4574,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "f181e85d4ee8d04f42e74a1d",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "config.go",
+        "start_byte": 1279,
+        "text": "type Listen struct {\n\tGraceful      bool // Graceful means use graceful module to start the server\n\tServerTimeOut int64\n\tListenTCP4    bool\n\tEnableHTTP    bool\n\tHTTPAddr      string\n\tHTTPPort      int\n\tEnableHTTPS   bool\n\tHTTPSAddr     string\n\tHTTPSPort     int\n\tHTTPSCertFile string\n\tHTTPSKeyFile  string\n\tEnableAdmin   bool\n\tAdminAddr     string\n\tAdminPort     int\n\tEnableFcgi    bool\n\tEnableStdIo   bool // EnableStdIo works with EnableFcgi Use FCGI via standard I/O\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "d5d7c63f7a71e1c09eaec9a8",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "config.go",
+        "start_byte": 1790,
+        "text": "type WebConfig struct {\n\tAutoRender             bool\n\tEnableDocs             bool\n\tFlashName              string\n\tFlashSeparator         string\n\tDirectoryIndex         bool\n\tStaticDir              map[string]string\n\tStaticExtensionsToGzip []string\n\tTemplateLeft           string\n\tTemplateRight          string\n\tViewsPath              string\n\tEnableXSRF             bool\n\tXSRFKey                string\n\tXSRFExpire             int\n\tSession                SessionConfig\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "8bf267def2023cdfdc4f16fb",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "config.go",
+        "start_byte": 2727,
+        "text": "var (\n\t// BConfig is the default config for Application\n\tBConfig *Config\n\t// AppConfig is the instance of Config, store the config information from file\n\tAppConfig *beegoAppConfig\n\t// AppPath is the absolute path to the app\n\tAppPath string\n\t// GlobalSessions is the instance for the session manager\n\tGlobalSessions *session.Manager\n\n\t// appConfigPath is the path to the config files\n\tappConfigPath string\n\t// appConfigProvider is the provider for the config, default is ini\n\tappConfigProvider = \"ini\"\n)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "86308352c3950a78ffebceac",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "config.go",
+        "start_byte": 12206,
+        "text": "func newAppConfig(appConfigProvider, appConfigPath string) (*beegoAppConfig, error) {\n\tac, err := config.NewConfig(appConfigProvider, appConfigPath)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\treturn &beegoAppConfig{ac}, nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "9a4cddc09098b198c7974778",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "config.go",
+        "start_byte": 12612,
+        "text": "func (b *beegoAppConfig) String(key string) string {\n\tif v := b.innerConfig.String(BConfig.RunMode + \"::\" + key); v != \"\" {\n\t\treturn v\n\t}\n\treturn b.innerConfig.String(key)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "e4563d0bb0992ad1cd4d667a",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "config.go",
+        "start_byte": 13732,
+        "text": "func (b *beegoAppConfig) DefaultString(key string, defaultVal string) string {\n\tif v := b.String(key); v != \"\" {\n\t\treturn v\n\t}\n\treturn defaultVal\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "410a4331ad8a526b144969fe",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "config.go",
+        "start_byte": 14040,
+        "text": "func (b *beegoAppConfig) DefaultInt(key string, defaultVal int) int {\n\tif v, err := b.Int(key); err == nil {\n\t\treturn v\n\t}\n\treturn defaultVal\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "17a8e6e1d1f89b926e6adb9b",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "config.go",
+        "start_byte": 14185,
+        "text": "func (b *beegoAppConfig) DefaultInt64(key string, defaultVal int64) int64 {\n\tif v, err := b.Int64(key); err == nil {\n\t\treturn v\n\t}\n\treturn defaultVal\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "9bcb074a9a15ce96bed9e4c0",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "config.go",
+        "start_byte": 14338,
+        "text": "func (b *beegoAppConfig) DefaultBool(key string, defaultVal bool) bool {\n\tif v, err := b.Bool(key); err == nil {\n\t\treturn v\n\t}\n\treturn defaultVal\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "79f921d184db519e0f5fba59",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "config/fake.go",
+        "start_byte": 943,
+        "text": "func (c *fakeConfigContainer) String(key string) string {\n\treturn c.getData(key)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "950845fcc745f0bca6c57675",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "config/fake.go",
+        "start_byte": 1027,
+        "text": "func (c *fakeConfigContainer) DefaultString(key string, defaultval string) string {\n\tv := c.getData(key)\n\tif v == \"\" {\n\t\treturn defaultval\n\t}\n\treturn v\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "20226c7ca4fa8858e951f5aa",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "config/fake.go",
+        "start_byte": 1589,
+        "text": "func (c *fakeConfigContainer) DefaultInt(key string, defaultval int) int {\n\tv, err := c.Int(key)\n\tif err != nil {\n\t\treturn defaultval\n\t}\n\treturn v\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "72363e1865d1c18c22ab46a0",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "config/fake.go",
+        "start_byte": 1856,
+        "text": "func (c *fakeConfigContainer) DefaultInt64(key string, defaultval int64) int64 {\n\tv, err := c.Int64(key)\n\tif err != nil {\n\t\treturn defaultval\n\t}\n\treturn v\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "40830c940fc685e2f59ac982",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "config/fake.go",
+        "start_byte": 2114,
+        "text": "func (c *fakeConfigContainer) DefaultBool(key string, defaultval bool) bool {\n\tv, err := c.Bool(key)\n\tif err != nil {\n\t\treturn defaultval\n\t}\n\treturn v\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "fb05a37f86e1d316ed082508",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "config/fake.go",
+        "start_byte": 3019,
+        "text": "var _ Configer = new(fakeConfigContainer)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "420cbe354499d4e152148d31",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "config/ini.go",
+        "start_byte": 5528,
+        "text": "func (c *IniConfigContainer) DefaultBool(key string, defaultval bool) bool {\n\tv, err := c.Bool(key)\n\tif err != nil {\n\t\treturn defaultval\n\t}\n\treturn v\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "0bad428d1c41f17655a236ff",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "config/ini.go",
+        "start_byte": 5922,
+        "text": "func (c *IniConfigContainer) DefaultInt(key string, defaultval int) int {\n\tv, err := c.Int(key)\n\tif err != nil {\n\t\treturn defaultval\n\t}\n\treturn v\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "367cf94ad33706509a5871ce",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "config/ini.go",
+        "start_byte": 6328,
+        "text": "func (c *IniConfigContainer) DefaultInt64(key string, defaultval int64) int64 {\n\tv, err := c.Int64(key)\n\tif err != nil {\n\t\treturn defaultval\n\t}\n\treturn v\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "bd8e40600505a711c85049db",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "config/ini.go",
+        "start_byte": 6957,
+        "text": "func (c *IniConfigContainer) String(key string) string {\n\treturn c.getdata(key)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "e55fb90c0318dde803f00fef",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "config/ini.go",
+        "start_byte": 7133,
+        "text": "func (c *IniConfigContainer) DefaultString(key string, defaultval string) string {\n\tv := c.String(key)\n\tif v == \"\" {\n\t\treturn defaultval\n\t}\n\treturn v\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "6fcf31d65eda7c1112052840",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "config/json.go",
+        "start_byte": 2097,
+        "text": "func (c *JSONConfigContainer) DefaultBool(key string, defaultval bool) bool {\n\tif v, err := c.Bool(key); err == nil {\n\t\treturn v\n\t}\n\treturn defaultval\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "a0bc9f95dd086a939f689777",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "config/json.go",
+        "start_byte": 2645,
+        "text": "func (c *JSONConfigContainer) DefaultInt(key string, defaultval int) int {\n\tif v, err := c.Int(key); err == nil {\n\t\treturn v\n\t}\n\treturn defaultval\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "57e5dd90ef208cd12df8e661",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "config/json.go",
+        "start_byte": 3197,
+        "text": "func (c *JSONConfigContainer) DefaultInt64(key string, defaultval int64) int64 {\n\tif v, err := c.Int64(key); err == nil {\n\t\treturn v\n\t}\n\treturn defaultval\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "ef99465f33521053d0276877",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "config/json.go",
+        "start_byte": 3974,
+        "text": "func (c *JSONConfigContainer) String(key string) string {\n\tval := c.getData(key)\n\tif val != nil {\n\t\tif v, ok := val.(string); ok {\n\t\t\treturn v\n\t\t}\n\t}\n\treturn \"\"\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "c756ae8b022dfe18c569e287",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "config/json.go",
+        "start_byte": 4231,
+        "text": "func (c *JSONConfigContainer) DefaultString(key string, defaultval string) string {\n\t// TODO FIXME should not use \"\" to replace non existence\n\tif v := c.String(key); v != \"\" {\n\t\treturn v\n\t}\n\treturn defaultval\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "c0011ebfb9b97826103aa2d3",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "config/xml/xml.go",
+        "start_byte": 2682,
+        "text": "func (c *ConfigContainer) DefaultBool(key string, defaultval bool) bool {\n\tv, err := c.Bool(key)\n\tif err != nil {\n\t\treturn defaultval\n\t}\n\treturn v\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "05c3b8630c1fa478d4d3aea1",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "config/xml/xml.go",
+        "start_byte": 3076,
+        "text": "func (c *ConfigContainer) DefaultInt(key string, defaultval int) int {\n\tv, err := c.Int(key)\n\tif err != nil {\n\t\treturn defaultval\n\t}\n\treturn v\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "a0eb97197e801ea6ce9c904e",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "config/xml/xml.go",
+        "start_byte": 3482,
+        "text": "func (c *ConfigContainer) DefaultInt64(key string, defaultval int64) int64 {\n\tv, err := c.Int64(key)\n\tif err != nil {\n\t\treturn defaultval\n\t}\n\treturn v\n\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "a50a3b14d73fb6b063c7f9c3",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "config/xml/xml.go",
+        "start_byte": 4109,
+        "text": "func (c *ConfigContainer) String(key string) string {\n\tif v, ok := c.data[key].(string); ok {\n\t\treturn v\n\t}\n\treturn \"\"\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "509fb0bcc9bc5054aaa8b42e",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "config/xml/xml.go",
+        "start_byte": 4324,
+        "text": "func (c *ConfigContainer) DefaultString(key string, defaultval string) string {\n\tv := c.String(key)\n\tif v == \"\" {\n\t\treturn defaultval\n\t}\n\treturn v\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "4f3dd9ed7c1d49232d3feccb",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "config/yaml/yaml.go",
+        "start_byte": 3201,
+        "text": "func (c *ConfigContainer) DefaultBool(key string, defaultval bool) bool {\n\tv, err := c.Bool(key)\n\tif err != nil {\n\t\treturn defaultval\n\t}\n\treturn v\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "e93fbc9985a62ed2e56cd74f",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "config/yaml/yaml.go",
+        "start_byte": 3654,
+        "text": "func (c *ConfigContainer) DefaultInt(key string, defaultval int) int {\n\tv, err := c.Int(key)\n\tif err != nil {\n\t\treturn defaultval\n\t}\n\treturn v\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "4f72066ad4129e00e726eaf7",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "config/yaml/yaml.go",
+        "start_byte": 4103,
+        "text": "func (c *ConfigContainer) DefaultInt64(key string, defaultval int64) int64 {\n\tv, err := c.Int64(key)\n\tif err != nil {\n\t\treturn defaultval\n\t}\n\treturn v\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "0ac5d91f451b0235d396a452",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "config/yaml/yaml.go",
+        "start_byte": 4781,
+        "text": "func (c *ConfigContainer) String(key string) string {\n\tif v, ok := c.data[key].(string); ok {\n\t\treturn v\n\t}\n\treturn \"\"\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "7f4ab91d8dcb66cbc5141788",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "config/yaml/yaml.go",
+        "start_byte": 4996,
+        "text": "func (c *ConfigContainer) DefaultString(key string, defaultval string) string {\n\tv := c.String(key)\n\tif v == \"\" {\n\t\treturn defaultval\n\t}\n\treturn v\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "801817113aeb73ae981bff27",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "context/acceptencoder.go",
+        "start_byte": 863,
+        "text": "func (n nopResetWriter) Reset(w io.Writer) {\n\t//do nothing\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "a1b8735ea69ee35eda55d01e",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "context/acceptencoder.go",
+        "start_byte": 3965,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "571782aadbff73009797ad2e",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "context/context.go",
+        "start_byte": 1604,
+        "text": "func (ctx *Context) Reset(rw http.ResponseWriter, r *http.Request) {\n\tctx.Request = r\n\tif ctx.ResponseWriter == nil {\n\t\tctx.ResponseWriter = &Response{}\n\t}\n\tctx.ResponseWriter.reset(rw)\n\tctx.Input.Reset(ctx)\n\tctx.Output.Reset(ctx)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "1e39bb51aa1e193f4474df75",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "context/input.go",
+        "start_byte": 1765,
+        "text": "func (input *BeegoInput) Reset(ctx *Context) {\n\tinput.Context = ctx\n\tinput.CruSession = nil\n\tinput.pnames = input.pnames[:0]\n\tinput.pvalues = input.pvalues[:0]\n\tinput.data = nil\n\tinput.RequestBody = []byte{}\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "6bb1ea26f9820105549f527d",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "context/input.go",
+        "start_byte": 8755,
+        "text": "func (input *BeegoInput) Session(key interface{}) interface{} {\n\treturn input.CruSession.Get(key)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "c58e41f9a92ccf31806d1de7",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "context/output.go",
+        "start_byte": 1072,
+        "text": "func (output *BeegoOutput) Reset(ctx *Context) {\n\toutput.Context = ctx\n\toutput.Status = 0\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "087124a2c67cac8fd980fa3d",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "context/output.go",
+        "start_byte": 4381,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "fc630c1d15f128d0abd06d26",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "context/output.go",
+        "start_byte": 4941,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "bcefbca45f6bee43c1cbc852",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "context/output.go",
+        "start_byte": 5761,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "a259330bc6000cff5e25aa84",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "context/output.go",
+        "start_byte": 9433,
+        "text": "func (output *BeegoOutput) Session(name interface{}, value interface{}) {\n\toutput.Context.Input.CruSession.Set(name, value)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "9ca4fedfcfdae8f503ccfe33",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "hooks.go",
+        "start_byte": 819,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "3cd70c4bf8f63447f35a6072",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "httplib/httplib.go",
+        "start_byte": 11714,
+        "text": "func (b *BeegoHTTPRequest) String() (string, error) {\n\tdata, err := b.Bytes()\n\tif err != nil {\n\t\treturn \"\", err\n\t}\n\n\treturn string(data), nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "76670a10b794e41791559b03",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "log.go",
+        "start_byte": 915,
+        "text": "var BeeLogger = logs.NewLogger(100)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "bd01518dd81f6223d02d152b",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "log.go",
+        "start_byte": 1116,
+        "text": "func SetLogFuncCall(b bool) {\n\tBeeLogger.EnableFuncCallDepth(b)\n\tBeeLogger.SetLogFuncCallDepth(3)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "e0ee2f4ce3c66d1e0b5dd17c",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "log.go",
+        "start_byte": 1249,
+        "text": "func SetLogger(adaptername string, config string) error {\n\terr := BeeLogger.SetLogger(adaptername, config)\n\tif err != nil {\n\t\treturn err\n\t}\n\treturn nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "4ad45bca21045d7cad96f62e",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "logs/log.go",
+        "start_byte": 2235,
+        "text": "type BeeLogger struct {\n\tlock                sync.Mutex\n\tlevel               int\n\tenableFuncCallDepth bool\n\tloggerFuncCallDepth int\n\tasynchronous        bool\n\tmsgChan             chan *logMsg\n\tsignalChan          chan string\n\twg                  sync.WaitGroup\n\toutputs             []*nameLogger\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "3b90a2d5b63b9a5f1e3aee96",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "logs/log.go",
+        "start_byte": 3494,
+        "text": "func (bl *BeeLogger) SetLogger(adapterName string, config string) error {\n\tbl.lock.Lock()\n\tdefer bl.lock.Unlock()\n\n\tfor _, l := range bl.outputs {\n\t\tif l.name == adapterName {\n\t\t\treturn fmt.Errorf(\"logs: duplicate adaptername %q (you have set this logger before)\", adapterName)\n\t\t}\n\t}\n\n\tlog, ok := adapters[adapterName]\n\tif !ok {\n\t\treturn fmt.Errorf(\"logs: unknown adaptername %q (forgotten Register?)\", adapterName)\n\t}\n\n\tlg := log()\n\terr := lg.Init(config)\n\tif err != nil {\n\t\tfmt.Fprintln(os.Stderr, \"logs.BeeLogger.SetLogger: \"+err.Error())\n\t\treturn err\n\t}\n\tbl.outputs = append(bl.outputs, &nameLogger{name: adapterName, Logger: lg})\n\treturn nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "6aa1112f95406b75ac763acb",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "logs/log.go",
+        "start_byte": 9642,
+        "text": "func (bl *BeeLogger) Reset() {\n\tbl.Flush()\n\tfor _, l := range bl.outputs {\n\t\tl.Destroy()\n\t}\n\tbl.outputs = nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "00f23dd580911e6a15eb5e6b",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "migration/migration.go",
+        "start_byte": 2290,
+        "text": "func (m *Migration) Reset() {\n\tm.sqls = make([]string, 0)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "f41492dd812508b3857f61aa",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "migration/migration.go",
+        "start_byte": 4855,
+        "text": "func Reset() error {\n\tsm := sortMap(migrationMap)\n\ti := 0\n\tfor j := len(sm) - 1; j >= 0; j-- {\n\t\tv := sm[j]\n\t\tif isRollBack(v.name) {\n\t\t\tbeego.Info(\"skip the\", v.name)\n\t\t\ttime.Sleep(1 * time.Second)\n\t\t\tcontinue\n\t\t}\n\t\tbeego.Info(\"start reset:\", v.name)\n\t\tv.m.Reset()\n\t\tv.m.Down()\n\t\terr := v.m.Exec(v.name, \"down\")\n\t\tif err != nil {\n\t\t\tbeego.Error(\"execute error:\", err)\n\t\t\ttime.Sleep(2 * time.Second)\n\t\t\treturn err\n\t\t}\n\t\ti++\n\t\tbeego.Info(\"end reset:\", v.name)\n\t}\n\tbeego.Info(\"total success reset:\", i, \" migration\")\n\ttime.Sleep(2 * time.Second)\n\treturn nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "65cc5f973ccc14199fec813c",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "orm/cmd_utils.go",
+        "start_byte": 6283,
+        "text": "var (\n\t\tv, t, d string\n\t)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "8ed62dcdc32f9e86b13b399e",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "orm/db_alias.go",
+        "start_byte": 781,
+        "text": "const (\n\t_          DriverType = iota // int enum type\n\tDRMySQL                      // mysql\n\tDRSqlite                     // sqlite\n\tDROracle                     // oracle\n\tDRPostgres                   // pgsql\n\tDRTiDB                       // TiDB\n)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "bc1625efc5fce03a78592db3",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "orm/db_alias.go",
+        "start_byte": 1361,
+        "text": "var _ Driver = new(driver)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "2e743b3a75d32fa84e78aa10",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "orm/db_alias.go",
+        "start_byte": 4811,
+        "text": "var (\n\t\terr error\n\t\tdb  *sql.DB\n\t\tal  *alias\n\t)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "515128af51218145289ffd48",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "orm/db_mysql.go",
+        "start_byte": 1895,
+        "text": "var _ dbBaser = new(dbBaseMysql)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "642932d3bfa3533c89d88201",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "orm/db_oracle.go",
+        "start_byte": 1511,
+        "text": "var _ dbBaser = new(dbBaseOracle)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "a47148ad920ecf416fb7cf5c",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "orm/db_postgres.go",
+        "start_byte": 1967,
+        "text": "var _ dbBaser = new(dbBasePostgres)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "1e693440557636defc5cc951",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "orm/db_sqlite.go",
+        "start_byte": 1881,
+        "text": "var _ dbBaser = new(dbBaseSqlite)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "9d1617a480768057bebcacc2",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "orm/db_tidb.go",
+        "start_byte": 713,
+        "text": "var _ dbBaser = new(dbBaseTidb)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "543a336b75e35af45fc02655",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "orm/db_utils.go",
+        "start_byte": 1880,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "0844c5ea80c795452f665a77",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "orm/db.go",
+        "start_byte": 1588,
+        "text": "var _ dbBaser = new(dbBase)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "eb582f157221fae0c60299a4",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "orm/db.go",
+        "start_byte": 7378,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "26bf4dce9243d45892203849",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "orm/db.go",
+        "start_byte": 27337,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "cae432f30746538c36bbfbc3",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "orm/models_boot.go",
+        "start_byte": 2114,
+        "text": "var (\n\t\terr    error\n\t\tmodels map[string]*modelInfo\n\t)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "25318086f8cb94d591bbf3c8",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "orm/models_fields.go",
+        "start_byte": 1635,
+        "text": "func (e *BooleanField) String() string {\n\treturn strconv.FormatBool(e.Value())\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "f22a0305bf8ccaffcb5f80f4",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "orm/models_fields.go",
+        "start_byte": 2325,
+        "text": "var _ Fielder = new(BooleanField)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "efc90d5e677713d8392ea05d",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "orm/models_fields.go",
+        "start_byte": 2748,
+        "text": "func (e *CharField) String() string {\n\treturn e.Value()\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "ca6701341ee26e2127a8b55c",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "orm/models_fields.go",
+        "start_byte": 3288,
+        "text": "var _ Fielder = new(CharField)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "735c98aab83ed5e5b5832a11",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "orm/models_fields.go",
+        "start_byte": 4218,
+        "text": "func (e *DateField) String() string {\n\treturn e.Value().String()\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "ef15fdc6dabd9d15cd8249b1",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "orm/models_fields.go",
+        "start_byte": 4905,
+        "text": "var _ Fielder = new(DateField)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "3b8f478d851fe6150df6b57b",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "orm/models_fields.go",
+        "start_byte": 5370,
+        "text": "func (e *DateTimeField) String() string {\n\treturn e.Value().String()\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "f8bd5e5fc282ba21884542af",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "orm/models_fields.go",
+        "start_byte": 6080,
+        "text": "var _ Fielder = new(DateTimeField)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "4bb1702a835a9bbe0db584c9",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "orm/models_fields.go",
+        "start_byte": 6422,
+        "text": "func (e *FloatField) String() string {\n\treturn ToStr(e.Value(), -1, 32)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "ac423baf2d83a36cf58d80b2",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "orm/models_fields.go",
+        "start_byte": 7132,
+        "text": "var _ Fielder = new(FloatField)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "0b667251cb37ce41140c06fb",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "orm/models_fields.go",
+        "start_byte": 7468,
+        "text": "func (e *SmallIntegerField) String() string {\n\treturn ToStr(e.Value())\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "d60d2876d8aa11e46915c8b8",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "orm/models_fields.go",
+        "start_byte": 8168,
+        "text": "var _ Fielder = new(SmallIntegerField)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "6050c08dc71c6fe01c23c5fa",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "orm/models_fields.go",
+        "start_byte": 8482,
+        "text": "func (e *IntegerField) String() string {\n\treturn ToStr(e.Value())\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "d64e24a35069b3471fe08925",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "orm/models_fields.go",
+        "start_byte": 9137,
+        "text": "var _ Fielder = new(IntegerField)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "387e336589c4ee6afc30fabb",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "orm/models_fields.go",
+        "start_byte": 9493,
+        "text": "func (e *BigIntegerField) String() string {\n\treturn ToStr(e.Value())\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "d1826889868c383e33251642",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "orm/models_fields.go",
+        "start_byte": 10168,
+        "text": "var _ Fielder = new(BigIntegerField)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "fd62b8de5b9343e0315f77de",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "orm/models_fields.go",
+        "start_byte": 10545,
+        "text": "func (e *PositiveSmallIntegerField) String() string {\n\treturn ToStr(e.Value())\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "f6ed6a89b0e145cefa4b6da4",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "orm/models_fields.go",
+        "start_byte": 11305,
+        "text": "var _ Fielder = new(PositiveSmallIntegerField)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "2ae9a6feb974ad3f84afe9a3",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "orm/models_fields.go",
+        "start_byte": 11713,
+        "text": "func (e *PositiveIntegerField) String() string {\n\treturn ToStr(e.Value())\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "6cfd5c06f008bbba8ceee6b8",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "orm/models_fields.go",
+        "start_byte": 12436,
+        "text": "var _ Fielder = new(PositiveIntegerField)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "848a18c2ea65db032adde142",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "orm/models_fields.go",
+        "start_byte": 12838,
+        "text": "func (e *PositiveBigIntegerField) String() string {\n\treturn ToStr(e.Value())\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "896f3ad7b6abbab926371e5a",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "orm/models_fields.go",
+        "start_byte": 13578,
+        "text": "var _ Fielder = new(PositiveBigIntegerField)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "8c03301696872a92e8966a03",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "orm/models_fields.go",
+        "start_byte": 13892,
+        "text": "func (e *TextField) String() string {\n\treturn e.Value()\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "524561b3cf9a67dc3b155f1e",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "orm/models_fields.go",
+        "start_byte": 14431,
+        "text": "var _ Fielder = new(TextField)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "98dcfaee79652a8001b43548",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "orm/models_info_m.go",
+        "start_byte": 1296,
+        "text": "var (\n\t\terr error\n\t\tfi  *fieldInfo\n\t\tsf  reflect.StructField\n\t)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "e4103661f43020f2eb30673c",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "orm/orm_log.go",
+        "start_byte": 725,
+        "text": "type Log struct {\n\t*log.Logger\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "b876a76a6b41a347f83fce60",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "orm/orm_log.go",
+        "start_byte": 1707,
+        "text": "var _ stmtQuerier = new(stmtQueryLog)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "1a77cad244400ec35a66113f",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "orm/orm_log.go",
+        "start_byte": 2835,
+        "text": "var _ dbQuerier = new(dbQueryLog)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "5d01992d183f9df02873b2db",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "orm/orm_log.go",
+        "start_byte": 2869,
+        "text": "var _ txer = new(dbQueryLog)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "acdcff2037064abc17be8578",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "orm/orm_log.go",
+        "start_byte": 2898,
+        "text": "var _ txEnder = new(dbQueryLog)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "b5ed2cae454ee4e363b20344",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "orm/orm_object.go",
+        "start_byte": 776,
+        "text": "var _ Inserter = new(insertSet)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "e1d83228869093b9c907fd5b",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "orm/orm_querym2m.go",
+        "start_byte": 3547,
+        "text": "var _ QueryM2Mer = new(queryM2M)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "5804f22a2184130e48b3d623",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "orm/orm_queryset.go",
+        "start_byte": 1550,
+        "text": "var _ QuerySeter = new(querySet)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "45a1dc0e8d047cd9c914b60c",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "orm/orm_raw.go",
+        "start_byte": 1447,
+        "text": "var _ RawSeter = new(rawSet)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "da2767215e1bf2f101a87f64",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "orm/orm.go",
+        "start_byte": 2392,
+        "text": "var _ Ormer = new(orm)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "8276666b796956146efa21b5",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "orm/orm.go",
+        "start_byte": 7292,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "59157e875f2b8347c3034b6c",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "orm/qb_mysql.go",
+        "start_byte": 4890,
+        "text": "func (qb *MySQLQueryBuilder) String() string {\n\treturn strings.Join(qb.Tokens, \" \")\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "4628597f6b168e6cdffb7cc6",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "orm/qb_tidb.go",
+        "start_byte": 4807,
+        "text": "func (qb *TiDBQueryBuilder) String() string {\n\treturn strings.Join(qb.Tokens, \" \")\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "dbd67b91a7dd5b8a7c39d575",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "orm/utils.go",
+        "start_byte": 2769,
+        "text": "func (f StrTo) String() string {\n\tif f.Exist() {\n\t\treturn string(f)\n\t}\n\treturn \"\"\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "b4693d88db1b4d55fe71be44",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "router.go",
+        "start_byte": 18347,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "ad3c075044ba59c2bb15147d",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "session/ledis/ledis_session.go",
+        "start_byte": 1824,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "e858c940855c92b78359b721",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "session/memcache/sess_memcache.go",
+        "start_byte": 4871,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "3ee26ae7f43ebfb972c4ff3d",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "session/sess_utils.go",
+        "start_byte": 3334,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "fb2cacdcddbf2591e7578c70",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "utils/captcha/siprng.go",
+        "start_byte": 3377,
+        "text": "var k [16]byte",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "23830456bdf5c81ceb96dd19",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "validation/validation.go",
+        "start_byte": 1724,
+        "text": "func (e *Error) String() string {\n\tif e == nil {\n\t\treturn \"\"\n\t}\n\treturn e.Message\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "13acf72abb001f28e311f90c",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "admin.go",
+        "start_byte": 10560,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "899c5f992d029be82a79af49",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "app.go",
+        "start_byte": 1432,
+        "text": "var (\n\t\terr        error\n\t\tl          net.Listener\n\t\tendRunning = make(chan bool, 1)\n\t)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "f1587b844eb8fe8fb72f5f1c",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "cache/redis/redis.go",
+        "start_byte": 2053,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "82f3978fe16f596d5be7cf9f",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "cache/redis/redis.go",
+        "start_byte": 2565,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "a9246c6464166f908b74e3a7",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "cache/redis/redis.go",
+        "start_byte": 2845,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "0219d33c9ad742d2390dc7e4",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "cache/ssdb/ssdb.go",
+        "start_byte": 1717,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "1093c60f2b59a77402568f73",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "cache/ssdb/ssdb.go",
+        "start_byte": 4574,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "199012ec9c644b0b282e7d6c",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "config.go",
+        "start_byte": 1323,
+        "text": "type Listen struct {\n\tGraceful      bool // Graceful means use graceful module to start the server\n\tServerTimeOut int64\n\tListenTCP4    bool\n\tEnableHTTP    bool\n\tHTTPAddr      string\n\tHTTPPort      int\n\tEnableHTTPS   bool\n\tHTTPSAddr     string\n\tHTTPSPort     int\n\tHTTPSCertFile string\n\tHTTPSKeyFile  string\n\tEnableAdmin   bool\n\tAdminAddr     string\n\tAdminPort     int\n\tEnableFcgi    bool\n\tEnableStdIo   bool // EnableStdIo works with EnableFcgi Use FCGI via standard I/O\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "04ed6f40937b952620bb009d",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "config.go",
+        "start_byte": 1834,
+        "text": "type WebConfig struct {\n\tAutoRender             bool\n\tEnableDocs             bool\n\tFlashName              string\n\tFlashSeparator         string\n\tDirectoryIndex         bool\n\tStaticDir              map[string]string\n\tStaticExtensionsToGzip []string\n\tTemplateLeft           string\n\tTemplateRight          string\n\tViewsPath              string\n\tEnableXSRF             bool\n\tXSRFKey                string\n\tXSRFExpire             int\n\tSession                SessionConfig\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "0e4918ca61a9d1d217272022",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "config.go",
+        "start_byte": 2986,
+        "text": "var (\n\t// BConfig is the default config for Application\n\tBConfig *Config\n\t// AppConfig is the instance of Config, store the config information from file\n\tAppConfig *beegoAppConfig\n\t// AppPath is the absolute path to the app\n\tAppPath string\n\t// GlobalSessions is the instance for the session manager\n\tGlobalSessions *session.Manager\n\n\t// appConfigPath is the path to the config files\n\tappConfigPath string\n\t// appConfigProvider is the provider for the config, default is ini\n\tappConfigProvider = \"ini\"\n)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "2f40e7cc7c01b52802b8efe4",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "config.go",
+        "start_byte": 3529,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "829301c3603ff2d2706efe62",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "config.go",
+        "start_byte": 8128,
+        "text": "func assignSingleConfig(p interface{}, ac config.Configer) {\n\tpt := reflect.TypeOf(p)\n\tif pt.Kind() != reflect.Ptr {\n\t\treturn\n\t}\n\tpt = pt.Elem()\n\tif pt.Kind() != reflect.Struct {\n\t\treturn\n\t}\n\tpv := reflect.ValueOf(p).Elem()\n\n\tfor i := 0; i < pt.NumField(); i++ {\n\t\tpf := pv.Field(i)\n\t\tif !pf.CanSet() {\n\t\t\tcontinue\n\t\t}\n\t\tname := pt.Field(i).Name\n\t\tswitch pf.Kind() {\n\t\tcase reflect.String:\n\t\t\tpf.SetString(ac.DefaultString(name, pf.String()))\n\t\tcase reflect.Int, reflect.Int64:\n\t\t\tpf.SetInt(int64(ac.DefaultInt64(name, pf.Int())))\n\t\tcase reflect.Bool:\n\t\t\tpf.SetBool(ac.DefaultBool(name, pf.Bool()))\n\t\tcase reflect.Struct:\n\t\tdefault:\n\t\t\t//do nothing here\n\t\t}\n\t}\n\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "7baefcd2d66afadacefe2727",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "config.go",
+        "start_byte": 9677,
+        "text": "func (b *beegoAppConfig) String(key string) string {\n\tif v := b.innerConfig.String(BConfig.RunMode + \"::\" + key); v != \"\" {\n\t\treturn v\n\t}\n\treturn b.innerConfig.String(key)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "06d1904f75aa706accd10ecd",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "config/config.go",
+        "start_byte": 1733,
+        "text": "type Configer interface {\n\tSet(key, val string) error   //support section::key type in given key when using ini type.\n\tString(key string) string    //support section::key type in key string when using ini and json type; Int,Int64,Bool,Float,DIY are same.\n\tStrings(key string) []string //get string slice\n\tInt(key string) (int, error)\n\tInt64(key string) (int64, error)\n\tBool(key string) (bool, error)\n\tFloat(key string) (float64, error)\n\tDefaultString(key string, defaultVal string) string      // support section::key type in key string when using ini and json type; Int,Int64,Bool,Float,DIY are same.\n\tDefaultStrings(key string, defaultVal []string) []string //get string slice\n\tDefaultInt(key string, defaultVal int) int\n\tDefaultInt64(key string, defaultVal int64) int64\n\tDefaultBool(key string, defaultVal bool) bool\n\tDefaultFloat(key string, defaultVal float64) float64\n\tDIY(key string) (interface{}, error)\n\tGetSection(section string) (map[string]string, error)\n\tSaveConfigFile(filename string) error\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "0a65631fa52122fe9fd3a040",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "config/fake.go",
+        "start_byte": 943,
+        "text": "func (c *fakeConfigContainer) String(key string) string {\n\treturn c.getData(key)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "d4a29f537aceb102f569ff06",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "config/fake.go",
+        "start_byte": 3017,
+        "text": "var _ Configer = new(fakeConfigContainer)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "ebf989c746220bb04f7de948",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "config/ini.go",
+        "start_byte": 7104,
+        "text": "func (c *IniConfigContainer) String(key string) string {\n\treturn c.getdata(key)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "b4798fde3acb8907c9434aea",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "config/json.go",
+        "start_byte": 4015,
+        "text": "func (c *JSONConfigContainer) String(key string) string {\n\tval := c.getData(key)\n\tif val != nil {\n\t\tif v, ok := val.(string); ok {\n\t\t\treturn v\n\t\t}\n\t}\n\treturn \"\"\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "2c0209771fa04513011fc6cd",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "config/xml/xml.go",
+        "start_byte": 4147,
+        "text": "func (c *ConfigContainer) String(key string) string {\n\tif v, ok := c.data[key].(string); ok {\n\t\treturn v\n\t}\n\treturn \"\"\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "f009ae8ce549a4a5d5dfd852",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "config/yaml/yaml.go",
+        "start_byte": 5154,
+        "text": "func (c *ConfigContainer) String(key string) string {\n\tif v, err := c.getData(key); err == nil {\n\t\tif vv, ok := v.(string); ok {\n\t\t\treturn vv\n\t\t}\n\t}\n\treturn \"\"\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "af90b770b68fc17866e20651",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "context/acceptencoder.go",
+        "start_byte": 1815,
+        "text": "func (n nopResetWriter) Reset(w io.Writer) {\n\t//do nothing\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "67ea0de576e3223f94de7c80",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "context/acceptencoder.go",
+        "start_byte": 5368,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "569ceb2e5ffc9b2a19dc0b69",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "context/context.go",
+        "start_byte": 1589,
+        "text": "func (ctx *Context) Reset(rw http.ResponseWriter, r *http.Request) {\n\tctx.Request = r\n\tif ctx.ResponseWriter == nil {\n\t\tctx.ResponseWriter = &Response{}\n\t}\n\tctx.ResponseWriter.reset(rw)\n\tctx.Input.Reset(ctx)\n\tctx.Output.Reset(ctx)\n\tctx._xsrfToken = \"\"\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "e19662cf1ed560599212d107",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "context/input.go",
+        "start_byte": 1765,
+        "text": "func (input *BeegoInput) Reset(ctx *Context) {\n\tinput.Context = ctx\n\tinput.CruSession = nil\n\tinput.pnames = input.pnames[:0]\n\tinput.pvalues = input.pvalues[:0]\n\tinput.data = nil\n\tinput.RequestBody = []byte{}\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "3175d11507edde33653a3d27",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "context/input.go",
+        "start_byte": 8838,
+        "text": "func (input *BeegoInput) Session(key interface{}) interface{} {\n\treturn input.CruSession.Get(key)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "96eb57c15781f8b6f8d1fbd2",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "context/output.go",
+        "start_byte": 1095,
+        "text": "func (output *BeegoOutput) Reset(ctx *Context) {\n\toutput.Context = ctx\n\toutput.Status = 0\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "fcbc6ac9d45536753090d8b6",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "context/output.go",
+        "start_byte": 4454,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "ebf685efa1299f724cbb9cc1",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "context/output.go",
+        "start_byte": 5014,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "6acc23572dbc4ac18979e8fd",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "context/output.go",
+        "start_byte": 5834,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "ec421fb663838c6c5132342d",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "context/output.go",
+        "start_byte": 9602,
+        "text": "func (output *BeegoOutput) Session(name interface{}, value interface{}) {\n\toutput.Context.Input.CruSession.Set(name, value)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "db5ec9b6630f27303f3411d8",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "flash.go",
+        "start_byte": 1820,
+        "text": "func (fd *FlashData) Error(msg string, args ...interface{}) {\n\tif len(args) == 0 {\n\t\tfd.Data[\"error\"] = msg\n\t} else {\n\t\tfd.Data[\"error\"] = fmt.Sprintf(msg, args...)\n\t}\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "abdf809fdd17a421e8de8eff",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "hooks.go",
+        "start_byte": 888,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "dffe0937000d60206463a1c6",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "httplib/httplib.go",
+        "start_byte": 11714,
+        "text": "func (b *BeegoHTTPRequest) String() (string, error) {\n\tdata, err := b.Bytes()\n\tif err != nil {\n\t\treturn \"\", err\n\t}\n\n\treturn string(data), nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "a1fab438bcf7cbbe1ec2e2e1",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "log.go",
+        "start_byte": 1111,
+        "text": "func SetLogFuncCall(b bool) {\n\tlogs.SetLogFuncCall(b)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "25794f0fb107614f9a2b1c60",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "log.go",
+        "start_byte": 1200,
+        "text": "func SetLogger(adaptername string, config string) error {\n\treturn logs.SetLogger(adaptername, config)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "8b86275ddcaf78e1a7f13e50",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "log.go",
+        "start_byte": 1721,
+        "text": "func Error(v ...interface{}) {\n\tlogs.Error(generateFmtStr(len(v)), v...)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "ec250379d5193c2bd4e0d9db",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "logs/log.go",
+        "start_byte": 5121,
+        "text": "func (bl *BeeLogger) SetLogger(adapterName string, configs ...string) error {\n\tbl.lock.Lock()\n\tdefer bl.lock.Unlock()\n\tif !bl.init {\n\t\tbl.outputs = []*nameLogger{}\n\t\tbl.init = true\n\t}\n\treturn bl.setLogger(adapterName, configs...)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "8a4dfcbee60198170953296d",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "logs/log.go",
+        "start_byte": 9086,
+        "text": "func (bl *BeeLogger) Error(format string, v ...interface{}) {\n\tif LevelError > bl.level {\n\t\treturn\n\t}\n\tbl.writeMsg(LevelError, format, v...)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "9b30b00b0566712cbe1e63fb",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "logs/log.go",
+        "start_byte": 10989,
+        "text": "func (bl *BeeLogger) Reset() {\n\tbl.Flush()\n\tfor _, l := range bl.outputs {\n\t\tl.Destroy()\n\t}\n\tbl.outputs = nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "da42ded6262006e243aea000",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "logs/log.go",
+        "start_byte": 12222,
+        "text": "func Reset() {\n\tbeeLogger.Reset()\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "e3f366f7bcf28a9117461df8",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "logs/log.go",
+        "start_byte": 12623,
+        "text": "func SetLogFuncCall(b bool) {\n\tbeeLogger.EnableFuncCallDepth(b)\n\tbeeLogger.SetLogFuncCallDepth(3)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "854af422ee8116368c7c68c3",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "logs/log.go",
+        "start_byte": 12873,
+        "text": "func SetLogger(adapter string, config ...string) error {\n\terr := beeLogger.SetLogger(adapter, config...)\n\tif err != nil {\n\t\treturn err\n\t}\n\treturn nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "fdfb338fb492c3dbdaddfa20",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "logs/log.go",
+        "start_byte": 13472,
+        "text": "func Error(f interface{}, v ...interface{}) {\n\tbeeLogger.Error(formatLog(f, v...))\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "c58343c2a7fe253241713291",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "migration/migration.go",
+        "start_byte": 2295,
+        "text": "func (m *Migration) Reset() {\n\tm.sqls = make([]string, 0)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "3a5578d548fbac556517b6d5",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "migration/migration.go",
+        "start_byte": 4851,
+        "text": "func Reset() error {\n\tsm := sortMap(migrationMap)\n\ti := 0\n\tfor j := len(sm) - 1; j >= 0; j-- {\n\t\tv := sm[j]\n\t\tif isRollBack(v.name) {\n\t\t\tlogs.Info(\"skip the\", v.name)\n\t\t\ttime.Sleep(1 * time.Second)\n\t\t\tcontinue\n\t\t}\n\t\tlogs.Info(\"start reset:\", v.name)\n\t\tv.m.Reset()\n\t\tv.m.Down()\n\t\terr := v.m.Exec(v.name, \"down\")\n\t\tif err != nil {\n\t\t\tlogs.Error(\"execute error:\", err)\n\t\t\ttime.Sleep(2 * time.Second)\n\t\t\treturn err\n\t\t}\n\t\ti++\n\t\tlogs.Info(\"end reset:\", v.name)\n\t}\n\tlogs.Info(\"total success reset:\", i, \" migration\")\n\ttime.Sleep(2 * time.Second)\n\treturn nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "3b7c9945f99fd7afb43e0bfa",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "orm/cmd_utils.go",
+        "start_byte": 6667,
+        "text": "var (\n\t\tv, t, d string\n\t)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "b7e77e68d068c645613694a4",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "orm/db_alias.go",
+        "start_byte": 781,
+        "text": "const (\n\t_          DriverType = iota // int enum type\n\tDRMySQL                      // mysql\n\tDRSqlite                     // sqlite\n\tDROracle                     // oracle\n\tDRPostgres                   // pgsql\n\tDRTiDB                       // TiDB\n)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "8030e11a6fd40d101e8ca43e",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "orm/db_alias.go",
+        "start_byte": 1361,
+        "text": "var _ Driver = new(driver)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "05953483e3fdcc0ec972f9c9",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "orm/db_alias.go",
+        "start_byte": 4811,
+        "text": "var (\n\t\terr error\n\t\tdb  *sql.DB\n\t\tal  *alias\n\t)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "45a8d31e7e635fdc8722b0d2",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "orm/db_mysql.go",
+        "start_byte": 1895,
+        "text": "var _ dbBaser = new(dbBaseMysql)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "6a1925c50afdec697484262d",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "orm/db_oracle.go",
+        "start_byte": 1511,
+        "text": "var _ dbBaser = new(dbBaseOracle)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "60de6d891ea8dd9bbbd2f57f",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "orm/db_postgres.go",
+        "start_byte": 2024,
+        "text": "var _ dbBaser = new(dbBasePostgres)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "fe0876ca681ba2f495adaf65",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "orm/db_sqlite.go",
+        "start_byte": 1881,
+        "text": "var _ dbBaser = new(dbBaseSqlite)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "e1727d972d6bf9ecbb604aa6",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "orm/db_tidb.go",
+        "start_byte": 713,
+        "text": "var _ dbBaser = new(dbBaseTidb)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "6df1707f43764ef6c1ea42fe",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "orm/db_utils.go",
+        "start_byte": 1912,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "e959cd6f49621a9466e61666",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "orm/db.go",
+        "start_byte": 1617,
+        "text": "var _ dbBaser = new(dbBase)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "142784d8de413963735ecdbe",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "orm/db.go",
+        "start_byte": 8134,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "80438ab568b8dceba75a64e2",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "orm/db.go",
+        "start_byte": 11083,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "3a94dfa1d297c4a17f55aa3b",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "orm/db.go",
+        "start_byte": 28667,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "6d4128b1d0d6938eff7f9975",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "orm/models_boot.go",
+        "start_byte": 2143,
+        "text": "var (\n\t\terr    error\n\t\tmodels map[string]*modelInfo\n\t)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "674a7ada00831d11b0fcdb04",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "orm/models_fields.go",
+        "start_byte": 1686,
+        "text": "func (e *BooleanField) String() string {\n\treturn strconv.FormatBool(e.Value())\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "9920e63c5665d41065990111",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "orm/models_fields.go",
+        "start_byte": 2376,
+        "text": "var _ Fielder = new(BooleanField)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "710070c955bbafc793a4f75e",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "orm/models_fields.go",
+        "start_byte": 2799,
+        "text": "func (e *CharField) String() string {\n\treturn e.Value()\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "e443d8b010b38a4645a3f4dc",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "orm/models_fields.go",
+        "start_byte": 3339,
+        "text": "var _ Fielder = new(CharField)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "eba5055603f1abb9a7677b82",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "orm/models_fields.go",
+        "start_byte": 4263,
+        "text": "func (e *TimeField) String() string {\n\treturn e.Value().String()\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "b777e40b2f9133315889d530",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "orm/models_fields.go",
+        "start_byte": 4902,
+        "text": "var _ Fielder = new(TimeField)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "ab486daea0c8c0cf82fc2367",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "orm/models_fields.go",
+        "start_byte": 5832,
+        "text": "func (e *DateField) String() string {\n\treturn e.Value().String()\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "a124725f730018899651f222",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "orm/models_fields.go",
+        "start_byte": 6519,
+        "text": "var _ Fielder = new(DateField)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "fa4779aa072973bd17c9f7f1",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "orm/models_fields.go",
+        "start_byte": 6984,
+        "text": "func (e *DateTimeField) String() string {\n\treturn e.Value().String()\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "ae521ae3c28e19c75c6bc466",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "orm/models_fields.go",
+        "start_byte": 7694,
+        "text": "var _ Fielder = new(DateTimeField)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "03d6ffe2719da8432cb51aa5",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "orm/models_fields.go",
+        "start_byte": 8036,
+        "text": "func (e *FloatField) String() string {\n\treturn ToStr(e.Value(), -1, 32)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "83f2c042f320d11627d9a54c",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "orm/models_fields.go",
+        "start_byte": 8746,
+        "text": "var _ Fielder = new(FloatField)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "e0a0a3ecde0578b5dd9dbd3f",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "orm/models_fields.go",
+        "start_byte": 9082,
+        "text": "func (e *SmallIntegerField) String() string {\n\treturn ToStr(e.Value())\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "feefc15f9166cc716134b20d",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "orm/models_fields.go",
+        "start_byte": 9782,
+        "text": "var _ Fielder = new(SmallIntegerField)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "e127931bcfe0f53137d0cea5",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "orm/models_fields.go",
+        "start_byte": 10096,
+        "text": "func (e *IntegerField) String() string {\n\treturn ToStr(e.Value())\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "3b5b28b4c57d6507ee11be1f",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "orm/models_fields.go",
+        "start_byte": 10751,
+        "text": "var _ Fielder = new(IntegerField)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "982cb8f19d36ea15b95206a3",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "orm/models_fields.go",
+        "start_byte": 11107,
+        "text": "func (e *BigIntegerField) String() string {\n\treturn ToStr(e.Value())\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "aa7e9d71326f21e0914aa62a",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "orm/models_fields.go",
+        "start_byte": 11782,
+        "text": "var _ Fielder = new(BigIntegerField)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "9b407acd283fe64d05ac804e",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "orm/models_fields.go",
+        "start_byte": 12159,
+        "text": "func (e *PositiveSmallIntegerField) String() string {\n\treturn ToStr(e.Value())\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "1883b796f5723521d219c58f",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "orm/models_fields.go",
+        "start_byte": 12919,
+        "text": "var _ Fielder = new(PositiveSmallIntegerField)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "9d0a071d968ba9d2faff1d91",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "orm/models_fields.go",
+        "start_byte": 13327,
+        "text": "func (e *PositiveIntegerField) String() string {\n\treturn ToStr(e.Value())\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "1915ee523cb77b37b1a26f2a",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "orm/models_fields.go",
+        "start_byte": 14050,
+        "text": "var _ Fielder = new(PositiveIntegerField)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "1e613cf31eb2fc1a7d245f02",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "orm/models_fields.go",
+        "start_byte": 14452,
+        "text": "func (e *PositiveBigIntegerField) String() string {\n\treturn ToStr(e.Value())\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "9fe8533e364d95af231303ab",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "orm/models_fields.go",
+        "start_byte": 15192,
+        "text": "var _ Fielder = new(PositiveBigIntegerField)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "d10b28d3a9322e72bba06bad",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "orm/models_fields.go",
+        "start_byte": 15506,
+        "text": "func (e *TextField) String() string {\n\treturn e.Value()\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "19a2911137c2229a3b814d12",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "orm/models_fields.go",
+        "start_byte": 16045,
+        "text": "var _ Fielder = new(TextField)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "d4a6f05878e8609fed4566de",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "orm/models_fields.go",
+        "start_byte": 16346,
+        "text": "func (j *JSONField) String() string {\n\treturn j.Value()\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "744b6b57dc82c1ca11a21036",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "orm/models_fields.go",
+        "start_byte": 16885,
+        "text": "var _ Fielder = new(JSONField)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "2fbb5e483e76317b842c42a2",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "orm/models_fields.go",
+        "start_byte": 17194,
+        "text": "func (j *JsonbField) String() string {\n\treturn j.Value()\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "c2bcde7e4875e03134907341",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "orm/models_fields.go",
+        "start_byte": 17741,
+        "text": "var _ Fielder = new(JsonbField)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "e250c3311a012bf21072655e",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "orm/models_info_m.go",
+        "start_byte": 1296,
+        "text": "var (\n\t\terr error\n\t\tfi  *fieldInfo\n\t\tsf  reflect.StructField\n\t)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "3f25a8cbd63470cc148abeed",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "orm/orm_log.go",
+        "start_byte": 725,
+        "text": "type Log struct {\n\t*log.Logger\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "849e962b81ab4ff5bbb5bd41",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "orm/orm_log.go",
+        "start_byte": 1717,
+        "text": "var _ stmtQuerier = new(stmtQueryLog)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "fd1d681a8de23e1d82e6b73a",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "orm/orm_log.go",
+        "start_byte": 2845,
+        "text": "var _ dbQuerier = new(dbQueryLog)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "ac2df4520abd64c98f7128fa",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "orm/orm_log.go",
+        "start_byte": 2879,
+        "text": "var _ txer = new(dbQueryLog)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "080d88dffbbfef9c6beb134e",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "orm/orm_log.go",
+        "start_byte": 2908,
+        "text": "var _ txEnder = new(dbQueryLog)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "85f2d6620990771cb2dceac2",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "orm/orm_object.go",
+        "start_byte": 776,
+        "text": "var _ Inserter = new(insertSet)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "f50797a075f556aeba5e15f1",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "orm/orm_querym2m.go",
+        "start_byte": 3547,
+        "text": "var _ QueryM2Mer = new(queryM2M)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "7075a718122bbc502abe45ee",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "orm/orm_queryset.go",
+        "start_byte": 1550,
+        "text": "var _ QuerySeter = new(querySet)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "35e69da19886630968888ce5",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "orm/orm_raw.go",
+        "start_byte": 1447,
+        "text": "var _ RawSeter = new(rawSet)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "03f425fbb18f1320b6295541",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "orm/orm.go",
+        "start_byte": 2392,
+        "text": "var _ Ormer = new(orm)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "6d99c782fbf9a6fc5403305c",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "orm/orm.go",
+        "start_byte": 7442,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "c8a97accdc6d162c76b7ea92",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "orm/qb_mysql.go",
+        "start_byte": 4890,
+        "text": "func (qb *MySQLQueryBuilder) String() string {\n\treturn strings.Join(qb.Tokens, \" \")\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "390bcac3eb64e91044688b9b",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "orm/qb_tidb.go",
+        "start_byte": 4807,
+        "text": "func (qb *TiDBQueryBuilder) String() string {\n\treturn strings.Join(qb.Tokens, \" \")\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "5cbf4b1ca2bf3919bfdca8fb",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "orm/utils.go",
+        "start_byte": 2769,
+        "text": "func (f StrTo) String() string {\n\tif f.Exist() {\n\t\treturn string(f)\n\t}\n\treturn \"\"\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "9af3f4f940331a1e303244f9",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "router.go",
+        "start_byte": 15985,
+        "text": "var i int",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "0c235e7db13722b0cea5bc29",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "router.go",
+        "start_byte": 18413,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "160a1ee6b95ea4961a36328b",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "session/ledis/ledis_session.go",
+        "start_byte": 1824,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "0b58c5965d3e12694eef60f3",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "session/memcache/sess_memcache.go",
+        "start_byte": 4871,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "4373248c9dca7fba89cad44b",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "session/sess_utils.go",
+        "start_byte": 3334,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "961b5ae1124ce12ede91bf08",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "session/session.go",
+        "start_byte": 10445,
+        "text": "type Log struct {\n\t*log.Logger\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "23f675118b31d3e02ffa5b3b",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "session/ssdb/sess_ssdb.go",
+        "start_byte": 340,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "6d5a4376d0c11d7c264070a9",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "validation/validation.go",
+        "start_byte": 1540,
+        "text": "type Error struct {\n\tMessage, Key, Name, Field, Tmpl string\n\tValue                           interface{}\n\tLimitValue                      interface{}\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "d0241d71ad3ccbcfa1e4cbce",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "validation/validation.go",
+        "start_byte": 1724,
+        "text": "func (e *Error) String() string {\n\tif e == nil {\n\t\treturn \"\"\n\t}\n\treturn e.Message\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "02c2fded19dc91d65b84e0b9",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "validation/validation.go",
+        "start_byte": 1860,
+        "text": "func (e *Error) Error() string { return e.String() }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "f8df0e3e1043aabab4a8b44c",
+        "revision": "d11823548b3dc0f947951cfdf0e729a4e0c1b13f",
+        "path": "validation/validation.go",
+        "start_byte": 3219,
+        "text": "func (v *Validation) Error(message string, args ...interface{}) *Result {\n\tresult := (&Result{\n\t\tOk:    false,\n\t\tError: &Error{},\n\t}).Message(message, args...)\n\tv.Errors = append(v.Errors, result.Error)\n\treturn result\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "d2461938081ae8e643cff6c6",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "admin.go",
+        "start_byte": 1433,
+        "text": "var FilterMonitorFunc func(string, string, time.Duration) bool",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "2f671d403aae7a0f526a194f",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "admin.go",
+        "start_byte": 1497,
+        "text": "func init() {\n\tbeeAdminApp = &adminApp{\n\t\trouters: make(map[string]http.HandlerFunc),\n\t}\n\tbeeAdminApp.Route(\"/\", adminIndex)\n\tbeeAdminApp.Route(\"/qps\", qpsIndex)\n\tbeeAdminApp.Route(\"/prof\", profIndex)\n\tbeeAdminApp.Route(\"/healthcheck\", healthcheck)\n\tbeeAdminApp.Route(\"/task\", taskStatus)\n\tbeeAdminApp.Route(\"/listconf\", listConf)\n\tFilterMonitorFunc = func(string, string, time.Duration) bool { return true }\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "dadd8c528b906f91a3a2bbcc",
+        "revision": "33ef34b95d90f4d9953ba410bf768eb1af8c3f8e",
+        "path": "admin.go",
+        "start_byte": 2654,
+        "text": "func listConf(rw http.ResponseWriter, r *http.Request) {\n\tr.ParseForm()\n\tcommand := r.Form.Get(\"command\")\n\tif command == \"\" {\n\t\trw.Write([]byte(\"command not support\"))\n\t\treturn\n\t}\n\n\tdata := make(map[interface{}]interface{})\n\tswitch command {\n\tcase \"conf\":\n\t\tm := make(map[string]interface{})\n\t\tm[\"AppConfigPath\"] = appConfigPath\n\t\tm[\"AppConfigProvider\"] = appConfigProvider\n\t\tm[\"BConfig.AppName\"] = BConfig.AppName\n\t\tm[\"BConfig.RunMode\"] = BConfig.RunMode\n\t\tm[\"BConfig.RouterCaseSensitive\"] = BConfig.RouterCaseSensitive\n\t\tm[\"BConfig.ServerName\"] = BConfig.ServerName\n\t\tm[\"BConfig.RecoverPanic\"] = BConfig.RecoverPanic\n\t\tm[\"BConfig.CopyRequestBody\"] = BConfig.CopyRequestBody\n\t\tm[\"BConfig.EnableGzip\"] = BConfig.EnableGzip\n\t\tm[\"BConfig.MaxMemory\"] = BConfig.MaxMemory\n\t\tm[\"BConfig.EnableErrorsShow\"] = BConfig.EnableErrorsShow\n\t\tm[\"BConfig.Listen.Graceful\"] = BConfig.Listen.Graceful\n\t\tm[\"BConfig.Listen.ServerTimeOut\"] = BConfig.Listen.ServerTimeOut\n\t\tm[\"BConfig.Listen.ListenTCP4\"] = BConfig.Listen.ListenTCP4\n\t\tm[\"BConfig.Listen.EnableHTTP\"] = BConfig.Listen.EnableHTTP\n\t\tm[\"BConfig.Listen.HTTPAddr\"] = BConfig.Listen.HTTPAddr\n\t\tm[\"BConfig.Listen.HTTPPort\"] = BConfig.Listen.HTTPPort\n\t\tm[\"BConfig.Listen.EnableHTTPS\"] = BConfig.Listen.EnableHTTPS\n\t\tm[\"BConfig.Listen.HTTPSAddr\"] = BConfig.Listen.HTTPSAddr\n\t\tm[\"BConfig.Listen.HTTPSPort\"] = BConfig.Listen.HTTPSPort\n\t\tm[\"BConfig.Listen.HTTPSCertFile\"] = BConfig.Listen.HTTPSCertFile\n\t\tm[\"BConfig.Listen.HTTPSKeyFile\"] = BConfig.Listen.HTTPSKeyFile\n\t\tm[\"BConfig.Listen.EnableAdmin\"] = BConfig.Listen.EnableAdmin\n\t\tm[\"BConfig.Listen.AdminAddr\"] = BConfig.Listen.AdminAddr\n\t\tm[\"BConfig.Listen.AdminPort\"] = BConfig.Listen.AdminPort\n\t\tm[\"BConfig.Listen.EnableFcgi\"] = BConfig.Listen.En",
+        "rank": 2,
+        "truncated": true
+      }
+    ]
+  },
+  "retrieval": {
+    "unresolved": [
+      {
+        "side": "ours",
+        "identifier": "parseConfig",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "appConfigPath",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "string",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "err",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "admin.go",
+            "start": 13270
+          },
+          {
+            "path": "app.go",
+            "start": 1399
+          },
+          {
+            "path": "cache/redis/redis.go",
+            "start": 2053
+          },
+          {
+            "path": "cache/redis/redis.go",
+            "start": 2565
+          },
+          {
+            "path": "cache/redis/redis.go",
+            "start": 2845
+          },
+          {
+            "path": "cache/ssdb/ssdb.go",
+            "start": 1717
+          },
+          {
+            "path": "cache/ssdb/ssdb.go",
+            "start": 4574
+          },
+          {
+            "path": "context/acceptencoder.go",
+            "start": 3965
+          },
+          {
+            "path": "context/output.go",
+            "start": 4381
+          },
+          {
+            "path": "context/output.go",
+            "start": 4941
+          },
+          {
+            "path": "context/output.go",
+            "start": 5761
+          },
+          {
+            "path": "hooks.go",
+            "start": 819
+          },
+          {
+            "path": "orm/db.go",
+            "start": 7378
+          },
+          {
+            "path": "orm/db.go",
+            "start": 27337
+          },
+          {
+            "path": "orm/db_alias.go",
+            "start": 4811
+          },
+          {
+            "path": "orm/db_utils.go",
+            "start": 1880
+          },
+          {
+            "path": "orm/models_boot.go",
+            "start": 2114
+          },
+          {
+            "path": "orm/models_info_m.go",
+            "start": 1296
+          },
+          {
+            "path": "orm/orm.go",
+            "start": 7292
+          },
+          {
+            "path": "router.go",
+            "start": 18347
+          },
+          {
+            "path": "session/ledis/ledis_session.go",
+            "start": 1824
+          },
+          {
+            "path": "session/memcache/sess_memcache.go",
+            "start": 4871
+          },
+          {
+            "path": "session/sess_utils.go",
+            "start": 3334
+          }
+        ]
+      },
+      {
+        "side": "ours",
+        "identifier": "error",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "AppConfig",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "appConfigProvider",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "envRunMode",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "os",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Getenv",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "RunMode",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "runMode",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "String",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "config.go",
+            "start": 12612
+          },
+          {
+            "path": "config/fake.go",
+            "start": 943
+          },
+          {
+            "path": "config/ini.go",
+            "start": 6957
+          },
+          {
+            "path": "config/json.go",
+            "start": 3974
+          },
+          {
+            "path": "config/xml/xml.go",
+            "start": 4109
+          },
+          {
+            "path": "config/yaml/yaml.go",
+            "start": 4781
+          },
+          {
+            "path": "httplib/httplib.go",
+            "start": 11714
+          },
+          {
+            "path": "orm/models_fields.go",
+            "start": 1635
+          },
+          {
+            "path": "orm/models_fields.go",
+            "start": 2748
+          },
+          {
+            "path": "orm/models_fields.go",
+            "start": 4218
+          },
+          {
+            "path": "orm/models_fields.go",
+            "start": 5370
+          },
+          {
+            "path": "orm/models_fields.go",
+            "start": 6422
+          },
+          {
+            "path": "orm/models_fields.go",
+            "start": 7468
+          },
+          {
+            "path": "orm/models_fields.go",
+            "start": 8482
+          },
+          {
+            "path": "orm/models_fields.go",
+            "start": 9493
+          },
+          {
+            "path": "orm/models_fields.go",
+            "start": 10545
+          },
+          {
+            "path": "orm/models_fields.go",
+            "start": 11713
+          },
+          {
+            "path": "orm/models_fields.go",
+            "start": 12838
+          },
+          {
+            "path": "orm/models_fields.go",
+            "start": 13892
+          },
+          {
+            "path": "orm/qb_mysql.go",
+            "start": 4890
+          },
+          {
+            "path": "orm/qb_tidb.go",
+            "start": 4807
+          },
+          {
+            "path": "orm/utils.go",
+            "start": 2769
+          },
+          {
+            "path": "validation/validation.go",
+            "start": 1724
+          }
+        ]
+      },
+      {
+        "side": "ours",
+        "identifier": "AppName",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "DefaultString",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "config.go",
+            "start": 13732
+          },
+          {
+            "path": "config/fake.go",
+            "start": 1027
+          },
+          {
+            "path": "config/ini.go",
+            "start": 7133
+          },
+          {
+            "path": "config/json.go",
+            "start": 4231
+          },
+          {
+            "path": "config/xml/xml.go",
+            "start": 4324
+          },
+          {
+            "path": "config/yaml/yaml.go",
+            "start": 4996
+          }
+        ]
+      },
+      {
+        "side": "ours",
+        "identifier": "RecoverPanic",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "DefaultBool",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "config.go",
+            "start": 14338
+          },
+          {
+            "path": "config/fake.go",
+            "start": 2114
+          },
+          {
+            "path": "config/ini.go",
+            "start": 5528
+          },
+          {
+            "path": "config/json.go",
+            "start": 2097
+          },
+          {
+            "path": "config/xml/xml.go",
+            "start": 2682
+          },
+          {
+            "path": "config/yaml/yaml.go",
+            "start": 3201
+          }
+        ]
+      },
+      {
+        "side": "ours",
+        "identifier": "RouterCaseSensitive",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "ServerName",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "EnableGzip",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "EnableErrorsShow",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "CopyRequestBody",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "MaxMemory",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "DefaultInt64",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "config.go",
+            "start": 14185
+          },
+          {
+            "path": "config/fake.go",
+            "start": 1856
+          },
+          {
+            "path": "config/ini.go",
+            "start": 6328
+          },
+          {
+            "path": "config/json.go",
+            "start": 3197
+          },
+          {
+            "path": "config/xml/xml.go",
+            "start": 3482
+          },
+          {
+            "path": "config/yaml/yaml.go",
+            "start": 4103
+          }
+        ]
+      },
+      {
+        "side": "ours",
+        "identifier": "Graceful",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "HTTPAddr",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "HTTPPort",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "DefaultInt",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "config.go",
+            "start": 14040
+          },
+          {
+            "path": "config/fake.go",
+            "start": 1589
+          },
+          {
+            "path": "config/ini.go",
+            "start": 5922
+          },
+          {
+            "path": "config/json.go",
+            "start": 2645
+          },
+          {
+            "path": "config/xml/xml.go",
+            "start": 3076
+          },
+          {
+            "path": "config/yaml/yaml.go",
+            "start": 3654
+          }
+        ]
+      },
+      {
+        "side": "ours",
+        "identifier": "ListenTCP4",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "EnableHTTP",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "EnableHTTPS",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "HTTPSAddr",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "HTTPSPort",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "HTTPSCertFile",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "HTTPSKeyFile",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "EnableAdmin",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "AdminAddr",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "AdminPort",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "EnableFcgi",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "EnableStdIo",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "ServerTimeOut",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "AutoRender",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "ViewsPath",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "DirectoryIndex",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "FlashName",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "FlashSeparator",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "EnableDocs",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "XSRFKey",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "EnableXSRF",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "XSRFExpire",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "TemplateLeft",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "TemplateRight",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Session",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "context/input.go",
+            "start": 8755
+          },
+          {
+            "path": "context/output.go",
+            "start": 9433
+          }
+        ]
+      },
+      {
+        "side": "ours",
+        "identifier": "SessionOn",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "SessionProvider",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "SessionName",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "SessionProviderConfig",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "SessionGCMaxLifetime",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "SessionCookieLifeTime",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "SessionAutoSetCookie",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "SessionDomain",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "AccessLogs",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "FileLineNum",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "sd",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "StaticDir",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "delete",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "sds",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "strings",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Fields",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "_",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "config/fake.go",
+            "start": 3019
+          },
+          {
+            "path": "orm/db.go",
+            "start": 1588
+          },
+          {
+            "path": "orm/db_alias.go",
+            "start": 781
+          },
+          {
+            "path": "orm/db_alias.go",
+            "start": 1361
+          },
+          {
+            "path": "orm/db_mysql.go",
+            "start": 1895
+          },
+          {
+            "path": "orm/db_oracle.go",
+            "start": 1511
+          },
+          {
+            "path": "orm/db_postgres.go",
+            "start": 1967
+          },
+          {
+            "path": "orm/db_sqlite.go",
+            "start": 1881
+          },
+          {
+            "path": "orm/db_tidb.go",
+            "start": 713
+          },
+          {
+            "path": "orm/models_fields.go",
+            "start": 2325
+          },
+          {
+            "path": "orm/models_fields.go",
+            "start": 3288
+          },
+          {
+            "path": "orm/models_fields.go",
+            "start": 4905
+          },
+          {
+            "path": "orm/models_fields.go",
+            "start": 6080
+          },
+          {
+            "path": "orm/models_fields.go",
+            "start": 7132
+          },
+          {
+            "path": "orm/models_fields.go",
+            "start": 8168
+          },
+          {
+            "path": "orm/models_fields.go",
+            "start": 9137
+          },
+          {
+            "path": "orm/models_fields.go",
+            "start": 10168
+          },
+          {
+            "path": "orm/models_fields.go",
+            "start": 11305
+          },
+          {
+            "path": "orm/models_fields.go",
+            "start": 12436
+          },
+          {
+            "path": "orm/models_fields.go",
+            "start": 13578
+          },
+          {
+            "path": "orm/models_fields.go",
+            "start": 14431
+          },
+          {
+            "path": "orm/orm.go",
+            "start": 2392
+          },
+          {
+            "path": "orm/orm_log.go",
+            "start": 1707
+          },
+          {
+            "path": "orm/orm_log.go",
+            "start": 2835
+          },
+          {
+            "path": "orm/orm_log.go",
+            "start": 2869
+          },
+          {
+            "path": "orm/orm_log.go",
+            "start": 2898
+          },
+          {
+            "path": "orm/orm_object.go",
+            "start": 776
+          },
+          {
+            "path": "orm/orm_querym2m.go",
+            "start": 3547
+          },
+          {
+            "path": "orm/orm_queryset.go",
+            "start": 1550
+          },
+          {
+            "path": "orm/orm_raw.go",
+            "start": 1447
+          }
+        ]
+      },
+      {
+        "side": "ours",
+        "identifier": "url2fsmap",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "SplitN",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "len",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Trim",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "sgz",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "extensions",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Split",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "fileExts",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "ext",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "TrimSpace",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "HasPrefix",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "append",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "StaticExtensionsToGzip",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "lo",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "los",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "logType2Config",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Outputs",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "BeeLogger",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "log.go",
+            "start": 915
+          },
+          {
+            "path": "logs/log.go",
+            "start": 2235
+          }
+        ]
+      },
+      {
+        "side": "ours",
+        "identifier": "Reset",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "context/acceptencoder.go",
+            "start": 863
+          },
+          {
+            "path": "context/context.go",
+            "start": 1604
+          },
+          {
+            "path": "context/input.go",
+            "start": 1765
+          },
+          {
+            "path": "context/output.go",
+            "start": 1072
+          },
+          {
+            "path": "logs/log.go",
+            "start": 9642
+          },
+          {
+            "path": "migration/migration.go",
+            "start": 2290
+          },
+          {
+            "path": "migration/migration.go",
+            "start": 4855
+          }
+        ]
+      },
+      {
+        "side": "ours",
+        "identifier": "adaptor",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "config",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "SetLogger",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "log.go",
+            "start": 1249
+          },
+          {
+            "path": "logs/log.go",
+            "start": 3494
+          }
+        ]
+      },
+      {
+        "side": "ours",
+        "identifier": "fmt",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Printf",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "assignConfig",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "ac",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "config",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "error",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "envRunMode",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "os",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Getenv",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "RunMode",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "runMode",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "String",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "config.go",
+            "start": 9677
+          },
+          {
+            "path": "config/fake.go",
+            "start": 943
+          },
+          {
+            "path": "config/ini.go",
+            "start": 7104
+          },
+          {
+            "path": "config/json.go",
+            "start": 4015
+          },
+          {
+            "path": "config/xml/xml.go",
+            "start": 4147
+          },
+          {
+            "path": "config/yaml/yaml.go",
+            "start": 5154
+          },
+          {
+            "path": "httplib/httplib.go",
+            "start": 11714
+          },
+          {
+            "path": "orm/models_fields.go",
+            "start": 1686
+          },
+          {
+            "path": "orm/models_fields.go",
+            "start": 2799
+          },
+          {
+            "path": "orm/models_fields.go",
+            "start": 4263
+          },
+          {
+            "path": "orm/models_fields.go",
+            "start": 5832
+          },
+          {
+            "path": "orm/models_fields.go",
+            "start": 6984
+          },
+          {
+            "path": "orm/models_fields.go",
+            "start": 8036
+          },
+          {
+            "path": "orm/models_fields.go",
+            "start": 9082
+          },
+          {
+            "path": "orm/models_fields.go",
+            "start": 10096
+          },
+          {
+            "path": "orm/models_fields.go",
+            "start": 11107
+          },
+          {
+            "path": "orm/models_fields.go",
+            "start": 12159
+          },
+          {
+            "path": "orm/models_fields.go",
+            "start": 13327
+          },
+          {
+            "path": "orm/models_fields.go",
+            "start": 14452
+          },
+          {
+            "path": "orm/models_fields.go",
+            "start": 15506
+          },
+          {
+            "path": "orm/models_fields.go",
+            "start": 16346
+          },
+          {
+            "path": "orm/models_fields.go",
+            "start": 17194
+          },
+          {
+            "path": "orm/qb_mysql.go",
+            "start": 4890
+          },
+          {
+            "path": "orm/qb_tidb.go",
+            "start": 4807
+          },
+          {
+            "path": "orm/utils.go",
+            "start": 2769
+          },
+          {
+            "path": "validation/validation.go",
+            "start": 1724
+          }
+        ]
+      },
+      {
+        "side": "theirs",
+        "identifier": "_",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "config/fake.go",
+            "start": 3017
+          },
+          {
+            "path": "orm/db.go",
+            "start": 1617
+          },
+          {
+            "path": "orm/db_alias.go",
+            "start": 781
+          },
+          {
+            "path": "orm/db_alias.go",
+            "start": 1361
+          },
+          {
+            "path": "orm/db_mysql.go",
+            "start": 1895
+          },
+          {
+            "path": "orm/db_oracle.go",
+            "start": 1511
+          },
+          {
+            "path": "orm/db_postgres.go",
+            "start": 2024
+          },
+          {
+            "path": "orm/db_sqlite.go",
+            "start": 1881
+          },
+          {
+            "path": "orm/db_tidb.go",
+            "start": 713
+          },
+          {
+            "path": "orm/models_fields.go",
+            "start": 2376
+          },
+          {
+            "path": "orm/models_fields.go",
+            "start": 3339
+          },
+          {
+            "path": "orm/models_fields.go",
+            "start": 4902
+          },
+          {
+            "path": "orm/models_fields.go",
+            "start": 6519
+          },
+          {
+            "path": "orm/models_fields.go",
+            "start": 7694
+          },
+          {
+            "path": "orm/models_fields.go",
+            "start": 8746
+          },
+          {
+            "path": "orm/models_fields.go",
+            "start": 9782
+          },
+          {
+            "path": "orm/models_fields.go",
+            "start": 10751
+          },
+          {
+            "path": "orm/models_fields.go",
+            "start": 11782
+          },
+          {
+            "path": "orm/models_fields.go",
+            "start": 12919
+          },
+          {
+            "path": "orm/models_fields.go",
+            "start": 14050
+          },
+          {
+            "path": "orm/models_fields.go",
+            "start": 15192
+          },
+          {
+            "path": "orm/models_fields.go",
+            "start": 16045
+          },
+          {
+            "path": "orm/models_fields.go",
+            "start": 16885
+          },
+          {
+            "path": "orm/models_fields.go",
+            "start": 17741
+          },
+          {
+            "path": "orm/orm.go",
+            "start": 2392
+          },
+          {
+            "path": "orm/orm_log.go",
+            "start": 1717
+          },
+          {
+            "path": "orm/orm_log.go",
+            "start": 2845
+          },
+          {
+            "path": "orm/orm_log.go",
+            "start": 2879
+          },
+          {
+            "path": "orm/orm_log.go",
+            "start": 2908
+          },
+          {
+            "path": "orm/orm_object.go",
+            "start": 776
+          },
+          {
+            "path": "orm/orm_querym2m.go",
+            "start": 3547
+          },
+          {
+            "path": "orm/orm_queryset.go",
+            "start": 1550
+          },
+          {
+            "path": "orm/orm_raw.go",
+            "start": 1447
+          }
+        ]
+      },
+      {
+        "side": "theirs",
+        "identifier": "Log",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "orm/orm_log.go",
+            "start": 725
+          },
+          {
+            "path": "session/session.go",
+            "start": 10445
+          }
+        ]
+      },
+      {
+        "side": "theirs",
+        "identifier": "Session",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "context/input.go",
+            "start": 8838
+          },
+          {
+            "path": "context/output.go",
+            "start": 9602
+          }
+        ]
+      },
+      {
+        "side": "theirs",
+        "identifier": "sd",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "StaticDir",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "string",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "sds",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "strings",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Fields",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "url2fsmap",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "SplitN",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "len",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "TrimRight",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "sgz",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "extensions",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Split",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "fileExts",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "ext",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "TrimSpace",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "HasPrefix",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "append",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "StaticExtensionsToGzip",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "lo",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "los",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "logType2Config",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Outputs",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "logs",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Reset",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "context/acceptencoder.go",
+            "start": 1815
+          },
+          {
+            "path": "context/context.go",
+            "start": 1589
+          },
+          {
+            "path": "context/input.go",
+            "start": 1765
+          },
+          {
+            "path": "context/output.go",
+            "start": 1095
+          },
+          {
+            "path": "logs/log.go",
+            "start": 10989
+          },
+          {
+            "path": "logs/log.go",
+            "start": 12222
+          },
+          {
+            "path": "migration/migration.go",
+            "start": 2295
+          },
+          {
+            "path": "migration/migration.go",
+            "start": 4851
+          }
+        ]
+      },
+      {
+        "side": "theirs",
+        "identifier": "adaptor",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "err",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "admin.go",
+            "start": 10560
+          },
+          {
+            "path": "app.go",
+            "start": 1432
+          },
+          {
+            "path": "cache/redis/redis.go",
+            "start": 2053
+          },
+          {
+            "path": "cache/redis/redis.go",
+            "start": 2565
+          },
+          {
+            "path": "cache/redis/redis.go",
+            "start": 2845
+          },
+          {
+            "path": "cache/ssdb/ssdb.go",
+            "start": 1717
+          },
+          {
+            "path": "cache/ssdb/ssdb.go",
+            "start": 4574
+          },
+          {
+            "path": "config.go",
+            "start": 3529
+          },
+          {
+            "path": "context/acceptencoder.go",
+            "start": 5368
+          },
+          {
+            "path": "context/output.go",
+            "start": 4454
+          },
+          {
+            "path": "context/output.go",
+            "start": 5014
+          },
+          {
+            "path": "context/output.go",
+            "start": 5834
+          },
+          {
+            "path": "hooks.go",
+            "start": 888
+          },
+          {
+            "path": "orm/db.go",
+            "start": 8134
+          },
+          {
+            "path": "orm/db.go",
+            "start": 11083
+          },
+          {
+            "path": "orm/db.go",
+            "start": 28667
+          },
+          {
+            "path": "orm/db_alias.go",
+            "start": 4811
+          },
+          {
+            "path": "orm/db_utils.go",
+            "start": 1912
+          },
+          {
+            "path": "orm/models_boot.go",
+            "start": 2143
+          },
+          {
+            "path": "orm/models_info_m.go",
+            "start": 1296
+          },
+          {
+            "path": "orm/orm.go",
+            "start": 7442
+          },
+          {
+            "path": "router.go",
+            "start": 18413
+          },
+          {
+            "path": "session/ledis/ledis_session.go",
+            "start": 1824
+          },
+          {
+            "path": "session/memcache/sess_memcache.go",
+            "start": 4871
+          },
+          {
+            "path": "session/sess_utils.go",
+            "start": 3334
+          },
+          {
+            "path": "session/ssdb/sess_ssdb.go",
+            "start": 340
+          }
+        ]
+      },
+      {
+        "side": "theirs",
+        "identifier": "SetLogger",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "log.go",
+            "start": 1200
+          },
+          {
+            "path": "logs/log.go",
+            "start": 5121
+          },
+          {
+            "path": "logs/log.go",
+            "start": 12873
+          }
+        ]
+      },
+      {
+        "side": "theirs",
+        "identifier": "fmt",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Fprintln",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Stderr",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Sprintf",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Error",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "flash.go",
+            "start": 1820
+          },
+          {
+            "path": "log.go",
+            "start": 1721
+          },
+          {
+            "path": "logs/log.go",
+            "start": 9086
+          },
+          {
+            "path": "logs/log.go",
+            "start": 13472
+          },
+          {
+            "path": "validation/validation.go",
+            "start": 1540
+          },
+          {
+            "path": "validation/validation.go",
+            "start": 1860
+          },
+          {
+            "path": "validation/validation.go",
+            "start": 3219
+          }
+        ]
+      },
+      {
+        "side": "theirs",
+        "identifier": "SetLogFuncCall",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "log.go",
+            "start": 1111
+          },
+          {
+            "path": "logs/log.go",
+            "start": 12623
+          }
+        ]
+      },
+      {
+        "side": "theirs",
+        "identifier": "FileLineNum",
+        "reason": "no-unique-declaration-established"
+      }
+    ],
+    "method": "syntax-ranges-and-identifier-candidates/3",
+    "budget_bytes": 32768,
+    "libraries": {
+      "C": "cbbd4827ee02cd5c018ab41f10d8404ff8741159054b352d9a6d763c506ba3c7",
+      "Go": "1612f8fd958ba1ec981bf4b91e2ff399f1e54d26a9da68e5b60b0d7cd00616fc"
+    }
+  }
+}
