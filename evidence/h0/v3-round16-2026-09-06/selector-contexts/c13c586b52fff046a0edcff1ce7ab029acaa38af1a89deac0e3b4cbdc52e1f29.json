@@ -1,0 +1,1087 @@
+{
+  "id": "c13c586b52fff046a0edcff1ce7ab029acaa38af1a89deac0e3b4cbdc52e1f29",
+  "source_protocol_sha256": "86ffe38086e217acf6e1a4aa4162e226862463d1bde3160478f9a6f4d2b968ce",
+  "repair_module_sha256": "b6a7cf123b0ac50001e1498cdf64964b8ac56e8e6a68cbbc6dcc01c8517b4a20",
+  "contexts": {
+    "local-context": [
+      {
+        "id": "dd5254efdecfd9ef77be6e21",
+        "revision": "6c2310183223ca53939d5cc7dd013225ecfb5716",
+        "path": "parser.go",
+        "start_byte": 0,
+        "text": "package cron\n\nimport (\n\t\"fmt\"\n\t\"log\"\n\t\"math\"\n\t\"strconv\"\n\t\"strings\"\n\t\"time\"\n)\n\ntype ParseOption int\n\nconst (\n\tSecond ParseOption = 1 << iota\n\tMinute\n\tHour\n\tDom\n\tMonth\n\tDow\n\tDowOptional\n\tDescriptor\n)\n\nvar places = []ParseOption{\n\tSecond,\n\tMinute,\n\tHour,\n\tDom,\n\tMonth,\n\tDow,\n}\n\nvar defaults = []string{\n\t\"0\",\n\t\"0\",\n\t\"0\",\n\t\"*\",\n\t\"*\",\n\t\"*\",\n}\n\ntype Parser struct {\n\toptions   ParseOption\n\toptionals int\n}\n\nfunc NewParser(options ParseOption) Parser {\n\toptionals := 0\n\tif options&DowOptional > 0 {\n\t\toptions |= Dow\n\t\toptionals++\n\t}\n\treturn Parser{options, optionals}\n}\n\nfunc (p Parser) Parse(spec string) (_ Schedule, err error) {\n\t// Convert panics into errors\n\tdefer func() {\n\t\tif recovered := recover(); recovered != nil {\n\t\t\terr = fmt.Errorf(\"%v\", recovered)\n\t\t}\n\t}()\n\n\tif spec[0] == '@' && p.options&Descriptor > 0 {\n\t\treturn parseDescriptor(spec), nil\n\t}\n\n\t// Figure out how many fields we need\n\tmax := 0\n\tfor _, place := range places {\n\t\tif p.options&place > 0 {\n\t\t\tmax++\n\t\t}\n\t}\n\tmin := max - p.optionals\n\n\t// Split fields on whitespace\n\tfields := strings.Fields(spec)\n\n\t// Validate number of fields\n\tif count := len(fields); count < min || count > max {\n\t\tif min == max {\n\t\t\tlog.Panicf(\"Expected %d fields, found %d: %s\", min, count, spec)\n\t\t} else {\n\t\t\tlog.Panicf(\"Expected %d to %d fields, found %d: %s\", min, max, count, spec)\n\t\t}\n\t}\n\n\t// Fill in missing fields\n\tfields = expandFields(fields, p.options)\n\n\tschedule := &SpecSchedule{\n\t\tSecond: getField(fields[0], seconds),\n\t\tMinute: getField(fields[1], minutes),\n\t\tHour:   getField(fields[2], hours),\n\t\tDom:    getField(fields[3], dom),\n\t\tMonth:  getField(fields[4], months),\n\t\tDow:    getField(fields[5], dow),\n\t}\n\n\treturn schedule, nil\n}\n\nfunc expandFields(fields []string, options ParseOption) []string {\n\tn := 0\n\tcount := len(fields)\n\texpFields := make([]string, len(places))\n\tcopy(expFields, defaults)\n\tfor i, place := range places {\n\t\tif options&place > 0 {\n\t\t\texpFields[i] = fields[n]\n\t\t\tn++\n\t\t}\n\t\tif n == count {\n\t\t\tbreak\n\t\t}\n\t}\n\treturn expFields\n}\n\nvar defaultParser = NewParser(\n\tSecond | Minute | Hour | Dom | Month | DowOptional | Descriptor,\n)\n\n// Parse returns a new crontab schedule representing the given spec.\n// It returns a descriptive error if the spec is not valid.\n//\n// It accepts\n//   - Full crontab specs, e.g. \"* * * * * ?\"\n//   - Descriptors, e.g. \"@midnight\", \"@every 1h30m\"\nfunc Parse(spec string) (_ Schedule, err error) {\n\treturn defaultParser.Parse(spec)\n}\n\n// getField returns an Int with the bits set representing all of the times that\n// the field represents.  A \"field\" is a comma-separated list of \"ranges\".\nfunc getField(field string, r bounds) uint64 {\n\t// list = range {\",\" range}\n\tvar bits uint64\n\tranges := strings.FieldsFunc(field, func(r rune) bool { return r == ',' })\n\tfor _, expr := range ranges {\n\t\tbits |= getRange(expr, r)\n\t}\n\treturn bits\n}\n\n// getRange returns the bits indicated by the given expression:\n//   number | number \"-\" number [ \"/\" number ]\nfunc getRange(expr string, r bounds) uint64 {\n\n\tvar (\n\t\tstart, end, step uint\n\t\trangeAndStep     = strings.Split(expr, \"/\")\n\t\tlowAndHigh       = strings.Split(rangeAndStep[0], \"-\")\n\t\tsingleDigit      = len(lowAndHigh) == 1\n\t)\n\n\tvar extra uint64\n\tif lowAndHigh[0] == \"*\" || lowAndHigh[0] == \"?\" {\n\t\tstart = r.min\n\t\tend = r.max\n\t\textra = starBit\n\t} else {\n\t\tstart = parseIntOrName(lowAndHigh[0], r.names)\n\t\tswitch len(lowAndHigh) {\n\t\tcase 1:\n\t\t\tend = start\n\t\tcase 2:\n\t\t\tend = parseIntOrName(lowAndHigh[1], r.names)\n\t\tdefault:\n\t\t\tlog.Panicf(\"Too many hyphens: %s\", expr)\n\t\t}\n\t}\n\n\tswitch len(rangeAndStep) {\n\tcase 1:\n\t\tstep = 1\n\tcase 2:\n\t\tstep = mustParseInt(rangeAndStep[1])\n\n\t\t// Special handling: \"N/step\" means \"N-max/step\".\n\t\tif singleDigit {\n\t\t\tend = r.max\n\t\t}\n\tdefault:\n\t\tlog.Panicf(\"Too many slashes: %s\", expr)\n\t}\n\n\tif start < r.min {\n\t\tlog.Panicf(\"Beginning of range (%d) below minimum (%d): %s\", start, r.min, expr)\n\t}\n\tif end > r.max {\n\t\tlog.Panicf(\"End of range (%d) above maximum (%d): %s\", end, r.max, expr)\n\t}\n\tif start > end {\n\t\tlog.Panicf(\"Beginning of range (%d) beyond end of range (%d): %s\", start, end, expr)\n\t}\n\n\treturn getBits(start, end, step) | extra\n}\n\n// parseIntOrName returns the (possibly-named) integer contained in expr.\nfunc parseIntOrName(expr string, names map[string]uint) uint {\n\tif names != nil {\n\t\tif namedInt, ok := names[strings.ToLower(expr)]; ok {\n\t\t\treturn namedInt\n\t\t}\n\t}\n\treturn mustParseInt(expr)\n}\n\n// mustParseInt parses the given expression as an int or panics.\nfunc mustParseInt(expr string) uint {\n\tnum, err := strconv.Atoi(expr)\n\tif err != nil {\n\t\tlog.Panicf(\"Failed to parse int from %s: %s\", expr, err)\n\t}\n\tif num < 0 {\n\t\tlog.Panicf(\"Negative number (%d) not allowed: %s\", num, expr)\n\t}\n\n\treturn uint(num)\n}\n\n// getBits sets all bits in the range [min, max], modulo the given step size.\nfunc getBits(min, max, step uint) uint64 {\n\tvar bits uint64\n\n\t// If step is 1, use shifts.\n\tif step == 1 {\n\t\treturn ^(math.MaxUint64 << (max + 1)) & (math.MaxUint64 << min)\n\t}\n\n\t// Else, use a simple loop.\n\tfor i := min; i <= max; i += step {\n\t\tbits |= 1 << i\n\t}\n\treturn bits\n}\n\n// all returns all bits within the given bounds.  (plus the star bit)\nfunc all(r bounds) uint64 {\n\treturn getBits(r.min, r.max, 1) | starBit\n}\n\n// parseDescriptor returns a pre-defined schedule for the expression, or panics\n// if none matches.\nfunc parseDescriptor(spec string) Schedule {\n\tswitch spec {\n\tcase \"@yearly\", \"@annually\":\n\t\treturn &SpecSchedule{\n\t\t\tSecond: 1 << seconds.min,\n\t\t\tMinute: 1 << minutes.min,\n\t\t\tHour:   1 << hours.min,\n\t\t\tDom:    1 << dom.min,\n\t\t\tMonth:  1 << months.min,\n\t\t\tDow:    all(dow),\n\t\t}\n\n\tcase \"@monthly\":\n\t\treturn &SpecSchedule{\n\t\t\tSecond: 1 << seconds.min,\n\t\t\tMinute: 1 << minutes.min,\n\t\t\tHour:   1 << hours.min,\n\t\t\tDom:    1 << dom.min,\n\t\t\tMonth:  all(months),\n\t\t\tDow:    all(dow),\n\t\t}\n\n\tcase \"@weekly\":\n\t\treturn &SpecSchedule{\n\t\t\tSecond: 1 << seconds.min,\n\t\t\tMinute: 1 << minutes.min,\n\t\t\tHour:   1 << hours.min,\n\t\t\tDom:    all(dom),\n\t\t\tMonth:  all(months),\n\t\t\tDow:    1 << dow.min,\n\t\t}\n\n\tcase \"@daily\", \"@midnight\":\n\t\treturn &SpecSchedule{\n\t\t\tSecond: 1 << seconds.min,\n\t\t\tMinute: 1 << minutes.min,\n\t\t\tHour:   1 << hours.min,\n\t\t\tDom:    all(dom),\n\t\t\tMonth:  all(months),\n\t\t\tDow:    all(dow),\n\t\t}\n\n\tcase \"@hourly\":\n\t\treturn &SpecSchedule{\n\t\t\tSecond: 1 << seconds.min,\n\t\t\tMinute: 1 << minutes.min,\n\t\t\tHour:   all(hours),\n\t\t\tDom:    all(dom),\n\t\t\tMonth:  all(months),\n\t\t\tDow:    all(dow),\n\t\t}\n\t}\n\n\tconst every = \"@every \"\n\tif strings.HasPrefix(spec, every) {\n\t\tduration, err := time.ParseDuration(spec[len(every):])\n\t\tif err != nil {\n\t\t\tlog.Panicf(\"Failed to parse duration %s: %s\", spec, err)\n\t\t}\n\t\treturn Every(duration)\n\t}\n\n\tlog.Panicf(\"Unrecognized descriptor: %s\", spec)\n\treturn nil\n}\n",
+        "rank": 0,
+        "truncated": false
+      },
+      {
+        "id": "a448f8a432c0ebe647aef37c",
+        "revision": "783cfcb01fb00c48f740c9de79122bd410294149",
+        "path": "parser.go",
+        "start_byte": 0,
+        "text": "package cron\n\nimport (\n\t\"fmt\"\n\t\"math\"\n\t\"strconv\"\n\t\"strings\"\n\t\"time\"\n)\n\n// ParseStandard returns a new crontab schedule representing the given standardSpec\n// (https://en.wikipedia.org/wiki/Cron). It differs from Parse requiring to always\n// pass 5 entries representing: minute, hour, day of month, month and day of week,\n// in that order. It returns a descriptive error if the spec is not valid.\n//\n// It accepts\n//   - Standard crontab specs, e.g. \"* * * * ?\"\n//   - Descriptors, e.g. \"@midnight\", \"@every 1h30m\"\nfunc ParseStandard(standardSpec string) (Schedule, error) {\n\tif standardSpec[0] == '@' {\n\t\treturn parseDescriptor(standardSpec)\n\t}\n\n\t// Split on whitespace.  We require exactly 5 fields.\n\t// (minute) (hour) (day of month) (month) (day of week)\n\tfields := strings.Fields(standardSpec)\n\tif len(fields) != 5 {\n\t\treturn nil, fmt.Errorf(\"Expected exactly 5 fields, found %d: %s\", len(fields), standardSpec)\n\t}\n\n\tvar err error\n\tfield := func(field string, r bounds) uint64 {\n\t\tif err != nil {\n\t\t\treturn uint64(0)\n\t\t}\n\t\tvar bits uint64\n\t\tbits, err = getField(field, r)\n\t\treturn bits\n\t}\n\tvar (\n\t\tminute     = field(fields[0], minutes)\n\t\thour       = field(fields[1], hours)\n\t\tdayofmonth = field(fields[2], dom)\n\t\tmonth      = field(fields[3], months)\n\t\tdayofweek  = field(fields[4], dow)\n\t)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\n\treturn &SpecSchedule{\n\t\tSecond: 1 << seconds.min,\n\t\tMinute: minute,\n\t\tHour:   hour,\n\t\tDom:    dayofmonth,\n\t\tMonth:  month,\n\t\tDow:    dayofweek,\n\t}, nil\n}\n\n// Parse returns a new crontab schedule representing the given spec.\n// It returns a descriptive error if the spec is not valid.\n//\n// It accepts\n//   - Full crontab specs, e.g. \"* * * * * ?\"\n//   - Descriptors, e.g. \"@midnight\", \"@every 1h30m\"\nfunc Parse(spec string) (Schedule, error) {\n\tif spec[0] == '@' {\n\t\treturn parseDescriptor(spec)\n\t}\n\n\t// Split on whitespace.  We require 5 or 6 fields.\n\t// (second) (minute) (hour) (day of month) (month) (day of week, optional)\n\tfields := strings.Fields(spec)\n\tif len(fields) != 5 && len(fields) != 6 {\n\t\treturn nil, fmt.Errorf(\"Expected 5 or 6 fields, found %d: %s\", len(fields), spec)\n\t}\n\n\t// If a sixth field is not provided (DayOfWeek), then it is equivalent to star.\n\tif len(fields) == 5 {\n\t\tfields = append(fields, \"*\")\n\t}\n\n\tvar err error\n\tfield := func(field string, r bounds) uint64 {\n\t\tif err != nil {\n\t\t\treturn uint64(0)\n\t\t}\n\t\tvar bits uint64\n\t\tbits, err = getField(field, r)\n\t\treturn bits\n\t}\n\tvar (\n\t\tsecond     = field(fields[0], seconds)\n\t\tminute     = field(fields[1], minutes)\n\t\thour       = field(fields[2], hours)\n\t\tdayofmonth = field(fields[3], dom)\n\t\tmonth      = field(fields[4], months)\n\t\tdayofweek  = field(fields[5], dow)\n\t)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\n\treturn &SpecSchedule{\n\t\tSecond: second,\n\t\tMinute: minute,\n\t\tHour:   hour,\n\t\tDom:    dayofmonth,\n\t\tMonth:  month,\n\t\tDow:    dayofweek,\n\t}, nil\n}\n\n// getField returns an Int with the bits set representing all of the times that\n// the field represents or error parsing field value.  A \"field\" is a comma-separated\n// list of \"ranges\".\nfunc getField(field string, r bounds) (uint64, error) {\n\tvar bits uint64\n\tranges := strings.FieldsFunc(field, func(r rune) bool { return r == ',' })\n\tfor _, expr := range ranges {\n\t\tbit, err := getRange(expr, r)\n\t\tif err != nil {\n\t\t\treturn bits, err\n\t\t}\n\t\tbits |= bit\n\t}\n\treturn bits, nil\n}\n\n// getRange returns the bits indicated by the given expression:\n//   number | number \"-\" number [ \"/\" number ]\n// or error parsing range.\nfunc getRange(expr string, r bounds) (uint64, error) {\n\tvar (\n\t\tstart, end, step uint\n\t\trangeAndStep     = strings.Split(expr, \"/\")\n\t\tlowAndHigh       = strings.Split(rangeAndStep[0], \"-\")\n\t\tsingleDigit      = len(lowAndHigh) == 1\n\t\terr              error\n\t\tzero             = uint64(0)\n\t)\n\n\tvar extra_star uint64\n\tif lowAndHigh[0] == \"*\" || lowAndHigh[0] == \"?\" {\n\t\tstart = r.min\n\t\tend = r.max\n\t\textra_star = starBit\n\t} else {\n\t\tstart, err = parseIntOrName(lowAndHigh[0], r.names)\n\t\tif err != nil {\n\t\t\treturn zero, err\n\t\t}\n\t\tswitch len(lowAndHigh) {\n\t\tcase 1:\n\t\t\tend = start\n\t\tcase 2:\n\t\t\tend, err = parseIntOrName(lowAndHigh[1], r.names)\n\t\t\tif err != nil {\n\t\t\t\treturn zero, err\n\t\t\t}\n\t\tdefault:\n\t\t\treturn zero, fmt.Errorf(\"Too many hyphens: %s\", expr)\n\t\t}\n\t}\n\n\tswitch len(rangeAndStep) {\n\tcase 1:\n\t\tstep = 1\n\tcase 2:\n\t\tstep, err = mustParseInt(rangeAndStep[1])\n\t\tif err != nil {\n\t\t\treturn zero, err\n\t\t}\n\n\t\t// Special handling: \"N/step\" means \"N-max/step\".\n\t\tif singleDigit {\n\t\t\tend = r.max\n\t\t}\n\tdefault:\n\t\treturn zero, fmt.Errorf(\"Too many slashes: %s\", expr)\n\t}\n\n\tif start < r.min {\n\t\treturn zero, fmt.Errorf(\"Beginning of range (%d) below minimum (%d): %s\", start, r.min, expr)\n\t}\n\tif end > r.max {\n\t\treturn zero, fmt.Errorf(\"End of range (%d) above maximum (%d): %s\", end, r.max, expr)\n\t}\n\tif start > end {\n\t\treturn zero, fmt.Errorf(\"Beginning of range (%d) beyond end of range (%d): %s\", start, end, expr)\n\t}\n\tif step == 0 {\n\t\treturn zero, fmt.Errorf(\"Step of range should be a positive number: %s\", expr)\n\t}\n\n\treturn getBits(start, end, step) | extra_star, nil\n}\n\n// parseIntOrName returns the (possibly-named) integer contained in expr.\nfunc parseIntOrName(expr string, names map[string]uint) (uint, error) {\n\tif names != nil {\n\t\tif namedInt, ok := names[strings.ToLower(expr)]; ok {\n\t\t\treturn namedInt, nil\n\t\t}\n\t}\n\treturn mustParseInt(expr)\n}\n\n// mustParseInt parses the given expression as an int or returns an error.\nfunc mustParseInt(expr string) (uint, error) {\n\tnum, err := strconv.Atoi(expr)\n\tif err != nil {\n\t\treturn 0, fmt.Errorf(\"Failed to parse int from %s: %s\", expr, err)\n\t}\n\tif num < 0 {\n\t\treturn 0, fmt.Errorf(\"Negative number (%d) not allowed: %s\", num, expr)\n\t}\n\n\treturn uint(num), nil\n}\n\n// getBits sets all bits in the range [min, max], modulo the given step size.\nfunc getBits(min, max, step uint) uint64 {\n\tvar bits uint64\n\n\t// If step is 1, use shifts.\n\tif step == 1 {\n\t\treturn ^(math.MaxUint64 << (max + 1)) & (math.MaxUint64 << min)\n\t}\n\n\t// Else, use a simple loop.\n\tfor i := min; i <= max; i += step {\n\t\tbits |= 1 << i\n\t}\n\treturn bits\n}\n\n// all returns all bits within the given bounds.  (plus the star bit)\nfunc all(r bounds) uint64 {\n\treturn getBits(r.min, r.max, 1) | starBit\n}\n\n// parseDescriptor returns a predefined schedule for the expression, or error if none matches.\nfunc parseDescriptor(descriptor string) (Schedule, error) {\n\tswitch descriptor {\n\tcase \"@yearly\", \"@annually\":\n\t\treturn &SpecSchedule{\n\t\t\tSecond: 1 << seconds.min,\n\t\t\tMinute: 1 << minutes.min,\n\t\t\tHour:   1 << hours.min,\n\t\t\tDom:    1 << dom.min,\n\t\t\tMonth:  1 << months.min,\n\t\t\tDow:    all(dow),\n\t\t}, nil\n\n\tcase \"@monthly\":\n\t\treturn &SpecSchedule{\n\t\t\tSecond: 1 << seconds.min,\n\t\t\tMinute: 1 << minutes.min,\n\t\t\tHour:   1 << hours.min,\n\t\t\tDom:    1 << dom.min,\n\t\t\tMonth:  all(months),\n\t\t\tDow:    all(dow),\n\t\t}, nil\n\n\tcase \"@weekly\":\n\t\treturn &SpecSchedule{\n\t\t\tSecond: 1 << seconds.min,\n\t\t\tMinute: 1 << minutes.min,\n\t\t\tHour:   1 << hours.min,\n\t\t\tDom:    all(dom),\n\t\t\tMonth:  all(months),\n\t\t\tDow:    1 << dow.min,\n\t\t}, nil\n\n\tcase \"@daily\", \"@midnight\":\n\t\treturn &SpecSchedule{\n\t\t\tSecond: 1 << seconds.min,\n\t\t\tMinute: 1 << minutes.min,\n\t\t\tHour:   1 << hours.min,\n\t\t\tDom:    all(dom),\n\t\t\tMonth:  all(months),\n\t\t\tDow:    all(dow),\n\t\t}, nil\n\n\tcase \"@hourly\":\n\t\treturn &SpecSchedule{\n\t\t\tSecond: 1 << seconds.min,\n\t\t\tMinute: 1 << minutes.min,\n\t\t\tHour:   all(hours),\n\t\t\tDom:    all(dom),\n\t\t\tMonth:  all(months),\n\t\t\tDow:    all(dow),\n\t\t}, nil\n\t}\n\n\tconst every = \"@every \"\n\tif strings.HasPrefix(descriptor, every) {\n\t\tduration, err := time.ParseDuration(descriptor[len(every):])\n\t\tif err != nil {\n\t\t\treturn nil, fmt.Errorf(\"Failed to parse duration %s: %s\", descriptor, err)\n\t\t}\n\t\treturn Every(duration), nil\n\t}\n\n\treturn nil, fmt.Errorf(\"Unrecognized descriptor: %s\", descriptor)\n}\n",
+        "rank": 0,
+        "truncated": false
+      }
+    ],
+    "selected": [
+      {
+        "id": "996c039dc02603e40b3bc3db",
+        "revision": "6c2310183223ca53939d5cc7dd013225ecfb5716",
+        "path": "cron.go",
+        "start_byte": 575,
+        "text": "type Schedule interface {\n\t// Return the next activation time, later than the given time.\n\t// Next is invoked initially, and then each time the job is run.\n\tNext(time.Time) time.Time\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "7572c102e2306985f6f3bd7c",
+        "revision": "6c2310183223ca53939d5cc7dd013225ecfb5716",
+        "path": "cron.go",
+        "start_byte": 2504,
+        "text": "func (c *Cron) Schedule(schedule Schedule, cmd Job) {\n\tentry := &Entry{\n\t\tSchedule: schedule,\n\t\tJob:      cmd,\n\t}\n\tif !c.running {\n\t\tc.entries = append(c.entries, entry)\n\t\treturn\n\t}\n\n\tc.add <- entry\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "48af323431096451f1590627",
+        "revision": "6c2310183223ca53939d5cc7dd013225ecfb5716",
+        "path": "parser.go",
+        "start_byte": 78,
+        "text": "type ParseOption int",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "025ba027e42fc6421faed7be",
+        "revision": "6c2310183223ca53939d5cc7dd013225ecfb5716",
+        "path": "parser.go",
+        "start_byte": 100,
+        "text": "const (\n\tSecond ParseOption = 1 << iota\n\tMinute\n\tHour\n\tDom\n\tMonth\n\tDow\n\tDowOptional\n\tDescriptor\n)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "56485d039619815df4239910",
+        "revision": "6c2310183223ca53939d5cc7dd013225ecfb5716",
+        "path": "parser.go",
+        "start_byte": 199,
+        "text": "var places = []ParseOption{\n\tSecond,\n\tMinute,\n\tHour,\n\tDom,\n\tMonth,\n\tDow,\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "440320831c2305d97bf6f1f7",
+        "revision": "6c2310183223ca53939d5cc7dd013225ecfb5716",
+        "path": "parser.go",
+        "start_byte": 275,
+        "text": "var defaults = []string{\n\t\"0\",\n\t\"0\",\n\t\"0\",\n\t\"*\",\n\t\"*\",\n\t\"*\",\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "07af5410aec649b656296519",
+        "revision": "6c2310183223ca53939d5cc7dd013225ecfb5716",
+        "path": "parser.go",
+        "start_byte": 339,
+        "text": "type Parser struct {\n\toptions   ParseOption\n\toptionals int\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "f9ab5630aba6524c24ce1738",
+        "revision": "6c2310183223ca53939d5cc7dd013225ecfb5716",
+        "path": "parser.go",
+        "start_byte": 401,
+        "text": "func NewParser(options ParseOption) Parser {\n\toptionals := 0\n\tif options&DowOptional > 0 {\n\t\toptions |= Dow\n\t\toptionals++\n\t}\n\treturn Parser{options, optionals}\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "7be696747719abe1fed92ff7",
+        "revision": "6c2310183223ca53939d5cc7dd013225ecfb5716",
+        "path": "parser.go",
+        "start_byte": 564,
+        "text": "func (p Parser) Parse(spec string) (_ Schedule, err error) {\n\t// Convert panics into errors\n\tdefer func() {\n\t\tif recovered := recover(); recovered != nil {\n\t\t\terr = fmt.Errorf(\"%v\", recovered)\n\t\t}\n\t}()\n\n\tif spec[0] == '@' && p.options&Descriptor > 0 {\n\t\treturn parseDescriptor(spec), nil\n\t}\n\n\t// Figure out how many fields we need\n\tmax := 0\n\tfor _, place := range places {\n\t\tif p.options&place > 0 {\n\t\t\tmax++\n\t\t}\n\t}\n\tmin := max - p.optionals\n\n\t// Split fields on whitespace\n\tfields := strings.Fields(spec)\n\n\t// Validate number of fields\n\tif count := len(fields); count < min || count > max {\n\t\tif min == max {\n\t\t\tlog.Panicf(\"Expected %d fields, found %d: %s\", min, count, spec)\n\t\t} else {\n\t\t\tlog.Panicf(\"Expected %d to %d fields, found %d: %s\", min, max, count, spec)\n\t\t}\n\t}\n\n\t// Fill in missing fields\n\tfields = expandFields(fields, p.options)\n\n\tschedule := &SpecSchedule{\n\t\tSecond: getField(fields[0], seconds),\n\t\tMinute: getField(fields[1], minutes),\n\t\tHour:   getField(fields[2], hours),\n\t\tDom:    getField(fields[3], dom),\n\t\tMonth:  getField(fields[4], months),\n\t\tDow:    getField(fields[5], dow),\n\t}\n\n\treturn schedule, nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "fa04af6de22aa1b82d1c2ef4",
+        "revision": "6c2310183223ca53939d5cc7dd013225ecfb5716",
+        "path": "parser.go",
+        "start_byte": 2358,
+        "text": "func Parse(spec string) (_ Schedule, err error) {\n\treturn defaultParser.Parse(spec)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "1dfec5cc2936e4f54ff9b738",
+        "revision": "6c2310183223ca53939d5cc7dd013225ecfb5716",
+        "path": "parser.go",
+        "start_byte": 5320,
+        "text": "func parseDescriptor(spec string) Schedule {\n\tswitch spec {\n\tcase \"@yearly\", \"@annually\":\n\t\treturn &SpecSchedule{\n\t\t\tSecond: 1 << seconds.min,\n\t\t\tMinute: 1 << minutes.min,\n\t\t\tHour:   1 << hours.min,\n\t\t\tDom:    1 << dom.min,\n\t\t\tMonth:  1 << months.min,\n\t\t\tDow:    all(dow),\n\t\t}\n\n\tcase \"@monthly\":\n\t\treturn &SpecSchedule{\n\t\t\tSecond: 1 << seconds.min,\n\t\t\tMinute: 1 << minutes.min,\n\t\t\tHour:   1 << hours.min,\n\t\t\tDom:    1 << dom.min,\n\t\t\tMonth:  all(months),\n\t\t\tDow:    all(dow),\n\t\t}\n\n\tcase \"@weekly\":\n\t\treturn &SpecSchedule{\n\t\t\tSecond: 1 << seconds.min,\n\t\t\tMinute: 1 << minutes.min,\n\t\t\tHour:   1 << hours.min,\n\t\t\tDom:    all(dom),\n\t\t\tMonth:  all(months),\n\t\t\tDow:    1 << dow.min,\n\t\t}\n\n\tcase \"@daily\", \"@midnight\":\n\t\treturn &SpecSchedule{\n\t\t\tSecond: 1 << seconds.min,\n\t\t\tMinute: 1 << minutes.min,\n\t\t\tHour:   1 << hours.min,\n\t\t\tDom:    all(dom),\n\t\t\tMonth:  all(months),\n\t\t\tDow:    all(dow),\n\t\t}\n\n\tcase \"@hourly\":\n\t\treturn &SpecSchedule{\n\t\t\tSecond: 1 << seconds.min,\n\t\t\tMinute: 1 << minutes.min,\n\t\t\tHour:   all(hours),\n\t\t\tDom:    all(dom),\n\t\t\tMonth:  all(months),\n\t\t\tDow:    all(dow),\n\t\t}\n\t}\n\n\tconst every = \"@every \"\n\tif strings.HasPrefix(spec, every) {\n\t\tduration, err := time.ParseDuration(spec[len(every):])\n\t\tif err != nil {\n\t\t\tlog.Panicf(\"Failed to parse duration %s: %s\", spec, err)\n\t\t}\n\t\treturn Every(duration)\n\t}\n\n\tlog.Panicf(\"Unrecognized descriptor: %s\", spec)\n\treturn nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "0610644bdf6f9cdbb1f53261",
+        "revision": "783cfcb01fb00c48f740c9de79122bd410294149",
+        "path": "cron.go",
+        "start_byte": 640,
+        "text": "type Schedule interface {\n\t// Return the next activation time, later than the given time.\n\t// Next is invoked initially, and then each time the job is run.\n\tNext(time.Time) time.Time\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "279a823237bfc1d8eec96dd0",
+        "revision": "783cfcb01fb00c48f740c9de79122bd410294149",
+        "path": "cron.go",
+        "start_byte": 2785,
+        "text": "func (c *Cron) Schedule(schedule Schedule, cmd Job) {\n\tentry := &Entry{\n\t\tSchedule: schedule,\n\t\tJob:      cmd,\n\t}\n\tif !c.running {\n\t\tc.entries = append(c.entries, entry)\n\t\treturn\n\t}\n\n\tc.add <- entry\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "be46866024c5701aea181f78",
+        "revision": "783cfcb01fb00c48f740c9de79122bd410294149",
+        "path": "parser.go",
+        "start_byte": 514,
+        "text": "func ParseStandard(standardSpec string) (Schedule, error) {\n\tif standardSpec[0] == '@' {\n\t\treturn parseDescriptor(standardSpec)\n\t}\n\n\t// Split on whitespace.  We require exactly 5 fields.\n\t// (minute) (hour) (day of month) (month) (day of week)\n\tfields := strings.Fields(standardSpec)\n\tif len(fields) != 5 {\n\t\treturn nil, fmt.Errorf(\"Expected exactly 5 fields, found %d: %s\", len(fields), standardSpec)\n\t}\n\n\tvar err error\n\tfield := func(field string, r bounds) uint64 {\n\t\tif err != nil {\n\t\t\treturn uint64(0)\n\t\t}\n\t\tvar bits uint64\n\t\tbits, err = getField(field, r)\n\t\treturn bits\n\t}\n\tvar (\n\t\tminute     = field(fields[0], minutes)\n\t\thour       = field(fields[1], hours)\n\t\tdayofmonth = field(fields[2], dom)\n\t\tmonth      = field(fields[3], months)\n\t\tdayofweek  = field(fields[4], dow)\n\t)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\n\treturn &SpecSchedule{\n\t\tSecond: 1 << seconds.min,\n\t\tMinute: minute,\n\t\tHour:   hour,\n\t\tDom:    dayofmonth,\n\t\tMonth:  month,\n\t\tDow:    dayofweek,\n\t}, nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "fba56e073d960ec663e0fd28",
+        "revision": "783cfcb01fb00c48f740c9de79122bd410294149",
+        "path": "parser.go",
+        "start_byte": 921,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "4e64364d15987ee3f14102b6",
+        "revision": "783cfcb01fb00c48f740c9de79122bd410294149",
+        "path": "parser.go",
+        "start_byte": 1027,
+        "text": "var bits uint64",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "7c94a61a954c314ba154ddbb",
+        "revision": "783cfcb01fb00c48f740c9de79122bd410294149",
+        "path": "parser.go",
+        "start_byte": 1094,
+        "text": "var (\n\t\tminute     = field(fields[0], minutes)\n\t\thour       = field(fields[1], hours)\n\t\tdayofmonth = field(fields[2], dom)\n\t\tmonth      = field(fields[3], months)\n\t\tdayofweek  = field(fields[4], dow)\n\t)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "1914381f9e203b5006be15d4",
+        "revision": "783cfcb01fb00c48f740c9de79122bd410294149",
+        "path": "parser.go",
+        "start_byte": 1737,
+        "text": "func Parse(spec string) (Schedule, error) {\n\tif spec[0] == '@' {\n\t\treturn parseDescriptor(spec)\n\t}\n\n\t// Split on whitespace.  We require 5 or 6 fields.\n\t// (second) (minute) (hour) (day of month) (month) (day of week, optional)\n\tfields := strings.Fields(spec)\n\tif len(fields) != 5 && len(fields) != 6 {\n\t\treturn nil, fmt.Errorf(\"Expected 5 or 6 fields, found %d: %s\", len(fields), spec)\n\t}\n\n\t// If a sixth field is not provided (DayOfWeek), then it is equivalent to star.\n\tif len(fields) == 5 {\n\t\tfields = append(fields, \"*\")\n\t}\n\n\tvar err error\n\tfield := func(field string, r bounds) uint64 {\n\t\tif err != nil {\n\t\t\treturn uint64(0)\n\t\t}\n\t\tvar bits uint64\n\t\tbits, err = getField(field, r)\n\t\treturn bits\n\t}\n\tvar (\n\t\tsecond     = field(fields[0], seconds)\n\t\tminute     = field(fields[1], minutes)\n\t\thour       = field(fields[2], hours)\n\t\tdayofmonth = field(fields[3], dom)\n\t\tmonth      = field(fields[4], months)\n\t\tdayofweek  = field(fields[5], dow)\n\t)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\n\treturn &SpecSchedule{\n\t\tSecond: second,\n\t\tMinute: minute,\n\t\tHour:   hour,\n\t\tDom:    dayofmonth,\n\t\tMonth:  month,\n\t\tDow:    dayofweek,\n\t}, nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "9d7b454ed3c2d8b9f65594e9",
+        "revision": "783cfcb01fb00c48f740c9de79122bd410294149",
+        "path": "parser.go",
+        "start_byte": 2268,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "d75305c2e4bc090d78399e83",
+        "revision": "783cfcb01fb00c48f740c9de79122bd410294149",
+        "path": "parser.go",
+        "start_byte": 2374,
+        "text": "var bits uint64",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "235580f059a0aee6b49677ec",
+        "revision": "783cfcb01fb00c48f740c9de79122bd410294149",
+        "path": "parser.go",
+        "start_byte": 3057,
+        "text": "func getField(field string, r bounds) (uint64, error) {\n\tvar bits uint64\n\tranges := strings.FieldsFunc(field, func(r rune) bool { return r == ',' })\n\tfor _, expr := range ranges {\n\t\tbit, err := getRange(expr, r)\n\t\tif err != nil {\n\t\t\treturn bits, err\n\t\t}\n\t\tbits |= bit\n\t}\n\treturn bits, nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "698fe558c83c5de8ed53775a",
+        "revision": "783cfcb01fb00c48f740c9de79122bd410294149",
+        "path": "parser.go",
+        "start_byte": 3114,
+        "text": "var bits uint64",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "dd5184c57ca8870ec09511e8",
+        "revision": "783cfcb01fb00c48f740c9de79122bd410294149",
+        "path": "parser.go",
+        "start_byte": 5821,
+        "text": "var bits uint64",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "69eb583b6293740c1cdeeaa4",
+        "revision": "783cfcb01fb00c48f740c9de79122bd410294149",
+        "path": "parser.go",
+        "start_byte": 6295,
+        "text": "func parseDescriptor(descriptor string) (Schedule, error) {\n\tswitch descriptor {\n\tcase \"@yearly\", \"@annually\":\n\t\treturn &SpecSchedule{\n\t\t\tSecond: 1 << seconds.min,\n\t\t\tMinute: 1 << minutes.min,\n\t\t\tHour:   1 << hours.min,\n\t\t\tDom:    1 << dom.min,\n\t\t\tMonth:  1 << months.min,\n\t\t\tDow:    all(dow),\n\t\t}, nil\n\n\tcase \"@monthly\":\n\t\treturn &SpecSchedule{\n\t\t\tSecond: 1 << seconds.min,\n\t\t\tMinute: 1 << minutes.min,\n\t\t\tHour:   1 << hours.min,\n\t\t\tDom:    1 << dom.min,\n\t\t\tMonth:  all(months),\n\t\t\tDow:    all(dow),\n\t\t}, nil\n\n\tcase \"@weekly\":\n\t\treturn &SpecSchedule{\n\t\t\tSecond: 1 << seconds.min,\n\t\t\tMinute: 1 << minutes.min,\n\t\t\tHour:   1 << hours.min,\n\t\t\tDom:    all(dom),\n\t\t\tMonth:  all(months),\n\t\t\tDow:    1 << dow.min,\n\t\t}, nil\n\n\tcase \"@daily\", \"@midnight\":\n\t\treturn &SpecSchedule{\n\t\t\tSecond: 1 << seconds.min,\n\t\t\tMinute: 1 << minutes.min,\n\t\t\tHour:   1 << hours.min,\n\t\t\tDom:    all(dom),\n\t\t\tMonth:  all(months),\n\t\t\tDow:    all(dow),\n\t\t}, nil\n\n\tcase \"@hourly\":\n\t\treturn &SpecSchedule{\n\t\t\tSecond: 1 << seconds.min,\n\t\t\tMinute: 1 << minutes.min,\n\t\t\tHour:   all(hours),\n\t\t\tDom:    all(dom),\n\t\t\tMonth:  all(months),\n\t\t\tDow:    all(dow),\n\t\t}, nil\n\t}\n\n\tconst every = \"@every \"\n\tif strings.HasPrefix(descriptor, every) {\n\t\tduration, err := time.ParseDuration(descriptor[len(every):])\n\t\tif err != nil {\n\t\t\treturn nil, fmt.Errorf(\"Failed to parse duration %s: %s\", descriptor, err)\n\t\t}\n\t\treturn Every(duration), nil\n\t}\n\n\treturn nil, fmt.Errorf(\"Unrecognized descriptor: %s\", descriptor)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "c9faa7a2f8c9beda9fb7b61c",
+        "revision": "783cfcb01fb00c48f740c9de79122bd410294149",
+        "path": "spec.go",
+        "start_byte": 195,
+        "text": "type SpecSchedule struct {\n\tSecond, Minute, Hour, Dom, Month, Dow uint64\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "60a3f2dd3cf0cdf8b5016f29",
+        "revision": "783cfcb01fb00c48f740c9de79122bd410294149",
+        "path": "spec.go",
+        "start_byte": 350,
+        "text": "type bounds struct {\n\tmin, max uint\n\tnames    map[string]uint\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "e1223673562186f274820fe6",
+        "revision": "783cfcb01fb00c48f740c9de79122bd410294149",
+        "path": "spec.go",
+        "start_byte": 445,
+        "text": "var (\n\tseconds = bounds{0, 59, nil}\n\tminutes = bounds{0, 59, nil}\n\thours   = bounds{0, 23, nil}\n\tdom     = bounds{1, 31, nil}\n\tmonths  = bounds{1, 12, map[string]uint{\n\t\t\"jan\": 1,\n\t\t\"feb\": 2,\n\t\t\"mar\": 3,\n\t\t\"apr\": 4,\n\t\t\"may\": 5,\n\t\t\"jun\": 6,\n\t\t\"jul\": 7,\n\t\t\"aug\": 8,\n\t\t\"sep\": 9,\n\t\t\"oct\": 10,\n\t\t\"nov\": 11,\n\t\t\"dec\": 12,\n\t}}\n\tdow = bounds{0, 6, map[string]uint{\n\t\t\"sun\": 0,\n\t\t\"mon\": 1,\n\t\t\"tue\": 2,\n\t\t\"wed\": 3,\n\t\t\"thu\": 4,\n\t\t\"fri\": 5,\n\t\t\"sat\": 6,\n\t}}\n)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "77002b2558a5664bb77658da",
+        "revision": "6c2310183223ca53939d5cc7dd013225ecfb5716",
+        "path": "constantdelay.go",
+        "start_byte": 441,
+        "text": "func Every(duration time.Duration) ConstantDelaySchedule {\n\tif duration < time.Second {\n\t\tduration = time.Second\n\t}\n\treturn ConstantDelaySchedule{\n\t\tDelay: duration - time.Duration(duration.Nanoseconds())%time.Second,\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "164ac3263bb51a137b17ac73",
+        "revision": "6c2310183223ca53939d5cc7dd013225ecfb5716",
+        "path": "cron.go",
+        "start_byte": 835,
+        "text": "type Entry struct {\n\t// The schedule on which this job should be run.\n\tSchedule Schedule\n\n\t// The next time the job will run. This is the zero time if Cron has not been\n\t// started or this entry's schedule is unsatisfiable\n\tNext time.Time\n\n\t// The last time this job was run. This is the zero time if the job has never\n\t// been run.\n\tPrev time.Time\n\n\t// The Job to run.\n\tJob Job\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "8d50ca1e48e7bd2c1bf4f2bc",
+        "revision": "6c2310183223ca53939d5cc7dd013225ecfb5716",
+        "path": "cron.go",
+        "start_byte": 1330,
+        "text": "func (s byTime) Len() int      { return len(s) }",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "51ff30ed7449e0420ca169db",
+        "revision": "6c2310183223ca53939d5cc7dd013225ecfb5716",
+        "path": "cron.go",
+        "start_byte": 1379,
+        "text": "func (s byTime) Swap(i, j int) { s[i], s[j] = s[j], s[i] }",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "1cf272471b315d035eee04ab",
+        "revision": "6c2310183223ca53939d5cc7dd013225ecfb5716",
+        "path": "cron.go",
+        "start_byte": 1438,
+        "text": "func (s byTime) Less(i, j int) bool {\n\t// Two zero times should return false.\n\t// Otherwise, zero is \"greater\" than any other time.\n\t// (To sort it at the end of the list.)\n\tif s[i].Next.IsZero() {\n\t\treturn false\n\t}\n\tif s[j].Next.IsZero() {\n\t\treturn true\n\t}\n\treturn s[i].Next.Before(s[j].Next)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "16b745ba157d533ec79f2181",
+        "revision": "6c2310183223ca53939d5cc7dd013225ecfb5716",
+        "path": "cron.go",
+        "start_byte": 2116,
+        "text": "func (c *Cron) AddFunc(spec string, cmd func()) error {\n\treturn c.AddJob(spec, FuncJob(cmd))\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "ccc103178f21ce48a926a246",
+        "revision": "6c2310183223ca53939d5cc7dd013225ecfb5716",
+        "path": "cron.go",
+        "start_byte": 2279,
+        "text": "func (c *Cron) AddJob(spec string, cmd Job) error {\n\tschedule, err := Parse(spec)\n\tif err != nil {\n\t\treturn err\n\t}\n\tc.Schedule(schedule, cmd)\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "545b789e43a9f62d2cc395d5",
+        "revision": "6c2310183223ca53939d5cc7dd013225ecfb5716",
+        "path": "cron.go",
+        "start_byte": 3119,
+        "text": "func (c *Cron) run() {\n\t// Figure out the next activation times for each entry.\n\tnow := time.Now().Local()\n\tfor _, entry := range c.entries {\n\t\tentry.Next = entry.Schedule.Next(now)\n\t}\n\n\tfor {\n\t\t// Determine the next entry to run.\n\t\tsort.Sort(byTime(c.entries))\n\n\t\tvar effective time.Time\n\t\tif len(c.entries) == 0 || c.entries[0].Next.IsZero() {\n\t\t\t// If there are no entries yet, just sleep - it still handles new entries\n\t\t\t// and stop requests.\n\t\t\teffective = now.AddDate(10, 0, 0)\n\t\t} else {\n\t\t\teffective = c.entries[0].Next\n\t\t}\n\n\t\tselect {\n\t\tcase now = <-time.After(effective.Sub(now)):\n\t\t\t// Run every entry whose next time was this effective time.\n\t\t\tfor _, e := range c.entries {\n\t\t\t\tif e.Next != effective {\n\t\t\t\t\tbreak\n\t\t\t\t}\n\t\t\t\tgo e.Job.Run()\n\t\t\t\te.Prev = e.Next\n\t\t\t\te.Next = e.Schedule.Next(effective)\n\t\t\t}\n\t\t\tcontinue\n\n\t\tcase newEntry := <-c.add:\n\t\t\tc.entries = append(c.entries, newEntry)\n\t\t\tnewEntry.Next = newEntry.Schedule.Next(now)\n\n\t\tcase <-c.snapshot:\n\t\t\tc.snapshot <- c.entrySnapshot()\n\n\t\tcase <-c.stop:\n\t\t\treturn\n\t\t}\n\n\t\t// 'now' should be updated after newEntry and snapshot cases.\n\t\tnow = time.Now().Local()\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "a888e8c2adb283cb86cb1115",
+        "revision": "6c2310183223ca53939d5cc7dd013225ecfb5716",
+        "path": "cron.go",
+        "start_byte": 4494,
+        "text": "func (c *Cron) entrySnapshot() []*Entry {\n\tentries := []*Entry{}\n\tfor _, e := range c.entries {\n\t\tentries = append(entries, &Entry{\n\t\t\tSchedule: e.Schedule,\n\t\t\tNext:     e.Next,\n\t\t\tPrev:     e.Prev,\n\t\t\tJob:      e.Job,\n\t\t})\n\t}\n\treturn entries\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "4623e1e489690f7159d4f208",
+        "revision": "6c2310183223ca53939d5cc7dd013225ecfb5716",
+        "path": "parser.go",
+        "start_byte": 1696,
+        "text": "func expandFields(fields []string, options ParseOption) []string {\n\tn := 0\n\tcount := len(fields)\n\texpFields := make([]string, len(places))\n\tcopy(expFields, defaults)\n\tfor i, place := range places {\n\t\tif options&place > 0 {\n\t\t\texpFields[i] = fields[n]\n\t\t\tn++\n\t\t}\n\t\tif n == count {\n\t\t\tbreak\n\t\t}\n\t}\n\treturn expFields\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "87b0c39d18d324c09ffcc302",
+        "revision": "6c2310183223ca53939d5cc7dd013225ecfb5716",
+        "path": "parser.go",
+        "start_byte": 2013,
+        "text": "var defaultParser = NewParser(\n\tSecond | Minute | Hour | Dom | Month | DowOptional | Descriptor,\n)",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "7fa1421f0cdd4fde82a07f15",
+        "revision": "6c2310183223ca53939d5cc7dd013225ecfb5716",
+        "path": "parser.go",
+        "start_byte": 2600,
+        "text": "func getField(field string, r bounds) uint64 {\n\t// list = range {\",\" range}\n\tvar bits uint64\n\tranges := strings.FieldsFunc(field, func(r rune) bool { return r == ',' })\n\tfor _, expr := range ranges {\n\t\tbits |= getRange(expr, r)\n\t}\n\treturn bits\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "fd4f18fa1d1790728cc98bac",
+        "revision": "6c2310183223ca53939d5cc7dd013225ecfb5716",
+        "path": "parser.go",
+        "start_byte": 2958,
+        "text": "func getRange(expr string, r bounds) uint64 {\n\n\tvar (\n\t\tstart, end, step uint\n\t\trangeAndStep     = strings.Split(expr, \"/\")\n\t\tlowAndHigh       = strings.Split(rangeAndStep[0], \"-\")\n\t\tsingleDigit      = len(lowAndHigh) == 1\n\t)\n\n\tvar extra uint64\n\tif lowAndHigh[0] == \"*\" || lowAndHigh[0] == \"?\" {\n\t\tstart = r.min\n\t\tend = r.max\n\t\textra = starBit\n\t} else {\n\t\tstart = parseIntOrName(lowAndHigh[0], r.names)\n\t\tswitch len(lowAndHigh) {\n\t\tcase 1:\n\t\t\tend = start\n\t\tcase 2:\n\t\t\tend = parseIntOrName(lowAndHigh[1], r.names)\n\t\tdefault:\n\t\t\tlog.Panicf(\"Too many hyphens: %s\", expr)\n\t\t}\n\t}\n\n\tswitch len(rangeAndStep) {\n\tcase 1:\n\t\tstep = 1\n\tcase 2:\n\t\tstep = mustParseInt(rangeAndStep[1])\n\n\t\t// Special handling: \"N/step\" means \"N-max/step\".\n\t\tif singleDigit {\n\t\t\tend = r.max\n\t\t}\n\tdefault:\n\t\tlog.Panicf(\"Too many slashes: %s\", expr)\n\t}\n\n\tif start < r.min {\n\t\tlog.Panicf(\"Beginning of range (%d) below minimum (%d): %s\", start, r.min, expr)\n\t}\n\tif end > r.max {\n\t\tlog.Panicf(\"End of range (%d) above maximum (%d): %s\", end, r.max, expr)\n\t}\n\tif start > end {\n\t\tlog.Panicf(\"Beginning of range (%d) beyond end of range (%d): %s\", start, end, expr)\n\t}\n\n\treturn getBits(start, end, step) | extra\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "5b81d969bc4e2d734d74b217",
+        "revision": "6c2310183223ca53939d5cc7dd013225ecfb5716",
+        "path": "parser.go",
+        "start_byte": 4208,
+        "text": "func parseIntOrName(expr string, names map[string]uint) uint {\n\tif names != nil {\n\t\tif namedInt, ok := names[strings.ToLower(expr)]; ok {\n\t\t\treturn namedInt\n\t\t}\n\t}\n\treturn mustParseInt(expr)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "9838fa5ccd92dab633e167e5",
+        "revision": "6c2310183223ca53939d5cc7dd013225ecfb5716",
+        "path": "parser.go",
+        "start_byte": 4467,
+        "text": "func mustParseInt(expr string) uint {\n\tnum, err := strconv.Atoi(expr)\n\tif err != nil {\n\t\tlog.Panicf(\"Failed to parse int from %s: %s\", expr, err)\n\t}\n\tif num < 0 {\n\t\tlog.Panicf(\"Negative number (%d) not allowed: %s\", num, expr)\n\t}\n\n\treturn uint(num)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "66a83429cc91ac8944881e8d",
+        "revision": "6c2310183223ca53939d5cc7dd013225ecfb5716",
+        "path": "spec.go",
+        "start_byte": 195,
+        "text": "type SpecSchedule struct {\n\tSecond, Minute, Hour, Dom, Month, Dow uint64\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "a9c7f467ae361c94e3acb25c",
+        "revision": "6c2310183223ca53939d5cc7dd013225ecfb5716",
+        "path": "spec.go",
+        "start_byte": 350,
+        "text": "type bounds struct {\n\tmin, max uint\n\tnames    map[string]uint\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "c380bf84ce7e70130b44c21c",
+        "revision": "6c2310183223ca53939d5cc7dd013225ecfb5716",
+        "path": "spec.go",
+        "start_byte": 445,
+        "text": "var (\n\tseconds = bounds{0, 59, nil}\n\tminutes = bounds{0, 59, nil}\n\thours   = bounds{0, 23, nil}\n\tdom     = bounds{1, 31, nil}\n\tmonths  = bounds{1, 12, map[string]uint{\n\t\t\"jan\": 1,\n\t\t\"feb\": 2,\n\t\t\"mar\": 3,\n\t\t\"apr\": 4,\n\t\t\"may\": 5,\n\t\t\"jun\": 6,\n\t\t\"jul\": 7,\n\t\t\"aug\": 8,\n\t\t\"sep\": 9,\n\t\t\"oct\": 10,\n\t\t\"nov\": 11,\n\t\t\"dec\": 12,\n\t}}\n\tdow = bounds{0, 6, map[string]uint{\n\t\t\"sun\": 0,\n\t\t\"mon\": 1,\n\t\t\"tue\": 2,\n\t\t\"wed\": 3,\n\t\t\"thu\": 4,\n\t\t\"fri\": 5,\n\t\t\"sat\": 6,\n\t}}\n)",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "54be1d336270305535ceab82",
+        "revision": "6c2310183223ca53939d5cc7dd013225ecfb5716",
+        "path": "spec.go",
+        "start_byte": 1146,
+        "text": "func (s *SpecSchedule) Next(t time.Time) time.Time {\n\t// General approach:\n\t// For Month, Day, Hour, Minute, Second:\n\t// Check if the time value matches.  If yes, continue to the next field.\n\t// If the field doesn't match the schedule, then increment the field until it matches.\n\t// While incrementing the field, a wrap-around brings it back to the beginning\n\t// of the field list (since it is necessary to re-verify previous field\n\t// values)\n\n\t// Start at the earliest possible time (the upcoming second).\n\tt = t.Add(1*time.Second - time.Duration(t.Nanosecond())*time.Nanosecond)\n\n\t// This flag indicates whether a field has been incremented.\n\tadded := false\n\n\t// If no time is found within five years, return zero.\n\tyearLimit := t.Year() + 5\n\nWRAP:\n\tif t.Year() > yearLimit {\n\t\treturn time.Time{}\n\t}\n\n\t// Find the first applicable month.\n\t// If it's this month, then do nothing.\n\tfor 1<<uint(t.Month())&s.Month == 0 {\n\t\t// If we have to add a month, reset the other parts to 0.\n\t\tif !added {\n\t\t\tadded = true\n\t\t\t// Otherwise, set the date at the beginning (since the current time is irrelevant).\n\t\t\tt = time.Date(t.Year(), t.Month(), 1, 0, 0, 0, 0, t.Location())\n\t\t}\n\t\tt = t.AddDate(0, 1, 0)\n\n\t\t// Wrapped around.\n\t\tif t.Month() == time.January {\n\t\t\tgoto WRAP\n\t\t}\n\t}\n\n\t// Now get a day in that month.\n\tfor !dayMatches(s, t) {\n\t\tif !added {\n\t\t\tadded = true\n\t\t\tt = time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.Location())\n\t\t}\n\t\tt = t.AddDate(0, 0, 1)\n\n\t\tif t.Day() == 1 {\n\t\t\tgoto WRAP\n\t\t}\n\t}\n\n\tfor 1<<uint(t.Hour())&s.Hour == 0 {\n\t\tif !added {\n\t\t\tadded = true\n\t\t\tt = t.Truncate(time.Hour)\n\t\t}\n\t\tt = t.Add(1 * time.Hour)\n\n\t\tif t.Hour() == 0 {\n\t\t\tgoto WRAP\n\t\t}\n\t}\n\n\tfor 1<<uint(t.Minute())&s.Minute == 0 {\n\t\tif !added {\n\t\t\tadded = true\n\t\t\tt = t.Truncate(time.Minute)\n\t\t}\n\t\tt = t.Add(1 * time.Minute)\n\n\t\tif t.Minute() == 0 {\n\t\t\tgoto WRAP\n\t\t}\n\t}\n\n\tfor 1<<uint(t.Second())&s.Second == 0 {\n\t\tif !added {\n\t\t\tadded = true\n\t\t\tt = t.Truncate(time.Second)\n\t\t}\n\t\tt = t.Add(1 * time.Second)\n\n\t\tif t.Second() == 0 {\n\t\t\tgoto WRAP\n\t\t}\n\t}\n\n\treturn t\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "a3a11ac9dd56b6bbc6fb4d32",
+        "revision": "6c2310183223ca53939d5cc7dd013225ecfb5716",
+        "path": "spec.go",
+        "start_byte": 3314,
+        "text": "func dayMatches(s *SpecSchedule, t time.Time) bool {\n\tvar (\n\t\tdomMatch bool = 1<<uint(t.Day())&s.Dom > 0\n\t\tdowMatch bool = 1<<uint(t.Weekday())&s.Dow > 0\n\t)\n\tif s.Dom&starBit > 0 || s.Dow&starBit > 0 {\n\t\treturn domMatch && dowMatch\n\t}\n\treturn domMatch || dowMatch\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "d09ac75a748ce58317d2ac92",
+        "revision": "6c2310183223ca53939d5cc7dd013225ecfb5716",
+        "path": "spec.go",
+        "start_byte": 3368,
+        "text": "var (\n\t\tdomMatch bool = 1<<uint(t.Day())&s.Dom > 0\n\t\tdowMatch bool = 1<<uint(t.Weekday())&s.Dow > 0\n\t)",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "3be1fde84bada80403763726",
+        "revision": "783cfcb01fb00c48f740c9de79122bd410294149",
+        "path": "constantdelay.go",
+        "start_byte": 441,
+        "text": "func Every(duration time.Duration) ConstantDelaySchedule {\n\tif duration < time.Second {\n\t\tduration = time.Second\n\t}\n\treturn ConstantDelaySchedule{\n\t\tDelay: duration - time.Duration(duration.Nanoseconds())%time.Second,\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "2ea555f258a07045f1cd86fd",
+        "revision": "783cfcb01fb00c48f740c9de79122bd410294149",
+        "path": "cron.go",
+        "start_byte": 900,
+        "text": "type Entry struct {\n\t// The schedule on which this job should be run.\n\tSchedule Schedule\n\n\t// The next time the job will run. This is the zero time if Cron has not been\n\t// started or this entry's schedule is unsatisfiable\n\tNext time.Time\n\n\t// The last time this job was run. This is the zero time if the job has never\n\t// been run.\n\tPrev time.Time\n\n\t// The Job to run.\n\tJob Job\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "a67adc00ccc102e12e6ca592",
+        "revision": "783cfcb01fb00c48f740c9de79122bd410294149",
+        "path": "cron.go",
+        "start_byte": 1395,
+        "text": "func (s byTime) Len() int      { return len(s) }",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "60172686d52c7ab70947a88b",
+        "revision": "783cfcb01fb00c48f740c9de79122bd410294149",
+        "path": "cron.go",
+        "start_byte": 2398,
+        "text": "func (c *Cron) AddFunc(spec string, cmd func()) error {\n\treturn c.AddJob(spec, FuncJob(cmd))\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "e604e3bae44e554e1adbc57d",
+        "revision": "783cfcb01fb00c48f740c9de79122bd410294149",
+        "path": "cron.go",
+        "start_byte": 2560,
+        "text": "func (c *Cron) AddJob(spec string, cmd Job) error {\n\tschedule, err := Parse(spec)\n\tif err != nil {\n\t\treturn err\n\t}\n\tc.Schedule(schedule, cmd)\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "6f741976d62dd07d214ad97e",
+        "revision": "783cfcb01fb00c48f740c9de79122bd410294149",
+        "path": "cron.go",
+        "start_byte": 3444,
+        "text": "func (c *Cron) runWithRecovery(j Job) {\n\tdefer func() {\n\t\tif r := recover(); r != nil {\n\t\t\tconst size = 64 << 10\n\t\t\tbuf := make([]byte, size)\n\t\t\tbuf = buf[:runtime.Stack(buf, false)]\n\t\t\tc.logf(\"cron: panic running job: %v\\n%s\", r, buf)\n\t\t}\n\t}()\n\tj.Run()\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "fd8d45e3ca9947d7da3f95ab",
+        "revision": "783cfcb01fb00c48f740c9de79122bd410294149",
+        "path": "cron.go",
+        "start_byte": 3819,
+        "text": "func (c *Cron) run() {\n\t// Figure out the next activation times for each entry.\n\tnow := time.Now().In(c.location)\n\tfor _, entry := range c.entries {\n\t\tentry.Next = entry.Schedule.Next(now)\n\t}\n\n\tfor {\n\t\t// Determine the next entry to run.\n\t\tsort.Sort(byTime(c.entries))\n\n\t\tvar effective time.Time\n\t\tif len(c.entries) == 0 || c.entries[0].Next.IsZero() {\n\t\t\t// If there are no entries yet, just sleep - it still handles new entries\n\t\t\t// and stop requests.\n\t\t\teffective = now.AddDate(10, 0, 0)\n\t\t} else {\n\t\t\teffective = c.entries[0].Next\n\t\t}\n\n\t\ttimer := time.NewTimer(effective.Sub(now))\n\t\tselect {\n\t\tcase now = <-timer.C:\n\t\t\t// Run every entry whose next time was this effective time.\n\t\t\tfor _, e := range c.entries {\n\t\t\t\tif e.Next != effective {\n\t\t\t\t\tbreak\n\t\t\t\t}\n\t\t\t\tgo c.runWithRecovery(e.Job)\n\t\t\t\te.Prev = e.Next\n\t\t\t\te.Next = e.Schedule.Next(now)\n\t\t\t}\n\t\t\tcontinue\n\n\t\tcase newEntry := <-c.add:\n\t\t\tc.entries = append(c.entries, newEntry)\n\t\t\tnewEntry.Next = newEntry.Schedule.Next(time.Now().In(c.location))\n\n\t\tcase <-c.snapshot:\n\t\t\tc.snapshot <- c.entrySnapshot()\n\n\t\tcase <-c.stop:\n\t\t\ttimer.Stop()\n\t\t\treturn\n\t\t}\n\n\t\t// 'now' should be updated after newEntry and snapshot cases.\n\t\tnow = time.Now().In(c.location)\n\t\ttimer.Stop()\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "677332de04ed71afae2897aa",
+        "revision": "783cfcb01fb00c48f740c9de79122bd410294149",
+        "path": "cron.go",
+        "start_byte": 5109,
+        "text": "func (c *Cron) logf(format string, args ...interface{}) {\n\tif c.ErrorLog != nil {\n\t\tc.ErrorLog.Printf(format, args...)\n\t} else {\n\t\tlog.Printf(format, args...)\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "b115dd8418d4a4017b6d323d",
+        "revision": "783cfcb01fb00c48f740c9de79122bd410294149",
+        "path": "cron.go",
+        "start_byte": 5513,
+        "text": "func (c *Cron) entrySnapshot() []*Entry {\n\tentries := []*Entry{}\n\tfor _, e := range c.entries {\n\t\tentries = append(entries, &Entry{\n\t\t\tSchedule: e.Schedule,\n\t\t\tNext:     e.Next,\n\t\t\tPrev:     e.Prev,\n\t\t\tJob:      e.Job,\n\t\t})\n\t}\n\treturn entries\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "ca681351660d4d3f448acd31",
+        "revision": "783cfcb01fb00c48f740c9de79122bd410294149",
+        "path": "parser.go",
+        "start_byte": 2441,
+        "text": "var (\n\t\tsecond     = field(fields[0], seconds)\n\t\tminute     = field(fields[1], minutes)\n\t\thour       = field(fields[2], hours)\n\t\tdayofmonth = field(fields[3], dom)\n\t\tmonth      = field(fields[4], months)\n\t\tdayofweek  = field(fields[5], dow)\n\t)",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "16a11cb44a4dae0af0921946",
+        "revision": "783cfcb01fb00c48f740c9de79122bd410294149",
+        "path": "parser.go",
+        "start_byte": 3487,
+        "text": "func getRange(expr string, r bounds) (uint64, error) {\n\tvar (\n\t\tstart, end, step uint\n\t\trangeAndStep     = strings.Split(expr, \"/\")\n\t\tlowAndHigh       = strings.Split(rangeAndStep[0], \"-\")\n\t\tsingleDigit      = len(lowAndHigh) == 1\n\t\terr              error\n\t\tzero             = uint64(0)\n\t)\n\n\tvar extra_star uint64\n\tif lowAndHigh[0] == \"*\" || lowAndHigh[0] == \"?\" {\n\t\tstart = r.min\n\t\tend = r.max\n\t\textra_star = starBit\n\t} else {\n\t\tstart, err = parseIntOrName(lowAndHigh[0], r.names)\n\t\tif err != nil {\n\t\t\treturn zero, err\n\t\t}\n\t\tswitch len(lowAndHigh) {\n\t\tcase 1:\n\t\t\tend = start\n\t\tcase 2:\n\t\t\tend, err = parseIntOrName(lowAndHigh[1], r.names)\n\t\t\tif err != nil {\n\t\t\t\treturn zero, err\n\t\t\t}\n\t\tdefault:\n\t\t\treturn zero, fmt.Errorf(\"Too many hyphens: %s\", expr)\n\t\t}\n\t}\n\n\tswitch len(rangeAndStep) {\n\tcase 1:\n\t\tstep = 1\n\tcase 2:\n\t\tstep, err = mustParseInt(rangeAndStep[1])\n\t\tif err != nil {\n\t\t\treturn zero, err\n\t\t}\n\n\t\t// Special handling: \"N/step\" means \"N-max/step\".\n\t\tif singleDigit {\n\t\t\tend = r.max\n\t\t}\n\tdefault:\n\t\treturn zero, fmt.Errorf(\"Too many slashes: %s\", expr)\n\t}\n\n\tif start < r.min {\n\t\treturn zero, fmt.Errorf(\"Beginning of range (%d) below minimum (%d): %s\", start, r.min, expr)\n\t}\n\tif end > r.max {\n\t\treturn zero, fmt.Errorf(\"End of range (%d) above maximum (%d): %s\", end, r.max, expr)\n\t}\n\tif start > end {\n\t\treturn zero, fmt.Errorf(\"Beginning of range (%d) beyond end of range (%d): %s\", start, end, expr)\n\t}\n\tif step == 0 {\n\t\treturn zero, fmt.Errorf(\"Step of range should be a positive number: %s\", expr)\n\t}\n\n\treturn getBits(start, end, step) | extra_star, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "a4fe761d9e6db844a0eaecae",
+        "revision": "783cfcb01fb00c48f740c9de79122bd410294149",
+        "path": "parser.go",
+        "start_byte": 3543,
+        "text": "var (\n\t\tstart, end, step uint\n\t\trangeAndStep     = strings.Split(expr, \"/\")\n\t\tlowAndHigh       = strings.Split(rangeAndStep[0], \"-\")\n\t\tsingleDigit      = len(lowAndHigh) == 1\n\t\terr              error\n\t\tzero             = uint64(0)\n\t)",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "e4976a87aa0916c1a6c8469b",
+        "revision": "783cfcb01fb00c48f740c9de79122bd410294149",
+        "path": "parser.go",
+        "start_byte": 3779,
+        "text": "var extra_star uint64",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "3d18cd0542f13988ee2c5a8d",
+        "revision": "783cfcb01fb00c48f740c9de79122bd410294149",
+        "path": "parser.go",
+        "start_byte": 5130,
+        "text": "func parseIntOrName(expr string, names map[string]uint) (uint, error) {\n\tif names != nil {\n\t\tif namedInt, ok := names[strings.ToLower(expr)]; ok {\n\t\t\treturn namedInt, nil\n\t\t}\n\t}\n\treturn mustParseInt(expr)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "81bc5a47bfc5b4603797f2e4",
+        "revision": "783cfcb01fb00c48f740c9de79122bd410294149",
+        "path": "parser.go",
+        "start_byte": 5413,
+        "text": "func mustParseInt(expr string) (uint, error) {\n\tnum, err := strconv.Atoi(expr)\n\tif err != nil {\n\t\treturn 0, fmt.Errorf(\"Failed to parse int from %s: %s\", expr, err)\n\t}\n\tif num < 0 {\n\t\treturn 0, fmt.Errorf(\"Negative number (%d) not allowed: %s\", num, expr)\n\t}\n\n\treturn uint(num), nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "fe2344fc42e309ec2ae28af0",
+        "revision": "783cfcb01fb00c48f740c9de79122bd410294149",
+        "path": "parser.go",
+        "start_byte": 5777,
+        "text": "func getBits(min, max, step uint) uint64 {\n\tvar bits uint64\n\n\t// If step is 1, use shifts.\n\tif step == 1 {\n\t\treturn ^(math.MaxUint64 << (max + 1)) & (math.MaxUint64 << min)\n\t}\n\n\t// Else, use a simple loop.\n\tfor i := min; i <= max; i += step {\n\t\tbits |= 1 << i\n\t}\n\treturn bits\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "dfc29aea5afae8327ca2cee6",
+        "revision": "783cfcb01fb00c48f740c9de79122bd410294149",
+        "path": "parser.go",
+        "start_byte": 6126,
+        "text": "func all(r bounds) uint64 {\n\treturn getBits(r.min, r.max, 1) | starBit\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "dca509a8b7e818677751b130",
+        "revision": "783cfcb01fb00c48f740c9de79122bd410294149",
+        "path": "spec.go",
+        "start_byte": 1146,
+        "text": "func (s *SpecSchedule) Next(t time.Time) time.Time {\n\t// General approach:\n\t// For Month, Day, Hour, Minute, Second:\n\t// Check if the time value matches.  If yes, continue to the next field.\n\t// If the field doesn't match the schedule, then increment the field until it matches.\n\t// While incrementing the field, a wrap-around brings it back to the beginning\n\t// of the field list (since it is necessary to re-verify previous field\n\t// values)\n\n\t// Start at the earliest possible time (the upcoming second).\n\tt = t.Add(1*time.Second - time.Duration(t.Nanosecond())*time.Nanosecond)\n\n\t// This flag indicates whether a field has been incremented.\n\tadded := false\n\n\t// If no time is found within five years, return zero.\n\tyearLimit := t.Year() + 5\n\nWRAP:\n\tif t.Year() > yearLimit {\n\t\treturn time.Time{}\n\t}\n\n\t// Find the first applicable month.\n\t// If it's this month, then do nothing.\n\tfor 1<<uint(t.Month())&s.Month == 0 {\n\t\t// If we have to add a month, reset the other parts to 0.\n\t\tif !added {\n\t\t\tadded = true\n\t\t\t// Otherwise, set the date at the beginning (since the current time is irrelevant).\n\t\t\tt = time.Date(t.Year(), t.Month(), 1, 0, 0, 0, 0, t.Location())\n\t\t}\n\t\tt = t.AddDate(0, 1, 0)\n\n\t\t// Wrapped around.\n\t\tif t.Month() == time.January {\n\t\t\tgoto WRAP\n\t\t}\n\t}\n\n\t// Now get a day in that month.\n\tfor !dayMatches(s, t) {\n\t\tif !added {\n\t\t\tadded = true\n\t\t\tt = time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.Location())\n\t\t}\n\t\tt = t.AddDate(0, 0, 1)\n\n\t\tif t.Day() == 1 {\n\t\t\tgoto WRAP\n\t\t}\n\t}\n\n\tfor 1<<uint(t.Hour())&s.Hour == 0 {\n\t\tif !added {\n\t\t\tadded = true\n\t\t\tt = time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), 0, 0, 0, t.Location())\n\t\t}\n\t\tt = t.Add(1 * time.Hour)\n\n\t\tif t.Hour() == 0 {\n\t\t\tgoto WRAP\n\t\t}\n\t}\n\n\tfor 1<<uint(t.Minute())&s.Minute == 0 {\n\t\tif !added {\n\t\t\tadded = true\n\t\t\tt = t.Truncate(time.Minute)\n\t\t}\n\t\tt = t.Add(1 * time.Minute)\n\n\t\tif t.Minute() == 0 {\n\t\t\tgoto WRAP\n\t\t}\n\t}\n\n\tfor 1<<uint(t.Second())&s.Second == 0 {\n\t\tif !added {\n\t\t\tadded = true\n\t\t\tt = t.Truncate(time.Second)\n\t\t}\n\t\tt = t.Add(1 * time.Second)\n\n\t\tif t.Second() == 0 {\n\t\t\tgoto WRAP\n\t\t}\n\t}\n\n\treturn t\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "0db7bc2fb32d5ee3aedea874",
+        "revision": "783cfcb01fb00c48f740c9de79122bd410294149",
+        "path": "spec.go",
+        "start_byte": 3365,
+        "text": "func dayMatches(s *SpecSchedule, t time.Time) bool {\n\tvar (\n\t\tdomMatch bool = 1<<uint(t.Day())&s.Dom > 0\n\t\tdowMatch bool = 1<<uint(t.Weekday())&s.Dow > 0\n\t)\n\n\tif s.Dom&starBit > 0 || s.Dow&starBit > 0 {\n\t\treturn domMatch && dowMatch\n\t}\n\treturn domMatch || dowMatch\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "5716c88a07fd3eb2298490ec",
+        "revision": "783cfcb01fb00c48f740c9de79122bd410294149",
+        "path": "spec.go",
+        "start_byte": 3419,
+        "text": "var (\n\t\tdomMatch bool = 1<<uint(t.Day())&s.Dom > 0\n\t\tdowMatch bool = 1<<uint(t.Weekday())&s.Dow > 0\n\t)",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "6aecfffcf324b6e668aa3065",
+        "revision": "6c2310183223ca53939d5cc7dd013225ecfb5716",
+        "path": "constantdelay_test.go",
+        "start_byte": 45,
+        "text": "func TestConstantDelayNext(t *testing.T) {\n\ttests := []struct {\n\t\ttime     string\n\t\tdelay    time.Duration\n\t\texpected string\n\t}{\n\t\t// Simple cases\n\t\t{\"Mon Jul 9 14:45 2012\", 15*time.Minute + 50*time.Nanosecond, \"Mon Jul 9 15:00 2012\"},\n\t\t{\"Mon Jul 9 14:59 2012\", 15 * time.Minute, \"Mon Jul 9 15:14 2012\"},\n\t\t{\"Mon Jul 9 14:59:59 2012\", 15 * time.Minute, \"Mon Jul 9 15:14:59 2012\"},\n\n\t\t// Wrap around hours\n\t\t{\"Mon Jul 9 15:45 2012\", 35 * time.Minute, \"Mon Jul 9 16:20 2012\"},\n\n\t\t// Wrap around days\n\t\t{\"Mon Jul 9 23:46 2012\", 14 * time.Minute, \"Tue Jul 10 00:00 2012\"},\n\t\t{\"Mon Jul 9 23:45 2012\", 35 * time.Minute, \"Tue Jul 10 00:20 2012\"},\n\t\t{\"Mon Jul 9 23:35:51 2012\", 44*time.Minute + 24*time.Second, \"Tue Jul 10 00:20:15 2012\"},\n\t\t{\"Mon Jul 9 23:35:51 2012\", 25*time.Hour + 44*time.Minute + 24*time.Second, \"Thu Jul 11 01:20:15 2012\"},\n\n\t\t// Wrap around months\n\t\t{\"Mon Jul 9 23:35 2012\", 91*24*time.Hour + 25*time.Minute, \"Thu Oct 9 00:00 2012\"},\n\n\t\t// Wrap around minute, hour, day, month, and year\n\t\t{\"Mon Dec 31 23:59:45 2012\", 15 * time.Second, \"Tue Jan 1 00:00:00 2013\"},\n\n\t\t// Round to nearest second on the delay\n\t\t{\"Mon Jul 9 14:45 2012\", 15*time.Minute + 50*time.Nanosecond, \"Mon Jul 9 15:00 2012\"},\n\n\t\t// Round up to 1 second if the duration is less.\n\t\t{\"Mon Jul 9 14:45:00 2012\", 15 * time.Millisecond, \"Mon Jul 9 14:45:01 2012\"},\n\n\t\t// Round to nearest second when calculating the next time.\n\t\t{\"Mon Jul 9 14:45:00.005 2012\", 15 * time.Minute, \"Mon Jul 9 15:00 2012\"},\n\n\t\t// Round to nearest second for both.\n\t\t{\"Mon Jul 9 14:45:00.005 2012\", 15*time.Minute + 50*time.Nanosecond, \"Mon Jul 9 15:00 2012\"},\n\t}\n\n\tfor _, c := range tests {\n\t\tactual := Every(c.delay).Next(getTime(c.time))\n\t\texpected := getTime(c.expected)\n\t\tif actual != expected {\n\t\t\tt.Errorf(\"%s, \\\"%s\\\": (expected) %v != %v (actual)\", c.time, c.delay, expected, actual)\n\t\t}\n\t}\n}",
+        "rank": 3,
+        "truncated": false
+      },
+      {
+        "id": "57571c4c95283bcef880f62b",
+        "revision": "6c2310183223ca53939d5cc7dd013225ecfb5716",
+        "path": "cron_test.go",
+        "start_byte": 259,
+        "text": "const ONE_SECOND = 1*time.Second + 10*time.Millisecond",
+        "rank": 3,
+        "truncated": false
+      },
+      {
+        "id": "0658cc16faf398a85803ebee",
+        "revision": "6c2310183223ca53939d5cc7dd013225ecfb5716",
+        "path": "cron_test.go",
+        "start_byte": 3006,
+        "text": "func TestRunningMultipleSchedules(t *testing.T) {\n\twg := &sync.WaitGroup{}\n\twg.Add(2)\n\n\tcron := New()\n\tcron.AddFunc(\"0 0 0 1 1 ?\", func() {})\n\tcron.AddFunc(\"0 0 0 31 12 ?\", func() {})\n\tcron.AddFunc(\"* * * * * ?\", func() { wg.Done() })\n\tcron.Schedule(Every(time.Minute), FuncJob(func() {}))\n\tcron.Schedule(Every(time.Second), FuncJob(func() { wg.Done() }))\n\tcron.Schedule(Every(time.Hour), FuncJob(func() {}))\n\n\tcron.Start()\n\tdefer cron.Stop()\n\n\tselect {\n\tcase <-time.After(2 * ONE_SECOND):\n\t\tt.FailNow()\n\tcase <-wait(wg):\n\t}\n}",
+        "rank": 3,
+        "truncated": false
+      },
+      {
+        "id": "c46a82e364883fcf36e206a1",
+        "revision": "6c2310183223ca53939d5cc7dd013225ecfb5716",
+        "path": "cron_test.go",
+        "start_byte": 3607,
+        "text": "func TestLocalTimezone(t *testing.T) {\n\twg := &sync.WaitGroup{}\n\twg.Add(1)\n\n\tnow := time.Now().Local()\n\tspec := fmt.Sprintf(\"%d %d %d %d %d ?\",\n\t\tnow.Second()+1, now.Minute(), now.Hour(), now.Day(), now.Month())\n\n\tcron := New()\n\tcron.AddFunc(spec, func() { wg.Done() })\n\tcron.Start()\n\tdefer cron.Stop()\n\n\tselect {\n\tcase <-time.After(ONE_SECOND):\n\t\tt.FailNow()\n\tcase <-wait(wg):\n\t}\n}",
+        "rank": 3,
+        "truncated": false
+      },
+      {
+        "id": "596b42055ab69c7776baf788",
+        "revision": "6c2310183223ca53939d5cc7dd013225ecfb5716",
+        "path": "cron_test.go",
+        "start_byte": 4158,
+        "text": "type testJob struct {\n\twg   *sync.WaitGroup\n\tname string\n}",
+        "rank": 3,
+        "truncated": false
+      },
+      {
+        "id": "36574fdb279e7bd8781bd5e8",
+        "revision": "6c2310183223ca53939d5cc7dd013225ecfb5716",
+        "path": "cron_test.go",
+        "start_byte": 4291,
+        "text": "func TestJob(t *testing.T) {\n\twg := &sync.WaitGroup{}\n\twg.Add(1)\n\n\tcron := New()\n\tcron.AddJob(\"0 0 0 30 Feb ?\", testJob{wg, \"job0\"})\n\tcron.AddJob(\"0 0 0 1 1 ?\", testJob{wg, \"job1\"})\n\tcron.AddJob(\"* * * * * ?\", testJob{wg, \"job2\"})\n\tcron.AddJob(\"1 0 0 1 1 ?\", testJob{wg, \"job3\"})\n\tcron.Schedule(Every(5*time.Second+5*time.Nanosecond), testJob{wg, \"job4\"})\n\tcron.Schedule(Every(5*time.Minute), testJob{wg, \"job5\"})\n\n\tcron.Start()\n\tdefer cron.Stop()\n\n\tselect {\n\tcase <-time.After(ONE_SECOND):\n\t\tt.FailNow()\n\tcase <-wait(wg):\n\t}\n\n\t// Ensure the entries are in the right order.\n\texpecteds := []string{\"job2\", \"job4\", \"job5\", \"job1\", \"job3\", \"job0\"}\n\n\tvar actuals []string\n\tfor _, entry := range cron.Entries() {\n\t\tactuals = append(actuals, entry.Job.(testJob).name)\n\t}\n\n\tfor i, expected := range expecteds {\n\t\tif actuals[i] != expected {\n\t\t\tt.Errorf(\"Jobs not in the right order.  (expected) %s != %s (actual)\", expecteds, actuals)\n\t\t\tt.FailNow()\n\t\t}\n\t}\n}",
+        "rank": 3,
+        "truncated": false
+      },
+      {
+        "id": "c102d6b860300bdfd18d8cef",
+        "revision": "6c2310183223ca53939d5cc7dd013225ecfb5716",
+        "path": "cron_test.go",
+        "start_byte": 4938,
+        "text": "var actuals []string",
+        "rank": 3,
+        "truncated": false
+      },
+      {
+        "id": "181b092777ef99febcc5813b",
+        "revision": "6c2310183223ca53939d5cc7dd013225ecfb5716",
+        "path": "parser_test.go",
+        "start_byte": 56,
+        "text": "func TestRange(t *testing.T) {\n\tranges := []struct {\n\t\texpr     string\n\t\tmin, max uint\n\t\texpected uint64\n\t}{\n\t\t{\"5\", 0, 7, 1 << 5},\n\t\t{\"0\", 0, 7, 1 << 0},\n\t\t{\"7\", 0, 7, 1 << 7},\n\n\t\t{\"5-5\", 0, 7, 1 << 5},\n\t\t{\"5-6\", 0, 7, 1<<5 | 1<<6},\n\t\t{\"5-7\", 0, 7, 1<<5 | 1<<6 | 1<<7},\n\n\t\t{\"5-6/2\", 0, 7, 1 << 5},\n\t\t{\"5-7/2\", 0, 7, 1<<5 | 1<<7},\n\t\t{\"5-7/1\", 0, 7, 1<<5 | 1<<6 | 1<<7},\n\n\t\t{\"*\", 1, 3, 1<<1 | 1<<2 | 1<<3 | starBit},\n\t\t{\"*/2\", 1, 3, 1<<1 | 1<<3 | starBit},\n\t}\n\n\tfor _, c := range ranges {\n\t\tactual := getRange(c.expr, bounds{c.min, c.max, nil})\n\t\tif actual != c.expected {\n\t\t\tt.Errorf(\"%s => (expected) %d != %d (actual)\", c.expr, c.expected, actual)\n\t\t}\n\t}\n}",
+        "rank": 3,
+        "truncated": false
+      },
+      {
+        "id": "6afe4e4ff9df01e2b1ebc2f7",
+        "revision": "6c2310183223ca53939d5cc7dd013225ecfb5716",
+        "path": "parser_test.go",
+        "start_byte": 716,
+        "text": "func TestField(t *testing.T) {\n\tfields := []struct {\n\t\texpr     string\n\t\tmin, max uint\n\t\texpected uint64\n\t}{\n\t\t{\"5\", 1, 7, 1 << 5},\n\t\t{\"5,6\", 1, 7, 1<<5 | 1<<6},\n\t\t{\"5,6,7\", 1, 7, 1<<5 | 1<<6 | 1<<7},\n\t\t{\"1,5-7/2,3\", 1, 7, 1<<1 | 1<<5 | 1<<7 | 1<<3},\n\t}\n\n\tfor _, c := range fields {\n\t\tactual := getField(c.expr, bounds{c.min, c.max, nil})\n\t\tif actual != c.expected {\n\t\t\tt.Errorf(\"%s => (expected) %d != %d (actual)\", c.expr, c.expected, actual)\n\t\t}\n\t}\n}",
+        "rank": 3,
+        "truncated": false
+      },
+      {
+        "id": "dc88c7029bc8a1d515999f36",
+        "revision": "6c2310183223ca53939d5cc7dd013225ecfb5716",
+        "path": "parser_test.go",
+        "start_byte": 1171,
+        "text": "func TestBits(t *testing.T) {\n\tallBits := []struct {\n\t\tr        bounds\n\t\texpected uint64\n\t}{\n\t\t{minutes, 0xfffffffffffffff}, // 0-59: 60 ones\n\t\t{hours, 0xffffff},            // 0-23: 24 ones\n\t\t{dom, 0xfffffffe},            // 1-31: 31 ones, 1 zero\n\t\t{months, 0x1ffe},             // 1-12: 12 ones, 1 zero\n\t\t{dow, 0x7f},                  // 0-6: 7 ones\n\t}\n\n\tfor _, c := range allBits {\n\t\tactual := all(c.r) // all() adds the starBit, so compensate for that..\n\t\tif c.expected|starBit != actual {\n\t\t\tt.Errorf(\"%d-%d/%d => (expected) %b != %b (actual)\",\n\t\t\t\tc.r.min, c.r.max, 1, c.expected|starBit, actual)\n\t\t}\n\t}\n\n\tbits := []struct {\n\t\tmin, max, step uint\n\t\texpected       uint64\n\t}{\n\n\t\t{0, 0, 1, 0x1},\n\t\t{1, 1, 1, 0x2},\n\t\t{1, 5, 2, 0x2a}, // 101010\n\t\t{1, 4, 2, 0xa},  // 1010\n\t}\n\n\tfor _, c := range bits {\n\t\tactual := getBits(c.min, c.max, c.step)\n\t\tif c.expected != actual {\n\t\t\tt.Errorf(\"%d-%d/%d => (expected) %b != %b (actual)\",\n\t\t\t\tc.min, c.max, c.step, c.expected, actual)\n\t\t}\n\t}\n}",
+        "rank": 3,
+        "truncated": false
+      },
+      {
+        "id": "5cd6ecbda9b4cf617c9b3fb4",
+        "revision": "6c2310183223ca53939d5cc7dd013225ecfb5716",
+        "path": "parser_test.go",
+        "start_byte": 2157,
+        "text": "func TestSpecSchedule(t *testing.T) {\n\tentries := []struct {\n\t\texpr     string\n\t\texpected Schedule\n\t}{\n\t\t{\"* 5 * * * *\", &SpecSchedule{all(seconds), 1 << 5, all(hours), all(dom), all(months), all(dow)}},\n\t\t{\"@every 5m\", ConstantDelaySchedule{time.Duration(5) * time.Minute}},\n\t}\n\n\tfor _, c := range entries {\n\t\tactual, err := Parse(c.expr)\n\t\tif err != nil {\n\t\t\tt.Error(err)\n\t\t}\n\t\tif !reflect.DeepEqual(actual, c.expected) {\n\t\t\tt.Errorf(\"%s => (expected) %b != %b (actual)\", c.expr, c.expected, actual)\n\t\t}\n\t}\n}",
+        "rank": 3,
+        "truncated": false
+      },
+      {
+        "id": "f8c91e56dc4bd8d23a426f21",
+        "revision": "6c2310183223ca53939d5cc7dd013225ecfb5716",
+        "path": "spec_test.go",
+        "start_byte": 45,
+        "text": "func TestActivation(t *testing.T) {\n\ttests := []struct {\n\t\ttime, spec string\n\t\texpected   bool\n\t}{\n\t\t// Every fifteen minutes.\n\t\t{\"Mon Jul 9 15:00 2012\", \"0 0/15 * * *\", true},\n\t\t{\"Mon Jul 9 15:45 2012\", \"0 0/15 * * *\", true},\n\t\t{\"Mon Jul 9 15:40 2012\", \"0 0/15 * * *\", false},\n\n\t\t// Every fifteen minutes, starting at 5 minutes.\n\t\t{\"Mon Jul 9 15:05 2012\", \"0 5/15 * * *\", true},\n\t\t{\"Mon Jul 9 15:20 2012\", \"0 5/15 * * *\", true},\n\t\t{\"Mon Jul 9 15:50 2012\", \"0 5/15 * * *\", true},\n\n\t\t// Named months\n\t\t{\"Sun Jul 15 15:00 2012\", \"0 0/15 * * Jul\", true},\n\t\t{\"Sun Jul 15 15:00 2012\", \"0 0/15 * * Jun\", false},\n\n\t\t// Everything set.\n\t\t{\"Sun Jul 15 08:30 2012\", \"0 30 08 ? Jul Sun\", true},\n\t\t{\"Sun Jul 15 08:30 2012\", \"0 30 08 15 Jul ?\", true},\n\t\t{\"Mon Jul 16 08:30 2012\", \"0 30 08 ? Jul Sun\", false},\n\t\t{\"Mon Jul 16 08:30 2012\", \"0 30 08 15 Jul ?\", false},\n\n\t\t// Predefined schedules\n\t\t{\"Mon Jul 9 15:00 2012\", \"@hourly\", true},\n\t\t{\"Mon Jul 9 15:04 2012\", \"@hourly\", false},\n\t\t{\"Mon Jul 9 15:00 2012\", \"@daily\", false},\n\t\t{\"Mon Jul 9 00:00 2012\", \"@daily\", true},\n\t\t{\"Mon Jul 9 00:00 2012\", \"@weekly\", false},\n\t\t{\"Sun Jul 8 00:00 2012\", \"@weekly\", true},\n\t\t{\"Sun Jul 8 01:00 2012\", \"@weekly\", false},\n\t\t{\"Sun Jul 8 00:00 2012\", \"@monthly\", false},\n\t\t{\"Sun Jul 1 00:00 2012\", \"@monthly\", true},\n\n\t\t// Test interaction of DOW and DOM.\n\t\t// If both are specified, then only one needs to match.\n\t\t{\"Sun Jul 15 00:00 2012\", \"0 * * 1,15 * Sun\", true},\n\t\t{\"Fri Jun 15 00:00 2012\", \"0 * * 1,15 * Sun\", true},\n\t\t{\"Wed Aug 1 00:00 2012\", \"0 * * 1,15 * Sun\", true},\n\n\t\t// However, if one has a star, then both need to match.\n\t\t{\"Sun Jul 15 00:00 2012\", \"0 * * * * Mon\", false},\n\t\t{\"Sun Jul 15 00:00 2012\", \"0 ",
+        "rank": 3,
+        "truncated": true
+      }
+    ]
+  },
+  "retrieval": {
+    "unresolved": [
+      {
+        "side": "ours",
+        "identifier": "int",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Minute",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Hour",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Dom",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Month",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Dow",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "DowOptional",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Descriptor",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "string",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "options",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "optionals",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "p",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Parse",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "parser.go",
+            "start": 564
+          },
+          {
+            "path": "parser.go",
+            "start": 2358
+          }
+        ]
+      },
+      {
+        "side": "ours",
+        "identifier": "spec",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "_",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Schedule",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "cron.go",
+            "start": 575
+          },
+          {
+            "path": "cron.go",
+            "start": 2504
+          }
+        ]
+      },
+      {
+        "side": "ours",
+        "identifier": "err",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "error",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "recovered",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "recover",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "fmt",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Errorf",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "standardSpec",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "string",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Schedule",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "cron.go",
+            "start": 640
+          },
+          {
+            "path": "cron.go",
+            "start": 2785
+          }
+        ]
+      },
+      {
+        "side": "theirs",
+        "identifier": "error",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "fields",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "strings",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Fields",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "len",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "fmt",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Errorf",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "err",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "parser.go",
+            "start": 921
+          },
+          {
+            "path": "parser.go",
+            "start": 2268
+          }
+        ]
+      },
+      {
+        "side": "theirs",
+        "identifier": "field",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "r",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "uint64",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "bits",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "parser.go",
+            "start": 1027
+          },
+          {
+            "path": "parser.go",
+            "start": 2374
+          },
+          {
+            "path": "parser.go",
+            "start": 3114
+          },
+          {
+            "path": "parser.go",
+            "start": 5821
+          }
+        ]
+      },
+      {
+        "side": "theirs",
+        "identifier": "minutes",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "hour",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "hours",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "dayofmonth",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "dom",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "month",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "months",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "dayofweek",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "dow",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Second",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "min",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Minute",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Hour",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Dom",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Month",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Dow",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "spec",
+        "reason": "no-unique-declaration-established"
+      }
+    ],
+    "method": "syntax-ranges-and-identifier-candidates/3",
+    "budget_bytes": 32768,
+    "libraries": {
+      "C": "cbbd4827ee02cd5c018ab41f10d8404ff8741159054b352d9a6d763c506ba3c7",
+      "Go": "1612f8fd958ba1ec981bf4b91e2ff399f1e54d26a9da68e5b60b0d7cd00616fc"
+    }
+  }
+}

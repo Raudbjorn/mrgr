@@ -11,8 +11,7 @@ not renumbered) because other files in this repo cite them by number (e.g.
 `evidence/h0/REVIEW-2026-08-29.md` cites "§3.4"). Use the table below to
 resolve any `§N` you find quoted elsewhere back to a file.
 
-*Last split:* 2026-08-30. *Last content update:* 2026-08-30 (H0 acceptance gate
-executed — verdict null; WP8 agent adapter retired under the WP4 STOP rule).
+*Last split:* 2026-08-30. *Last content update:* 2026-09-06 (Phase 3 v2 complete; v3 behavioral development running with a staged selector repair; Phase 4 integration complete; Phase 5 ready).
 
 ---
 
@@ -23,8 +22,8 @@ executed — verdict null; WP8 agent adapter retired under the WP4 STOP rule).
 | M0 (`@mrgr/core` extraction, publication) | `notes/m0.md` |
 | M1a (schema, persistence, `mrgr-db/2`) | `notes/m1a.md` |
 | H0 (evidence-utility discriminator) | `notes/h0.md` |
-| M2a (merge mechanisms) — **blocked, read first** | `notes/m2a.md` |
-| Resurrection proof — **blocked, read first** | `notes/resurrection.md` |
+| M2a (merge mechanisms) — **port complete, evidence available** | `notes/m2a.md` |
+| Resurrection proof — **follows Phase 4; read first** | `notes/resurrection.md` |
 | M1b/M2b/M3/M4/Replay/Agent adapter (future work) | `notes/future-work.md` |
 | Anything, every session | `phase-0-frame-and-status/` (both files) |
 
@@ -45,13 +44,7 @@ file wins; notes files carry no state of their own.
   *every* session regardless of which milestone you're working — it carries
   workspace/version pinning, authority/supersession rules, and the
   answer-first verdict table.
-- **H0 is VALID and NULL (phase 3 closed, agent adapter retired); WP0 is 3/4 done; M1a's persistence layer is not on `main`.**
-  Current state for all three lives at point of use — §3.4, §3.1/§3.2, §3.5
-  respectively — not summarized here to avoid a second copy going stale. If
-  you find text elsewhere still contradicting these, it's the stale copy —
-  the phase-N `current-state.md` file wins (§1.5 rule 2, which also covers
-  the `STATUS.md`/`SOURCES.md` caveat — read that one rule, not scattered
-  mentions of it).
+- **Phase 3 is complete: the valid 2026-09-06 concrete-output result is preserved.** Read its [current state](phase-3-h0-evidence-utility/current-state.md) and [execution contract / Phase 4 handoff](phase-3-h0-evidence-utility/execution-and-handoff-2026-09-06.md). The user selected Phase 3 → Phase 4 → Phase 5. A valid preserved Phase 3 result permits deterministic Phase 4 work regardless of H0 positivity. Phase 4's port and residue freeze are complete; see its [current state](phase-4-m2a-mechanisms/current-state.md). Phase 5 fresh reconstruction is next. Each phase's current-state file wins over historical summaries elsewhere.
 
 ---
 
@@ -77,13 +70,15 @@ file wins; notes files carry no state of their own.
 | `work-packages.md` | §6 WP1 (P0 schema honesty) + WP2 (P1 load-bearing tests) — both DONE |
 | `requirements.md` | §8 M1a schema/persistence/identity/error/test requirements |
 
-### `phase-3-h0-evidence-utility/` — does selected evidence help adjudication? **Answer: not measurably. Phase closed 2026-08-30.**
+### `phase-3-h0-evidence-utility/` — concrete evidence measurement (2026-09-06 amendment)
 | File | Covers (orig. §) |
 | --- | --- |
-| `current-state.md` | §3.4 H0 — evidence-utility discriminator (current 2026-08-30 verdict: **VALID and NULL**) |
-| `work-packages.md` | §6 WP3 (H0 redesign) + Work package 4 (H0 rerun). WP4's acceptance gate executed 2026-08-30, not met; STOP rule fired |
-| `redesign-requirements.md` | §7 H0 redesign requirements (the 5 defects, addressed by construction) |
-| `SIGNIFICANCE-…` (in `evidence/h0/`, not this tree) | The executed acceptance gate: test, alpha, verdict, and why the gate is unsatisfiable under the current grader |
+| `current-state.md` | §3.4 H0 — current concrete-output study and preserved historical verdicts |
+| `work-packages.md` | §6 WP3 (redesign) + WP4 (execution); 2026-09-06 amendment supersedes the old instrument |
+| `redesign-requirements.md` | §7 H0 requirements; current amendment plus historical specification |
+| `execution-and-handoff-2026-09-06.md` | Active contract, source research, new data, evidence threshold, reproducibility and Phase 4 implementation steps |
+| `research-report-2026-09-06.html` | Portable technical report with the final results and limitations |
+| `SIGNIFICANCE-…` (in `evidence/h0/`, not this tree) | Historical enum-only gate: test, verdict, and why its grader made success impossible |
 | `historical-2026-08-29-execution-record.md` | §23 — **superseded** 2026-08-29 broken-PRNG/single-repository run. Historical only; do not read as current H0 status. Current status is `current-state.md`. |
 
 ### `phase-4-m2a-mechanisms/` — merge-mechanism port (`@mrgr/mechanisms`)
@@ -151,7 +146,7 @@ section into one code block under strict CommonMark rendering), and the
 horizontal-rule (`---`) separators between original sections were dropped
 since each section is now its own file.
 
-**Fact-check status against disk, updated 2026-08-30:** M0, M1a, H0, M2a,
+**Historical fact-check snapshot, 2026-08-30 (later phase amendments supersede blockers below):** M0, M1a, H0, M2a,
 resurrection, and future-work phases are now verified against the actual
 repo (git objects, file existence, test counts) — each carries its findings
 inline, including two real blockers the original plan didn't name: the

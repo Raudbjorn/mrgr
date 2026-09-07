@@ -1,0 +1,1203 @@
+{
+  "id": "556674cc3a041852177d57483bd7583f8f5355c1ce22e3c108aa8b6e6634ea70",
+  "source_protocol_sha256": "86ffe38086e217acf6e1a4aa4162e226862463d1bde3160478f9a6f4d2b968ce",
+  "repair_module_sha256": "475070c72aaadf08fe1cbd1ec90cde5210664924e6b0589d61d2226e86f3da7f",
+  "contexts": {
+    "local-context": [
+      {
+        "id": "74823c254f0f11617790b945",
+        "revision": "2b959bd8919d1110df44ec9a839e25a739906c3c",
+        "path": "app.go",
+        "start_byte": 0,
+        "text": "package cli\n\nimport (\n\t\"fmt\"\n\t\"io\"\n\t\"io/ioutil\"\n\t\"os\"\n\t\"path/filepath\"\n\t\"reflect\"\n\t\"sort\"\n\t\"time\"\n)\n\n// App is the main structure of a cli application.\ntype App struct {\n\t// The name of the program. Defaults to path.Base(os.Args[0])\n\tName string\n\t// Full name of command for help, defaults to Name\n\tHelpName string\n\t// Description of the program.\n\tUsage string\n\t// Text to override the USAGE section of help\n\tUsageText string\n\t// Description of the program argument format.\n\tArgsUsage string\n\t// Version of the program\n\tVersion string\n\t// List of commands to execute\n\tCommands []*Command\n\t// List of flags to parse\n\tFlags []Flag\n\t// Boolean to enable bash completion commands\n\tEnableBashCompletion bool\n\t// Boolean to hide built-in help command\n\tHideHelp bool\n\t// Boolean to hide built-in version flag and the VERSION section of help\n\tHideVersion bool\n\t// Categories contains the categorized commands and is populated on app startup\n\tCategories CommandCategories\n\t// An action to execute when the bash-completion flag is set\n\tBashComplete BashCompleteFunc\n\t// An action to execute before any subcommands are run, but after the context is ready\n\t// If a non-nil error is returned, no subcommands are run\n\tBefore BeforeFunc\n\t// An action to execute after any subcommands are run, but after the subcommand has finished\n\t// It is run even if Action() panics\n\tAfter AfterFunc\n\t// The action to execute when no subcommands are specified\n\tAction ActionFunc\n\t// Execute this function if the proper command cannot be found\n\tCommandNotFound CommandNotFoundFunc\n\t// Execute this function if an usage error occurs\n\tOnUsageError OnUsageErrorFunc\n\t// Compilation date\n\tCompiled time.Time\n\t// List of all authors who contributed\n\tAuthors []*Author\n\t// Copyright of the binary if any\n\tCopyright string\n\t// Writer writer to write output to\n\tWriter io.Writer\n\t// ErrWriter writes error output\n\tErrWriter io.Writer\n\t// Other custom info\n\tMetadata map[string]interface{}\n\n\tdidSetup bool\n}\n\n// Tries to find out when this binary was compiled.\n// Returns the current time if it fails to find it.\nfunc compileTime() time.Time {\n\tinfo, err := os.Stat(os.Args[0])\n\tif err != nil {\n\t\treturn time.Now()\n\t}\n\treturn info.ModTime()\n}\n\n// Setup runs initialization code to ensure all data structures are ready for\n// `Run` or inspection prior to `Run`.  It is internally called by `Run`, but\n// will return early if setup has already happened.\nfunc (a *App) Setup() {\n\tif a.didSetup {\n\t\treturn\n\t}\n\n\ta.didSetup = true\n\n\tif a.Name == \"\" {\n\t\ta.Name = filepath.Base(os.Args[0])\n\t}\n\n\tif a.HelpName == \"\" {\n\t\ta.HelpName = filepath.Base(os.Args[0])\n\t}\n\n\tif a.Usage == \"\" {\n\t\ta.Usage = \"A new cli application\"\n\t}\n\n\tif a.Version == \"\" {\n\t\ta.Version = \"0.0.0\"\n\t}\n\n\tif a.BashComplete == nil {\n\t\ta.BashComplete = DefaultAppComplete\n\t}\n\n\tif a.Action == nil {\n\t\ta.Action = helpCommand.Action\n\t}\n\n\tif a.Compiled == (time.Time{}) {\n\t\ta.Compiled = compileTime()\n\t}\n\n\tif a.Writer == nil {\n\t\ta.Writer = os.Stdout\n\t}\n\n\tnewCmds := []*Command{}\n\tfor _, c := range a.Commands {\n\t\tif c.HelpName == \"\" {\n\t\t\tc.HelpName = fmt.Sprintf(\"%s %s\", a.HelpName, c.Name)\n\t\t}\n\t\tnewCmds = append(newCmds, c)\n\t}\n\ta.Commands = newCmds\n\n\tif a.Command(helpCommand.Name) == nil && !a.HideHelp {\n\t\ta.appendCommand(helpCommand)\n\n\t\tif HelpFlag != nil {\n\t\t\ta.appendFlag(HelpFlag)\n\t\t}\n\t}\n\n\tif a.EnableBashCompletion {\n\t\ta.appendFlag(BashCompletionFlag)\n\t}\n\n\tif !a.HideVersion {\n\t\ta.appendFlag(VersionFlag)\n\t}\n\n\ta.Categories = newCommandCategories()\n\tfor _, command := range a.Commands {\n\t\ta.Categories.AddCommand(command.Category, command)\n\t}\n\tsort.Sort(a.Categories.(*commandCategories))\n}\n\n// Run is the entry point to the cli app. Parses the arguments slice and routes\n// to the proper flag/args combination\nfunc (a *App) Run(arguments []string) (err error) {\n\ta.Setup()\n\n\t// parse flags\n\tset := flagSet(a.Name, a.Flags)\n\tset.SetOutput(ioutil.Discard)\n\terr = set.Parse(arguments[1:])\n\tnerr := normalizeFlags(a.Flags, set)\n\tcontext := NewContext(a, set, nil)\n\tif nerr != nil {\n\t\tfmt.Fprintln(a.Writer, nerr)\n\t\tShowAppHelp(context)\n\t\treturn nerr\n\t}\n\n\tif checkCompletions(context) {\n\t\treturn nil\n\t}\n\n\tif err != nil {\n\t\tif a.OnUsageError != nil {\n\t\t\terr := a.OnUsageError(context, err, false)\n\t\t\tHandleExitCoder(err)\n\t\t\treturn err\n\t\t}\n\t\tfmt.Fprintf(a.Writer, \"Incorrect Usage: %s\\n\\n\", err)\n\t\tShowAppHelp(context)\n\t\treturn err\n\t}\n\n\tif !a.HideHelp && checkHelp(context) {\n\t\tShowAppHelp(context)\n\t\treturn nil\n\t}\n\n\tif !a.HideVersion && checkVersion(context) {\n\t\tShowVersion(context)\n\t\treturn nil\n\t}\n\n\tif a.After != nil {\n\t\tdefer func() {\n\t\t\tif afterErr := a.After(context); afterErr != nil {\n\t\t\t\tif err != nil {\n\t\t\t\t\terr = newMultiError(err, afterErr)\n\t\t\t\t} else {\n\t\t\t\t\terr = afterErr\n\t\t\t\t}\n\t\t\t}\n\t\t}()\n\t}\n\n\tif a.Before != nil {\n\t\tbeforeErr := a.Before(context)\n\t\tif beforeErr != nil {\n\t\t\tfmt.Fprintf(a.Writer, \"%v\\n\\n\", beforeErr)\n\t\t\tShowAppHelp(context)\n\t\t\tHandleExitCoder(beforeErr)\n\t\t\terr = beforeErr\n\t\t\treturn err\n\t\t}\n\t}\n\n\targs := context.Args()\n\tif args.Present() {\n\t\tname := args.First()\n\t\tc := a.Command(name)\n\t\tif c != nil {\n\t\t\treturn c.Run(context)\n\t\t}\n\t}\n\n\t// Run default Action\n\terr = a.Action(context)\n\n\tHandleExitCoder(err)\n\treturn err\n}\n\n// RunAsSubcommand invokes the subcommand given the context, parses ctx.Args() to\n// generate command-specific flags\nfunc (a *App) RunAsSubcommand(ctx *Context) (err error) {\n\t// append help to commands\n\tif len(a.Commands) > 0 {\n\t\tif a.Command(helpCommand.Name) == nil && !a.HideHelp {\n\t\t\ta.appendCommand(helpCommand)\n\n\t\t\tif HelpFlag != nil {\n\t\t\t\ta.appendFlag(HelpFlag)\n\t\t\t}\n\t\t}\n\t}\n\n\tnewCmds := []*Command{}\n\tfor _, c := range a.Commands {\n\t\tif c.HelpName == \"\" {\n\t\t\tc.HelpName = fmt.Sprintf(\"%s %s\", a.HelpName, c.Name)\n\t\t}\n\t\tnewCmds = append(newCmds, c)\n\t}\n\ta.Commands = newCmds\n\n\t// append flags\n\tif a.EnableBashCompletion {\n\t\ta.appendFlag(BashCompletionFlag)\n\t}\n\n\t// parse flags\n\tset := flagSet(a.Name, a.Flags)\n\tset.SetOutput(ioutil.Discard)\n\terr = set.Parse(ctx.Args().Tail())\n\tnerr := normalizeFlags(a.Flags, set)\n\tcontext := NewContext(a, set, ctx)\n\n\tif nerr != nil {\n\t\tfmt.Fprintln(a.Writer, nerr)\n\t\tfmt.Fprintln(a.Writer)\n\t\tif len(a.Commands) > 0 {\n\t\t\tShowSubcommandHelp(context)\n\t\t} else {\n\t\t\tShowCommandHelp(ctx, context.Args().First())\n\t\t}\n\t\treturn nerr\n\t}\n\n\tif checkCompletions(context) {\n\t\treturn nil\n\t}\n\n\tif err != nil {\n\t\tif a.OnUsageError != nil {\n\t\t\terr = a.OnUsageError(context, err, true)\n\t\t\tHandleExitCoder(err)\n\t\t\treturn err\n\t\t}\n\t\tfmt.Fprintf(a.Writer, \"Incorrect Usage: %s\\n\\n\", err)\n\t\tShowSubcommandHelp(context)\n\t\treturn err\n\t}\n\n\tif len(a.Commands) > 0 {\n\t\tif checkSubcommandHelp(context) {\n\t\t\treturn nil\n\t\t}\n\t} else {\n\t\tif checkCommandHelp(ctx, context.Args().First()) {\n\t\t\treturn nil\n\t\t}\n\t}\n\n\tif a.After != nil {\n\t\tdefer func() {\n\t\t\tafterErr := a.After(context)\n\t\t\tif afterErr != nil {\n\t\t\t\tHandleExitCoder(err)\n\t\t\t\tif err != nil {\n\t\t\t\t\terr = newMultiError(err, afterErr)\n\t\t\t\t} else {\n\t\t\t\t\terr = afterErr\n\t\t\t\t}\n\t\t\t}\n\t\t}()\n\t}\n\n\tif a.Before != nil {\n\t\tbeforeErr := a.Before(context)\n\t\tif beforeErr != nil {\n\t\t\tHandleExitCoder(beforeErr)\n\t\t\terr = beforeErr\n\t\t\treturn err\n\t\t}\n\t}\n\n\targs := context.Args()\n\tif args.Present() {\n\t\tname := args.First()\n\t\tc := a.Command(name)\n\t\tif c != nil {\n\t\t\treturn c.Run(context)\n\t\t}\n\t}\n\n\t// Run default Action\n\terr = a.Action(context)\n\n\tHandleExitCoder(err)\n\treturn err\n}\n\n// Command returns the named command on App. Returns nil if the command does not exist\nfunc (a *App) Command(name string) *Command {\n\tfor _, c := range a.Commands {\n\t\tif c.HasName(name) {\n\t\t\treturn c\n\t\t}\n\t}\n\n\treturn nil\n}\n\n// VisibleCategories returns a slice of categories and commands that are\n// Hidden=false\nfunc (a *App) VisibleCategories() []CommandCategory {\n\tret := []CommandCategory{}\n\tfor _, category := range a.Categories.Categories() {\n\t\tif visible := func() CommandCategory {\n\t\t\tif len(category.VisibleCommands()) > 0 {\n\t\t\t\treturn category\n\t\t\t}\n\t\t\treturn nil\n\t\t}(); visible != nil {\n\t\t\tret = append(ret, visible)\n\t\t}\n\t}\n\treturn ret\n}\n\n// VisibleCommands returns a slice of the Commands with Hidden=false\nfunc (a *App) VisibleCommands() []*Command {\n\tret := []*Command{}\n\tfor _, command := range a.Commands {\n\t\tif !command.Hidden {\n\t\t\tret = append(ret, command)\n\t\t}\n\t}\n\treturn ret\n}\n\n// VisibleFlags returns a slice of the Flags with Hidden=false\nfunc (a *App) VisibleFlags() []Flag {\n\treturn visibleFlags(a.Flags)\n}\n\nfunc (a *App) hasFlag(flag Flag) bool {\n\tfor _, f := range a.Flags {\n\t\tif reflect.DeepEqual(flag, f) {\n\t\t\treturn true\n\t\t}\n\t}\n\n\treturn false\n}\n\nfunc (a *App) errWriter() io.Writer {\n\n\t// When the app ErrWriter is nil use the package level one.\n\tif a.ErrWriter == nil {\n\t\treturn ErrWriter\n\t}\n\n\treturn a.ErrWriter\n}\n\nfunc (a *App) appendFlag(fl Flag) {\n\tif !hasFlag(a.Flags, fl) {\n\t\ta.Flags = append(a.Flags, fl)\n\t}\n}\n\nfunc (a *App) appendCommand(c *Command) {\n\tif !hasCommand(a.Commands, c) {\n\t\ta.Commands = append(a.Commands, c)\n\t}\n}\n\n// Author represents someone who has contributed to a cli project.\ntype Author struct {\n\tName  string // The Authors name\n\tEmail string // The Authors email\n}\n\n// String makes Author comply to the Stringer interface, to allow an easy print in the templating process\nfunc (a *Author) String() string {\n\te := \"\"\n\tif a.Email != \"\" {\n\t\te = \"<\" + a.Email + \"> \"\n\t}\n\n\treturn fmt.Sprintf(\"%v %v\", a.Name, e)\n}\n",
+        "rank": 0,
+        "truncated": false
+      },
+      {
+        "id": "8e5058face163dd8715f833c",
+        "revision": "ec402ecec579718ec2d7a686db201bbeb6ad918a",
+        "path": "app.go",
+        "start_byte": 0,
+        "text": "package cli\n\nimport (\n\t\"fmt\"\n\t\"io\"\n\t\"io/ioutil\"\n\t\"os\"\n\t\"path/filepath\"\n\t\"reflect\"\n\t\"sort\"\n\t\"strings\"\n\t\"time\"\n)\n\nvar (\n\tchangeLogURL                    = \"https://github.com/urfave/cli/blob/master/CHANGELOG.md\"\n\tappActionDeprecationURL         = fmt.Sprintf(\"%s#deprecated-cli-app-action-signature\", changeLogURL)\n\trunAndExitOnErrorDeprecationURL = fmt.Sprintf(\"%s#deprecated-cli-app-runandexitonerror\", changeLogURL)\n\n\tcontactSysadmin = \"This is an error in the application.  Please contact the distributor of this application if this is not you.\"\n\n\terrNonFuncAction = NewExitError(\"ERROR invalid Action type.  \"+\n\t\tfmt.Sprintf(\"Must be a func of type `cli.ActionFunc`.  %s\", contactSysadmin)+\n\t\tfmt.Sprintf(\"See %s\", appActionDeprecationURL), 2)\n\terrInvalidActionSignature = NewExitError(\"ERROR invalid Action signature.  \"+\n\t\tfmt.Sprintf(\"Must be `cli.ActionFunc`.  %s\", contactSysadmin)+\n\t\tfmt.Sprintf(\"See %s\", appActionDeprecationURL), 2)\n)\n\n// App is the main structure of a cli application. It is recommended that\n// an app be created with the cli.NewApp() function\ntype App struct {\n\t// The name of the program. Defaults to path.Base(os.Args[0])\n\tName string\n\t// Full name of command for help, defaults to Name\n\tHelpName string\n\t// Description of the program.\n\tUsage string\n\t// Text to override the USAGE section of help\n\tUsageText string\n\t// Description of the program argument format.\n\tArgsUsage string\n\t// Version of the program\n\tVersion string\n\t// List of commands to execute\n\tCommands []Command\n\t// List of flags to parse\n\tFlags []Flag\n\t// Boolean to enable bash completion commands\n\tEnableBashCompletion bool\n\t// Boolean to hide built-in help command\n\tHideHelp bool\n\t// Boolean to hide built-in version flag and the VERSION section of help\n\tHideVersion bool\n\t// Populate on app startup, only gettable through method Categories()\n\tcategories CommandCategories\n\t// An action to execute when the bash-completion flag is set\n\tBashComplete BashCompleteFunc\n\t// An action to execute before any subcommands are run, but after the context is ready\n\t// If a non-nil error is returned, no subcommands are run\n\tBefore BeforeFunc\n\t// An action to execute after any subcommands are run, but after the subcommand has finished\n\t// It is run even if Action() panics\n\tAfter AfterFunc\n\t// The action to execute when no subcommands are specified\n\tAction interface{}\n\t// TODO: replace `Action: interface{}` with `Action: ActionFunc` once some kind\n\t// of deprecation period has passed, maybe?\n\n\t// Execute this function if the proper command cannot be found\n\tCommandNotFound CommandNotFoundFunc\n\t// Execute this function if an usage error occurs\n\tOnUsageError OnUsageErrorFunc\n\t// Compilation date\n\tCompiled time.Time\n\t// List of all authors who contributed\n\tAuthors []Author\n\t// Copyright of the binary if any\n\tCopyright string\n\t// Name of Author (Note: Use App.Authors, this is deprecated)\n\tAuthor string\n\t// Email of Author (Note: Use App.Authors, this is deprecated)\n\tEmail string\n\t// Writer writer to write output to\n\tWriter io.Writer\n\t// ErrWriter writes error output\n\tErrWriter io.Writer\n\t// Other custom info\n\tMetadata map[string]interface{}\n\n\tdidSetup bool\n}\n\n// Tries to find out when this binary was compiled.\n// Returns the current time if it fails to find it.\nfunc compileTime() time.Time {\n\tinfo, err := os.Stat(os.Args[0])\n\tif err != nil {\n\t\treturn time.Now()\n\t}\n\treturn info.ModTime()\n}\n\n// NewApp creates a new cli Application with some reasonable defaults for Name,\n// Usage, Version and Action.\nfunc NewApp() *App {\n\treturn &App{\n\t\tName:         filepath.Base(os.Args[0]),\n\t\tHelpName:     filepath.Base(os.Args[0]),\n\t\tUsage:        \"A new cli application\",\n\t\tUsageText:    \"\",\n\t\tVersion:      \"0.0.0\",\n\t\tBashComplete: DefaultAppComplete,\n\t\tAction:       helpCommand.Action,\n\t\tCompiled:     compileTime(),\n\t\tWriter:       os.Stdout,\n\t}\n}\n\n// Setup runs initialization code to ensure all data structures are ready for\n// `Run` or inspection prior to `Run`.  It is internally called by `Run`, but\n// will return early if setup has already happened.\nfunc (a *App) Setup() {\n\tif a.didSetup {\n\t\treturn\n\t}\n\n\ta.didSetup = true\n\n\tif a.Author != \"\" || a.Email != \"\" {\n\t\ta.Authors = append(a.Authors, Author{Name: a.Author, Email: a.Email})\n\t}\n\n\tnewCmds := []Command{}\n\tfor _, c := range a.Commands {\n\t\tif c.HelpName == \"\" {\n\t\t\tc.HelpName = fmt.Sprintf(\"%s %s\", a.HelpName, c.Name)\n\t\t}\n\t\tnewCmds = append(newCmds, c)\n\t}\n\ta.Commands = newCmds\n\n\tif a.Command(helpCommand.Name) == nil && !a.HideHelp {\n\t\ta.Commands = append(a.Commands, helpCommand)\n\t\tif (HelpFlag != BoolFlag{}) {\n\t\t\ta.appendFlag(HelpFlag)\n\t\t}\n\t}\n\n\tif a.EnableBashCompletion {\n\t\ta.appendFlag(BashCompletionFlag)\n\t}\n\n\tif !a.HideVersion {\n\t\ta.appendFlag(VersionFlag)\n\t}\n\n\ta.categories = CommandCategories{}\n\tfor _, command := range a.Commands {\n\t\ta.categories = a.categories.AddCommand(command.Category, command)\n\t}\n\tsort.Sort(a.categories)\n\n\tif a.Metadata == nil {\n\t\ta.Metadata = make(map[string]interface{})\n\t}\n}\n\n// Run is the entry point to the cli app. Parses the arguments slice and routes\n// to the proper flag/args combination\nfunc (a *App) Run(arguments []string) (err error) {\n\ta.Setup()\n\n\t// parse flags\n\tset := flagSet(a.Name, a.Flags)\n\tset.SetOutput(ioutil.Discard)\n\terr = set.Parse(arguments[1:])\n\tnerr := normalizeFlags(a.Flags, set)\n\tcontext := NewContext(a, set, nil)\n\tif nerr != nil {\n\t\tfmt.Fprintln(a.Writer, nerr)\n\t\tShowAppHelp(context)\n\t\treturn nerr\n\t}\n\n\tif checkCompletions(context) {\n\t\treturn nil\n\t}\n\n\tif err != nil {\n\t\tif a.OnUsageError != nil {\n\t\t\terr := a.OnUsageError(context, err, false)\n\t\t\tHandleExitCoder(err)\n\t\t\treturn err\n\t\t}\n\t\tfmt.Fprintf(a.Writer, \"%s\\n\\n\", \"Incorrect Usage.\")\n\t\tShowAppHelp(context)\n\t\treturn err\n\t}\n\n\tif !a.HideHelp && checkHelp(context) {\n\t\tShowAppHelp(context)\n\t\treturn nil\n\t}\n\n\tif !a.HideVersion && checkVersion(context) {\n\t\tShowVersion(context)\n\t\treturn nil\n\t}\n\n\tif a.After != nil {\n\t\tdefer func() {\n\t\t\tif afterErr := a.After(context); afterErr != nil {\n\t\t\t\tif err != nil {\n\t\t\t\t\terr = NewMultiError(err, afterErr)\n\t\t\t\t} else {\n\t\t\t\t\terr = afterErr\n\t\t\t\t}\n\t\t\t}\n\t\t}()\n\t}\n\n\tif a.Before != nil {\n\t\tbeforeErr := a.Before(context)\n\t\tif beforeErr != nil {\n\t\t\tfmt.Fprintf(a.Writer, \"%v\\n\\n\", beforeErr)\n\t\t\tShowAppHelp(context)\n\t\t\tHandleExitCoder(beforeErr)\n\t\t\terr = beforeErr\n\t\t\treturn err\n\t\t}\n\t}\n\n\targs := context.Args()\n\tif args.Present() {\n\t\tname := args.First()\n\t\tc := a.Command(name)\n\t\tif c != nil {\n\t\t\treturn c.Run(context)\n\t\t}\n\t}\n\n\t// Run default Action\n\terr = HandleAction(a.Action, context)\n\n\tHandleExitCoder(err)\n\treturn err\n}\n\n// DEPRECATED: Another entry point to the cli app, takes care of passing arguments and error handling\nfunc (a *App) RunAndExitOnError() {\n\tfmt.Fprintf(a.errWriter(),\n\t\t\"DEPRECATED cli.App.RunAndExitOnError.  %s  See %s\\n\",\n\t\tcontactSysadmin, runAndExitOnErrorDeprecationURL)\n\tif err := a.Run(os.Args); err != nil {\n\t\tfmt.Fprintln(a.errWriter(), err)\n\t\tOsExiter(1)\n\t}\n}\n\n// RunAsSubcommand invokes the subcommand given the context, parses ctx.Args() to\n// generate command-specific flags\nfunc (a *App) RunAsSubcommand(ctx *Context) (err error) {\n\t// append help to commands\n\tif len(a.Commands) > 0 {\n\t\tif a.Command(helpCommand.Name) == nil && !a.HideHelp {\n\t\t\ta.Commands = append(a.Commands, helpCommand)\n\t\t\tif (HelpFlag != BoolFlag{}) {\n\t\t\t\ta.appendFlag(HelpFlag)\n\t\t\t}\n\t\t}\n\t}\n\n\tnewCmds := []Command{}\n\tfor _, c := range a.Commands {\n\t\tif c.HelpName == \"\" {\n\t\t\tc.HelpName = fmt.Sprintf(\"%s %s\", a.HelpName, c.Name)\n\t\t}\n\t\tnewCmds = append(newCmds, c)\n\t}\n\ta.Commands = newCmds\n\n\t// append flags\n\tif a.EnableBashCompletion {\n\t\ta.appendFlag(BashCompletionFlag)\n\t}\n\n\t// parse flags\n\tset := flagSet(a.Name, a.Flags)\n\tset.SetOutput(ioutil.Discard)\n\terr = set.Parse(ctx.Args().Tail())\n\tnerr := normalizeFlags(a.Flags, set)\n\tcontext := NewContext(a, set, ctx)\n\n\tif nerr != nil {\n\t\tfmt.Fprintln(a.Writer, nerr)\n\t\tfmt.Fprintln(a.Writer)\n\t\tif len(a.Commands) > 0 {\n\t\t\tShowSubcommandHelp(context)\n\t\t} else {\n\t\t\tShowCommandHelp(ctx, context.Args().First())\n\t\t}\n\t\treturn nerr\n\t}\n\n\tif checkCompletions(context) {\n\t\treturn nil\n\t}\n\n\tif err != nil {\n\t\tif a.OnUsageError != nil {\n\t\t\terr = a.OnUsageError(context, err, true)\n\t\t\tHandleExitCoder(err)\n\t\t\treturn err\n\t\t}\n\t\tfmt.Fprintf(a.Writer, \"%s\\n\\n\", \"Incorrect Usage.\")\n\t\tShowSubcommandHelp(context)\n\t\treturn err\n\t}\n\n\tif len(a.Commands) > 0 {\n\t\tif checkSubcommandHelp(context) {\n\t\t\treturn nil\n\t\t}\n\t} else {\n\t\tif checkCommandHelp(ctx, context.Args().First()) {\n\t\t\treturn nil\n\t\t}\n\t}\n\n\tif a.After != nil {\n\t\tdefer func() {\n\t\t\tafterErr := a.After(context)\n\t\t\tif afterErr != nil {\n\t\t\t\tHandleExitCoder(err)\n\t\t\t\tif err != nil {\n\t\t\t\t\terr = NewMultiError(err, afterErr)\n\t\t\t\t} else {\n\t\t\t\t\terr = afterErr\n\t\t\t\t}\n\t\t\t}\n\t\t}()\n\t}\n\n\tif a.Before != nil {\n\t\tbeforeErr := a.Before(context)\n\t\tif beforeErr != nil {\n\t\t\tHandleExitCoder(beforeErr)\n\t\t\terr = beforeErr\n\t\t\treturn err\n\t\t}\n\t}\n\n\targs := context.Args()\n\tif args.Present() {\n\t\tname := args.First()\n\t\tc := a.Command(name)\n\t\tif c != nil {\n\t\t\treturn c.Run(context)\n\t\t}\n\t}\n\n\t// Run default Action\n\terr = HandleAction(a.Action, context)\n\n\tHandleExitCoder(err)\n\treturn err\n}\n\n// Command returns the named command on App. Returns nil if the command does not exist\nfunc (a *App) Command(name string) *Command {\n\tfor _, c := range a.Commands {\n\t\tif c.HasName(name) {\n\t\t\treturn &c\n\t\t}\n\t}\n\n\treturn nil\n}\n\n// Categories returns a slice containing all the categories with the commands they contain\nfunc (a *App) Categories() CommandCategories {\n\treturn a.categories\n}\n\n// VisibleCategories returns a slice of categories and commands that are\n// Hidden=false\nfunc (a *App) VisibleCategories() []*CommandCategory {\n\tret := []*CommandCategory{}\n\tfor _, category := range a.categories {\n\t\tif visible := func() *CommandCategory {\n\t\t\tfor _, command := range category.Commands {\n\t\t\t\tif !command.Hidden {\n\t\t\t\t\treturn category\n\t\t\t\t}\n\t\t\t}\n\t\t\treturn nil\n\t\t}(); visible != nil {\n\t\t\tret = append(ret, visible)\n\t\t}\n\t}\n\treturn ret\n}\n\n// VisibleCommands returns a slice of the Commands with Hidden=false\nfunc (a *App) VisibleCommands() []Command {\n\tret := []Command{}\n\tfor _, command := range a.Commands {\n\t\tif !command.Hidden {\n\t\t\tret = append(ret, command)\n\t\t}\n\t}\n\treturn ret\n}\n\n// VisibleFlags returns a slice of the Flags with Hidden=false\nfunc (a *App) VisibleFlags() []Flag {\n\treturn visibleFlags(a.Flags)\n}\n\nfunc (a *App) hasFlag(flag Flag) bool {\n\tfor _, f := range a.Flags {\n\t\tif flag == f {\n\t\t\treturn true\n\t\t}\n\t}\n\n\treturn false\n}\n\nfunc (a *App) errWriter() io.Writer {\n\n\t// When the app ErrWriter is nil use the package level one.\n\tif a.ErrWriter == nil {\n\t\treturn ErrWriter\n\t}\n\n\treturn a.ErrWriter\n}\n\nfunc (a *App) appendFlag(flag Flag) {\n\tif !a.hasFlag(flag) {\n\t\ta.Flags = append(a.Flags, flag)\n\t}\n}\n\n// Author represents someone who has contributed to a cli project.\ntype Author struct {\n\tName  string // The Authors name\n\tEmail string // The Authors email\n}\n\n// String makes Author comply to the Stringer interface, to allow an easy print in the templating process\nfunc (a Author) String() string {\n\te := \"\"\n\tif a.Email != \"\" {\n\t\te = \"<\" + a.Email + \"> \"\n\t}\n\n\treturn fmt.Sprintf(\"%v %v\", a.Name, e)\n}\n\n// HandleAction uses ✧✧✧reflection✧✧✧ to figure out if the given Action is an\n// ActionFunc, a func with the legacy signature for Action, or some other\n// invalid thing.  If it's an ActionFunc or a func with the legacy signature for\n// Action, the func is run!\nfunc HandleAction(action interface{}, context *Context) (err error) {\n\tdefer func() {\n\t\tif r := recover(); r != nil {\n\t\t\t// Try to detect a known reflection error from *this scope*, rather than\n\t\t\t// swallowing all panics that may happen when calling an Action func.\n\t\t\ts := fmt.Sprintf(\"%v\", r)\n\t\t\tif strings.HasPrefix(s, \"reflect: \") && strings.Contains(s, \"too many input arguments\") {\n\t\t\t\terr = NewExitError(fmt.Sprintf(\"ERROR unknown Action error: %v.  See %s\", r, appActionDeprecationURL), 2)\n\t\t\t} else {\n\t\t\t\tpanic(r)\n\t\t\t}\n\t\t}\n\t}()\n\n\tif reflect.TypeOf(action).Kind() != reflect.Func {\n\t\treturn errNonFuncAction\n\t}\n\n\tvals := reflect.ValueOf(action).Call([]reflect.Value{reflect.ValueOf(context)})\n\n\tif len(vals) == 0 {\n\t\tfmt.Fprintf(ErrWriter,\n\t\t\t\"DEPRECATED Action signature.  Must be `cli.ActionFunc`.  %s  See %s\\n\",\n\t\t\tcontactSysadmin, appActionDeprecationURL)\n\t\treturn nil\n\t}\n\n\tif len(vals) > 1 {\n\t\treturn errInvalidActionSignature\n\t}\n\n\tif retErr, ok := vals[0].Interface().(error); vals[0].IsValid() && ok {\n\t\treturn retErr\n\t}\n\n\treturn err\n}\n",
+        "rank": 0,
+        "truncated": false
+      }
+    ],
+    "selected": [
+      {
+        "id": "b17e80dbdcd6e7d2257962a1",
+        "revision": "2b959bd8919d1110df44ec9a839e25a739906c3c",
+        "path": "app.go",
+        "start_byte": 2413,
+        "text": "func (a *App) Setup() {\n\tif a.didSetup {\n\t\treturn\n\t}\n\n\ta.didSetup = true\n\n\tif a.Name == \"\" {\n\t\ta.Name = filepath.Base(os.Args[0])\n\t}\n\n\tif a.HelpName == \"\" {\n\t\ta.HelpName = filepath.Base(os.Args[0])\n\t}\n\n\tif a.Usage == \"\" {\n\t\ta.Usage = \"A new cli application\"\n\t}\n\n\tif a.Version == \"\" {\n\t\ta.Version = \"0.0.0\"\n\t}\n\n\tif a.BashComplete == nil {\n\t\ta.BashComplete = DefaultAppComplete\n\t}\n\n\tif a.Action == nil {\n\t\ta.Action = helpCommand.Action\n\t}\n\n\tif a.Compiled == (time.Time{}) {\n\t\ta.Compiled = compileTime()\n\t}\n\n\tif a.Writer == nil {\n\t\ta.Writer = os.Stdout\n\t}\n\n\tnewCmds := []*Command{}\n\tfor _, c := range a.Commands {\n\t\tif c.HelpName == \"\" {\n\t\t\tc.HelpName = fmt.Sprintf(\"%s %s\", a.HelpName, c.Name)\n\t\t}\n\t\tnewCmds = append(newCmds, c)\n\t}\n\ta.Commands = newCmds\n\n\tif a.Command(helpCommand.Name) == nil && !a.HideHelp {\n\t\ta.appendCommand(helpCommand)\n\n\t\tif HelpFlag != nil {\n\t\t\ta.appendFlag(HelpFlag)\n\t\t}\n\t}\n\n\tif a.EnableBashCompletion {\n\t\ta.appendFlag(BashCompletionFlag)\n\t}\n\n\tif !a.HideVersion {\n\t\ta.appendFlag(VersionFlag)\n\t}\n\n\ta.Categories = newCommandCategories()\n\tfor _, command := range a.Commands {\n\t\ta.Categories.AddCommand(command.Category, command)\n\t}\n\tsort.Sort(a.Categories.(*commandCategories))\n}",
+        "rank": 0,
+        "truncated": false
+      },
+      {
+        "id": "48dc6ee2f29e713f821b2b0d",
+        "revision": "ec402ecec579718ec2d7a686db201bbeb6ad918a",
+        "path": "app.go",
+        "start_byte": 4059,
+        "text": "func (a *App) Setup() {\n\tif a.didSetup {\n\t\treturn\n\t}\n\n\ta.didSetup = true\n\n\tif a.Author != \"\" || a.Email != \"\" {\n\t\ta.Authors = append(a.Authors, Author{Name: a.Author, Email: a.Email})\n\t}\n\n\tnewCmds := []Command{}\n\tfor _, c := range a.Commands {\n\t\tif c.HelpName == \"\" {\n\t\t\tc.HelpName = fmt.Sprintf(\"%s %s\", a.HelpName, c.Name)\n\t\t}\n\t\tnewCmds = append(newCmds, c)\n\t}\n\ta.Commands = newCmds\n\n\tif a.Command(helpCommand.Name) == nil && !a.HideHelp {\n\t\ta.Commands = append(a.Commands, helpCommand)\n\t\tif (HelpFlag != BoolFlag{}) {\n\t\t\ta.appendFlag(HelpFlag)\n\t\t}\n\t}\n\n\tif a.EnableBashCompletion {\n\t\ta.appendFlag(BashCompletionFlag)\n\t}\n\n\tif !a.HideVersion {\n\t\ta.appendFlag(VersionFlag)\n\t}\n\n\ta.categories = CommandCategories{}\n\tfor _, command := range a.Commands {\n\t\ta.categories = a.categories.AddCommand(command.Category, command)\n\t}\n\tsort.Sort(a.categories)\n\n\tif a.Metadata == nil {\n\t\ta.Metadata = make(map[string]interface{})\n\t}\n}",
+        "rank": 0,
+        "truncated": false
+      },
+      {
+        "id": "572a1c26472c1cc6d55a1905",
+        "revision": "2b959bd8919d1110df44ec9a839e25a739906c3c",
+        "path": "app.go",
+        "start_byte": 152,
+        "text": "type App struct {\n\t// The name of the program. Defaults to path.Base(os.Args[0])\n\tName string\n\t// Full name of command for help, defaults to Name\n\tHelpName string\n\t// Description of the program.\n\tUsage string\n\t// Text to override the USAGE section of help\n\tUsageText string\n\t// Description of the program argument format.\n\tArgsUsage string\n\t// Version of the program\n\tVersion string\n\t// List of commands to execute\n\tCommands []*Command\n\t// List of flags to parse\n\tFlags []Flag\n\t// Boolean to enable bash completion commands\n\tEnableBashCompletion bool\n\t// Boolean to hide built-in help command\n\tHideHelp bool\n\t// Boolean to hide built-in version flag and the VERSION section of help\n\tHideVersion bool\n\t// Categories contains the categorized commands and is populated on app startup\n\tCategories CommandCategories\n\t// An action to execute when the bash-completion flag is set\n\tBashComplete BashCompleteFunc\n\t// An action to execute before any subcommands are run, but after the context is ready\n\t// If a non-nil error is returned, no subcommands are run\n\tBefore BeforeFunc\n\t// An action to execute after any subcommands are run, but after the subcommand has finished\n\t// It is run even if Action() panics\n\tAfter AfterFunc\n\t// The action to execute when no subcommands are specified\n\tAction ActionFunc\n\t// Execute this function if the proper command cannot be found\n\tCommandNotFound CommandNotFoundFunc\n\t// Execute this function if an usage error occurs\n\tOnUsageError OnUsageErrorFunc\n\t// Compilation date\n\tCompiled time.Time\n\t// List of all authors who contributed\n\tAuthors []*Author\n\t// Copyright of the binary if any\n\tCopyright string\n\t// Writer writer to write output to\n\tWriter io.Writer\n\t// ErrWriter writes error output\n\tErrWriter io.Writer\n\t// Other custom info\n\tMetadata map[string]interface{}\n\n\tdidSetup bool\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "6d1b37d321b4481650ac7cde",
+        "revision": "2b959bd8919d1110df44ec9a839e25a739906c3c",
+        "path": "app.go",
+        "start_byte": 2074,
+        "text": "func compileTime() time.Time {\n\tinfo, err := os.Stat(os.Args[0])\n\tif err != nil {\n\t\treturn time.Now()\n\t}\n\treturn info.ModTime()\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "17d4796fec74bcb6f9de6e31",
+        "revision": "2b959bd8919d1110df44ec9a839e25a739906c3c",
+        "path": "app.go",
+        "start_byte": 7386,
+        "text": "func (a *App) Command(name string) *Command {\n\tfor _, c := range a.Commands {\n\t\tif c.HasName(name) {\n\t\t\treturn c\n\t\t}\n\t}\n\n\treturn nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "365b6a5691c4000f4b227ba4",
+        "revision": "2b959bd8919d1110df44ec9a839e25a739906c3c",
+        "path": "app.go",
+        "start_byte": 8643,
+        "text": "func (a *App) appendFlag(fl Flag) {\n\tif !hasFlag(a.Flags, fl) {\n\t\ta.Flags = append(a.Flags, fl)\n\t}\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "cb2cf8ac522e4c9043237087",
+        "revision": "2b959bd8919d1110df44ec9a839e25a739906c3c",
+        "path": "app.go",
+        "start_byte": 8745,
+        "text": "func (a *App) appendCommand(c *Command) {\n\tif !hasCommand(a.Commands, c) {\n\t\ta.Commands = append(a.Commands, c)\n\t}\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "45337657c6b5e5d995adc2f1",
+        "revision": "2b959bd8919d1110df44ec9a839e25a739906c3c",
+        "path": "args.go",
+        "start_byte": 88,
+        "text": "type Args interface {\n\t// Get returns the nth argument, or else a blank string\n\tGet(n int) string\n\t// First returns the first argument, or else a blank string\n\tFirst() string\n\t// Tail returns the rest of the arguments (not the first one)\n\t// or else an empty string slice\n\tTail() []string\n\t// Len returns the length of the wrapped slice\n\tLen() int\n\t// Present checks if there are any arguments present\n\tPresent() bool\n\t// Slice returns a copy of the internal slice\n\tSlice() []string\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "cefc7f51c1dc3ad8ce7e9fb3",
+        "revision": "2b959bd8919d1110df44ec9a839e25a739906c3c",
+        "path": "category.go",
+        "start_byte": 265,
+        "text": "type commandCategories []*commandCategory",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "9fb0e84a07be7e7a99f1fa4b",
+        "revision": "2b959bd8919d1110df44ec9a839e25a739906c3c",
+        "path": "category.go",
+        "start_byte": 308,
+        "text": "func newCommandCategories() CommandCategories {\n\tret := commandCategories([]*commandCategory{})\n\treturn &ret\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "bffc0d5fc56ba22ec9dda5f5",
+        "revision": "2b959bd8919d1110df44ec9a839e25a739906c3c",
+        "path": "category.go",
+        "start_byte": 657,
+        "text": "func (c *commandCategories) AddCommand(category string, command *Command) {\n\tfor _, commandCategory := range []*commandCategory(*c) {\n\t\tif commandCategory.name == category {\n\t\t\tcommandCategory.commands = append(commandCategory.commands, command)\n\t\t\treturn\n\t\t}\n\t}\n\tnewVal := commandCategories(append(*c,\n\t\t&commandCategory{name: category, commands: []*Command{command}}))\n\t(*c) = newVal\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "92d55be28b84a430be69a7ba",
+        "revision": "2b959bd8919d1110df44ec9a839e25a739906c3c",
+        "path": "category.go",
+        "start_byte": 1046,
+        "text": "func (c *commandCategories) Categories() []CommandCategory {\n\tret := make([]CommandCategory, len(*c))\n\tfor i, cat := range *c {\n\t\tret[i] = cat\n\t}\n\treturn ret\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "a59756f2749fa3051b8ad21b",
+        "revision": "2b959bd8919d1110df44ec9a839e25a739906c3c",
+        "path": "category.go",
+        "start_byte": 1657,
+        "text": "func (c *commandCategory) Name() string {\n\treturn c.name\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "d8e595c9dbd991dc3a4a3d30",
+        "revision": "2b959bd8919d1110df44ec9a839e25a739906c3c",
+        "path": "command.go",
+        "start_byte": 106,
+        "text": "type Command struct {\n\t// The name of the command\n\tName string\n\t// A list of aliases for the command\n\tAliases []string\n\t// A short description of the usage of this command\n\tUsage string\n\t// Custom text to show on USAGE section of help\n\tUsageText string\n\t// A longer explanation of how the command works\n\tDescription string\n\t// A short description of the arguments of this command\n\tArgsUsage string\n\t// The category the command is part of\n\tCategory string\n\t// The function to call when checking for bash command completions\n\tBashComplete BashCompleteFunc\n\t// An action to execute before any sub-subcommands are run, but after the context is ready\n\t// If a non-nil error is returned, no sub-subcommands are run\n\tBefore BeforeFunc\n\t// An action to execute after any subcommands are run, but after the subcommand has finished\n\t// It is run even if Action() panics\n\tAfter AfterFunc\n\t// The function to call when this command is invoked\n\tAction ActionFunc\n\t// Execute this function if a usage error occurs.\n\tOnUsageError OnUsageErrorFunc\n\t// List of child commands\n\tSubcommands []*Command\n\t// List of flags to parse\n\tFlags []Flag\n\t// Treat all flags as normal arguments if true\n\tSkipFlagParsing bool\n\t// Boolean to hide built-in help command\n\tHideHelp bool\n\t// Boolean to hide this command from help or completion\n\tHidden bool\n\n\t// Full name of command for help, defaults to full command name, including parent commands.\n\tHelpName        string\n\tcommandNamePath []string\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "a1098124beec9c56bbcc3f7e",
+        "revision": "2b959bd8919d1110df44ec9a839e25a739906c3c",
+        "path": "command.go",
+        "start_byte": 5347,
+        "text": "func (c *Command) appendFlag(fl Flag) {\n\tif !hasFlag(c.Flags, fl) {\n\t\tc.Flags = append(c.Flags, fl)\n\t}\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "551bbf90d64ac0d1c641b4cd",
+        "revision": "2b959bd8919d1110df44ec9a839e25a739906c3c",
+        "path": "context.go",
+        "start_byte": 5031,
+        "text": "func (c *Context) Args() Args {\n\tret := args(c.flagSet.Args())\n\treturn &ret\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "2f820ea10a04f15dcb179793",
+        "revision": "2b959bd8919d1110df44ec9a839e25a739906c3c",
+        "path": "flag.go",
+        "start_byte": 363,
+        "text": "var BashCompletionFlag = &BoolFlag{\n\tName:   \"generate-bash-completion\",\n\tHidden: true,\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "18c62de791750d6440580bb9",
+        "revision": "2b959bd8919d1110df44ec9a839e25a739906c3c",
+        "path": "flag.go",
+        "start_byte": 508,
+        "text": "var VersionFlag = &BoolFlag{\n\tName:    \"version\",\n\tAliases: []string{\"v\"},\n\tUsage:   \"print the version\",\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "7c1d49a2727f8a101df39bb2",
+        "revision": "2b959bd8919d1110df44ec9a839e25a739906c3c",
+        "path": "flag.go",
+        "start_byte": 785,
+        "text": "var HelpFlag = &BoolFlag{\n\tName:    \"help\",\n\tAliases: []string{\"h\"},\n\tUsage:   \"show help\",\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "1632b0837e280c623a1b465e",
+        "revision": "2b959bd8919d1110df44ec9a839e25a739906c3c",
+        "path": "help.go",
+        "start_byte": 2245,
+        "text": "var helpCommand = &Command{\n\tName:      \"help\",\n\tAliases:   []string{\"h\"},\n\tUsage:     \"Shows a list of commands or help for one command\",\n\tArgsUsage: \"[command]\",\n\tAction: func(c *Context) error {\n\t\targs := c.Args()\n\t\tif args.Present() {\n\t\t\treturn ShowCommandHelp(c, args.First())\n\t\t}\n\n\t\tShowAppHelp(c)\n\t\treturn nil\n\t},\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "6122ada24821adb4a0fe4f5c",
+        "revision": "2b959bd8919d1110df44ec9a839e25a739906c3c",
+        "path": "help.go",
+        "start_byte": 3544,
+        "text": "func DefaultAppComplete(c *Context) {\n\tfor _, command := range c.App.Commands {\n\t\tif command.Hidden {\n\t\t\tcontinue\n\t\t}\n\t\tfor _, name := range command.Names() {\n\t\t\tfmt.Fprintln(c.App.Writer, name)\n\t\t}\n\t}\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "5d95ee07a2dbe719d980518f",
+        "revision": "ec402ecec579718ec2d7a686db201bbeb6ad918a",
+        "path": "altsrc/flag_generated.go",
+        "start_byte": 197,
+        "text": "type BoolFlag struct {\n\tcli.BoolFlag\n\tset *flag.FlagSet\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "81982e526be5aad264e43103",
+        "revision": "ec402ecec579718ec2d7a686db201bbeb6ad918a",
+        "path": "app.go",
+        "start_byte": 1073,
+        "text": "type App struct {\n\t// The name of the program. Defaults to path.Base(os.Args[0])\n\tName string\n\t// Full name of command for help, defaults to Name\n\tHelpName string\n\t// Description of the program.\n\tUsage string\n\t// Text to override the USAGE section of help\n\tUsageText string\n\t// Description of the program argument format.\n\tArgsUsage string\n\t// Version of the program\n\tVersion string\n\t// List of commands to execute\n\tCommands []Command\n\t// List of flags to parse\n\tFlags []Flag\n\t// Boolean to enable bash completion commands\n\tEnableBashCompletion bool\n\t// Boolean to hide built-in help command\n\tHideHelp bool\n\t// Boolean to hide built-in version flag and the VERSION section of help\n\tHideVersion bool\n\t// Populate on app startup, only gettable through method Categories()\n\tcategories CommandCategories\n\t// An action to execute when the bash-completion flag is set\n\tBashComplete BashCompleteFunc\n\t// An action to execute before any subcommands are run, but after the context is ready\n\t// If a non-nil error is returned, no subcommands are run\n\tBefore BeforeFunc\n\t// An action to execute after any subcommands are run, but after the subcommand has finished\n\t// It is run even if Action() panics\n\tAfter AfterFunc\n\t// The action to execute when no subcommands are specified\n\tAction interface{}\n\t// TODO: replace `Action: interface{}` with `Action: ActionFunc` once some kind\n\t// of deprecation period has passed, maybe?\n\n\t// Execute this function if the proper command cannot be found\n\tCommandNotFound CommandNotFoundFunc\n\t// Execute this function if an usage error occurs\n\tOnUsageError OnUsageErrorFunc\n\t// Compilation date\n\tCompiled time.Time\n\t// List of all authors who contributed\n\tAuthors []Author\n\t// Copyright of the binary if any\n\tCopyright string\n\t// Name of Author (Note: Use App.Authors, this is deprecated)\n\tAuthor string\n\t// Email of Author (Note: Use App.Authors, this is deprecated)\n\tEmail string\n\t// Writer writer to write output to\n\tWriter io.Writer\n\t// ErrWriter writes error output\n\tErrWriter io.Writer\n\t// Other custom info\n\tMetadata map[string]interface{}\n\n\tdidSetup bool\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "18b7141e04fc4aed75db892b",
+        "revision": "ec402ecec579718ec2d7a686db201bbeb6ad918a",
+        "path": "app.go",
+        "start_byte": 9169,
+        "text": "func (a *App) Command(name string) *Command {\n\tfor _, c := range a.Commands {\n\t\tif c.HasName(name) {\n\t\t\treturn &c\n\t\t}\n\t}\n\n\treturn nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "24cfb0557428da4405683809",
+        "revision": "ec402ecec579718ec2d7a686db201bbeb6ad918a",
+        "path": "app.go",
+        "start_byte": 10595,
+        "text": "func (a *App) appendFlag(flag Flag) {\n\tif !a.hasFlag(flag) {\n\t\ta.Flags = append(a.Flags, flag)\n\t}\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "77ba50b4755fc335ae227c7e",
+        "revision": "ec402ecec579718ec2d7a686db201bbeb6ad918a",
+        "path": "app.go",
+        "start_byte": 10763,
+        "text": "type Author struct {\n\tName  string // The Authors name\n\tEmail string // The Authors email\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "c8ebc9096d0b41a0739d0afd",
+        "revision": "ec402ecec579718ec2d7a686db201bbeb6ad918a",
+        "path": "category.go",
+        "start_byte": 66,
+        "text": "type CommandCategories []*CommandCategory",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "e421f50d42e13e6665edc406",
+        "revision": "ec402ecec579718ec2d7a686db201bbeb6ad918a",
+        "path": "category.go",
+        "start_byte": 487,
+        "text": "func (c CommandCategories) AddCommand(category string, command Command) CommandCategories {\n\tfor _, commandCategory := range c {\n\t\tif commandCategory.Name == category {\n\t\t\tcommandCategory.Commands = append(commandCategory.Commands, command)\n\t\t\treturn c\n\t\t}\n\t}\n\treturn append(c, &CommandCategory{Name: category, Commands: []Command{command}})\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "7ad7616de8e04fc2f13e55e3",
+        "revision": "ec402ecec579718ec2d7a686db201bbeb6ad918a",
+        "path": "command.go",
+        "start_byte": 106,
+        "text": "type Command struct {\n\t// The name of the command\n\tName string\n\t// short name of the command. Typically one character (deprecated, use `Aliases`)\n\tShortName string\n\t// A list of aliases for the command\n\tAliases []string\n\t// A short description of the usage of this command\n\tUsage string\n\t// Custom text to show on USAGE section of help\n\tUsageText string\n\t// A longer explanation of how the command works\n\tDescription string\n\t// A short description of the arguments of this command\n\tArgsUsage string\n\t// The category the command is part of\n\tCategory string\n\t// The function to call when checking for bash command completions\n\tBashComplete BashCompleteFunc\n\t// An action to execute before any sub-subcommands are run, but after the context is ready\n\t// If a non-nil error is returned, no sub-subcommands are run\n\tBefore BeforeFunc\n\t// An action to execute after any subcommands are run, but after the subcommand has finished\n\t// It is run even if Action() panics\n\tAfter AfterFunc\n\t// The function to call when this command is invoked\n\tAction interface{}\n\t// TODO: replace `Action: interface{}` with `Action: ActionFunc` once some kind\n\t// of deprecation period has passed, maybe?\n\n\t// Execute this function if a usage error occurs.\n\tOnUsageError OnUsageErrorFunc\n\t// List of child commands\n\tSubcommands Commands\n\t// List of flags to parse\n\tFlags []Flag\n\t// Treat all flags as normal arguments if true\n\tSkipFlagParsing bool\n\t// Boolean to hide built-in help command\n\tHideHelp bool\n\t// Boolean to hide this command from help or completion\n\tHidden bool\n\n\t// Full name of command for help, defaults to full command name, including parent commands.\n\tHelpName        string\n\tcommandNamePath []string\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "9310b3c39c63f5b2d65d2647",
+        "revision": "ec402ecec579718ec2d7a686db201bbeb6ad918a",
+        "path": "command.go",
+        "start_byte": 2102,
+        "text": "type Commands []Command",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "9d09af354fc8dddf319330a5",
+        "revision": "ec402ecec579718ec2d7a686db201bbeb6ad918a",
+        "path": "flag_generated.go",
+        "start_byte": 126,
+        "text": "type BoolFlag struct {\n\tName        string\n\tUsage       string\n\tEnvVar      string\n\tHidden      bool\n\tDestination *bool\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "f66d8f8b9ffc1bd6ecd29492",
+        "revision": "ec402ecec579718ec2d7a686db201bbeb6ad918a",
+        "path": "flag.go",
+        "start_byte": 213,
+        "text": "var BashCompletionFlag = BoolFlag{\n\tName:   \"generate-bash-completion\",\n\tHidden: true,\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "02a6b05f5ba2214dd6eb7b05",
+        "revision": "ec402ecec579718ec2d7a686db201bbeb6ad918a",
+        "path": "flag.go",
+        "start_byte": 357,
+        "text": "var VersionFlag = BoolFlag{\n\tName:  \"version, v\",\n\tUsage: \"print the version\",\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "1a8ea116edd1b12c1b431961",
+        "revision": "ec402ecec579718ec2d7a686db201bbeb6ad918a",
+        "path": "flag.go",
+        "start_byte": 609,
+        "text": "var HelpFlag = BoolFlag{\n\tName:  \"help, h\",\n\tUsage: \"show help\",\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "a44a4d22af1a27ec32d42372",
+        "revision": "ec402ecec579718ec2d7a686db201bbeb6ad918a",
+        "path": "help.go",
+        "start_byte": 2245,
+        "text": "var helpCommand = Command{\n\tName:      \"help\",\n\tAliases:   []string{\"h\"},\n\tUsage:     \"Shows a list of commands or help for one command\",\n\tArgsUsage: \"[command]\",\n\tAction: func(c *Context) error {\n\t\targs := c.Args()\n\t\tif args.Present() {\n\t\t\treturn ShowCommandHelp(c, args.First())\n\t\t}\n\n\t\tShowAppHelp(c)\n\t\treturn nil\n\t},\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "d3affa6cd6f20f01d44b401a",
+        "revision": "2b959bd8919d1110df44ec9a839e25a739906c3c",
+        "path": "altsrc/flag.go",
+        "start_byte": 565,
+        "text": "func ApplyInputSourceValues(context *cli.Context, inputSourceContext InputSourceContext, flags []cli.Flag) error {\n\tfor _, f := range flags {\n\t\tinputSourceExtendedFlag, isType := f.(FlagInputSourceExtension)\n\t\tif isType {\n\t\t\terr := inputSourceExtendedFlag.ApplyInputSourceValue(context, inputSourceContext)\n\t\t\tif err != nil {\n\t\t\t\treturn err\n\t\t\t}\n\t\t}\n\t}\n\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "d717a8e41755127fb857b661",
+        "revision": "2b959bd8919d1110df44ec9a839e25a739906c3c",
+        "path": "altsrc/flag.go",
+        "start_byte": 1208,
+        "text": "func InitInputSource(flags []cli.Flag, createInputSource func() (InputSourceContext, error)) cli.BeforeFunc {\n\treturn func(context *cli.Context) error {\n\t\tinputSource, err := createInputSource()\n\t\tif err != nil {\n\t\t\treturn fmt.Errorf(\"Unable to create input source: inner error: \\n'%v'\", err.Error())\n\t\t}\n\n\t\treturn ApplyInputSourceValues(context, inputSource, flags)\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "77847b72120b5307872f8d67",
+        "revision": "2b959bd8919d1110df44ec9a839e25a739906c3c",
+        "path": "altsrc/flag.go",
+        "start_byte": 1938,
+        "text": "func InitInputSourceWithContext(flags []cli.Flag, createInputSource func(context *cli.Context) (InputSourceContext, error)) cli.BeforeFunc {\n\treturn func(context *cli.Context) error {\n\t\tinputSource, err := createInputSource(context)\n\t\tif err != nil {\n\t\t\treturn fmt.Errorf(\"Unable to create input source with context: inner error: \\n'%v'\", err.Error())\n\t\t}\n\n\t\treturn ApplyInputSourceValues(context, inputSource, flags)\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "384a7a1d767e27a112a776a1",
+        "revision": "2b959bd8919d1110df44ec9a839e25a739906c3c",
+        "path": "altsrc/flag.go",
+        "start_byte": 2764,
+        "text": "func (f *GenericFlag) ApplyInputSourceValue(context *cli.Context, isc InputSourceContext) error {\n\tif f.set != nil {\n\t\tif !context.IsSet(f.Name) && !isEnvVarSet(f.EnvVars) {\n\t\t\tvalue, err := isc.Generic(f.GenericFlag.Name)\n\t\t\tif err != nil {\n\t\t\t\treturn err\n\t\t\t}\n\t\t\tif value != nil {\n\t\t\t\tfor _, name := range f.Names() {\n\t\t\t\t\tf.set.Set(name, value.String())\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t}\n\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "0be115e05050d4c6d195a025",
+        "revision": "2b959bd8919d1110df44ec9a839e25a739906c3c",
+        "path": "altsrc/flag.go",
+        "start_byte": 3783,
+        "text": "func (f *StringSliceFlag) ApplyInputSourceValue(context *cli.Context, isc InputSourceContext) error {\n\tif f.set != nil {\n\t\tif !context.IsSet(f.Name) && !isEnvVarSet(f.EnvVars) {\n\t\t\tvalue, err := isc.StringSlice(f.StringSliceFlag.Name)\n\t\t\tif err != nil {\n\t\t\t\treturn err\n\t\t\t}\n\t\t\tif value != nil {\n\t\t\t\tvar sliceValue cli.StringSlice = *(cli.NewStringSlice(value...))\n\t\t\t\tfor _, name := range f.Names() {\n\t\t\t\t\tunderlyingFlag := f.set.Lookup(name)\n\t\t\t\t\tif underlyingFlag != nil {\n\t\t\t\t\t\tunderlyingFlag.Value = &sliceValue\n\t\t\t\t\t}\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t}\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "0d706f8fe1162939782a21f6",
+        "revision": "2b959bd8919d1110df44ec9a839e25a739906c3c",
+        "path": "altsrc/flag.go",
+        "start_byte": 4928,
+        "text": "func (f *IntSliceFlag) ApplyInputSourceValue(context *cli.Context, isc InputSourceContext) error {\n\tif f.set != nil {\n\t\tif !context.IsSet(f.Name) && !isEnvVarSet(f.EnvVars) {\n\t\t\tvalue, err := isc.IntSlice(f.IntSliceFlag.Name)\n\t\t\tif err != nil {\n\t\t\t\treturn err\n\t\t\t}\n\t\t\tif value != nil {\n\t\t\t\tvar sliceValue cli.IntSlice = *(cli.NewIntSlice(value...))\n\t\t\t\tfor _, name := range f.Names() {\n\t\t\t\t\tunderlyingFlag := f.set.Lookup(name)\n\t\t\t\t\tif underlyingFlag != nil {\n\t\t\t\t\t\tunderlyingFlag.Value = &sliceValue\n\t\t\t\t\t}\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t}\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "5715380f81eb150c244df20b",
+        "revision": "2b959bd8919d1110df44ec9a839e25a739906c3c",
+        "path": "altsrc/flag.go",
+        "start_byte": 6016,
+        "text": "func (f *BoolFlag) ApplyInputSourceValue(context *cli.Context, isc InputSourceContext) error {\n\tif f.set != nil {\n\t\tif !context.IsSet(f.Name) && !isEnvVarSet(f.EnvVars) {\n\t\t\tvalue, err := isc.Bool(f.BoolFlag.Name)\n\t\t\tif err != nil {\n\t\t\t\treturn err\n\t\t\t}\n\t\t\tif value {\n\t\t\t\tfor _, name := range f.Names() {\n\t\t\t\t\tf.set.Set(name, strconv.FormatBool(value))\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t}\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "44e288ad2fcec41df5266285",
+        "revision": "2b959bd8919d1110df44ec9a839e25a739906c3c",
+        "path": "altsrc/flag.go",
+        "start_byte": 6960,
+        "text": "func (f *StringFlag) ApplyInputSourceValue(context *cli.Context, isc InputSourceContext) error {\n\tif f.set != nil {\n\t\tif !(context.IsSet(f.Name) || isEnvVarSet(f.EnvVars)) {\n\t\t\tvalue, err := isc.String(f.StringFlag.Name)\n\t\t\tif err != nil {\n\t\t\t\treturn err\n\t\t\t}\n\t\t\tif value != \"\" {\n\t\t\t\tfor _, name := range f.Names() {\n\t\t\t\t\tf.set.Set(name, value)\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t}\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "8e928ae92ac8a8ea433d5ce3",
+        "revision": "2b959bd8919d1110df44ec9a839e25a739906c3c",
+        "path": "altsrc/flag.go",
+        "start_byte": 7868,
+        "text": "func (f *IntFlag) ApplyInputSourceValue(context *cli.Context, isc InputSourceContext) error {\n\tif f.set != nil {\n\t\tif !(context.IsSet(f.Name) || isEnvVarSet(f.EnvVars)) {\n\t\t\tvalue, err := isc.Int(f.IntFlag.Name)\n\t\t\tif err != nil {\n\t\t\t\treturn err\n\t\t\t}\n\t\t\tif value > 0 {\n\t\t\t\tfor _, name := range f.Names() {\n\t\t\t\t\tf.set.Set(name, strconv.FormatInt(int64(value), 10))\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t}\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "7d6fedd75948deb297b9d409",
+        "revision": "2b959bd8919d1110df44ec9a839e25a739906c3c",
+        "path": "altsrc/flag.go",
+        "start_byte": 8845,
+        "text": "func (f *DurationFlag) ApplyInputSourceValue(context *cli.Context, isc InputSourceContext) error {\n\tif f.set != nil {\n\t\tif !(context.IsSet(f.Name) || isEnvVarSet(f.EnvVars)) {\n\t\t\tvalue, err := isc.Duration(f.DurationFlag.Name)\n\t\t\tif err != nil {\n\t\t\t\treturn err\n\t\t\t}\n\t\t\tif value > 0 {\n\t\t\t\tfor _, name := range f.Names() {\n\t\t\t\t\tf.set.Set(name, value.String())\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t}\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "3f7025c6cf8387eaae03b7b4",
+        "revision": "2b959bd8919d1110df44ec9a839e25a739906c3c",
+        "path": "altsrc/flag.go",
+        "start_byte": 9820,
+        "text": "func (f *Float64Flag) ApplyInputSourceValue(context *cli.Context, isc InputSourceContext) error {\n\tif f.set != nil {\n\t\tif !(context.IsSet(f.Name) || isEnvVarSet(f.EnvVars)) {\n\t\t\tvalue, err := isc.Float64(f.Float64Flag.Name)\n\t\t\tif err != nil {\n\t\t\t\treturn err\n\t\t\t}\n\t\t\tif value > 0 {\n\t\t\t\tfloatStr := float64ToString(value)\n\t\t\t\tfor _, name := range f.Names() {\n\t\t\t\t\tf.set.Set(name, floatStr)\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t}\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "46dd2de74b7de364ef2dde95",
+        "revision": "2b959bd8919d1110df44ec9a839e25a739906c3c",
+        "path": "altsrc/flag.go",
+        "start_byte": 10420,
+        "text": "func isEnvVarSet(envVars []string) bool {\n\tfor _, envVar := range envVars {\n\t\tif envVal := os.Getenv(envVar); envVal != \"\" {\n\t\t\t// TODO: Can't use this for bools as\n\t\t\t// set means that it was true or false based on\n\t\t\t// Bool flag type, should work for other types\n\t\t\tif len(envVal) > 0 {\n\t\t\t\treturn true\n\t\t\t}\n\t\t}\n\t}\n\n\treturn false\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "d48ed6d4dc38fcf1ac82a266",
+        "revision": "2b959bd8919d1110df44ec9a839e25a739906c3c",
+        "path": "altsrc/flag.go",
+        "start_byte": 10756,
+        "text": "func float64ToString(f float64) string {\n\treturn fmt.Sprintf(\"%v\", f)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "908880bc206e7d4b5292d76b",
+        "revision": "2b959bd8919d1110df44ec9a839e25a739906c3c",
+        "path": "altsrc/input_source_context.go",
+        "start_byte": 166,
+        "text": "type InputSourceContext interface {\n\tInt(name string) (int, error)\n\tDuration(name string) (time.Duration, error)\n\tFloat64(name string) (float64, error)\n\tString(name string) (string, error)\n\tStringSlice(name string) ([]string, error)\n\tIntSlice(name string) ([]int, error)\n\tGeneric(name string) (cli.Generic, error)\n\tBool(name string) (bool, error)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "ccd6576f71fc40076c556286",
+        "revision": "2b959bd8919d1110df44ec9a839e25a739906c3c",
+        "path": "altsrc/json_source_context.go",
+        "start_byte": 348,
+        "text": "func NewJSONSourceFromFlagFunc(flag string) func(c *cli.Context) (InputSourceContext, error) {\n\treturn func(context *cli.Context) (InputSourceContext, error) {\n\t\treturn NewJSONSourceFromFile(context.String(flag))\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "2c2733bb6bdd6a84b3f13698",
+        "revision": "2b959bd8919d1110df44ec9a839e25a739906c3c",
+        "path": "altsrc/json_source_context.go",
+        "start_byte": 1546,
+        "text": "func (x *jsonSource) Int(name string) (int, error) {\n\ti, err := x.getValue(name)\n\tif err != nil {\n\t\treturn 0, err\n\t}\n\tswitch v := i.(type) {\n\tdefault:\n\t\treturn 0, fmt.Errorf(\"unexpected type %T for %q\", i, name)\n\tcase int:\n\t\treturn v, nil\n\tcase float64:\n\t\treturn int(float64(v)), nil\n\tcase float32:\n\t\treturn int(float32(v)), nil\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "0ff5eccfefc68af64a6729aa",
+        "revision": "2b959bd8919d1110df44ec9a839e25a739906c3c",
+        "path": "altsrc/json_source_context.go",
+        "start_byte": 1881,
+        "text": "func (x *jsonSource) Duration(name string) (time.Duration, error) {\n\ti, err := x.getValue(name)\n\tif err != nil {\n\t\treturn 0, err\n\t}\n\tv, ok := (time.Duration)(0), false\n\tif v, ok = i.(time.Duration); !ok {\n\t\treturn v, fmt.Errorf(\"unexpected type %T for %q\", i, name)\n\t}\n\treturn v, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "c985688e4952c43a5ca1922f",
+        "revision": "2b959bd8919d1110df44ec9a839e25a739906c3c",
+        "path": "altsrc/json_source_context.go",
+        "start_byte": 2168,
+        "text": "func (x *jsonSource) Float64(name string) (float64, error) {\n\ti, err := x.getValue(name)\n\tif err != nil {\n\t\treturn 0, err\n\t}\n\tv, ok := (float64)(0), false\n\tif v, ok = i.(float64); !ok {\n\t\treturn v, fmt.Errorf(\"unexpected type %T for %q\", i, name)\n\t}\n\treturn v, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "2b77863dc52132da1421b847",
+        "revision": "2b959bd8919d1110df44ec9a839e25a739906c3c",
+        "path": "altsrc/json_source_context.go",
+        "start_byte": 2436,
+        "text": "func (x *jsonSource) String(name string) (string, error) {\n\ti, err := x.getValue(name)\n\tif err != nil {\n\t\treturn \"\", err\n\t}\n\tv, ok := \"\", false\n\tif v, ok = i.(string); !ok {\n\t\treturn v, fmt.Errorf(\"unexpected type %T for %q\", i, name)\n\t}\n\treturn v, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "a2dc4698c28b3edf27a0a279",
+        "revision": "2b959bd8919d1110df44ec9a839e25a739906c3c",
+        "path": "altsrc/json_source_context.go",
+        "start_byte": 2692,
+        "text": "func (x *jsonSource) StringSlice(name string) ([]string, error) {\n\ti, err := x.getValue(name)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\tswitch v := i.(type) {\n\tdefault:\n\t\treturn nil, fmt.Errorf(\"unexpected type %T for %q\", i, name)\n\tcase []string:\n\t\treturn v, nil\n\tcase []interface{}:\n\t\tc := []string{}\n\t\tfor _, s := range v {\n\t\t\tif str, ok := s.(string); ok {\n\t\t\t\tc = append(c, str)\n\t\t\t} else {\n\t\t\t\treturn c, fmt.Errorf(\"unexpected item type %T in %T for %q\", s, c, name)\n\t\t\t}\n\t\t}\n\t\treturn c, nil\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "2432d899f8cc4efcc603d153",
+        "revision": "2b959bd8919d1110df44ec9a839e25a739906c3c",
+        "path": "altsrc/json_source_context.go",
+        "start_byte": 3193,
+        "text": "func (x *jsonSource) IntSlice(name string) ([]int, error) {\n\ti, err := x.getValue(name)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\tswitch v := i.(type) {\n\tdefault:\n\t\treturn nil, fmt.Errorf(\"unexpected type %T for %q\", i, name)\n\tcase []int:\n\t\treturn v, nil\n\tcase []interface{}:\n\t\tc := []int{}\n\t\tfor _, s := range v {\n\t\t\tif i2, ok := s.(int); ok {\n\t\t\t\tc = append(c, i2)\n\t\t\t} else {\n\t\t\t\treturn c, fmt.Errorf(\"unexpected item type %T in %T for %q\", s, c, name)\n\t\t\t}\n\t\t}\n\t\treturn c, nil\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "1312abca39bf5fddae856a1a",
+        "revision": "2b959bd8919d1110df44ec9a839e25a739906c3c",
+        "path": "altsrc/json_source_context.go",
+        "start_byte": 3677,
+        "text": "func (x *jsonSource) Generic(name string) (cli.Generic, error) {\n\ti, err := x.getValue(name)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\tv, ok := (cli.Generic)(nil), false\n\tif v, ok = i.(cli.Generic); !ok {\n\t\treturn v, fmt.Errorf(\"unexpected type %T for %q\", i, name)\n\t}\n\treturn v, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "61d2d0316185fc12ac7ba1d3",
+        "revision": "2b959bd8919d1110df44ec9a839e25a739906c3c",
+        "path": "altsrc/json_source_context.go",
+        "start_byte": 3961,
+        "text": "func (x *jsonSource) Bool(name string) (bool, error) {\n\ti, err := x.getValue(name)\n\tif err != nil {\n\t\treturn false, err\n\t}\n\tv, ok := false, false\n\tif v, ok = i.(bool); !ok {\n\t\treturn v, fmt.Errorf(\"unexpected type %T for %q\", i, name)\n\t}\n\treturn v, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "2afb4479184c95fe32865b25",
+        "revision": "2b959bd8919d1110df44ec9a839e25a739906c3c",
+        "path": "altsrc/json_source_context.go",
+        "start_byte": 4327,
+        "text": "func jsonGetValue(key string, m map[string]interface{}) (interface{}, error) {\n\tvar ret interface{}\n\tvar ok bool\n\tworking := m\n\tkeys := strings.Split(key, \".\")\n\tfor ix, k := range keys {\n\t\tif ret, ok = working[k]; !ok {\n\t\t\treturn ret, fmt.Errorf(\"missing key %q\", key)\n\t\t}\n\t\tif working, ok = ret.(map[string]interface{}); !ok {\n\t\t\tif ix < len(keys)-1 {\n\t\t\t\treturn ret, fmt.Errorf(\"unexpected intermediate value at %q segment of %q: %T\", k, key, ret)\n\t\t\t}\n\t\t}\n\t}\n\treturn ret, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "0fb8c8972c5258e5247a453a",
+        "revision": "2b959bd8919d1110df44ec9a839e25a739906c3c",
+        "path": "altsrc/map_input_source.go",
+        "start_byte": 417,
+        "text": "func nestedVal(name string, tree map[interface{}]interface{}) (interface{}, bool) {\n\tif sections := strings.Split(name, \".\"); len(sections) > 1 {\n\t\tnode := tree\n\t\tfor _, section := range sections[:len(sections)-1] {\n\t\t\tif child, ok := node[section]; !ok {\n\t\t\t\treturn nil, false\n\t\t\t} else {\n\t\t\t\tif ctype, ok := child.(map[interface{}]interface{}); !ok {\n\t\t\t\t\treturn nil, false\n\t\t\t\t} else {\n\t\t\t\t\tnode = ctype\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t\tif val, ok := node[sections[len(sections)-1]]; ok {\n\t\t\treturn val, true\n\t\t}\n\t}\n\treturn nil, false\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "4a8dfd8d70082ab482b9f970",
+        "revision": "2b959bd8919d1110df44ec9a839e25a739906c3c",
+        "path": "altsrc/map_input_source.go",
+        "start_byte": 1635,
+        "text": "func (fsm *MapInputSource) Duration(name string) (time.Duration, error) {\n\totherGenericValue, exists := fsm.valueMap[name]\n\tif exists {\n\t\totherValue, isType := otherGenericValue.(time.Duration)\n\t\tif !isType {\n\t\t\treturn 0, incorrectTypeForFlagError(name, \"duration\", otherGenericValue)\n\t\t}\n\t\treturn otherValue, nil\n\t}\n\tnestedGenericValue, exists := nestedVal(name, fsm.valueMap)\n\tif exists {\n\t\totherValue, isType := nestedGenericValue.(time.Duration)\n\t\tif !isType {\n\t\t\treturn 0, incorrectTypeForFlagError(name, \"duration\", nestedGenericValue)\n\t\t}\n\t\treturn otherValue, nil\n\t}\n\n\treturn 0, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "ce519ba37ad1dc9161042bf0",
+        "revision": "2b959bd8919d1110df44ec9a839e25a739906c3c",
+        "path": "altsrc/map_input_source.go",
+        "start_byte": 6155,
+        "text": "func incorrectTypeForFlagError(name, expectedTypeName string, value interface{}) error {\n\tvalueType := reflect.TypeOf(value)\n\tvalueTypeName := \"\"\n\tif valueType != nil {\n\t\tvalueTypeName = valueType.Name()\n\t}\n\n\treturn fmt.Errorf(\"Mismatched type for flag '%s'. Expected '%s' but actual is '%s'\", name, expectedTypeName, valueTypeName)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "23fe6e1693b2c8819b5b3d8f",
+        "revision": "2b959bd8919d1110df44ec9a839e25a739906c3c",
+        "path": "altsrc/yaml_file_loader.go",
+        "start_byte": 408,
+        "text": "func NewYamlSourceFromFile(file string) (InputSourceContext, error) {\n\tysc := &yamlSourceContext{FilePath: file}\n\tvar results map[interface{}]interface{}\n\terr := readCommandYaml(ysc.FilePath, &results)\n\tif err != nil {\n\t\treturn nil, fmt.Errorf(\"Unable to load Yaml file '%s': inner error: \\n'%v'\", ysc.FilePath, err.Error())\n\t}\n\n\treturn &MapInputSource{valueMap: results}, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "3a4eb098eac7aa4e23d88173",
+        "revision": "2b959bd8919d1110df44ec9a839e25a739906c3c",
+        "path": "altsrc/yaml_file_loader.go",
+        "start_byte": 1400,
+        "text": "func loadDataFrom(filePath string) ([]byte, error) {\n\tu, err := url.Parse(filePath)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\n\tif u.Host != \"\" { // i have a host, now do i support the scheme?\n\t\tswitch u.Scheme {\n\t\tcase \"http\", \"https\":\n\t\t\tres, err := http.Get(filePath)\n\t\t\tif err != nil {\n\t\t\t\treturn nil, err\n\t\t\t}\n\t\t\treturn ioutil.ReadAll(res.Body)\n\t\tdefault:\n\t\t\treturn nil, fmt.Errorf(\"scheme of %s is unsupported\", filePath)\n\t\t}\n\t} else if u.Path != \"\" { // i dont have a host, but I have a path. I am a local file.\n\t\tif _, notFoundFileErr := os.Stat(filePath); notFoundFileErr != nil {\n\t\t\treturn nil, fmt.Errorf(\"Cannot read from file: '%s' because it does not exist.\", filePath)\n\t\t}\n\t\treturn ioutil.ReadFile(filePath)\n\t} else {\n\t\treturn nil, fmt.Errorf(\"unable to determine how to load from path %s\", filePath)\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "7ebd986140328a1449426287",
+        "revision": "2b959bd8919d1110df44ec9a839e25a739906c3c",
+        "path": "app.go",
+        "start_byte": 3733,
+        "text": "func (a *App) Run(arguments []string) (err error) {\n\ta.Setup()\n\n\t// parse flags\n\tset := flagSet(a.Name, a.Flags)\n\tset.SetOutput(ioutil.Discard)\n\terr = set.Parse(arguments[1:])\n\tnerr := normalizeFlags(a.Flags, set)\n\tcontext := NewContext(a, set, nil)\n\tif nerr != nil {\n\t\tfmt.Fprintln(a.Writer, nerr)\n\t\tShowAppHelp(context)\n\t\treturn nerr\n\t}\n\n\tif checkCompletions(context) {\n\t\treturn nil\n\t}\n\n\tif err != nil {\n\t\tif a.OnUsageError != nil {\n\t\t\terr := a.OnUsageError(context, err, false)\n\t\t\tHandleExitCoder(err)\n\t\t\treturn err\n\t\t}\n\t\tfmt.Fprintf(a.Writer, \"Incorrect Usage: %s\\n\\n\", err)\n\t\tShowAppHelp(context)\n\t\treturn err\n\t}\n\n\tif !a.HideHelp && checkHelp(context) {\n\t\tShowAppHelp(context)\n\t\treturn nil\n\t}\n\n\tif !a.HideVersion && checkVersion(context) {\n\t\tShowVersion(context)\n\t\treturn nil\n\t}\n\n\tif a.After != nil {\n\t\tdefer func() {\n\t\t\tif afterErr := a.After(context); afterErr != nil {\n\t\t\t\tif err != nil {\n\t\t\t\t\terr = newMultiError(err, afterErr)\n\t\t\t\t} else {\n\t\t\t\t\terr = afterErr\n\t\t\t\t}\n\t\t\t}\n\t\t}()\n\t}\n\n\tif a.Before != nil {\n\t\tbeforeErr := a.Before(context)\n\t\tif beforeErr != nil {\n\t\t\tfmt.Fprintf(a.Writer, \"%v\\n\\n\", beforeErr)\n\t\t\tShowAppHelp(context)\n\t\t\tHandleExitCoder(beforeErr)\n\t\t\terr = beforeErr\n\t\t\treturn err\n\t\t}\n\t}\n\n\targs := context.Args()\n\tif args.Present() {\n\t\tname := args.First()\n\t\tc := a.Command(name)\n\t\tif c != nil {\n\t\t\treturn c.Run(context)\n\t\t}\n\t}\n\n\t// Run default Action\n\terr = a.Action(context)\n\n\tHandleExitCoder(err)\n\treturn err\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "2b28175fea01a98903a3f4e3",
+        "revision": "2b959bd8919d1110df44ec9a839e25a739906c3c",
+        "path": "app.go",
+        "start_byte": 5287,
+        "text": "func (a *App) RunAsSubcommand(ctx *Context) (err error) {\n\t// append help to commands\n\tif len(a.Commands) > 0 {\n\t\tif a.Command(helpCommand.Name) == nil && !a.HideHelp {\n\t\t\ta.appendCommand(helpCommand)\n\n\t\t\tif HelpFlag != nil {\n\t\t\t\ta.appendFlag(HelpFlag)\n\t\t\t}\n\t\t}\n\t}\n\n\tnewCmds := []*Command{}\n\tfor _, c := range a.Commands {\n\t\tif c.HelpName == \"\" {\n\t\t\tc.HelpName = fmt.Sprintf(\"%s %s\", a.HelpName, c.Name)\n\t\t}\n\t\tnewCmds = append(newCmds, c)\n\t}\n\ta.Commands = newCmds\n\n\t// append flags\n\tif a.EnableBashCompletion {\n\t\ta.appendFlag(BashCompletionFlag)\n\t}\n\n\t// parse flags\n\tset := flagSet(a.Name, a.Flags)\n\tset.SetOutput(ioutil.Discard)\n\terr = set.Parse(ctx.Args().Tail())\n\tnerr := normalizeFlags(a.Flags, set)\n\tcontext := NewContext(a, set, ctx)\n\n\tif nerr != nil {\n\t\tfmt.Fprintln(a.Writer, nerr)\n\t\tfmt.Fprintln(a.Writer)\n\t\tif len(a.Commands) > 0 {\n\t\t\tShowSubcommandHelp(context)\n\t\t} else {\n\t\t\tShowCommandHelp(ctx, context.Args().First())\n\t\t}\n\t\treturn nerr\n\t}\n\n\tif checkCompletions(context) {\n\t\treturn nil\n\t}\n\n\tif err != nil {\n\t\tif a.OnUsageError != nil {\n\t\t\terr = a.OnUsageError(context, err, true)\n\t\t\tHandleExitCoder(err)\n\t\t\treturn err\n\t\t}\n\t\tfmt.Fprintf(a.Writer, \"Incorrect Usage: %s\\n\\n\", err)\n\t\tShowSubcommandHelp(context)\n\t\treturn err\n\t}\n\n\tif len(a.Commands) > 0 {\n\t\tif checkSubcommandHelp(context) {\n\t\t\treturn nil\n\t\t}\n\t} else {\n\t\tif checkCommandHelp(ctx, context.Args().First()) {\n\t\t\treturn nil\n\t\t}\n\t}\n\n\tif a.After != nil {\n\t\tdefer func() {\n\t\t\tafterErr := a.After(context)\n\t\t\tif afterErr != nil {\n\t\t\t\tHandleExitCoder(err)\n\t\t\t\tif err != nil {\n\t\t\t\t\terr = newMultiError(err, afterErr)\n\t\t\t\t} else {\n\t\t\t\t\terr = afterErr\n\t\t\t\t}\n\t\t\t}\n\t\t}()\n\t}\n\n\tif a.Before != nil {\n\t\tbeforeErr := a.Before(context)\n\t\tif beforeErr != nil {\n\t\t\tHandleExitCoder(beforeErr)\n\t\t\terr = beforeErr\n\t\t\treturn err\n\t\t}\n\t}\n\n\targs := context.Args()\n\tif args.Present() {\n\t\tname := args.First()\n\t\tc := a.Command(name)\n\t\tif c != nil {\n\t\t\treturn c.Run(context)\n\t\t}\n\t}\n\n\t// Run default Action\n\terr = a.Action(context)\n\n\tHandleExitCoder(err)\n\treturn err\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "38074e2b6b819e414dc3b7c9",
+        "revision": "2b959bd8919d1110df44ec9a839e25a739906c3c",
+        "path": "app.go",
+        "start_byte": 7611,
+        "text": "func (a *App) VisibleCategories() []CommandCategory {\n\tret := []CommandCategory{}\n\tfor _, category := range a.Categories.Categories() {\n\t\tif visible := func() CommandCategory {\n\t\t\tif len(category.VisibleCommands()) > 0 {\n\t\t\t\treturn category\n\t\t\t}\n\t\t\treturn nil\n\t\t}(); visible != nil {\n\t\t\tret = append(ret, visible)\n\t\t}\n\t}\n\treturn ret\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "738f03679855934029521a4e",
+        "revision": "2b959bd8919d1110df44ec9a839e25a739906c3c",
+        "path": "app.go",
+        "start_byte": 8016,
+        "text": "func (a *App) VisibleCommands() []*Command {\n\tret := []*Command{}\n\tfor _, command := range a.Commands {\n\t\tif !command.Hidden {\n\t\t\tret = append(ret, command)\n\t\t}\n\t}\n\treturn ret\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "0db408bec0ca22bddf219e77",
+        "revision": "2b959bd8919d1110df44ec9a839e25a739906c3c",
+        "path": "app.go",
+        "start_byte": 8258,
+        "text": "func (a *App) VisibleFlags() []Flag {\n\treturn visibleFlags(a.Flags)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "1258b590cee082c831171976",
+        "revision": "2b959bd8919d1110df44ec9a839e25a739906c3c",
+        "path": "app.go",
+        "start_byte": 8329,
+        "text": "func (a *App) hasFlag(flag Flag) bool {\n\tfor _, f := range a.Flags {\n\t\tif reflect.DeepEqual(flag, f) {\n\t\t\treturn true\n\t\t}\n\t}\n\n\treturn false\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "2b371e4f1982fb81d4273c5f",
+        "revision": "2b959bd8919d1110df44ec9a839e25a739906c3c",
+        "path": "app.go",
+        "start_byte": 8472,
+        "text": "func (a *App) errWriter() io.Writer {\n\n\t// When the app ErrWriter is nil use the package level one.\n\tif a.ErrWriter == nil {\n\t\treturn ErrWriter\n\t}\n\n\treturn a.ErrWriter\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "18de04e0745f8dbae0a088e5",
+        "revision": "2b959bd8919d1110df44ec9a839e25a739906c3c",
+        "path": "app.go",
+        "start_byte": 8930,
+        "text": "type Author struct {\n\tName  string // The Authors name\n\tEmail string // The Authors email\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "2effe2864ea0c9610c6aafca",
+        "revision": "2b959bd8919d1110df44ec9a839e25a739906c3c",
+        "path": "app.go",
+        "start_byte": 9129,
+        "text": "func (a *Author) String() string {\n\te := \"\"\n\tif a.Email != \"\" {\n\t\te = \"<\" + a.Email + \"> \"\n\t}\n\n\treturn fmt.Sprintf(\"%v %v\", a.Name, e)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "07414c8a56473ae95b36e82a",
+        "revision": "2b959bd8919d1110df44ec9a839e25a739906c3c",
+        "path": "args.go",
+        "start_byte": 594,
+        "text": "func (a *args) Get(n int) string {\n\tif len(*a) > n {\n\t\treturn (*a)[n]\n\t}\n\treturn \"\"\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "7553682d0878dde00101fb21",
+        "revision": "2b959bd8919d1110df44ec9a839e25a739906c3c",
+        "path": "args.go",
+        "start_byte": 681,
+        "text": "func (a *args) First() string {\n\treturn a.Get(0)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "3c2e052f6e57c30648b6e650",
+        "revision": "2b959bd8919d1110df44ec9a839e25a739906c3c",
+        "path": "args.go",
+        "start_byte": 733,
+        "text": "func (a *args) Tail() []string {\n\tif a.Len() >= 2 {\n\t\ttail := []string((*a)[1:])\n\t\tret := make([]string, len(tail))\n\t\tcopy(ret, tail)\n\t\treturn ret\n\t}\n\treturn []string{}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "600a2d0315bc5918e2e5e1b4",
+        "revision": "2b959bd8919d1110df44ec9a839e25a739906c3c",
+        "path": "args.go",
+        "start_byte": 905,
+        "text": "func (a *args) Len() int {\n\treturn len(*a)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "9b568b050572231254ffe287",
+        "revision": "2b959bd8919d1110df44ec9a839e25a739906c3c",
+        "path": "args.go",
+        "start_byte": 951,
+        "text": "func (a *args) Present() bool {\n\treturn a.Len() != 0\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "f53518cbd1bb2ebac9abbd93",
+        "revision": "2b959bd8919d1110df44ec9a839e25a739906c3c",
+        "path": "args.go",
+        "start_byte": 1007,
+        "text": "func (a *args) Slice() []string {\n\tret := make([]string, len(*a))\n\tcopy(ret, []string(*a))\n\treturn ret\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "c5f79f683d8cb621fa57ae27",
+        "revision": "2b959bd8919d1110df44ec9a839e25a739906c3c",
+        "path": "category.go",
+        "start_byte": 13,
+        "text": "type CommandCategories interface {\n\t// AddCommand adds a command to a category, creating a new category if necessary.\n\tAddCommand(category string, command *Command)\n\t// Categories returns a copy of the category slice\n\tCategories() []CommandCategory\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "0e96c224e5dddedaed0c4851",
+        "revision": "2b959bd8919d1110df44ec9a839e25a739906c3c",
+        "path": "category.go",
+        "start_byte": 420,
+        "text": "func (c *commandCategories) Less(i, j int) bool {\n\treturn (*c)[i].Name() < (*c)[j].Name()\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "5ba0132a3794a0c582fe43cc",
+        "revision": "2b959bd8919d1110df44ec9a839e25a739906c3c",
+        "path": "category.go",
+        "start_byte": 513,
+        "text": "func (c *commandCategories) Len() int {\n\treturn len(*c)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "846bee4eb4d58c666d17c4ab",
+        "revision": "2b959bd8919d1110df44ec9a839e25a739906c3c",
+        "path": "category.go",
+        "start_byte": 572,
+        "text": "func (c *commandCategories) Swap(i, j int) {\n\t(*c)[i], (*c)[j] = (*c)[j], (*c)[i]\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "681775056699ef6e6f528eef",
+        "revision": "2b959bd8919d1110df44ec9a839e25a739906c3c",
+        "path": "category.go",
+        "start_byte": 1261,
+        "text": "type CommandCategory interface {\n\t// Name returns the category name string\n\tName() string\n\t// VisibleCommands returns a slice of the Commands with Hidden=false\n\tVisibleCommands() []*Command\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "eb529742fabc2554bbc4dc35",
+        "revision": "2b959bd8919d1110df44ec9a839e25a739906c3c",
+        "path": "category.go",
+        "start_byte": 1454,
+        "text": "type commandCategory struct {\n\tname     string\n\tcommands []*Command\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "7310b942d7d3faa4e72a8719",
+        "revision": "2b959bd8919d1110df44ec9a839e25a739906c3c",
+        "path": "category.go",
+        "start_byte": 1525,
+        "text": "func newCommandCategory(name string) *commandCategory {\n\treturn &commandCategory{\n\t\tname:     name,\n\t\tcommands: []*Command{},\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "d6a0406c4b8c4da1a99ac6e9",
+        "revision": "2b959bd8919d1110df44ec9a839e25a739906c3c",
+        "path": "category.go",
+        "start_byte": 1717,
+        "text": "func (c *commandCategory) VisibleCommands() []*Command {\n\tif c.commands == nil {\n\t\tc.commands = []*Command{}\n\t}\n\n\tret := []*Command{}\n\tfor _, command := range c.commands {\n\t\tif !command.Hidden {\n\t\t\tret = append(ret, command)\n\t\t}\n\t}\n\treturn ret\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "15723feb77f45163d0cfe606",
+        "revision": "2b959bd8919d1110df44ec9a839e25a739906c3c",
+        "path": "command.go",
+        "start_byte": 1706,
+        "text": "func (c *Command) FullName() string {\n\tif c.commandNamePath == nil {\n\t\treturn c.Name\n\t}\n\treturn strings.Join(c.commandNamePath, \" \")\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "517a6027e32c83fd52c555ca",
+        "revision": "2b959bd8919d1110df44ec9a839e25a739906c3c",
+        "path": "command.go",
+        "start_byte": 1941,
+        "text": "func (c *Command) Run(ctx *Context) (err error) {\n\tif len(c.Subcommands) > 0 {\n\t\treturn c.startApp(ctx)\n\t}\n\n\tif !c.HideHelp && HelpFlag != nil {\n\t\t// append help to flags\n\t\tc.appendFlag(HelpFlag)\n\t}\n\n\tif ctx.App.EnableBashCompletion {\n\t\tc.appendFlag(BashCompletionFlag)\n\t}\n\n\tset := flagSet(c.Name, c.Flags)\n\tset.SetOutput(ioutil.Discard)\n\n\tif c.SkipFlagParsing {\n\t\terr = set.Parse(append([]string{\"--\"}, ctx.Args().Tail()...))\n\t} else {\n\t\terr = set.Parse(ctx.Args().Tail())\n\t}\n\n\tif err != nil {\n\t\tif c.OnUsageError != nil {\n\t\t\terr := c.OnUsageError(ctx, err, false)\n\t\t\tHandleExitCoder(err)\n\t\t\treturn err\n\t\t}\n\t\tfmt.Fprintf(ctx.App.Writer, \"Incorrect Usage: %s\\n\\n\", err)\n\t\tfmt.Fprintln(ctx.App.Writer)\n\t\tShowCommandHelp(ctx, c.Name)\n\t\treturn err\n\t}\n\n\tnerr := normalizeFlags(c.Flags, set)\n\tif nerr != nil {\n\t\tfmt.Fprintln(ctx.App.Writer, nerr)\n\t\tfmt.Fprintln(ctx.App.Writer)\n\t\tShowCommandHelp(ctx, c.Name)\n\t\treturn nerr\n\t}\n\n\tcontext := NewContext(ctx.App, set, ctx)\n\n\tif checkCommandCompletions(context, c.Name) {\n\t\treturn nil\n\t}\n\n\tif checkCommandHelp(context, c.Name) {\n\t\treturn nil\n\t}\n\n\tif c.After != nil {\n\t\tdefer func() {\n\t\t\tafterErr := c.After(context)\n\t\t\tif afterErr != nil {\n\t\t\t\tHandleExitCoder(err)\n\t\t\t\tif err != nil {\n\t\t\t\t\terr = newMultiError(err, afterErr)\n\t\t\t\t} else {\n\t\t\t\t\terr = afterErr\n\t\t\t\t}\n\t\t\t}\n\t\t}()\n\t}\n\n\tif c.Before != nil {\n\t\terr = c.Before(context)\n\t\tif err != nil {\n\t\t\tfmt.Fprintln(ctx.App.Writer, err)\n\t\t\tfmt.Fprintln(ctx.App.Writer)\n\t\t\tShowCommandHelp(ctx, c.Name)\n\t\t\tHandleExitCoder(err)\n\t\t\treturn err\n\t\t}\n\t}\n\n\tcontext.Command = c\n\terr = c.Action(context)\n\n\tif err != nil {\n\t\tHandleExitCoder(err)\n\t}\n\treturn err\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "0fea8dad165fa0081020fc27",
+        "revision": "2b959bd8919d1110df44ec9a839e25a739906c3c",
+        "path": "command.go",
+        "start_byte": 3640,
+        "text": "func (c *Command) Names() []string {\n\treturn append([]string{c.Name}, c.Aliases...)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "a2e218f69f874f504c41af56",
+        "revision": "2b959bd8919d1110df44ec9a839e25a739906c3c",
+        "path": "command.go",
+        "start_byte": 3786,
+        "text": "func (c *Command) H",
+        "rank": 2,
+        "truncated": true
+      }
+    ]
+  },
+  "retrieval": {
+    "unresolved": [
+      {
+        "side": "ours",
+        "identifier": "a",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Setup",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "didSetup",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "filepath",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Base",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "os",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Args",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "args.go",
+            "start": 88
+          },
+          {
+            "path": "context.go",
+            "start": 5031
+          }
+        ]
+      },
+      {
+        "side": "ours",
+        "identifier": "HelpName",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Usage",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Version",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "BashComplete",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Action",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Compiled",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "time",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Time",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Writer",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Stdout",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "newCmds",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Command",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "app.go",
+            "start": 7386
+          },
+          {
+            "path": "command.go",
+            "start": 106
+          }
+        ]
+      },
+      {
+        "side": "ours",
+        "identifier": "_",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "c",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Commands",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "fmt",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Sprintf",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "append",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "HideHelp",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "appendFlag",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "app.go",
+            "start": 8643
+          },
+          {
+            "path": "command.go",
+            "start": 5347
+          }
+        ]
+      },
+      {
+        "side": "ours",
+        "identifier": "EnableBashCompletion",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "HideVersion",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "command",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Category",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "sort",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Sort",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "a",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Setup",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "didSetup",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Email",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Authors",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "append",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Name",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "newCmds",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Command",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "app.go",
+            "start": 9169
+          },
+          {
+            "path": "command.go",
+            "start": 106
+          }
+        ]
+      },
+      {
+        "side": "theirs",
+        "identifier": "_",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "c",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "HelpName",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "fmt",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Sprintf",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "HideHelp",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "BoolFlag",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "altsrc/flag_generated.go",
+            "start": 197
+          },
+          {
+            "path": "flag_generated.go",
+            "start": 126
+          }
+        ]
+      },
+      {
+        "side": "theirs",
+        "identifier": "EnableBashCompletion",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "HideVersion",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "categories",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "command",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Category",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "sort",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Sort",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Metadata",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "make",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "string",
+        "reason": "no-unique-declaration-established"
+      }
+    ],
+    "method": "syntax-ranges-and-identifier-candidates/3",
+    "budget_bytes": 32768,
+    "libraries": {
+      "C": "cbbd4827ee02cd5c018ab41f10d8404ff8741159054b352d9a6d763c506ba3c7",
+      "Go": "1612f8fd958ba1ec981bf4b91e2ff399f1e54d26a9da68e5b60b0d7cd00616fc"
+    }
+  }
+}

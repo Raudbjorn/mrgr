@@ -1,5 +1,15 @@
 *Part of the [canonical planning document](../canonical-final-planning-document.md).*
 
+## Completed port — 2026-09-06
+
+**Phase 4 is complete; Phase 5 is ready.** All six integration gates are closed: real CLI/native Git configuration, distinct engine/driver/outer statuses, mixed-binary returned-tree and index preservation in both orders, five-run tree determinism, required Mergiraf coverage, and frozen outputs/residue. [The completion record](../../../../evidence/m2a/2026-09-06/README.md) contains source hashes, public Git bundles, real-input preflight provenance and reproduction instructions.
+
+Validation: 31 mechanism tests, 306 core tests and 2 H0 checks pass; typecheck/build and carried-source verification pass. Public bundles were independently imported and all 45 result trees verified. The isolated real preflight produced 30 deterministic result trees with 1,020 driver invocations. CI installs Mergiraf 0.19.0 and requires its integration tests; remote CI execution is not claimed.
+
+Phase 3 remains complete and valid with MEASURABLE=NO. No comparative efficacy, semantic safety, or Round 5 model-arm result is implied by this port. Proceed with [Phase 5's fresh reconstruction scope](../phase-5-resurrection-proof/current-state.md).
+
+## Historical port/source record
+
 ### 3.6 M2a — mechanisms, statuses, determinism
 - **State (2026-09-02): port done.** `packages/mechanisms/` exists with `src/adapter.ts`, `src/registry.ts`, `src/index.ts`, 15 passing tests. See `phase-4-m2a-mechanisms/work-package.md` for the acceptance-gate-by-gate evidence. Superseded text below describes the pre-port state, kept for provenance.
 - **State (verified against repo, 2026-08-30):** `mrgr` port not started — **confirmed accurate**, `packages/` contains only `core/`, no `packages/mechanisms/` exists.

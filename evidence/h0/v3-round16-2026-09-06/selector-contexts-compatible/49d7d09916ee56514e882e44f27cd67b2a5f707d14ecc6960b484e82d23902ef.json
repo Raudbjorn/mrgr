@@ -1,0 +1,961 @@
+{
+  "id": "49d7d09916ee56514e882e44f27cd67b2a5f707d14ecc6960b484e82d23902ef",
+  "source_protocol_sha256": "86ffe38086e217acf6e1a4aa4162e226862463d1bde3160478f9a6f4d2b968ce",
+  "repair_module_sha256": "475070c72aaadf08fe1cbd1ec90cde5210664924e6b0589d61d2226e86f3da7f",
+  "contexts": {
+    "local-context": [
+      {
+        "id": "7ec05392ae5182f3cd3ccb91",
+        "revision": "22b407e2d0bdfb445206e088556a75c49480c786",
+        "path": "unmarshaler.go",
+        "start_byte": 2145,
+        "text": " will read from r.\nfunc NewDecoder(r io.Reader) *Decoder {\n\treturn &Decoder{r: r}\n}\n\n// DisallowUnknownFields causes the Decoder to return an error when the\n// destination is a struct and the input contains a key that does not match a\n// non-ignored field.\n//\n// In that case, the Decoder returns a StrictMissingError that can be used to\n// retrieve the individual errors as well as generate a human readable\n// description of the missing fields.\nfunc (d *Decoder) DisallowUnknownFields() *Decoder {\n\td.strict = true\n\treturn d\n}\n\n// EnableUnmarshalerInterface allows to enable unmarshaler interface.\n//\n// With this feature enabled, types implementing the unstable.Unmarshaler\n// interface can be decoded from any structure of the document. It allows types\n// that don't have a straightforward TOML representation to provide their own\n// decoding logic.\n//\n// The UnmarshalTOML method receives raw TOML bytes:\n//   - For single values: the raw value bytes (e.g., `\"hello\"` for a string)\n//   - For tables: all key-value lines belonging to that table\n//   - For inline tables/arrays: the raw bytes of the inline structure\n//\n// The unstable.RawMessage type can be used to capture raw TOML bytes for\n// later processing, similar to json.RawMessage.\n//\n// *Unstable:* This method does not follow the compatibility guarantees of\n// semver. It can be changed or removed without a new major version being\n// issued.\nfunc (d *Decoder) EnableUnmarshalerInterface() *Decoder {\n\td.unmarshalerInterface = true\n\treturn d\n}\n\n// Decode the whole content of r into v.\n//\n// By default, values in the document that don't exist in the target Go value\n// are ignored. See Decoder.DisallowUnknownFields() to change this behavior.\n//\n// When a TOML local date, time, or date-time is decoded into a time.Time, its\n// value is represented in time.Local timezone. Otherwise the appropriate Local*\n// structure is used. For time values, precision up to the nanosecond is\n// supported by truncating extra digits.\n//\n// Empty tables decoded in an interface{} create an empty initialized\n// map[string]interface{}.\n//\n// Types implementing the encoding.TextUnmarshaler interface are decoded from a\n// TOML string.\n//\n// When decoding a number, go-toml will return an error if the number is out of\n// bounds for the target type (which includes negative numbers when decoding\n// into an unsigned int).\n//\n// If an error occurs while decoding the content of the document, this function\n// returns a toml.DecodeError, providing context about the issue. When using\n// strict mode and a field is missing, a `toml.StrictMissingError` is\n// returned. In any other case, this function returns a standard Go error.\n//\n// # Type mapping\n//\n// List of supported TOML types and their associated accepted Go types:\n//\n//\tString           -> string\n//\tInteger          -> uint*, int*, depending on size\n//\tFloat            -> float*, depending on size\n//\tBoolean          -> bool\n//\tOffset Date-Time -> time.Time\n//\tLocal Date-time  -> LocalDateTime, time.Time\n//\tLocal Date       -> LocalDate, time.Time\n//\tLocal Time       -> LocalTime, time.Time\n//\tArray            -> slice and array, depending on elements types\n//\tTable            -> map and struct\n//\tInline Table     -> same as Table\n//\tArray of Tables  -> same as Array and Table\nfunc (d *Decoder) Decode(v interface{}) error {\n\tb, err := readDocument(d.r)\n\tif err != nil {\n\t\treturn fmt.Errorf(\"toml: %w\", err)\n\t}\n\n\tdec := getDecoder(d.strict, d.unmarshalerInterface)\n\terr = dec.unmarshal(b, v)\n\tputDecoder(dec)\n\treturn err\n}\n\n// readDocument reads the reader to its end. Readers that know their size\n// (bytes.Reader, strings.Reader, bytes.Buffer, ...) get a buffer of exactly\n// that size up front instead of io.ReadAll's growth sequence.\nfunc readDocument(r io.Reader) ([]byte, error) {\n\tl, ok := r.(interface{ Len() int })\n\tif !ok {\n\t\treturn io.ReadAll(r)\n\t}\n\tb := make([]byte, 0, l.Len())\n\tfor {\n\t\tn, err := r.Read(b[len(b):cap(b)])\n\t\tb = b[:len(b)+n]\n\t\tif err != nil {\n\t\t\tif err == io.EOF {\n\t\t\t\treturn b, nil\n\t\t\t}\n\t\t\treturn b, err\n\t\t}\n\t\tif len(b) == cap(b) {\n\t\t\t// The reader may have grown (or lied): finish with ReadAll.\n\t\t\trest, err := io.ReadAll(r)\n\t\t\tif err != nil {\n\t\t\t\treturn b, err\n\t\t\t}\n\t\t\treturn append(b, rest...), nil\n\t\t}\n\t}\n}\n\n// pathPart is one part of the key path leading to a value. Parts that come\n// from the current table header only carry a name; parts that come from the\n// key of the current key-value expression also carry the AST node, and their\n// name is materialized lazily to avoid allocations.\ntype pathPart struct {\n\tname string\n\tnode *unstable.Node\n}\n\n// bytes returns the raw bytes of the key part.\nfunc (p *pathPart) bytes() []byte {\n\tif p.node != nil {\n\t\treturn p.node.Data\n\t}\n\treturn []byte(p.name)\n}\n\n// str returns the key part as a string, possibly allocating.\nfunc (p *pathPart) str() string {\n\tif p.node != nil {\n\t\treturn string(p.node.Data)\n\t}\n\treturn p.name\n}\n\n// rawCapture accumulates the raw bytes fed to a type implementing\n// unstable.Unmarshaler for a table target. The target is identified by the\n// parts of its key and the array-table indexes in effect when the capture\n// was created, so that it can be located again once the whole document has\n// been processed (the address of the target may change as slices grow).\ntype rawCapture struct {\n\tnames []string\n\t// indexes[i] is the index to use when reaching a slice or array right\n\t// before consuming names[i]. indexes[len(names)] is the index of the\n\t// element when the target is an element of an array table. -1 when not\n\t// relevant.\n\tindexes []int\n\tbuf     []byte\n}\n\ntype decoder struct {\n\tp unstable.Parser\n\n\t// strict mode\n\tstrict strict\n\n\t// toggles unmarshaler interface\n\tunmarshalerInterface bool\n\n\t// tracks the duplicate and type consistency of the keys\n\tseen tracker.SeenTracker\n\n\t// path of the current table header, as copied strings\n\ttableKey []string\n\n\t// true when the expressions under the current table header cannot be\n\t// stored anywhere and should be skipped\n\tskipUntilTable bool\n\n\t// scratch buffer for the key path of the current expression\n\tpath []pathPart\n\n\t// raw captures for the unmarshaler interface, in order of first\n\t// appearance. captureIdx is the index of the capture the current table\n\t// belongs to, or -1.\n\tcaptures   []rawCapture\n\tcaptureIdx int\n\n\t// segIdx[i] records the array element index used when traversing a\n\t// slice or array right before consuming the i-th part of the current\n\t// table key. Reset for each table expression.\n\tsegIdx []int\n\n\t// arrayCounts tracks the number of elements appended to fixed-size\n\t// arrays used as array tables, keyed by the NUL-joined key parts.\n\t// Values are pointer slots so that updating an existing path does not\n\t// allocate a new key string. Slots stamped with an older generation\n\t// than acGen read as zero, which resets all counts in O(1) between\n\t// documents.\n\tarrayCounts map[string]*acSlot\n\tacGen       uint64\n\n\t// Cached target of the current table, so that key-values do not need to\n\t// walk the document structure from the root for every expression.\n\t// tableFlush holds the write-backs to perform when leaving the table\n\t// (for targets reached through map values, which are copies).\n\t// tableParentSlot stores a replacement of the target itself (e.g. a nil\n\t// map that was allocated) into its parent.\n\ttableTarget      reflect.Value\n\ttableTargetValid bool\n\ttableFlush       []flushOp\n\ttableParentSlot  slotWriter\n\n\t// strKey is a reusable string value used as map key, so that map\n\t// operations with string keys do not need to allocate a boxed key for\n\t// every access. It must be refreshed with stringMapKey immediately\n\t// before each use: any recursive call may overwrite it.\n\tstrKey reflect.Value\n\n\t// interned de-duplicates key strings: documents repeat the same keys\n\t// over and over, and the table survives pooling, so repeated decodes\n\t// of similar documents stop allocating key strings altogether.\n\tinterned map[string]string\n\n\t// pathScratch is the buffer used by joinPath.\n\tpathScratch []byte\n\n\t// keyParts is the reusable buffer holding the decoded parts of the key of\n\t// the current expression in the fused generic decode path.\n\tkeyParts [][]byte\n\n\t// Small memo of struct plan lookups: the key-values of a table hit the\n\t// same few struct types over and over, and the global cache lookup costs\n\t// an interface hash every time. Hits swap the entry one slot toward the\n\t// front (transpose heuristic); misses overwrite a rotating slot, so a\n\t// document with more hot types than slots degrades to a handful of\n\t// pointer comparisons instead of shifting the whole array per lookup.\n\tplanMemo [8]struct {\n\t\tt reflect.Type\n\t\tp *structPlan\n\t}\n\tplanClock uint8\n}\n\n// planFor returns the struct plan of t, memoizing recent lookups.\nfunc (d *decoder) planFor(t reflect.Type) *structPlan {\n\tif d.planMemo[0].t == t {\n\t\treturn d.planMemo[0].p\n\t}\n\tfor i := 1; i < len(d.planMemo); i++ {\n\t\tif d.planMemo[i].t == t {\n\t\t\td.planMemo[i-1], d.planMemo[i] = d.planMemo[i], d.planMemo[i-1]\n\t\t\treturn d.planMemo[i-1].p\n\t\t}\n\t}\n\tp := planForType(t)\n\ti := int(d.planClock) % len(d.planMemo)\n\td.planClock++\n\td.planMemo[i].t, d.planMemo[i].p = t, p\n\treturn p\n}\n\n// slotWriter remembers how to store a value at some location of the target\n// structure. Implemented as a struct instead of a closure to avoid\n// allocations.\ntype slotWriter struct {\n\tkind uint8 // 0: none, 1: slot.Set, 2: m.SetMapIndex(k, ...), 3: m.SetMapIndex(string key ks, ...)\n\tslot reflect.Value\n\tm    reflect.Value\n\tk    reflect.Value\n\tks   string\n}\n\nfunc (d *decoder) storeSlot(s *slotWriter, nv reflect.Value) {\n\tswitch s.kind {\n\tcase 1:\n\t\tif s.slot.CanSet() {\n\t\t\ts.slot.Set(nv)\n\t\t}\n\tcase 2:\n\t\ts.m.SetMapIndex(s.k, nv)\n\tcase 3:\n\t\ts.m.SetMapIndex(d.stringMapKey(s.ks), nv)\n\t}\n}\n\n// flushOp stores val using w when the table is flushed.\ntype flushOp struct {\n\tw   slotWriter\n\tval reflect.Value\n}\n\n// flushTable performs the pending write-backs of the cached table target, in\n// reverse order so that inner copies land before their parents are stored.\nfunc (d *decoder) flushTable() {\n\tfor i := len(d.tableFlush) - 1; i >= 0; i-- {\n\t\td.storeSlot(&d.tableFlush[i].w, d.tableFlush[i].val)\n\t}\n\td.tableFlush = d.tableFlush[:0]\n\td.tableTargetValid = false\n\td.tableParentSlot = slotWriter{}\n\td.tableTarget = reflect.Value{}\n}\n\n// intern returns the string corresponding to the given bytes, reusing a\n// previous allocation when the same key has been seen before.\nfunc (d *decoder) intern(b []byte) string {\n\tif s, ok := d.interned[string(b)]; ok { // does not allocate\n\t\treturn s\n\t}\n\tif d.interned == nil {\n\t\td.interned = make(map[string]string, 64)\n\t} else if len(d.interned) >= 1<<14 {\n\t\t// Safety valve for adversarial inputs: do not let the table grow\n\t\t// without bounds.\n\t\tfor k := range d.interned {\n\t\t\tdelete(d.interned, k)\n\t\t}\n\t}\n\ts := string(b)\n\td.interned[s] = s\n\treturn s\n}\n\n// partString returns the name of a path part, interning it when it comes\n// from the document.\nfunc (d *decoder) partString(p *pathPart) string {\n\tif p.node != nil {\n\t\treturn d.intern(p.node.Data)\n\t}\n\treturn p.name\n}\n\n// stringMapKey returns a reflect.Value holding the given string, reusing the\n// same allocation every time. The result must be used (the map operation\n// performed) before any recursive call, which may overwrite the buffer.\nfunc (d *decoder) stringMapKey(s string) reflect.Value {\n\tif !d.strKey.IsValid() {\n\t\td.strKey = reflect.New(stringType).Elem()\n\t}\n\td.strKey.SetString(s)\n\treturn d.strKey\n}\n\n// joinPath builds the NUL-joined representation of a key path in the\n// decoder's scratch buffer. The result is only valid until the next call.\nfunc (d *decoder) joinPath(parts []string) []byte {\n\td.pathScratch = d.pathScratch[:0]\n\tfor i, p := range parts {\n\t\tif i > 0 {\n\t\t\td.pathScratch = append(d.pathScratch, 0)\n\t\t}\n\t\td.pathScratch = append(d.pathScratch, p...)\n\t}\n\treturn d.pathScratch\n}\n\n// arrayCount returns the number of elements appended so far to the array\n// table at the given path.\nfunc (d *decoder) arrayCount(key []byte) int {\n\tif d.arrayCounts == nil {\n\t\treturn 0\n\t}\n\tif p := d.arrayCounts[string(key)]; p != nil && p.gen == d.acGen { // does not allocate\n\t\treturn p.n\n\t}\n\treturn 0\n}\n\nfunc (d *decoder) setArrayCount(key []byte, n int) {\n\tif d.arrayCounts == nil {\n\t\td.arrayCounts = map[string]*acSlot{}\n\t}\n\tif p := d.arrayCounts[string(key)]; p != nil { // does not allocate\n\t\tp.gen = d.acGen\n\t\tp.n = n\n\t\treturn\n\t}\n\td.arrayCounts[string(key)] = &acSlot{gen: d.acGen, n: n}\n}\n\n// acSlot is an array-table element count, valid for one decode generation.\ntype acSlot struct {\n\tgen uint64\n\tn   int\n}\n\n// resetChildArrayCounts forgets the counts of all the array tables under\n// the given path, so that a new element starts fresh.\nfunc (d *decoder) resetChildArrayCounts(key []byte) {\n\tif len(d.arrayCounts) == 0 {\n\t\treturn\n\t}\n\tfor k, p := range d.arrayCounts {\n\t\t// Prefix match without building the prefix string: same bytes as\n\t\t// key, followed by the NUL separator.\n\t\tif len(k) > len(key) && k[len(key)] == 0 && k[:len(key)] == string(key) {\n\t\t\t// Zero instead of delete: the next element of the parent table\n\t\t\t// will reuse the slot without allocating a new key.\n\t\t\tp.n = 0\n\t\t}\n\t}\n}\n\nfunc (d *decoder) typeMismatchError(toml string, target reflect.Type, highlight []byte) error {\n\treturn &typeMismatchError{\n\t\ttoml:      toml,\n\t\ttarget:    target,\n\t\thighlight: highlight,\n\t}\n}\n\ntype typeMismatchError struct {\n\ttoml      string\n\ttarget    reflect.Type\n\thighlight []byte\n\t// key is the TOML key being processed when the mismatch occurred. It is\n\t// populated lazily as the error propagates back up to the key-value\n\t// handler (see contextualizeError).\n\tkey Key\n}\n\nfunc (e *typeMismatchError) Error() string {\n\treturn fmt.Sprintf(\"cannot decode TOML %s into %s\", e.toml, e.target)\n}\n\n// contextualizeError attaches the TOML key currently being processed to errors\n// raised while decoding a key-value expression, so that DecodeError.Key()\n// reports the offending key (e.g. on type mismatch errors). The current key is\n// reconstructed from d.path; when the table target is cached, d.path holds only\n// the key-value parts, so the table key prefix is prepended. This only runs on\n// the error path and adds no cost to successful decodes.\nfunc (d *decoder) contextualizeError(err error, withTableKey bool) error {\n\tvar mm *typeMismatchError\n\tif errors.As(err, &mm) {\n\t\tif mm.key == nil {\n\t\t\tmm.key = d.currentKey(withTableKey)\n\t\t}\n\t\treturn err\n\t}\n\tvar perr *unstable.ParserError\n\tif errors.As(err, &perr) {\n\t\tif perr.Key == nil {\n\t\t\tperr.Key = d.currentKey(withTableKey)\n\t\t}\n\t}\n\treturn err\n}\n\n// currentKey reconstructs the full TOML key being processed from the decoder's\n// path. When withTableKey is true, d.path contains only the key-value parts\n// (the table target is cached) and the table key is prepended.\nfunc (d *decoder) currentKey(withTableKey bool) Key {\n\tn := len(d.path)\n\tif withTableKey {\n\t\tn += len(d.tableKey)\n\t}\n\tkey := make(Key, 0, n)\n\tif withTableKey {\n\t\tkey = append(key, d.tableKey...)\n\t}\n\tfor i := range d.path {\n\t\tkey = append(key, d.path[i].str())\n\t}\n\treturn key\n}\n\nfunc (d *decoder) unmarshal(data []byte, v interface{}) error {\n\tr := reflect.ValueOf(v)\n\tif r.Kind() != reflect.Ptr {\n\t\treturn fmt.Errorf(\"toml: decoding can only be performed into a pointer, not %s\", r.Kind())\n\t}\n\tif r.IsNil() {\n\t\treturn errors.New(\"toml: decoding pointer target cannot be nil\")\n\t}\n\n\troot := r.Elem()\n\n\td.captureIdx = -1\n\td.p.Reset(data)\n\n\t// Fully generic targets (interface{} or map[string]interface{}) are\n\t// decoded straight into native Go maps and slices, with no reflection on\n\t// the document structure at all. This covers the common \"decode arbitrary\n\t// TOML into a map\" case, including every standard benchmark dataset.\n\tif !d.unmarshalerInterface {\n\t\tif k := root.Kind(); k == reflect.Interface || (k == reflect.Map && root.Type() == mapStringInterfaceType) {\n\t\t\treturn d.unmarshalFused(root, data)\n\t\t}\n\t}\n\n\t// When the root target itself implements the Unmarshaler interface, the\n\t// whole document decodes into it. Open a capture spanning the entire\n\t// document up front: the top-level key-values then flow through the\n\t// existing capture branch and any tables attach to it via resumeCapture,\n\t// so UnmarshalTOML receives the assembled document exactly once.\n\tif d.unmarshalerInterface && hasUnmarshaler(root) {\n\t\td.startRootCapture()\n\t}\n\n\tfor d.",
+        "rank": 0,
+        "truncated": false
+      },
+      {
+        "id": "5a041aaf96719b66b677d460",
+        "revision": "e286c0bc0eb3e24ec8dd4828d552c050fe657cb9",
+        "path": "unmarshaler.go",
+        "start_byte": 1785,
+        "text": "\n\td.fusedValueSpan = nil\n\t// A decode aborted by an error may leave the count non-zero.\n\td.fusedNesting = 0\n\td.strict.Reset()\n}\n\n// Unmarshal deserializes a TOML document into a Go value.\n//\n// It is a shortcut for Decoder.Decode() with the default options.\nfunc Unmarshal(data []byte, v interface{}) error {\n\td := getDecoder(false, false)\n\terr := d.unmarshal(data, v)\n\tputDecoder(d)\n\treturn err\n}\n\n// Decoder reads and decode a TOML document from an input stream.\ntype Decoder struct {\n\t// input\n\tr io.Reader\n\n\t// global settings\n\tstrict bool\n\n\t// toggles unmarshaler interface\n\tunmarshalerInterface bool\n}\n\n// NewDecoder creates a new Decoder that will read from r.\nfunc NewDecoder(r io.Reader) *Decoder {\n\treturn &Decoder{r: r}\n}\n\n// DisallowUnknownFields causes the Decoder to return an error when the\n// destination is a struct and the input contains a key that does not match a\n// non-ignored field.\n//\n// In that case, the Decoder returns a StrictMissingError that can be used to\n// retrieve the individual errors as well as generate a human readable\n// description of the missing fields.\nfunc (d *Decoder) DisallowUnknownFields() *Decoder {\n\td.strict = true\n\treturn d\n}\n\n// EnableUnmarshalerInterface allows to enable unmarshaler interface.\n//\n// With this feature enabled, types implementing the unstable.Unmarshaler\n// interface can be decoded from any structure of the document. It allows types\n// that don't have a straightforward TOML representation to provide their own\n// decoding logic.\n//\n// The UnmarshalTOML method receives raw TOML bytes:\n//   - For single values: the raw value bytes (e.g., `\"hello\"` for a string)\n//   - For tables: all key-value lines belonging to that table\n//   - For inline tables/arrays: the raw bytes of the inline structure\n//\n// The unstable.RawMessage type can be used to capture raw TOML bytes for\n// later processing, similar to json.RawMessage.\n//\n// *Unstable:* This method does not follow the compatibility guarantees of\n// semver. It can be changed or removed without a new major version being\n// issued.\nfunc (d *Decoder) EnableUnmarshalerInterface() *Decoder {\n\td.unmarshalerInterface = true\n\treturn d\n}\n\n// Decode the whole content of r into v.\n//\n// By default, values in the document that don't exist in the target Go value\n// are ignored. See Decoder.DisallowUnknownFields() to change this behavior.\n//\n// When a TOML local date, time, or date-time is decoded into a time.Time, its\n// value is represented in time.Local timezone. Otherwise the appropriate Local*\n// structure is used. For time values, precision up to the nanosecond is\n// supported by truncating extra digits.\n//\n// Empty tables decoded in an interface{} create an empty initialized\n// map[string]interface{}.\n//\n// Types implementing the encoding.TextUnmarshaler interface are decoded from a\n// TOML string.\n//\n// When decoding a number, go-toml will return an error if the number is out of\n// bounds for the target type (which includes negative numbers when decoding\n// into an unsigned int).\n//\n// If an error occurs while decoding the content of the document, this function\n// returns a toml.DecodeError, providing context about the issue. When using\n// strict mode and a field is missing, a `toml.StrictMissingError` is\n// returned. In any other case, this function returns a standard Go error.\n//\n// # Type mapping\n//\n// List of supported TOML types and their associated accepted Go types:\n//\n//\tString           -> string\n//\tInteger          -> uint*, int*, depending on size\n//\tFloat            -> float*, depending on size\n//\tBoolean          -> bool\n//\tOffset Date-Time -> time.Time\n//\tLocal Date-time  -> LocalDateTime, time.Time\n//\tLocal Date       -> LocalDate, time.Time\n//\tLocal Time       -> LocalTime, time.Time\n//\tArray            -> slice and array, depending on elements types\n//\tTable            -> map and struct\n//\tInline Table     -> same as Table\n//\tArray of Tables  -> same as Array and Table\nfunc (d *Decoder) Decode(v interface{}) error {\n\tb, err := io.ReadAll(d.r)\n\tif err != nil {\n\t\treturn fmt.Errorf(\"toml: %w\", err)\n\t}\n\n\tdec := getDecoder(d.strict, d.unmarshalerInterface)\n\terr = dec.unmarshal(b, v)\n\tputDecoder(dec)\n\treturn err\n}\n\n// pathPart is one part of the key path leading to a value. Parts that come\n// from the current table header only carry a name; parts that come from the\n// key of the current key-value expression also carry the AST node — or, on\n// the fused (AST-free) path, the decoded part bytes and the range of its raw\n// span — and their name is materialized lazily to avoid allocations.\ntype pathPart struct {\n\tname string\n\tnode *unstable.Node\n\tdata []byte\n\trng  unstable.Range\n}\n\n// bytes returns the raw bytes of the key part.\nfunc (p *pathPart) bytes() []byte {\n\tif p.node != nil {\n\t\treturn p.node.Data\n\t}\n\tif p.data != nil {\n\t\treturn p.data\n\t}\n\treturn []byte(p.name)\n}\n\n// str returns the key part as a string, possibly allocating.\nfunc (p *pathPart) str() string {\n\tif p.node != nil {\n\t\treturn string(p.node.Data)\n\t}\n\tif p.data != nil {\n\t\treturn string(p.data)\n\t}\n\treturn p.name\n}\n\n// rawCapture accumulates the raw bytes fed to a type implementing\n// unstable.Unmarshaler for a table target. The target is identified by the\n// parts of its key and the array-table indexes in effect when the capture\n// was created, so that it can be located again once the whole document has\n// been processed (the address of the target may change as slices grow).\ntype rawCapture struct {\n\tnames []string\n\t// indexes[i] is the index to use when reaching a slice or array right\n\t// before consuming names[i]. indexes[len(names)] is the index of the\n\t// element when the target is an element of an array table. -1 when not\n\t// relevant.\n\tindexes []int\n\tbuf     []byte\n}\n\ntype decoder struct {\n\tp unstable.Parser\n\n\t// strict mode\n\tstrict strict\n\n\t// toggles unmarshaler interface\n\tunmarshalerInterface bool\n\n\t// tracks the duplicate and type consistency of the keys\n\tseen tracker.SeenTracker\n\n\t// path of the current table header, as copied strings\n\ttableKey []string\n\n\t// true when the expressions under the current table header cannot be\n\t// stored anywhere and should be skipped\n\tskipUntilTable bool\n\n\t// scratch buffer for the key path of the current expression\n\tpath []pathPart\n\n\t// raw captures for the unmarshaler interface, in order of first\n\t// appearance. captureIdx is the index of the capture the current table\n\t// belongs to, or -1.\n\tcaptures   []rawCapture\n\tcaptureIdx int\n\n\t// segIdx[i] records the array element index used when traversing a\n\t// slice or array right before consuming the i-th part of the current\n\t// table key. Reset for each table expression.\n\tsegIdx []int\n\n\t// arrayCounts tracks the number of elements appended to fixed-size\n\t// arrays used as array tables, keyed by the NUL-joined key parts.\n\t// Values are pointer slots so that updating an existing path does not\n\t// allocate a new key string.\n\tarrayCounts map[string]*int\n\n\t// Cached target of the current table, so that key-values do not need to\n\t// walk the document structure from the root for every expression.\n\t// tableFlush holds the write-backs to perform when leaving the table\n\t// (for targets reached through map values, which are copies).\n\t// tableParentSlot stores a replacement of the target itself (e.g. a nil\n\t// map that was allocated) into its parent.\n\ttableTarget      reflect.Value\n\ttableTargetValid bool\n\ttableFlush       []flushOp\n\ttableParentSlot  slotWriter\n\n\t// strKey is a reusable string value used as map key, so that map\n\t// operations with string keys do not need to allocate a boxed key for\n\t// every access. It must be refreshed with stringMapKey immediately\n\t// before each use: any recursive call may overwrite it.\n\tstrKey reflect.Value\n\n\t// interned de-duplicates key strings: documents repeat the same keys\n\t// over and over, and the table survives pooling, so repeated decodes\n\t// of similar documents stop allocating key strings altogether.\n\tinterned map[string]string\n\n\t// pathScratch is the buffer used by joinPath.\n\tpathScratch []byte\n\n\t// keyParts is the reusable buffer holding the decoded parts of the key of\n\t// the current expression in the fused generic decode path.\n\tkeyParts [][]byte\n\n\t// Scratch buffers of the fused generic decode path for container values:\n\t// anyStack accumulates array elements (and kvStack inline-table pairs)\n\t// before the exact-size copy-out; fusedParts and fusedOps record the keys\n\t// seen inside a container value so they can be validated by the\n\t// seen-tracker after the whole expression has parsed (preserving error\n\t// precedence); idStack is the scope stack used during that replay.\n\tanyStack   []interface{}\n\tkvStack    []fusedKV\n\tfusedParts [][]byte\n\tfusedOps   []fusedOp\n\tidStack    []int32\n\n\t// fusedNesting is the current depth of nested containers being decoded\n\t// natively, bounded by maxFusedNesting (see fusedContainerValue).\n\tfusedNesting int\n\n\t// Fused struct-path state: keyRaws is the reusable buffer of raw key-part\n\t// spans matching keyParts; fusedKVParts/fusedKVKeyRange describe the key\n\t// of the key-value being decoded (for strict-mode reporting) and\n\t// fusedValueSpan the exact raw span of its value (for error highlights).\n\tkeyRaws         [][]byte\n\tfusedKVParts    [][]byte\n\tfusedKVKeyRange unstable.Range\n\tfusedValueSpan  []byte\n\n\t// valSeen validates the keys declared inside a single container value,\n\t// which no later expression can reach: keeping them out of d.seen means\n\t// the main tracker only ever holds reachable keys. Reset (cheaply) for\n\t// every container value.\n\tvalSeen tracker.SeenTracker\n}\n\n// fusedKV is a deferred key-value of an inline table being decoded natively:\n// the parts d.fusedParts[lo:hi] of its key, and its decoded value.\ntype fusedKV struct {\n\tv      interface{}\n\tlo, hi int32\n}\n\n// slotWriter remembers how to store a value at some location of the target\n// structure. Implemented as a struct instead of a closure to avoid\n// allocations.\ntype slotWriter struct {\n\tkind uint8 // 0: none, 1: slot.Set, 2: m.SetMapIndex(k, ...), 3: m.SetMapIndex(string key ks, ...)\n\tslot reflect.Value\n\tm    reflect.Value\n\tk    reflect.Value\n\tks   string\n}\n\nfunc (d *decoder) storeSlot(s *slotWriter, nv reflect.Value) {\n\tswitch s.kind {\n\tcase 1:\n\t\tif s.slot.CanSet() {\n\t\t\ts.slot.Set(nv)\n\t\t}\n\tcase 2:\n\t\ts.m.SetMapIndex(s.k, nv)\n\tcase 3:\n\t\ts.m.SetMapIndex(d.stringMapKey(s.ks), nv)\n\t}\n}\n\n// flushOp stores val using w when the table is flushed.\ntype flushOp struct {\n\tw   slotWriter\n\tval reflect.Value\n}\n\n// flushTable performs the pending write-backs of the cached table target, in\n// reverse order so that inner copies land before their parents are stored.\nfunc (d *decoder) flushTable() {\n\tfor i := len(d.tableFlush) - 1; i >= 0; i-- {\n\t\td.storeSlot(&d.tableFlush[i].w, d.tableFlush[i].val)\n\t}\n\td.tableFlush = d.tableFlush[:0]\n\td.tableTargetValid = false\n\td.tableParentSlot = slotWriter{}\n\td.tableTarget = reflect.Value{}\n}\n\n// intern returns the string corresponding to the given bytes, reusing a\n// previous allocation when the same key has been seen before.\nfunc (d *decoder) intern(b []byte) string {\n\tif s, ok := d.interned[string(b)]; ok { // does not allocate\n\t\treturn s\n\t}\n\tif d.interned == nil {\n\t\td.interned = make(map[string]string, 64)\n\t} else if len(d.interned) >= 1<<14 {\n\t\t// Safety valve for adversarial inputs: do not let the table grow\n\t\t// without bounds.\n\t\tfor k := range d.interned {\n\t\t\tdelete(d.interned, k)\n\t\t}\n\t}\n\ts := string(b)\n\td.interned[s] = s\n\treturn s\n}\n\n// partString returns the name of a path part, interning it when it comes\n// from the document.\nfunc (d *decoder) partString(p *pathPart) string {\n\tif p.node != nil {\n\t\treturn d.intern(p.node.Data)\n\t}\n\tif p.data != nil {\n\t\treturn d.intern(p.data)\n\t}\n\treturn p.name\n}\n\n// stringMapKey returns a reflect.Value holding the given string, reusing the\n// same allocation every time. The result must be used (the map operation\n// performed) before any recursive call, which may overwrite the buffer.\nfunc (d *decoder) stringMapKey(s string) reflect.Value {\n\tif !d.strKey.IsValid() {\n\t\td.strKey = reflect.New(stringType).Elem()\n\t}\n\td.strKey.SetString(s)\n\treturn d.strKey\n}\n\n// joinPath builds the NUL-joined representation of a key path in the\n// decoder's scratch buffer. The result is only valid until the next call.\nfunc (d *decoder) joinPath(parts []string) []byte {\n\td.pathScratch = d.pathScratch[:0]\n\tfor i, p := range parts {\n\t\tif i > 0 {\n\t\t\td.pathScratch = append(d.pathScratch, 0)\n\t\t}\n\t\td.pathScratch = append(d.pathScratch, p...)\n\t}\n\treturn d.pathScratch\n}\n\n// arrayCount returns the number of elements appended so far to the array\n// table at the given path.\nfunc (d *decoder) arrayCount(key []byte) int {\n\tif d.arrayCounts == nil {\n\t\treturn 0\n\t}\n\tif p := d.arrayCounts[string(key)]; p != nil { // does not allocate\n\t\treturn *p\n\t}\n\treturn 0\n}\n\nfunc (d *decoder) setArrayCount(key []byte, n int) {\n\tif d.arrayCounts == nil {\n\t\td.arrayCounts = map[string]*int{}\n\t}\n\tif p := d.arrayCounts[string(key)]; p != nil { // does not allocate\n\t\t*p = n\n\t\treturn\n\t}\n\tv := n\n\td.arrayCounts[string(key)] = &v\n}\n\n// resetChildArrayCounts forgets the counts of all the array tables under\n// the given path, so that a new element starts fresh.\nfunc (d *decoder) resetChildArrayCounts(key []byte) {\n\tif len(d.arrayCounts) == 0 {\n\t\treturn\n\t}\n\tfor k, p := range d.arrayCounts {\n\t\t// Prefix match without building the prefix string: same bytes as\n\t\t// key, followed by the NUL separator.\n\t\tif len(k) > len(key) && k[len(key)] == 0 && k[:len(key)] == string(key) {\n\t\t\t// Zero instead of delete: the next element of the parent table\n\t\t\t// will reuse the slot without allocating a new key.\n\t\t\t*p = 0\n\t\t}\n\t}\n}\n\nfunc (d *decoder) typeMismatchError(toml string, target reflect.Type, highlight []byte) error {\n\treturn &typeMismatchError{\n\t\ttoml:      toml,\n\t\ttarget:    target,\n\t\thighlight: highlight,\n\t}\n}\n\ntype typeMismatchError struct {\n\ttoml      string\n\ttarget    reflect.Type\n\thighlight []byte\n\t// key is the TOML key being processed when the mismatch occurred. It is\n\t// populated lazily as the error propagates back up to the key-value\n\t// handler (see contextualizeError).\n\tkey Key\n}\n\nfunc (e *typeMismatchError) Error() string {\n\treturn fmt.Sprintf(\"cannot decode TOML %s into %s\", e.toml, e.target)\n}\n\n// contextualizeError attaches the TOML key currently being processed to errors\n// raised while decoding a key-value expression, so that DecodeError.Key()\n// reports the offending key (e.g. on type mismatch errors). The current key is\n// reconstructed from d.path; when the table target is cached, d.path holds only\n// the key-value parts, so the table key prefix is prepended. This only runs on\n// the error path and adds no cost to successful decodes.\nfunc (d *decoder) contextualizeError(err error, withTableKey bool) error {\n\tvar mm *typeMismatchError\n\tif errors.As(err, &mm) {\n\t\tif mm.key == nil {\n\t\t\tmm.key = d.currentKey(withTableKey)\n\t\t}\n\t\treturn err\n\t}\n\tvar perr *unstable.ParserError\n\tif errors.As(err, &perr) {\n\t\tif perr.Key == nil {\n\t\t\tperr.Key = d.currentKey(withTableKey)\n\t\t}\n\t}\n\treturn err\n}\n\n// currentKey reconstructs the full TOML key being processed from the decoder's\n// path. When withTableKey is true, d.path contains only the key-value parts\n// (the table target is cached) and the table key is prepended.\nfunc (d *decoder) currentKey(withTableKey bool) Key {\n\tn := len(d.path)\n\tif withTableKey {\n\t\tn += len(d.tableKey)\n\t}\n\tkey := make(Key, 0, n)\n\tif withTableKey {\n\t\tkey = append(key, d.tableKey...)\n\t}\n\tfor i := range d.path {\n\t\tkey = append(key, d.path[i].str())\n\t}\n\treturn key\n}\n\nfunc (d *decoder) unmarshal(data []byte, v interface{}) error {\n\tr := reflect.ValueOf(v)\n\tif r.Kind() != reflect.Ptr {\n\t\treturn fmt.Errorf(\"toml: decoding can only be performed into a pointer, not %s\", r.Kind())\n\t}\n\tif r.IsNil() {\n\t\treturn errors.New(\"toml: decoding pointer target cannot be nil\")\n\t}\n\n\troot := r.Elem()\n\n\td.captureIdx = -1\n\td.p.Reset(data)\n\n\t// Fully generic targets (interface{} or map[string]interface{}) are\n\t// decoded straight into native Go maps and slices, with no reflection on\n\t// the document structure at all. This covers the common \"decode arbitrary\n\t// TOML into a map\" case, including every standard benchmark dataset.\n\tif !d.unmarshalerInterface {\n\t\tif k := root.Kind(); k == reflect.Interface || (k == reflect.Map && root.Type() == mapStringInterfaceType) {\n\t\t\treturn d.unmarshalFused",
+        "rank": 0,
+        "truncated": false
+      }
+    ],
+    "selected": [
+      {
+        "id": "6e1e30c089edc701144fcdfb",
+        "revision": "22b407e2d0bdfb445206e088556a75c49480c786",
+        "path": "decode.go",
+        "start_byte": 586,
+        "text": "var d byte",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "b4e0bd7ea9a48ef51bf788ee",
+        "revision": "22b407e2d0bdfb445206e088556a75c49480c786",
+        "path": "internal/testsuite/rm.go",
+        "start_byte": 2006,
+        "text": "var t toml.LocalDateTime",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "b6fc93e34b4db4e137935175",
+        "revision": "22b407e2d0bdfb445206e088556a75c49480c786",
+        "path": "internal/testsuite/rm.go",
+        "start_byte": 2171,
+        "text": "var t toml.LocalDate",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "3df6b947623d6e7a9b2f2ce3",
+        "revision": "22b407e2d0bdfb445206e088556a75c49480c786",
+        "path": "internal/testsuite/rm.go",
+        "start_byte": 2332,
+        "text": "var t toml.LocalTime",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "39d933fed78e4e8af3f86b54",
+        "revision": "22b407e2d0bdfb445206e088556a75c49480c786",
+        "path": "marshaler.go",
+        "start_byte": 13465,
+        "text": "var p typeEncProps",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "0a442c814ddb06b0670ad18d",
+        "revision": "22b407e2d0bdfb445206e088556a75c49480c786",
+        "path": "unmarshaler.go",
+        "start_byte": 7743,
+        "text": "type decoder struct {\n\tp unstable.Parser\n\n\t// strict mode\n\tstrict strict\n\n\t// toggles unmarshaler interface\n\tunmarshalerInterface bool\n\n\t// tracks the duplicate and type consistency of the keys\n\tseen tracker.SeenTracker\n\n\t// path of the current table header, as copied strings\n\ttableKey []string\n\n\t// true when the expressions under the current table header cannot be\n\t// stored anywhere and should be skipped\n\tskipUntilTable bool\n\n\t// scratch buffer for the key path of the current expression\n\tpath []pathPart\n\n\t// raw captures for the unmarshaler interface, in order of first\n\t// appearance. captureIdx is the index of the capture the current table\n\t// belongs to, or -1.\n\tcaptures   []rawCapture\n\tcaptureIdx int\n\n\t// segIdx[i] records the array element index used when traversing a\n\t// slice or array right before consuming the i-th part of the current\n\t// table key. Reset for each table expression.\n\tsegIdx []int\n\n\t// arrayCounts tracks the number of elements appended to fixed-size\n\t// arrays used as array tables, keyed by the NUL-joined key parts.\n\t// Values are pointer slots so that updating an existing path does not\n\t// allocate a new key string. Slots stamped with an older generation\n\t// than acGen read as zero, which resets all counts in O(1) between\n\t// documents.\n\tarrayCounts map[string]*acSlot\n\tacGen       uint64\n\n\t// Cached target of the current table, so that key-values do not need to\n\t// walk the document structure from the root for every expression.\n\t// tableFlush holds the write-backs to perform when leaving the table\n\t// (for targets reached through map values, which are copies).\n\t// tableParentSlot stores a replacement of the target itself (e.g. a nil\n\t// map that was allocated) into its parent.\n\ttableTarget      reflect.Value\n\ttableTargetValid bool\n\ttableFlush       []flushOp\n\ttableParentSlot  slotWriter\n\n\t// strKey is a reusable string value used as map key, so that map\n\t// operations with string keys do not need to allocate a boxed key for\n\t// every access. It must be refreshed with stringMapKey immediately\n\t// before each use: any recursive call may overwrite it.\n\tstrKey reflect.Value\n\n\t// interned de-duplicates key strings: documents repeat the same keys\n\t// over and over, and the table survives pooling, so repeated decodes\n\t// of similar documents stop allocating key strings altogether.\n\tinterned map[string]string\n\n\t// pathScratch is the buffer used by joinPath.\n\tpathScratch []byte\n\n\t// keyParts is the reusable buffer holding the decoded parts of the key of\n\t// the current expression in the fused generic decode path.\n\tkeyParts [][]byte\n\n\t// Small memo of struct plan lookups: the key-values of a table hit the\n\t// same few struct types over and over, and the global cache lookup costs\n\t// an interface hash every time. Hits swap the entry one slot toward the\n\t// front (transpose heuristic); misses overwrite a rotating slot, so a\n\t// document with more hot types than slots degrades to a handful of\n\t// pointer comparisons instead of shifting the whole array per lookup.\n\tplanMemo [8]struct {\n\t\tt reflect.Type\n\t\tp *structPlan\n\t}\n\tplanClock uint8\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "50b3d22a0f691fd0a749cd5a",
+        "revision": "22b407e2d0bdfb445206e088556a75c49480c786",
+        "path": "unmarshaler.go",
+        "start_byte": 10918,
+        "text": "func (d *decoder) planFor(t reflect.Type) *structPlan {\n\tif d.planMemo[0].t == t {\n\t\treturn d.planMemo[0].p\n\t}\n\tfor i := 1; i < len(d.planMemo); i++ {\n\t\tif d.planMemo[i].t == t {\n\t\t\td.planMemo[i-1], d.planMemo[i] = d.planMemo[i], d.planMemo[i-1]\n\t\t\treturn d.planMemo[i-1].p\n\t\t}\n\t}\n\tp := planForType(t)\n\ti := int(d.planClock) % len(d.planMemo)\n\td.planClock++\n\td.planMemo[i].t, d.planMemo[i].p = t, p\n\treturn p\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "83cff2f8dc692a60fbbc25ac",
+        "revision": "22b407e2d0bdfb445206e088556a75c49480c786",
+        "path": "unmarshaler.go",
+        "start_byte": 65271,
+        "text": "type structPlan struct {\n\tbyName       map[string]structField\n\tbyFold       map[string]structField\n\thasCollision bool\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "a132e40a37af5c62b7775c3c",
+        "revision": "22b407e2d0bdfb445206e088556a75c49480c786",
+        "path": "unmarshaler.go",
+        "start_byte": 68172,
+        "text": "func planForType(t reflect.Type) *structPlan {\n\tif plan, ok := structPlans.Load(t); ok {\n\t\treturn plan.(*structPlan)\n\t}\n\tplan := buildPlan(t)\n\tstructPlans.Store(t, plan)\n\treturn plan\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "5e9d7ab35e3f07a5c2917f43",
+        "revision": "22b407e2d0bdfb445206e088556a75c49480c786",
+        "path": "unstable/parser.go",
+        "start_byte": 40244,
+        "text": "var d uint32",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "555fcdcf29e195e448b45281",
+        "revision": "e286c0bc0eb3e24ec8dd4828d552c050fe657cb9",
+        "path": "cmd/jsontoml/main.go",
+        "start_byte": 905,
+        "text": "var v interface{}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "6603b3d2b5f517247eb4e520",
+        "revision": "e286c0bc0eb3e24ec8dd4828d552c050fe657cb9",
+        "path": "cmd/tomljson/main.go",
+        "start_byte": 764,
+        "text": "var v interface{}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "d978ee574d9a1acef0625f5a",
+        "revision": "e286c0bc0eb3e24ec8dd4828d552c050fe657cb9",
+        "path": "cmd/tomll/main.go",
+        "start_byte": 878,
+        "text": "var v interface{}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "b5cd8edc7355c77b90472bf5",
+        "revision": "e286c0bc0eb3e24ec8dd4828d552c050fe657cb9",
+        "path": "decode_fused.go",
+        "start_byte": 6716,
+        "text": "type fusedOp struct {\n\tlo, hi int32 // fusedOpKey: the parts d.fusedParts[lo:hi] of the key\n\top     uint8\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "1d3ed3e8c7930a51de4f6a6e",
+        "revision": "e286c0bc0eb3e24ec8dd4828d552c050fe657cb9",
+        "path": "decode_fused.go",
+        "start_byte": 9296,
+        "text": "var (\n\t\tv    interface{}\n\t\trest []byte\n\t\terr  error\n\t)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "1376c3e4b865af18824fecb1",
+        "revision": "e286c0bc0eb3e24ec8dd4828d552c050fe657cb9",
+        "path": "decode_fused.go",
+        "start_byte": 11222,
+        "text": "var (\n\t\t\t\tv   interface{}\n\t\t\t\terr error\n\t\t\t)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "0a10ac6b5ea1e6352f14d7ec",
+        "revision": "e286c0bc0eb3e24ec8dd4828d552c050fe657cb9",
+        "path": "decode.go",
+        "start_byte": 499,
+        "text": "var v uint64",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "dcc5f86155a03ac104dab9e3",
+        "revision": "e286c0bc0eb3e24ec8dd4828d552c050fe657cb9",
+        "path": "decode.go",
+        "start_byte": 978,
+        "text": "var v uint64",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "728ab3ee76d44ace0fa13155",
+        "revision": "e286c0bc0eb3e24ec8dd4828d552c050fe657cb9",
+        "path": "decode.go",
+        "start_byte": 1285,
+        "text": "var v uint64",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "2392ab63bac496bc6a95d165",
+        "revision": "e286c0bc0eb3e24ec8dd4828d552c050fe657cb9",
+        "path": "decode.go",
+        "start_byte": 1757,
+        "text": "var v uint64",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "2de49803b414315dbf83d4a2",
+        "revision": "e286c0bc0eb3e24ec8dd4828d552c050fe657cb9",
+        "path": "internal/tracker/seen.go",
+        "start_byte": 3673,
+        "text": "type SeenTracker struct {\n\tentries      []entry\n\tcurrentTable int32\n\n\t// index is the open-addressing hash table of entry ids (stored as id+1,\n\t// 0 meaning empty) for the children of spilled parents, keyed by\n\t// hash(parent, name). Its size is always a power of two. inserted counts\n\t// used slots for load-factor purposes.\n\tindex    []int32\n\tinserted int\n\tseed     maphash.Seed\n\tseeded   bool\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "6861957e46808b2e86af1e42",
+        "revision": "e286c0bc0eb3e24ec8dd4828d552c050fe657cb9",
+        "path": "ossfuzz/fuzz.go",
+        "start_byte": 320,
+        "text": "var v interface{}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "13a5c09afc423ba7ef3c0c67",
+        "revision": "e286c0bc0eb3e24ec8dd4828d552c050fe657cb9",
+        "path": "unmarshaler.go",
+        "start_byte": 11509,
+        "text": "type fusedKV struct {\n\tv      interface{}\n\tlo, hi int32\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "f1b655606767b7c5d7bca966",
+        "revision": "e286c0bc0eb3e24ec8dd4828d552c050fe657cb9",
+        "path": "unstable/edit/edit.go",
+        "start_byte": 3609,
+        "text": "var v interface{}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "7afc810e8b12356f1d7c8ec6",
+        "revision": "e286c0bc0eb3e24ec8dd4828d552c050fe657cb9",
+        "path": "unstable/edit/edit.go",
+        "start_byte": 4779,
+        "text": "var v interface{}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "e8ef7cdaa82df6bff77a79ce",
+        "revision": "e286c0bc0eb3e24ec8dd4828d552c050fe657cb9",
+        "path": "unstable/edit/mutate.go",
+        "start_byte": 9445,
+        "text": "var v interface{}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "a06dbde3d44baffdfd50438a",
+        "revision": "e286c0bc0eb3e24ec8dd4828d552c050fe657cb9",
+        "path": "unstable/parser.go",
+        "start_byte": 2603,
+        "text": "func (p *Parser) Range(b []byte) Range {\n\t// b is a subslice of p.data if and only if they share the same backing\n\t// array. In that case, because subslicing cannot extend capacity, the\n\t// number of bytes between the start of b and the end of the backing array\n\t// (its capacity) identifies the offset of b within data.\n\toffset := cap(p.data) - cap(b)\n\tif offset < 0 || offset+len(b) > len(p.data) {\n\t\tpanic(errors.New(\"not a slice of the data slice\"))\n\t}\n\treturn Range{\n\t\tOffset: uint32(offset), //nolint:gosec // TOML documents are small\n\t\tLength: uint32(len(b)), //nolint:gosec // TOML documents are small\n\t}\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "21be0585c81d834d48d7e849",
+        "revision": "e286c0bc0eb3e24ec8dd4828d552c050fe657cb9",
+        "path": "unstable/parser.go",
+        "start_byte": 3773,
+        "text": "type Range struct {\n\tOffset uint32\n\tLength uint32\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "2797414b3d89a2da21fc84d5",
+        "revision": "22b407e2d0bdfb445206e088556a75c49480c786",
+        "path": "cmd/jsontoml/main.go",
+        "start_byte": 645,
+        "text": "func main() {\n\tflag.BoolVar(&useJSONNumber, \"use-json-number\", false, \"unmarshal numbers into `json.Number` type instead of as `float64`\")\n\n\tp := cli.Program{\n\t\tUsage: usage,\n\t\tFn:    convert,\n\t}\n\tp.Execute()\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "2b1246ffd63a973c6ac1fde6",
+        "revision": "22b407e2d0bdfb445206e088556a75c49480c786",
+        "path": "cmd/jsontoml/main.go",
+        "start_byte": 857,
+        "text": "func convert(r io.Reader, w io.Writer) error {\n\tvar v interface{}\n\n\td := json.NewDecoder(r)\n\te := toml.NewEncoder(w)\n\n\tif useJSONNumber {\n\t\td.UseNumber()\n\t\te.SetMarshalJSONNumbers(true)\n\t}\n\n\terr := d.Decode(&v)\n\tif err != nil {\n\t\treturn err\n\t}\n\n\treturn e.Encode(v)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "21531214ed0824b5fefe231e",
+        "revision": "22b407e2d0bdfb445206e088556a75c49480c786",
+        "path": "cmd/tomljson/main.go",
+        "start_byte": 630,
+        "text": "func main() {\n\tp := cli.Program{\n\t\tUsage: usage,\n\t\tFn:    convert,\n\t}\n\tp.Execute()\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "fc969ec18f72e1e692ef32cd",
+        "revision": "22b407e2d0bdfb445206e088556a75c49480c786",
+        "path": "cmd/tomljson/main.go",
+        "start_byte": 716,
+        "text": "func convert(r io.Reader, w io.Writer) error {\n\tvar v interface{}\n\n\td := toml.NewDecoder(r)\n\terr := d.Decode(&v)\n\tif err != nil {\n\t\tvar derr *toml.DecodeError\n\t\tif errors.As(err, &derr) {\n\t\t\trow, col := derr.Position()\n\t\t\treturn fmt.Errorf(\"%s\\nerror occurred at row %d column %d\", derr.String(), row, col)\n\t\t}\n\t\treturn err\n\t}\n\n\te := json.NewEncoder(w)\n\te.SetIndent(\"\", \"  \")\n\treturn e.Encode(v)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "4a8453a2bb8c5a7f361831b3",
+        "revision": "22b407e2d0bdfb445206e088556a75c49480c786",
+        "path": "cmd/tomll/main.go",
+        "start_byte": 723,
+        "text": "func main() {\n\tp := cli.Program{\n\t\tUsage:   usage,\n\t\tFn:      convert,\n\t\tInplace: true,\n\t}\n\tp.Execute()\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "448daafe8812c93d01ade6cf",
+        "revision": "22b407e2d0bdfb445206e088556a75c49480c786",
+        "path": "cmd/tomll/main.go",
+        "start_byte": 830,
+        "text": "func convert(r io.Reader, w io.Writer) error {\n\tvar v interface{}\n\n\td := toml.NewDecoder(r)\n\terr := d.Decode(&v)\n\tif err != nil {\n\t\treturn err\n\t}\n\n\te := toml.NewEncoder(w)\n\treturn e.Encode(v)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "a0e20044ce264edc9daf46ab",
+        "revision": "22b407e2d0bdfb445206e088556a75c49480c786",
+        "path": "cmd/tomltestgen/main.go",
+        "start_byte": 589,
+        "text": "type testsCollection struct {\n\tRef       string\n\tTimestamp string\n\tInvalid   []invalid\n\tValid     []valid\n\tCount     int\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "fbab77d847fc933f8520e171",
+        "revision": "22b407e2d0bdfb445206e088556a75c49480c786",
+        "path": "cmd/tomltestgen/main.go",
+        "start_byte": 1960,
+        "text": "func main() {\n\tflag.Usage = usage\n\tflag.Parse()\n\n\tcollection := testsCollection{\n\t\tRef:       *ref,\n\t\tTimestamp: time.Now().Format(time.RFC3339),\n\t}\n\n\tdirContent, _ := filepath.Glob(\"tests/invalid/**/*.toml\")\n\tfor _, f := range dirContent {\n\t\tfilename := strings.TrimPrefix(f, \"tests/valid/\")\n\t\tname := kebabToCamel(strings.TrimSuffix(filename, \".toml\"))\n\t\tname = strings.ReplaceAll(name, \".\", \"_\")\n\n\t\tlog.Printf(\"> [%s] %s\\n\", \"invalid\", name)\n\n\t\ttomlContent, err := os.ReadFile(f) // #nosec G304\n\t\tif err != nil {\n\t\t\tfmt.Printf(\"failed to read test file: %s\\n\", err)\n\t\t\tos.Exit(1)\n\t\t}\n\n\t\tcollection.Invalid = append(collection.Invalid, invalid{\n\t\t\tName:  name,\n\t\t\tInput: string(tomlContent),\n\t\t})\n\t\tcollection.Count++\n\t}\n\n\tdirContent, _ = filepath.Glob(\"tests/valid/**/*.toml\")\n\tfor _, f := range dirContent {\n\t\tfilename := strings.TrimPrefix(f, \"tests/valid/\")\n\t\tname := kebabToCamel(strings.TrimSuffix(filename, \".toml\"))\n\t\tname = strings.ReplaceAll(name, \".\", \"_\")\n\n\t\tlog.Printf(\"> [%s] %s\\n\", \"valid\", name)\n\n\t\ttomlContent, err := os.ReadFile(f) // #nosec G304\n\t\tif err != nil {\n\t\t\tfmt.Printf(\"failed reading test file: %s\\n\", err)\n\t\t\tos.Exit(1)\n\t\t}\n\n\t\tfilename = strings.TrimSuffix(f, \".toml\")\n\t\tjsonContent, err := os.ReadFile(filename + \".json\") // #nosec G304\n\t\tif err != nil {\n\t\t\tfmt.Printf(\"failed reading validation json: %s\\n\", err)\n\t\t\tos.Exit(1)\n\t\t}\n\n\t\tcollection.Valid = append(collection.Valid, valid{\n\t\t\tName:    name,\n\t\t\tInput:   string(tomlContent),\n\t\t\tJSONRef: string(jsonContent),\n\t\t})\n\t\tcollection.Count++\n\t}\n\n\tlog.Printf(\"Collected %d tests from toml-test\\n\", collection.Count)\n\n\tfuncMap := template.FuncMap{\n\t\t\"gostr\": templateGoStr,\n\t}\n\tt := template.Must(template.New(\"src\").Funcs(funcMap).Parse(srcTemplate))\n\tbuf := new(bytes.Buffer)\n\terr := t.Execute(buf, collection)\n\tif err != nil {\n\t\tpanic(err)\n\t}\n\toutputBytes, err := format.Source(buf.Bytes())\n\tif err != nil {\n\t\tpanic(err)\n\t}\n\n\tif *out == \"\" {\n\t\tfmt.Println(string(outputBytes))\n\t\treturn\n\t}\n\n\terr = os.WriteFile(*out, outputBytes, 0o600)\n\tif err != nil {\n\t\tpanic(err)\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "3899f7c597da485dcbbf6ce2",
+        "revision": "22b407e2d0bdfb445206e088556a75c49480c786",
+        "path": "decode_fused.go",
+        "start_byte": 1067,
+        "text": "func (d *decoder) unmarshalFused(root reflect.Value, data []byte) error {\n\tvar m map[string]interface{}\n\tif !root.IsNil() {\n\t\t// Decode into (merge with) an existing generic map when present.\n\t\tif em, ok := root.Interface().(map[string]interface{}); ok {\n\t\t\tm = em\n\t\t}\n\t}\n\tif m == nil {\n\t\tm = map[string]interface{}{}\n\t}\n\n\tif err := d.fusedDocument(m, data); err != nil {\n\t\treturn d.wrapFusedError(data, err)\n\t}\n\n\tif root.CanSet() {\n\t\troot.Set(reflect.ValueOf(m))\n\t}\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "7f44c00100a49f66358eff90",
+        "revision": "22b407e2d0bdfb445206e088556a75c49480c786",
+        "path": "decode_fused.go",
+        "start_byte": 1683,
+        "text": "func (d *decoder) fusedDocument(m map[string]interface{}, b []byte) error {\n\tcur := m\n\tfor {\n\t\tb = fusedSkipWS(b)\n\t\tif len(b) == 0 {\n\t\t\treturn nil\n\t\t}\n\t\tswitch b[0] {\n\t\tcase '\\n':\n\t\t\tb = b[1:]\n\t\tcase '\\r':\n\t\t\tif len(b) > 1 && b[1] == '\\n' {\n\t\t\t\tb = b[2:]\n\t\t\t\tcontinue\n\t\t\t}\n\t\t\treturn unstable.NewParserError(b[:1], \"expected newline but got %#U\", b[0])\n\t\tcase '#':\n\t\t\t_, rest, err := parserbridge.ScanComment(b)\n\t\t\tif err != nil {\n\t\t\t\treturn err\n\t\t\t}\n\t\t\trest, err = fusedConsumeEOL(rest)\n\t\t\tif err != nil {\n\t\t\t\treturn err\n\t\t\t}\n\t\t\tb = rest\n\t\tcase '[':\n\t\t\trest, err := d.fusedTable(b, m, &cur)\n\t\t\tif err != nil {\n\t\t\t\treturn err\n\t\t\t}\n\t\t\tb = rest\n\t\tdefault:\n\t\t\trest, err := d.fusedKeyVal(b, cur)\n\t\t\tif err != nil {\n\t\t\t\treturn err\n\t\t\t}\n\t\t\tb = rest\n\t\t}\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "0d17fde4f1461ac017eac18a",
+        "revision": "22b407e2d0bdfb445206e088556a75c49480c786",
+        "path": "decode_fused.go",
+        "start_byte": 2579,
+        "text": "func (d *decoder) fusedTable(b []byte, root map[string]interface{}, cur *map[string]interface{}) ([]byte, error) {\n\tarrayTable := len(b) > 1 && b[1] == '['\n\n\tvar start []byte\n\tif arrayTable {\n\t\tstart = fusedSkipWS(b[2:])\n\t} else {\n\t\tstart = fusedSkipWS(b[1:])\n\t}\n\n\tvar err error\n\tvar rawKey []byte\n\td.keyParts, rawKey, b, err = parserbridge.ScanKey(&d.p, start, d.keyParts[:0])\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\n\tif arrayTable {\n\t\tif len(b) < 2 || b[0] != ']' || b[1] != ']' {\n\t\t\treturn nil, unstable.NewParserError(fusedHL1(b), \"expected ']]' to close array table name\")\n\t\t}\n\t\tb = b[2:]\n\t} else {\n\t\tif len(b) == 0 || b[0] != ']' {\n\t\t\treturn nil, unstable.NewParserError(fusedHL1(b), \"expected ']' to close table name\")\n\t\t}\n\t\tb = b[1:]\n\t}\n\n\t// The whole expression (including its line termination) is parsed before\n\t// it is validated, to keep error precedence identical to the AST path.\n\tb, err = d.fusedFinishLine(b)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\n\tif arrayTable {\n\t\tfirst, err := d.seen.CheckArrayTable(d.keyParts)\n\t\tif err != nil {\n\t\t\treturn nil, d.fusedSeenError(rawKey, d.keyParts, err)\n\t\t}\n\t\t*cur = d.anyArrayTableParts(root, d.keyParts, first)\n\t} else {\n\t\tif _, err := d.seen.CheckTable(d.keyParts); err != nil {\n\t\t\treturn nil, d.fusedSeenError(rawKey, d.keyParts, err)\n\t\t}\n\t\t*cur = d.anyTableParts(root, d.keyParts)\n\t}\n\treturn b, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "ef75cdef2d94d6e6a314a3df",
+        "revision": "22b407e2d0bdfb445206e088556a75c49480c786",
+        "path": "decode_fused.go",
+        "start_byte": 4070,
+        "text": "func (d *decoder) fusedKeyVal(b []byte, cur map[string]interface{}) ([]byte, error) {\n\tvar err error\n\tvar rawKey []byte\n\td.keyParts, rawKey, b, err = parserbridge.ScanKey(&d.p, b, d.keyParts[:0])\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\tif len(b) == 0 || b[0] != '=' {\n\t\treturn nil, unstable.NewParserError(fusedHL1(b), \"expected '=' after key\")\n\t}\n\tb = fusedSkipWS(b[1:])\n\tif len(b) == 0 {\n\t\treturn nil, unstable.NewParserError(b, \"expected value, not end of input\")\n\t}\n\n\tif c := b[0]; c == '[' || c == '{' {\n\t\t// Container value: build its AST so the seen-tracker can validate it\n\t\t// and decodeAny can presize the resulting slices and maps.\n\t\tnodeAny, rest, err := parserbridge.ParseValue(&d.p, b)\n\t\tif err != nil {\n\t\t\treturn nil, err\n\t\t}\n\t\tnode := nodeAny.(*unstable.Node)\n\t\trest, err = d.fusedFinishLine(rest)\n\t\tif err != nil {\n\t\t\treturn nil, err\n\t\t}\n\t\tleafID, err := d.seen.CheckKeyValue(d.keyParts)\n\t\tif err != nil {\n\t\t\treturn nil, d.fusedSeenError(rawKey, d.keyParts, err)\n\t\t}\n\t\tif err := d.seen.CheckValueUnder(leafID, node); err != nil {\n\t\t\treturn nil, d.fusedSeenError(rawKey, d.keyParts, err)\n\t\t}\n\t\tav, err := d.decodeAny(node)\n\t\tif err != nil {\n\t\t\treturn nil, err\n\t\t}\n\t\td.setFusedLeaf(cur, d.keyParts, av)\n\t\treturn rest, nil\n\t}\n\n\t// Scalar value: scan it without building a node, then validate and convert\n\t// it natively.\n\tk, _, value, rest, err := parserbridge.ScanScalar(&d.p, b)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\tkind := unstable.Kind(k)\n\trest, err = d.fusedFinishLine(rest)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\tif _, err := d.seen.CheckKeyValue(d.keyParts); err != nil {\n\t\treturn nil, d.fusedSeenError(rawKey, d.keyParts, err)\n\t}\n\tav, err := d.fusedScalar(kind, value)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\td.setFusedLeaf(cur, d.keyParts, av)\n\treturn rest, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "208b8219b646058c716060a9",
+        "revision": "22b407e2d0bdfb445206e088556a75c49480c786",
+        "path": "decode_fused.go",
+        "start_byte": 6163,
+        "text": "func (d *decoder) fusedSeenError(rawKey []byte, parts [][]byte, err error) error {\n\tkey := make(Key, len(parts))\n\tfor i, p := range parts {\n\t\tkey[i] = string(p)\n\t}\n\treturn &unstable.ParserError{\n\t\tHighlight: rawKey,\n\t\tMessage:   strings.TrimPrefix(err.Error(), \"toml: \"),\n\t\tKey:       key,\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "61fb63bdc54dd6be4c6e0a65",
+        "revision": "22b407e2d0bdfb445206e088556a75c49480c786",
+        "path": "decode_fused.go",
+        "start_byte": 6602,
+        "text": "func (d *decoder) fusedScalar(kind unstable.Kind, value []byte) (interface{}, error) {\n\tswitch kind {\n\tcase unstable.String:\n\t\treturn string(value), nil\n\tcase unstable.Integer:\n\t\ti, err := parseInteger(value)\n\t\treturn i, err\n\tcase unstable.Float:\n\t\tf, err := parseFloat(value)\n\t\treturn f, err\n\tcase unstable.Bool:\n\t\treturn value[0] == 't', nil\n\tcase unstable.DateTime:\n\t\tt, err := parseDateTime(value)\n\t\treturn t, err\n\tcase unstable.LocalDateTime:\n\t\tdt, rest, err := parseLocalDateTime(value)\n\t\tif err != nil {\n\t\t\treturn nil, err\n\t\t}\n\t\tif len(rest) > 0 {\n\t\t\treturn nil, unstable.NewParserError(rest, \"extra characters at the end of a local date time\")\n\t\t}\n\t\treturn dt, nil\n\tcase unstable.LocalDate:\n\t\tdate, err := parseLocalDate(value)\n\t\treturn date, err\n\tcase unstable.LocalTime:\n\t\tt, rest, err := parseLocalTime(value)\n\t\tif err != nil {\n\t\t\treturn nil, err\n\t\t}\n\t\tif len(rest) > 0 {\n\t\t\treturn nil, unstable.NewParserError(rest, \"extra characters at the end of a local time\")\n\t\t}\n\t\treturn t, nil\n\tdefault:\n\t\treturn nil, unstable.NewParserError(value, \"unsupported value kind %s\", kind)\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "e5a096e429027769155e692d",
+        "revision": "22b407e2d0bdfb445206e088556a75c49480c786",
+        "path": "decode_fused.go",
+        "start_byte": 7828,
+        "text": "func (d *decoder) anyTableParts(m map[string]interface{}, parts [][]byte) map[string]interface{} {\n\tcur := m\n\tfor _, p := range parts {\n\t\tcur = d.anyChildTable(cur, d.intern(p))\n\t}\n\treturn cur\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "15252ac2bd21a865e965c897",
+        "revision": "22b407e2d0bdfb445206e088556a75c49480c786",
+        "path": "decode_fused.go",
+        "start_byte": 8298,
+        "text": "func (d *decoder) anyArrayTableParts(m map[string]interface{}, parts [][]byte, first bool) map[string]interface{} {\n\tcur := m\n\tname := d.intern(parts[0])\n\tfor i := 1; i < len(parts); i++ {\n\t\tcur = d.anyChildTable(cur, name)\n\t\tname = d.intern(parts[i])\n\t}\n\ts, _ := cur[name].([]interface{})\n\tif first {\n\t\ts = s[:0]\n\t}\n\telem := map[string]interface{}{}\n\tcur[name] = append(s, elem)\n\treturn elem\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "a95442beaf5ec2269083767f",
+        "revision": "22b407e2d0bdfb445206e088556a75c49480c786",
+        "path": "decode_fused.go",
+        "start_byte": 8809,
+        "text": "func (d *decoder) setFusedLeaf(cur map[string]interface{}, parts [][]byte, av interface{}) {\n\tfor i := 0; i < len(parts)-1; i++ {\n\t\tcur = d.anyChildTable(cur, d.intern(parts[i]))\n\t}\n\tcur[d.intern(parts[len(parts)-1])] = av\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "837c2fb4a72603f36baecee7",
+        "revision": "22b407e2d0bdfb445206e088556a75c49480c786",
+        "path": "decode_fused.go",
+        "start_byte": 9120,
+        "text": "func (d *decoder) wrapFusedError(data []byte, err error) error {\n\tvar perr *unstable.ParserError\n\tif errors.As(err, &perr) && len(perr.Highlight) == 0 {\n\t\t// Mirror NextExpression: give end-of-input errors a usable position by\n\t\t// extending the empty highlight to the last byte of the document.\n\t\tif offset := cap(data) - cap(perr.Highlight); offset > 0 && offset == len(data) {\n\t\t\tperr.Highlight = data[offset-1 : offset]\n\t\t}\n\t}\n\treturn d.wrapError(data, err)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "9309d0f17a6d5b8cb889ae46",
+        "revision": "22b407e2d0bdfb445206e088556a75c49480c786",
+        "path": "decode_fused.go",
+        "start_byte": 9585,
+        "text": "func fusedSkipWS(b []byte) []byte {\n\tfor len(b) > 0 && (b[0] == ' ' || b[0] == '\\t') {\n\t\tb = b[1:]\n\t}\n\treturn b\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "73c84272e0281f4169442bac",
+        "revision": "22b407e2d0bdfb445206e088556a75c49480c786",
+        "path": "decode_fused.go",
+        "start_byte": 9700,
+        "text": "func fusedConsumeEOL(b []byte) ([]byte, error) {\n\tif len(b) == 0 {\n\t\treturn b, nil\n\t}\n\tswitch b[0] {\n\tcase '\\n':\n\t\treturn b[1:], nil\n\tcase '\\r':\n\t\tif len(b) > 1 && b[1] == '\\n' {\n\t\t\treturn b[2:], nil\n\t\t}\n\t}\n\treturn nil, unstable.NewParserError(b[:1], \"expected newline but got %#U\", b[0])\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "f489098abbea3612f2aab37d",
+        "revision": "22b407e2d0bdfb445206e088556a75c49480c786",
+        "path": "decode_fused.go",
+        "start_byte": 10070,
+        "text": "func (d *decoder) fusedFinishLine(b []byte) ([]byte, error) {\n\tb = fusedSkipWS(b)\n\tif len(b) > 0 && b[0] == '#' {\n\t\t_, rest, err := parserbridge.ScanComment(b)\n\t\tif err != nil {\n\t\t\treturn nil, err\n\t\t}\n\t\tb = rest\n\t}\n\treturn fusedConsumeEOL(b)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "86b385dca3362b712069aac1",
+        "revision": "22b407e2d0bdfb445206e088556a75c49480c786",
+        "path": "decode_fused.go",
+        "start_byte": 10315,
+        "text": "func fusedHL1(b []byte) []byte {\n\tif len(b) > 0 {\n\t\treturn b[:1]\n\t}\n\treturn b\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "4ba7bb16f41957f6c7a7746f",
+        "revision": "22b407e2d0bdfb445206e088556a75c49480c786",
+        "path": "decode.go",
+        "start_byte": 127,
+        "text": "func parseInteger(b []byte) (int64, error) {\n\tif len(b) > 2 && b[0] == '0' {\n\t\tswitch b[1] {\n\t\tcase 'x':\n\t\t\treturn parseIntHex(b)\n\t\tcase 'b':\n\t\t\treturn parseIntBin(b)\n\t\tcase 'o':\n\t\t\treturn parseIntOct(b)\n\t\tdefault:\n\t\t\tpanic(fmt.Errorf(\"invalid base '%c', should have been checked by scanIntOrFloat\", b[1]))\n\t\t}\n\t}\n\treturn parseIntDec(b)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "0a0537d97627061f882618d5",
+        "revision": "22b407e2d0bdfb445206e088556a75c49480c786",
+        "path": "decode.go",
+        "start_byte": 467,
+        "text": "func parseIntHex(b []byte) (int64, error) {\n\tvar v uint64\n\tfor _, c := range b[2:] {\n\t\tif c == '_' {\n\t\t\tcontinue\n\t\t}\n\t\tvar d byte\n\t\tswitch {\n\t\tcase c >= '0' && c <= '9':\n\t\t\td = c - '0'\n\t\tcase c >= 'a' && c <= 'f':\n\t\t\td = c - 'a' + 10\n\t\tcase c >= 'A' && c <= 'F':\n\t\t\td = c - 'A' + 10\n\t\t}\n\t\tif v > math.MaxInt64>>4 {\n\t\t\treturn 0, unstable.NewParserError(b, \"hexadecimal number is too large to fit in a 64-bit signed integer\")\n\t\t}\n\t\tv = v<<4 | uint64(d)\n\t}\n\treturn int64(v), nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "abc5f5739615d8cb762ba3a9",
+        "revision": "22b407e2d0bdfb445206e088556a75c49480c786",
+        "path": "decode.go",
+        "start_byte": 1561,
+        "text": "func parseIntDec(b []byte) (int64, error) {\n\ti := 0\n\tneg := false\n\tswitch b[0] {\n\tcase '-':\n\t\tneg = true\n\t\ti++\n\tcase '+':\n\t\ti++\n\t}\n\n\tvar limit uint64 = math.MaxInt64\n\tif neg {\n\t\tlimit = math.MaxInt64 + 1\n\t}\n\n\tvar v uint64\n\tfor ; i < len(b); i++ {\n\t\tc := b[i]\n\t\tif c == '_' {\n\t\t\tcontinue\n\t\t}\n\t\tif v > limit/10 {\n\t\t\treturn 0, unstable.NewParserError(b, \"decimal number is too large to fit in a 64-bit signed integer\")\n\t\t}\n\t\tv = v*10 + uint64(c-'0')\n\t\tif v > limit {\n\t\t\treturn 0, unstable.NewParserError(b, \"decimal number is too large to fit in a 64-bit signed integer\")\n\t\t}\n\t}\n\tif neg {\n\t\treturn -int64(v), nil //nolint:gosec // v <= MaxInt64+1, the conversion wraps to the intended negative value\n\t}\n\treturn int64(v), nil //nolint:gosec // v <= MaxInt64\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "bdda7d58524505f505b85c38",
+        "revision": "22b407e2d0bdfb445206e088556a75c49480c786",
+        "path": "decode.go",
+        "start_byte": 2318,
+        "text": "func parseFloat(b []byte) (float64, error) {\n\ti := 0\n\tif len(b) > 0 && (b[0] == '+' || b[0] == '-') {\n\t\ti = 1\n\t}\n\tif len(b) == i+3 {\n\t\tswitch b[i] {\n\t\tcase 'i':\n\t\t\t// inf\n\t\t\tif b[0] == '-' {\n\t\t\t\treturn math.Inf(-1), nil\n\t\t\t}\n\t\t\treturn math.Inf(1), nil\n\t\tcase 'n':\n\t\t\t// nan\n\t\t\treturn math.NaN(), nil\n\t\t}\n\t}\n\n\t// Fast path: a plain decimal whose significand fits in 53 bits and whose\n\t// base-10 exponent is within [-22, 22] is parsed exactly with a single\n\t// rounding (Clinger's method) straight from the bytes, with no string\n\t// allocation and no full strconv parse. This is the common shape for\n\t// numeric data (e.g. coordinate lists). Anything outside those bounds, or\n\t// with underscores, falls through to strconv, which is the reference.\n\tif f, ok := fastParseFloat(b); ok {\n\t\treturn f, nil\n\t}\n\n\t// strconv.ParseFloat is the reference implementation for parsing\n\t// floating point numbers. The position of underscores has already been\n\t// validated by the parser; strip them so that they do not interfere with\n\t// Go's own underscore rules.\n\tcleaned := b\n\tif bytes.IndexByte(b, '_') >= 0 {\n\t\tcleaned = make([]byte, 0, len(b))\n\t\tfor _, c := range b {\n\t\t\tif c != '_' {\n\t\t\t\tcleaned = append(cleaned, c)\n\t\t\t}\n\t\t}\n\t}\n\n\tf, err := strconv.ParseFloat(string(cleaned), 64)\n\tif err != nil {\n\t\treturn 0, unstable.NewParserError(b, \"unable to parse float: %s\", err)\n\t}\n\treturn f, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "5738505260f82628d6b3b6f0",
+        "revision": "22b407e2d0bdfb445206e088556a75c49480c786",
+        "path": "decode.go",
+        "start_byte": 4568,
+        "text": "func fastParseFloat(b []byte) (float64, bool) {\n\ti := 0\n\tneg := false\n\tif i < len(b) && (b[i] == '+' || b[i] == '-') {\n\t\tneg = b[i] == '-'\n\t\ti++\n\t}\n\n\tvar mantissa uint64\n\tdigits := 0\n\tfracDigits := 0\n\tsawDot := false\n\tsawDigit := false\n\tfor ; i < len(b); i++ {\n\t\tc := b[i]\n\t\tswitch {\n\t\tcase c >= '0' && c <= '9':\n\t\t\tif digits >= 19 {\n\t\t\t\t// Too many significant digits to accumulate without risking a\n\t\t\t\t// uint64 overflow (and well past the 53-bit exact range).\n\t\t\t\treturn 0, false\n\t\t\t}\n\t\t\tmantissa = mantissa*10 + uint64(c-'0')\n\t\t\tdigits++\n\t\t\tif sawDot {\n\t\t\t\tfracDigits++\n\t\t\t}\n\t\t\tsawDigit = true\n\t\tcase c == '.':\n\t\t\tif sawDot {\n\t\t\t\treturn 0, false\n\t\t\t}\n\t\t\tsawDot = true\n\t\tdefault:\n\t\t\tgoto exponent\n\t\t}\n\t}\nexponent:\n\tif !sawDigit {\n\t\treturn 0, false\n\t}\n\texp := -fracDigits\n\tif i < len(b) && (b[i] == 'e' || b[i] == 'E') {\n\t\ti++\n\t\tesign := 1\n\t\tif i < len(b) && (b[i] == '+' || b[i] == '-') {\n\t\t\tif b[i] == '-' {\n\t\t\t\tesign = -1\n\t\t\t}\n\t\t\ti++\n\t\t}\n\t\tif i >= len(b) {\n\t\t\treturn 0, false\n\t\t}\n\t\teval := 0\n\t\tfor ; i < len(b); i++ {\n\t\t\tc := b[i]\n\t\t\tif c < '0' || c > '9' {\n\t\t\t\treturn 0, false\n\t\t\t}\n\t\t\teval = eval*10 + int(c-'0')\n\t\t\tif eval > 1000 {\n\t\t\t\treturn 0, false\n\t\t\t}\n\t\t}\n\t\texp += esign * eval\n\t}\n\tif i != len(b) {\n\t\t// Trailing bytes (an underscore, a hexadecimal marker, ...).\n\t\treturn 0, false\n\t}\n\n\tvar f float64\n\tswitch {\n\tcase mantissa <= 1<<53 && exp == 0:\n\t\tf = float64(mantissa)\n\tcase mantissa <= 1<<53 && exp > 0 && exp <= 22:\n\t\tf = float64(mantissa) * float64pow10[exp]\n\tcase mantissa <= 1<<53 && exp < 0 && exp >= -22:\n\t\tf = float64(mantissa) / float64pow10[-exp]\n\tcase exp >= -27 && exp <= 27:\n\t\t// The significand does not fit in 53 bits (or the exponent is a bit\n\t\t// past the exact float64 powers of ten): compute the correctly\n\t\t// rounded result with exact 128-bit integer arithmetic.\n\t\tvar ok bool\n\t\tf, ok = wideParseFloat(mantissa, exp)\n\t\tif !ok {\n\t\t\treturn 0, false\n\t\t}\n\tdefault:\n\t\treturn 0, false\n\t}\n\tif neg {\n\t\tf = -f\n\t}\n\treturn f, true\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "88c82d4a6c9d27730a1c943f",
+        "revision": "22b407e2d0bdfb445206e088556a75c49480c786",
+        "path": "decode.go",
+        "start_byte": 7413,
+        "text": "func wideParseFloat(mantissa uint64, exp int) (float64, bool) {\n\tswitch {\n\tcase mantissa == 0:\n\t\treturn 0, true\n\tcase exp == 0:\n\t\t// Go guarantees correctly rounded uint64 to float64 conversions.\n\t\treturn float64(mantissa), true\n\tcase exp > 0:\n\t\tif exp >= len(uint64pow5) {\n\t\t\treturn 0, false\n\t\t}\n\t\t// value = (mantissa * 5^exp) * 2^exp, with the product exact on 128\n\t\t// bits.\n\t\thi, lo := bits.Mul64(mantissa, uint64pow5[exp])\n\t\tif hi == 0 {\n\t\t\treturn roundFloat64(lo, exp, false), true\n\t\t}\n\t\tsh := uint(bits.Len64(hi)) //nolint:gosec // Len64 is in [1, 64]\n\t\ttop := hi<<(64-sh) | lo>>sh\n\t\tsticky := lo<<(64-sh) != 0\n\t\treturn roundFloat64(top, exp+int(sh), sticky), true //nolint:gosec // sh is in [1, 64]\n\tdefault:\n\t\tp := -exp\n\t\tif p >= len(uint64pow5) {\n\t\t\treturn 0, false\n\t\t}\n\t\t// value = (mantissa / 5^p) * 2^exp. Shift the mantissa up so the\n\t\t// 128/64-bit division yields a quotient with 55 to 63 significant\n\t\t// bits, then round with the exact remainder.\n\t\td := uint64pow5[p]\n\t\tt := bits.Len64(d) + 58 - bits.Len64(mantissa)\n\t\tif t < 0 {\n\t\t\tt = 0\n\t\t}\n\t\tvar hi, lo uint64\n\t\tif t >= 64 {\n\t\t\thi, lo = mantissa<<(t-64), 0\n\t\t} else {\n\t\t\thi, lo = mantissa>>(64-t), mantissa<<t\n\t\t}\n\t\tq, r := bits.Div64(hi, lo, d)\n\t\treturn roundFloat64(q, exp-t, r != 0), true\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "b6a81bb9914bab1a68b0fb1a",
+        "revision": "22b407e2d0bdfb445206e088556a75c49480c786",
+        "path": "decode.go",
+        "start_byte": 8992,
+        "text": "func roundFloat64(top uint64, exp2 int, sticky bool) float64 {\n\ts := uint(bits.Len64(top) - 53) //nolint:gosec // top has at least 54 significant bits\n\tmant := top >> s\n\trem := top & (1<<s - 1)\n\thalf := uint64(1) << (s - 1)\n\tif rem > half || (rem == half && (sticky || mant&1 == 1)) {\n\t\t// mant can reach 1<<53, which is still exactly representable.\n\t\tmant++\n\t}\n\treturn math.Ldexp(float64(mant), exp2+int(s)) //nolint:gosec // s is in [1, 11]\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "96a77e7efd917264d3d94728",
+        "revision": "22b407e2d0bdfb445206e088556a75c49480c786",
+        "path": "decode.go",
+        "start_byte": 9599,
+        "text": "func parseLocalDate(b []byte) (LocalDate, error) {\n\tvar date LocalDate\n\n\tif len(b) != 10 || b[4] != '-' || b[7] != '-' {\n\t\treturn date, unstable.NewParserError(b, \"dates are expected to have the format YYYY-MM-DD\")\n\t}\n\n\tvar err error\n\tdate.Year, err = parseDecimalDigits(b[0:4])\n\tif err != nil {\n\t\treturn date, err\n\t}\n\tdate.Month, err = parseDecimalDigits(b[5:7])\n\tif err != nil {\n\t\treturn date, err\n\t}\n\tdate.Day, err = parseDecimalDigits(b[8:10])\n\tif err != nil {\n\t\treturn date, err\n\t}\n\n\tif date.Month < 1 || date.Month > 12 {\n\t\treturn date, unstable.NewParserError(b[5:7], \"impossible date\")\n\t}\n\tmaxDay := daysIn(date.Month, date.Year)\n\tif date.Day < 1 || date.Day > maxDay {\n\t\treturn date, unstable.NewParserError(b[8:10], \"impossible date\")\n\t}\n\n\treturn date, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "be955df57f0243db579bac77",
+        "revision": "22b407e2d0bdfb445206e088556a75c49480c786",
+        "path": "decode.go",
+        "start_byte": 10369,
+        "text": "func daysIn(month int, year int) int {\n\tswitch month {\n\tcase 2:\n\t\tif isLeapYear(year) {\n\t\t\treturn 29\n\t\t}\n\t\treturn 28\n\tcase 4, 6, 9, 11:\n\t\treturn 30\n\tdefault:\n\t\treturn 31\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "b43183694270b9a907be26a5",
+        "revision": "22b407e2d0bdfb445206e088556a75c49480c786",
+        "path": "decode.go",
+        "start_byte": 10545,
+        "text": "func isLeapYear(year int) bool {\n\treturn year%4 == 0 && (year%100 != 0 || year%400 == 0)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "434b57e9302417c6ad761931",
+        "revision": "22b407e2d0bdfb445206e088556a75c49480c786",
+        "path": "decode.go",
+        "start_byte": 10708,
+        "text": "func parseDecimalDigits(b []byte) (int, error) {\n\tv := 0\n\tfor i, c := range b {\n\t\tif !isDecimalDigit(c) {\n\t\t\treturn 0, unstable.NewParserError(b[i:i+1], \"expected digit (0-9)\")\n\t\t}\n\t\tv = v*10 + int(c-'0')\n\t}\n\treturn v, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "386b87f6115a1a78aa84a6fc",
+        "revision": "22b407e2d0bdfb445206e088556a75c49480c786",
+        "path": "decode.go",
+        "start_byte": 11106,
+        "text": "func parseLocalTime(b []byte) (LocalTime, []byte, error) {\n\tvar (\n\t\tnspow = [10]int{0, 1e8, 1e7, 1e6, 1e5, 1e4, 1e3, 1e2, 1e1, 1e0}\n\t\tt     LocalTime\n\t)\n\n\t// check if b matches to have expected format HH:MM[:SS[.NNNNNN]]\n\tconst localTimeByteMinLen = 5\n\tif len(b) < localTimeByteMinLen {\n\t\treturn t, nil, unstable.NewParserError(b, \"times are expected to have the format HH:MM[:SS[.NNNNNN]]\")\n\t}\n\n\tvar err error\n\tt.Hour, err = parseDecimalDigits(b[0:2])\n\tif err != nil {\n\t\treturn t, nil, err\n\t}\n\tif t.Hour > 23 {\n\t\treturn t, nil, unstable.NewParserError(b[0:2], \"hour cannot be greater 23\")\n\t}\n\tif b[2] != ':' {\n\t\treturn t, nil, unstable.NewParserError(b[2:3], \"expecting colon between hours and minutes\")\n\t}\n\n\tt.Minute, err = parseDecimalDigits(b[3:5])\n\tif err != nil {\n\t\treturn t, nil, err\n\t}\n\tif t.Minute > 59 {\n\t\treturn t, nil, unstable.NewParserError(b[3:5], \"minutes cannot be greater 59\")\n\t}\n\n\tb = b[5:]\n\n\t// Seconds are optional (TOML v1.1.0). Fractional seconds may only appear\n\t// when seconds are present:\n\t//   partial-time = time-hour \":\" time-minute [ \":\" time-second [ time-secfrac ] ]\n\tsecondsPresent := false\n\n\tif len(b) >= 1 && b[0] == ':' {\n\t\tif len(b) < 3 {\n\t\t\treturn t, nil, unstable.NewParserError(b, \"incomplete seconds\")\n\t\t}\n\n\t\tt.Second, err = parseDecimalDigits(b[1:3])\n\t\tif err != nil {\n\t\t\treturn t, nil, err\n\t\t}\n\n\t\tif t.Second > 59 {\n\t\t\treturn t, nil, unstable.NewParserError(b[1:3], \"seconds cannot be greater than 59\")\n\t\t}\n\n\t\tb = b[3:]\n\t\tsecondsPresent = true\n\t}\n\n\tif secondsPresent && len(b) >= 1 && b[0] == '.' {\n\t\tfrac := 0\n\t\tprecision := 0\n\t\tdigits := 0\n\n\t\tfor i, c := range b[1:] {\n\t\t\tif !isDecimalDigit(c) {\n\t\t\t\tif i == 0 {\n\t\t\t\t\treturn t, nil, unstable.NewParserError(b[0:1], \"need at least one digit after fraction point\")\n\t\t\t\t}\n\t\t\t\tbreak\n\t\t\t}\n\t\t\tdigits++\n\t\t\tif i < 9 {\n\t\t\t\tfrac = frac*10 + int(c-'0')\n\t\t\t\tprecision++\n\t\t\t}\n\t\t}\n\n\t\tif digits == 0 {\n\t\t\treturn t, nil, unstable.NewParserError(b[0:1], \"need at least one digit after fraction point\")\n\t\t}\n\n\t\tt.Nanosecond = frac * nspow[precision]\n\t\tt.Precision = precision\n\n\t\treturn t, b[1+digits:], nil\n\t}\n\treturn t, b, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "a93aaa351199848d04aad776",
+        "revision": "22b407e2d0bdfb445206e088556a75c49480c786",
+        "path": "decode.go",
+        "start_byte": 11166,
+        "text": "var (\n\t\tnspow = [10]int{0, 1e8, 1e7, 1e6, 1e5, 1e4, 1e3, 1e2, 1e1, 1e0}\n\t\tt     LocalTime\n\t)",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "84feb78220d1355f635d53c6",
+        "revision": "22b407e2d0bdfb445206e088556a75c49480c786",
+        "path": "decode.go",
+        "start_byte": 13364,
+        "text": "func parseLocalDateTime(b []byte) (LocalDateTime, []byte, error) {\n\tvar dt LocalDateTime\n\n\tconst localDateTimeByteMinLen = 11\n\tif len(b) < localDateTimeByteMinLen {\n\t\treturn dt, nil, unstable.NewParserError(b, \"local datetimes are expected to have the format YYYY-MM-DDTHH:MM[:SS[.NNNNNNNNN]]\")\n\t}\n\n\tdate, err := parseLocalDate(b[:10])\n\tif err != nil {\n\t\treturn dt, nil, err\n\t}\n\tdt.LocalDate = date\n\n\tsep := b[10]\n\tif sep != 'T' && sep != ' ' && sep != 't' {\n\t\treturn dt, nil, unstable.NewParserError(b[10:11], \"datetime separator is expected to be T or a space\")\n\t}\n\n\tt, rest, err := parseLocalTime(b[11:])\n\tif err != nil {\n\t\treturn dt, nil, err\n\t}\n\tdt.LocalTime = t\n\n\treturn dt, rest, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "45e6e884db6fa43e8b28832e",
+        "revision": "22b407e2d0bdfb445206e088556a75c49480c786",
+        "path": "decode.go",
+        "start_byte": 14134,
+        "text": "func parseDateTime(b []byte) (time.Time, error) {\n\tdt, b, err := parseLocalDateTime(b)\n\tif err != nil {\n\t\treturn time.Time{}, err\n\t}\n\n\tvar zone *time.Location\n\n\tif len(b) == 0 {\n\t\t// parser should have checked that there is a timezone\n\t\treturn time.Time{}, unstable.NewParserError(b, \"date-time is missing timezone\")\n\t}\n\n\tif b[0] == 'Z' || b[0] == 'z' {\n\t\tb = b[1:]\n\t\tzone = time.UTC\n\t} else {\n\t\tconst dateTimeByteLen = 6\n\t\tif len(b) != dateTimeByteLen {\n\t\t\treturn time.Time{}, unstable.NewParserError(b, \"invalid date-time timezone\")\n\t\t}\n\t\tvar direction int\n\t\tswitch b[0] {\n\t\tcase '-':\n\t\t\tdirection = -1\n\t\tcase '+':\n\t\t\tdirection = +1\n\t\tdefault:\n\t\t\treturn time.Time{}, unstable.NewParserError(b[:1], \"invalid timezone offset character\")\n\t\t}\n\n\t\tif b[3] != ':' {\n\t\t\treturn time.Time{}, unstable.NewParserError(b[3:4], \"expected a : separator\")\n\t\t}\n\n\t\thours, err := parseDecimalDigits(b[1:3])\n\t\tif err != nil {\n\t\t\treturn time.Time{}, err\n\t\t}\n\t\tif hours > 23 {\n\t\t\treturn time.Time{}, unstable.NewParserError(b[1:3], \"invalid timezone offset hours\")\n\t\t}\n\n\t\tminutes, err := parseDecimalDigits(b[4:6])\n\t\tif err != nil {\n\t\t\treturn time.Time{}, err\n\t\t}\n\t\tif minutes > 59 {\n\t\t\treturn time.Time{}, unstable.NewParserError(b[4:6], \"invalid timezone offset minutes\")\n\t\t}\n\n\t\tseconds := direction * (hours*3600 + minutes*60)\n\t\tif seconds == 0 {\n\t\t\tzone = time.UTC\n\t\t} else {\n\t\t\tzone = time.FixedZone(\"\", seconds)\n\t\t}\n\t\tb = b[dateTimeByteLen:]\n\t}\n\n\tif len(b) > 0 {\n\t\treturn time.Time{}, unstable.NewParserError(b, \"extra bytes at the end of the timezone\")\n\t}\n\n\tt := time.Date(\n\t\tdt.Year,\n\t\ttime.Month(dt.Month),\n\t\tdt.Day,\n\t\tdt.Hour,\n\t\tdt.Minute,\n\t\tdt.Second,\n\t\tdt.Nanosecond,\n\t\tzone)\n\n\treturn t, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "eb8d9d2381b625e6ef9874c5",
+        "revision": "22b407e2d0bdfb445206e088556a75c49480c786",
+        "path": "decode.go",
+        "start_byte": 14675,
+        "text": "var direction int",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "e33fde58c70af3df8772366b",
+        "revision": "22b407e2d0bdfb445206e088556a75c49480c786",
+        "path": "errors.go",
+        "start_byte": 406,
+        "text": "type DecodeError struct {\n\tmessage string\n\tline    int\n\tcolumn  int\n\tkey     Key\n\n\thuman string\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "8a7da1fdaa2de0b84df1e5dc",
+        "revision": "22b407e2d0bdfb445206e088556a75c49480c786",
+        "path": "errors.go",
+        "start_byte": 1084,
+        "text": "func (s *StrictMissingError) String() string {\n\tvar buf strings.Builder\n\n\tfor i, e := range s.Errors {\n\t\tif i > 0 {\n\t\t\tbuf.WriteString(\"\\n---\\n\")\n\t\t}\n\t\tbuf.WriteString(e.String())\n\t}\n\n\treturn buf.String()\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "43278db8ba2d93a36f482e40",
+        "revision": "22b407e2d0bdfb445206e088556a75c49480c786",
+        "path": "errors.go",
+        "start_byte": 1374,
+        "text": "func (s *StrictMissingError) Unwrap() []error {\n\terrs := make([]error, len(s.Errors))\n\tfor i := range s.Errors {\n\t\terrs[i] = &s.Errors[i]\n\t}\n\treturn errs\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "7ae6a3189f91675b26fb5342",
+        "revision": "22b407e2d0bdfb445206e088556a75c49480c786",
+        "path": "errors.go",
+        "start_byte": 2016,
+        "text": "func (e *DecodeError) Position() (row int, column int) {\n\treturn e.line, e.column\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "0aba6ba9094fbd7007bd6693",
+        "revision": "22b407e2d0bdfb445206e088556a75c49480c786",
+        "path": "errors.go",
+        "start_byte": 2649,
+        "text": "func newDecodeError(document []byte, highlight []byte, key Key, message string) *DecodeError {\n\toffset := subsliceOffset(document, highlight)\n\n\terrLineIdx, errColumn := positionAt(document, offset)\n\n\thuman := buildHumanContext(document, errLineIdx, errColumn, len(highlight), message)\n\n\treturn &DecodeError{\n\t\tmessage: message,\n\t\tline:    errLineIdx + 1,\n\t\tcolumn:  errColumn,\n\t\tkey:     key,\n\t\thuman:   human,\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "dafe334f9f4a753f8977a8db",
+        "revision": "22b407e2d0bdfb445206e088556a75c49480c786",
+        "path": "errors.go",
+        "start_byte": 3142,
+        "text": "func subsliceOffset(document, b []byte) int {\n\t// Highlights are subslices of the document, which means they share the\n\t// same backing array, and their capacity counts the bytes between their\n\t// start and the end of the backing array.\n\toffset := cap(document) - cap(b)\n\tif offset < 0 || offset+len(b) > len(document) {\n\t\tpanic(errors.New(\"highlight is not a subslice of the document\"))\n\t}\n\treturn offset\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "3977529ca51029f3d77e2264",
+        "revision": "22b407e2d0bdfb445206e088556a75c49480c786",
+        "path": "errors.go",
+        "start_byte": 3657,
+        "text": "func positionAt(document []byte, offset int) (lineIdx int, column int) {\n\tlineStart := 0\n\tfor i := 0; i < offset; i++ {\n\t\tif document[i] == '\\n' {\n\t\t\tlineIdx++\n\t\t\tlineStart = i + 1\n\t\t}\n\t}\n\treturn lineIdx, offset - lineStart + 1\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "5f5f66177fb38ac9c3fa6de3",
+        "revision": "22b407e2d0bdfb445206e088556a75c49480c786",
+        "path": "errors.go",
+        "start_byte": 3977,
+        "text": "func docLines(document []byte) []string {\n\ts := string(document)\n\tlines := strings.Split(s, \"\\n\")\n\tfor i, l := range lines {\n\t\tlines[i] = strings.TrimSuffix(l, \"\\r\")\n\t}\n\treturn lines\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "fcb1933824e18f3df39a4060",
+        "revision": "22b407e2d0bdfb445206e088556a75c49480c786",
+        "path": "errors.go",
+        "start_byte": 4344,
+        "text": "func buildHumanContext(document []byte, errLineIdx, errColumn, highlightLen int, message string) string {\n\tlines := docLines(document)\n\n\tconst window = 3\n\tfirstIdx := errLineIdx - window\n\tif firstIdx < 0 {\n\t\tfirstIdx = 0\n\t}\n\tlastIdx := errLineIdx + window\n\tif lastIdx > len(lines)-1 {\n\t\tlastIdx = len(lines) - 1\n\t}\n\t// Empty lines at the edges of the window are dropped, unless the error\n\t// is about that very position.\n\tfor firstIdx < errLineIdx && lines[firstIdx] == \"\" {\n\t\tfirstIdx++\n\t}\n\tfor lastIdx > errLineIdx && lines[lastIdx] == \"\" {\n\t\tlastIdx--\n\t}\n\n\t// Width of the column of line numbers.\n\twidth := len(strconv.Itoa(lastIdx + 1))\n\n\tvar buf strings.Builder\n\n\twriteLine := func(idx int) {\n\t\tnumber := strconv.Itoa(idx + 1)\n\t\tfor i := len(number); i < width; i++ {\n\t\t\tbuf.WriteByte(' ')\n\t\t}\n\t\tbuf.WriteString(number)\n\t\tbuf.WriteByte('|')\n\t\tif len(lines[idx]) > 0 {\n\t\t\tbuf.WriteByte(' ')\n\t\t\tbuf.WriteString(lines[idx])\n\t\t}\n\t\tbuf.WriteByte('\\n')\n\t}\n\n\tfor idx := firstIdx; idx <= errLineIdx; idx++ {\n\t\twriteLine(idx)\n\t}\n\n\t// Underline the error.\n\tfor i := 0; i < width; i++ {\n\t\tbuf.WriteByte(' ')\n\t}\n\tbuf.WriteString(\"| \")\n\tfor i := 1; i < errColumn; i++ {\n\t\tbuf.WriteByte(' ')\n\t}\n\t// The highlight cannot extend past the end of its line.\n\ttildes := highlightLen\n\tif errLineIdx < len(lines) {\n\t\tif avail := len(lines[errLineIdx]) - errColumn + 1; tildes > avail {\n\t\t\ttildes = avail\n\t\t}\n\t}\n\tif tildes < 1 {\n\t\ttildes = 1\n\t}\n\tfor i := 0; i < tildes; i++ {\n\t\tbuf.WriteByte('~')\n\t}\n\tif message != \"\" {\n\t\tbuf.WriteByte(' ')\n\t\tbuf.WriteString(message)\n\t}\n\tbuf.WriteByte('\\n')\n\n\tfor idx := errLineIdx + 1; idx <= lastIdx; idx++ {\n\t\twriteLine(idx)\n\t}\n\n\treturn strings.TrimSuffix(buf.String(), \"\\n\")\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "c23c6a99e148ec4f0d553ff4",
+        "revision": "22b407e2d0bdfb445206e088556a75c49480c786",
+        "path": "internal/assert/assertions.go",
+        "start_byte": 1660,
+        "text": "func Zero[T any](tb testing.TB, value T, msgAndArgs ...any) {\n\ttb.Helper()\n\tvar zero T\n\tif objectsAreEqual(value, zero) {\n\t\treturn\n\t}\n\tval := reflect.ValueOf(value)\n\tif (val.Kind() == reflect.Slice || val.Kind() == reflect.",
+        "rank": 2,
+        "truncated": true
+      }
+    ]
+  },
+  "retrieval": {
+    "unresolved": [
+      {
+        "side": "ours",
+        "identifier": "planMemo",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "t",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "internal/testsuite/rm.go",
+            "start": 2006
+          },
+          {
+            "path": "internal/testsuite/rm.go",
+            "start": 2171
+          },
+          {
+            "path": "internal/testsuite/rm.go",
+            "start": 2332
+          }
+        ]
+      },
+      {
+        "side": "ours",
+        "identifier": "reflect",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Type",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "planClock",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "uint8",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "d",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "decode.go",
+            "start": 586
+          },
+          {
+            "path": "unstable/parser.go",
+            "start": 40244
+          }
+        ]
+      },
+      {
+        "side": "ours",
+        "identifier": "i",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "len",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "int",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "anyStack",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "kvStack",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "fusedParts",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "byte",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "fusedOps",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "idStack",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "int32",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "fusedNesting",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "int",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "keyRaws",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "fusedKVParts",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "fusedKVKeyRange",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "unstable",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Range",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "unstable/parser.go",
+            "start": 2603
+          },
+          {
+            "path": "unstable/parser.go",
+            "start": 3773
+          }
+        ]
+      },
+      {
+        "side": "theirs",
+        "identifier": "fusedValueSpan",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "valSeen",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "tracker",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "v",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "cmd/jsontoml/main.go",
+            "start": 905
+          },
+          {
+            "path": "cmd/tomljson/main.go",
+            "start": 764
+          },
+          {
+            "path": "cmd/tomll/main.go",
+            "start": 878
+          },
+          {
+            "path": "decode.go",
+            "start": 499
+          },
+          {
+            "path": "decode.go",
+            "start": 978
+          },
+          {
+            "path": "decode.go",
+            "start": 1285
+          },
+          {
+            "path": "decode.go",
+            "start": 1757
+          },
+          {
+            "path": "decode_fused.go",
+            "start": 9296
+          },
+          {
+            "path": "decode_fused.go",
+            "start": 11222
+          },
+          {
+            "path": "ossfuzz/fuzz.go",
+            "start": 320
+          },
+          {
+            "path": "unstable/edit/edit.go",
+            "start": 3609
+          },
+          {
+            "path": "unstable/edit/edit.go",
+            "start": 4779
+          },
+          {
+            "path": "unstable/edit/mutate.go",
+            "start": 9445
+          }
+        ]
+      },
+      {
+        "side": "theirs",
+        "identifier": "lo",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "hi",
+        "reason": "no-unique-declaration-established"
+      }
+    ],
+    "method": "syntax-ranges-and-identifier-candidates/3",
+    "budget_bytes": 32768,
+    "libraries": {
+      "C": "cbbd4827ee02cd5c018ab41f10d8404ff8741159054b352d9a6d763c506ba3c7",
+      "Go": "1612f8fd958ba1ec981bf4b91e2ff399f1e54d26a9da68e5b60b0d7cd00616fc"
+    }
+  }
+}

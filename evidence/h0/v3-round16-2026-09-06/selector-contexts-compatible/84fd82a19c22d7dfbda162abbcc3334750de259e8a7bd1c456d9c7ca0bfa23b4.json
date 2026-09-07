@@ -1,0 +1,1018 @@
+{
+  "id": "84fd82a19c22d7dfbda162abbcc3334750de259e8a7bd1c456d9c7ca0bfa23b4",
+  "source_protocol_sha256": "86ffe38086e217acf6e1a4aa4162e226862463d1bde3160478f9a6f4d2b968ce",
+  "repair_module_sha256": "475070c72aaadf08fe1cbd1ec90cde5210664924e6b0589d61d2226e86f3da7f",
+  "contexts": {
+    "local-context": [
+      {
+        "id": "b2e13829ff949f073cc2ae4f",
+        "revision": "77222f84dc6a7a5c3577c61d2487ba8e829606af",
+        "path": "response.go",
+        "start_byte": 0,
+        "text": "package restful\n\n// Copyright 2013 Ernest Micklei. All rights reserved.\n// Use of this source code is governed by a license\n// that can be found in the LICENSE file.\n\nimport (\n\t\"errors\"\n\t\"net/http\"\n\t\"strings\"\n)\n\n// DEPRECATED, use DefaultResponseContentType(mime)\nvar DefaultResponseMimeType string\n\n//PrettyPrintResponses controls the indentation feature of XML and JSON serialization\nvar PrettyPrintResponses = true\n\n// Response is a wrapper on the actual http ResponseWriter\n// It provides several convenience methods to prepare and write response content.\ntype Response struct {\n\thttp.ResponseWriter\n\trequestAccept string   // mime-type what the Http Request says it wants to receive\n\trouteProduces []string // mime-types what the Route says it can produce\n\tstatusCode    int      // HTTP status code that has been written explicity (if zero then net/http has written 200)\n\tcontentLength int      // number of bytes written for the response body\n\tprettyPrint   bool     // controls the indentation feature of XML and JSON serialization. It is initialized using var PrettyPrintResponses.\n\terr           error    // err property is kept when WriteError is called\n}\n\n// Creates a new response based on a http ResponseWriter.\nfunc NewResponse(httpWriter http.ResponseWriter) *Response {\n\treturn &Response{httpWriter, \"\", []string{}, http.StatusOK, 0, PrettyPrintResponses, nil} // empty content-types\n}\n\n// If Accept header matching fails, fall back to this type.\n// Valid values are restful.MIME_JSON and restful.MIME_XML\n// Example:\n// \trestful.DefaultResponseContentType(restful.MIME_JSON)\nfunc DefaultResponseContentType(mime string) {\n\tDefaultResponseMimeType = mime\n}\n\n// InternalServerError writes the StatusInternalServerError header.\n// DEPRECATED, use WriteErrorString(http.StatusInternalServerError,reason)\nfunc (r Response) InternalServerError() Response {\n\tr.WriteHeader(http.StatusInternalServerError)\n\treturn r\n}\n\n// PrettyPrint changes whether this response must produce pretty (line-by-line, indented) JSON or XML output.\nfunc (r *Response) PrettyPrint(bePretty bool) {\n\tr.prettyPrint = bePretty\n}\n\n// AddHeader is a shortcut for .Header().Add(header,value)\nfunc (r Response) AddHeader(header string, value string) Response {\n\tr.Header().Add(header, value)\n\treturn r\n}\n\n// SetRequestAccepts tells the response what Mime-type(s) the HTTP request said it wants to accept. Exposed for testing.\nfunc (r *Response) SetRequestAccepts(mime string) {\n\tr.requestAccept = mime\n}\n\n// EntityWriter returns the registered EntityWriter that the entity (requested resource)\n// can write according to what the request wants (Accept) and what the Route can produce or what the restful defaults say.\n// If called before WriteEntity and WriteHeader then a false return value can be used to write a 406: Not Acceptable.\nfunc (r *Response) EntityWriter() (EntityReaderWriter, bool) {\n\tfor _, qualifiedMime := range strings.Split(r.requestAccept, \",\") {\n\t\tmime := strings.Trim(strings.Split(qualifiedMime, \";\")[0], \" \")\n\t\tif 0 == len(mime) || mime == \"*/*\" {\n\t\t\tfor _, each := range r.routeProduces {\n\t\t\t\tif MIME_JSON == each {\n\t\t\t\t\treturn entityAccessRegistry.accessorAt(MIME_JSON)\n\t\t\t\t}\n\t\t\t\tif MIME_XML == each {\n\t\t\t\t\treturn entityAccessRegistry.accessorAt(MIME_XML)\n\t\t\t\t}\n\t\t\t}\n\t\t} else { // mime is not blank; see if we have a match in Produces\n\t\t\tfor _, each := range r.routeProduces {\n\t\t\t\tif mime == each {\n\t\t\t\t\tif MIME_JSON == each {\n\t\t\t\t\t\treturn entityAccessRegistry.accessorAt(MIME_JSON)\n\t\t\t\t\t}\n\t\t\t\t\tif MIME_XML == each {\n\t\t\t\t\t\treturn entityAccessRegistry.accessorAt(MIME_XML)\n\t\t\t\t\t}\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t}\n\twriter, ok := entityAccessRegistry.accessorAt(r.requestAccept)\n\tif !ok {\n\t\t// if not registered then fallback to the defaults (if set)\n\t\tif DefaultResponseMimeType == MIME_JSON {\n\t\t\treturn entityAccessRegistry.accessorAt(MIME_JSON)\n\t\t}\n\t\tif DefaultResponseMimeType == MIME_XML {\n\t\t\treturn entityAccessRegistry.accessorAt(MIME_XML)\n\t\t}\n\t\tif trace {\n\t\t\ttraceLogger.Printf(\"no registered EntityReaderWriter found for %s\", r.requestAccept)\n\t\t}\n\t}\n\treturn writer, ok\n}\n\n// WriteEntity calls WriteHeaderAndEntity with Http Status OK (200)\nfunc (r *Response) WriteEntity(value interface{}) error {\n\treturn r.WriteHeaderAndEntity(http.StatusOK, value)\n}\n\n// WriteHeaderAndEntity marshals the value using the representation denoted by the Accept Header and the registered EntityWriters.\n// If no Accept header is specified (or */*) then respond with the Content-Type as specified by the first in the Route.Produces.\n// If an Accept header is specified then respond with the Content-Type as specified by the first in the Route.Produces that is matched with the Accept header.\n// If the value is nil then no response is send except for the Http status. You may want to call WriteHeader(http.StatusNotFound) instead.\n// If there is no writer available that can represent the value in the requested MIME type then Http Status NotAcceptable is written.\n// Current implementation ignores any q-parameters in the Accept Header.\n// Returns an error if the value could not be written on the response.\nfunc (r *Response) WriteHeaderAndEntity(status int, value interface{}) error {\n\twriter, ok := r.EntityWriter()\n\tif !ok {\n\t\tr.WriteHeader(http.StatusNotAcceptable)\n\t\treturn nil\n\t}\n\treturn writer.Write(r, status, value)\n}\n\n// WriteAsXml is a convenience method for writing a value in xml (requires Xml tags on the value)\n// It uses the standard encoding/xml package for marshalling the valuel ; not using a registered EntityReaderWriter.\nfunc (r *Response) WriteAsXml(value interface{}) error {\n\treturn writeXML(r, http.StatusOK, MIME_XML, value)\n}\n\n// WriteHeaderAndXml is a convenience method for writing a status and value in xml (requires Xml tags on the value)\n// It uses the standard encoding/xml package for marshalling the valuel ; not using a registered EntityReaderWriter.\nfunc (r *Response) WriteHeaderAndXml(status int, value interface{}) error {\n\treturn writeXML(r, status, MIME_XML, value)\n}\n\n// WriteAsJson is a convenience method for writing a value in json.\n// It uses the standard encoding/json package for marshalling the valuel ; not using a registered EntityReaderWriter.\nfunc (r *Response) WriteAsJson(value interface{}) error {\n\treturn writeJSON(r, http.StatusOK, MIME_JSON, value)\n}\n\n// WriteJson is a convenience method for writing a value in Json with a given Content-Type.\n// It uses the standard encoding/json package for marshalling the valuel ; not using a registered EntityReaderWriter.\nfunc (r *Response) WriteJson(value interface{}, contentType string) error {\n\treturn writeJSON(r, http.StatusOK, contentType, value)\n}\n\n// WriteHeaderAndJson is a convenience method for writing the status and a value in Json with a given Content-Type.\n// It uses the standard encoding/json package for marshalling the value ; not using a registered EntityReaderWriter.\nfunc (r *Response) WriteHeaderAndJson(status int, value interface{}, contentType string) error {\n\treturn writeJSON(r, status, contentType, value)\n}\n\n// WriteError write the http status and the error string on the response.\nfunc (r *Response) WriteError(httpStatus int, err error) error {\n\tr.err = err\n\treturn r.WriteErrorString(httpStatus, err.Error())\n}\n\n// WriteServiceError is a convenience method for a responding with a status and a ServiceError\nfunc (r *Response) WriteServiceError(httpStatus int, err ServiceError) error {\n\tr.err = err\n\treturn r.WriteHeaderAndEntity(httpStatus, err)\n}\n\n// WriteErrorString is a convenience method for an error status with the actual error\nfunc (r *Response) WriteErrorString(httpStatus int, errorReason string) error {\n\tif r.err == nil {\n\t\t// if not called from WriteError\n\t\tr.err = errors.New(errorReason)\n\t}\n\tr.WriteHeader(httpStatus)\n\tif _, err := r.Write([]byte(errorReason)); err != nil {\n\t\treturn err\n\t}\n\treturn nil\n}\n\n// Flush implements http.Flusher interface, which sends any buffered data to the client.\nfunc (r *Response) Flush() {\n\tif f, ok := r.ResponseWriter.(http.Flusher); ok {\n\t\tf.Flush()\n\t} else if trace {\n\t\ttraceLogger.Printf(\"ResponseWriter %v doesn't support Flush\", r)\n\t}\n}\n\n// WriteHeader is overridden to remember the Status Code that has been written.\n// Changes to the Header of the response have no effect after this.\nfunc (r *Response) WriteHeader(httpStatus int) {\n\tr.statusCode = httpStatus\n\tr.ResponseWriter.WriteHeader(httpStatus)\n}\n\n// StatusCode returns the code that has been written using WriteHeader.\nfunc (r Response) StatusCode() int {\n\tif 0 == r.statusCode {\n\t\t// no status code has been written yet; assume OK\n\t\treturn http.StatusOK\n\t}\n\treturn r.statusCode\n}\n\n// Write writes the data to the connection as part of an HTTP reply.\n// Write is part of http.ResponseWriter interface.\nfunc (r *Response) Write(bytes []byte) (int, error) {\n\twritten, err := r.ResponseWriter.Write(bytes)\n\tr.contentLength += written\n\treturn written, err\n}\n\n// ContentLength returns the number of bytes written for the response content.\n// Note that this value is only correct if all data is written through the Response using its Write* methods.\n// Data written directly using the underlying http.ResponseWriter is not accounted for.\nfunc (r Response) ContentLength() int {\n\treturn r.contentLength\n}\n\n// CloseNotify is part of http.CloseNotifier interface\nfunc (r Response) CloseNotify() <-chan bool {\n\treturn r.ResponseWriter.(http.CloseNotifier).CloseNotify()\n}\n\n// Error returns the err created by WriteError\nfunc (r Response) Error() error {\n\treturn r.err\n}\n",
+        "rank": 0,
+        "truncated": false
+      },
+      {
+        "id": "864e67fd11e0eb6493eedb45",
+        "revision": "36655eaf7386cc502d5a3a349ad45df2cb128a55",
+        "path": "response.go",
+        "start_byte": 0,
+        "text": "package restful\n\n// Copyright 2013 Ernest Micklei. All rights reserved.\n// Use of this source code is governed by a license\n// that can be found in the LICENSE file.\n\nimport (\n\t\"errors\"\n\t\"net/http\"\n)\n\n// DEPRECATED, use DefaultResponseContentType(mime)\nvar DefaultResponseMimeType string\n\n//PrettyPrintResponses controls the indentation feature of XML and JSON serialization\nvar PrettyPrintResponses = true\n\n// Response is a wrapper on the actual http ResponseWriter\n// It provides several convenience methods to prepare and write response content.\ntype Response struct {\n\thttp.ResponseWriter\n\trequestAccept string   // mime-type what the Http Request says it wants to receive\n\trouteProduces []string // mime-types what the Route says it can produce\n\tstatusCode    int      // HTTP status code that has been written explicity (if zero then net/http has written 200)\n\tcontentLength int      // number of bytes written for the response body\n\tprettyPrint   bool     // controls the indentation feature of XML and JSON serialization. It is initialized using var PrettyPrintResponses.\n\terr           error    // err property is kept when WriteError is called\n}\n\n// Creates a new response based on a http ResponseWriter.\nfunc NewResponse(httpWriter http.ResponseWriter) *Response {\n\treturn &Response{httpWriter, \"\", []string{}, http.StatusOK, 0, PrettyPrintResponses, nil} // empty content-types\n}\n\n// If Accept header matching fails, fall back to this type.\n// Valid values are restful.MIME_JSON and restful.MIME_XML\n// Example:\n// \trestful.DefaultResponseContentType(restful.MIME_JSON)\nfunc DefaultResponseContentType(mime string) {\n\tDefaultResponseMimeType = mime\n}\n\n// InternalServerError writes the StatusInternalServerError header.\n// DEPRECATED, use WriteErrorString(http.StatusInternalServerError,reason)\nfunc (r Response) InternalServerError() Response {\n\tr.WriteHeader(http.StatusInternalServerError)\n\treturn r\n}\n\n// PrettyPrint changes whether this response must produce pretty (line-by-line, indented) JSON or XML output.\nfunc (r *Response) PrettyPrint(bePretty bool) {\n\tr.prettyPrint = bePretty\n}\n\n// AddHeader is a shortcut for .Header().Add(header,value)\nfunc (r Response) AddHeader(header string, value string) Response {\n\tr.Header().Add(header, value)\n\treturn r\n}\n\n// SetRequestAccepts tells the response what Mime-type(s) the HTTP request said it wants to accept. Exposed for testing.\nfunc (r *Response) SetRequestAccepts(mime string) {\n\tr.requestAccept = mime\n}\n\n// EntityWriter returns the registered EntityWriter that the entity (requested resource)\n// can write according to what the request wants (Accept) and what the Route can produce or what the restful defaults say.\n// If called before WriteEntity and WriteHeader then a false return value can be used to write a 406: Not Acceptable.\nfunc (r *Response) EntityWriter() (EntityReaderWriter, bool) {\n\tsorted := sortedMimes(r.requestAccept)\n\tfor _, eachAccept := range sorted {\n\t\tfor _, eachProduce := range r.routeProduces {\n\t\t\tif eachProduce == eachAccept.media {\n\t\t\t\tw, ok := entityAccessRegistry.AccessorAt(eachAccept.media)\n\t\t\t\tif ok {\n\t\t\t\t\treturn w, true\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t\tif eachAccept.media == \"*/*\" {\n\t\t\tfor _, each := range r.routeProduces {\n\t\t\t\tw, ok := entityAccessRegistry.AccessorAt(each)\n\t\t\t\tif ok {\n\t\t\t\t\treturn w, true\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t}\n\t// if requestAccept is empty\n\twriter, ok := entityAccessRegistry.AccessorAt(r.requestAccept)\n\tif !ok {\n\t\t// if not registered then fallback to the defaults (if set)\n\t\tif DefaultResponseMimeType == MIME_JSON {\n\t\t\treturn entityAccessRegistry.AccessorAt(MIME_JSON)\n\t\t}\n\t\tif DefaultResponseMimeType == MIME_XML {\n\t\t\treturn entityAccessRegistry.AccessorAt(MIME_XML)\n\t\t}\n\t\tif trace {\n\t\t\ttraceLogger.Printf(\"no registered EntityReaderWriter found for %s\", r.requestAccept)\n\t\t}\n\t}\n\treturn writer, ok\n}\n\n// WriteEntity calls WriteHeaderAndEntity with Http Status OK (200)\nfunc (r *Response) WriteEntity(value interface{}) error {\n\treturn r.WriteHeaderAndEntity(http.StatusOK, value)\n}\n\n// WriteHeaderAndEntity marshals the value using the representation denoted by the Accept Header and the registered EntityWriters.\n// If no Accept header is specified (or */*) then respond with the Content-Type as specified by the first in the Route.Produces.\n// If an Accept header is specified then respond with the Content-Type as specified by the first in the Route.Produces that is matched with the Accept header.\n// If the value is nil then no response is send except for the Http status. You may want to call WriteHeader(http.StatusNotFound) instead.\n// If there is no writer available that can represent the value in the requested MIME type then Http Status NotAcceptable is written.\n// Current implementation ignores any q-parameters in the Accept Header.\n// Returns an error if the value could not be written on the response.\nfunc (r *Response) WriteHeaderAndEntity(status int, value interface{}) error {\n\twriter, ok := r.EntityWriter()\n\tif !ok {\n\t\tr.WriteHeader(http.StatusNotAcceptable)\n\t\treturn nil\n\t}\n\treturn writer.Write(r, status, value)\n}\n\n// WriteAsXml is a convenience method for writing a value in xml (requires Xml tags on the value)\n// It uses the standard encoding/xml package for marshalling the valuel ; not using a registered EntityReaderWriter.\nfunc (r *Response) WriteAsXml(value interface{}) error {\n\treturn writeXML(r, http.StatusOK, MIME_XML, value)\n}\n\n// WriteHeaderAndXml is a convenience method for writing a status and value in xml (requires Xml tags on the value)\n// It uses the standard encoding/xml package for marshalling the valuel ; not using a registered EntityReaderWriter.\nfunc (r *Response) WriteHeaderAndXml(status int, value interface{}) error {\n\treturn writeXML(r, status, MIME_XML, value)\n}\n\n// WriteAsJson is a convenience method for writing a value in json.\n// It uses the standard encoding/json package for marshalling the valuel ; not using a registered EntityReaderWriter.\nfunc (r *Response) WriteAsJson(value interface{}) error {\n\treturn writeJSON(r, http.StatusOK, MIME_JSON, value)\n}\n\n// WriteJson is a convenience method for writing a value in Json with a given Content-Type.\n// It uses the standard encoding/json package for marshalling the valuel ; not using a registered EntityReaderWriter.\nfunc (r *Response) WriteJson(value interface{}, contentType string) error {\n\treturn writeJSON(r, http.StatusOK, contentType, value)\n}\n\n// WriteHeaderAndJson is a convenience method for writing the status and a value in Json with a given Content-Type.\n// It uses the standard encoding/json package for marshalling the value ; not using a registered EntityReaderWriter.\nfunc (r *Response) WriteHeaderAndJson(status int, value interface{}, contentType string) error {\n\treturn writeJSON(r, status, contentType, value)\n}\n\n// WriteError write the http status and the error string on the response.\nfunc (r *Response) WriteError(httpStatus int, err error) error {\n\tr.err = err\n\treturn r.WriteErrorString(httpStatus, err.Error())\n}\n\n// WriteServiceError is a convenience method for a responding with a status and a ServiceError\nfunc (r *Response) WriteServiceError(httpStatus int, err ServiceError) error {\n\tr.err = err\n\treturn r.WriteHeaderAndEntity(httpStatus, err)\n}\n\n// WriteErrorString is a convenience method for an error status with the actual error\nfunc (r *Response) WriteErrorString(httpStatus int, errorReason string) error {\n\tif r.err == nil {\n\t\t// if not called from WriteError\n\t\tr.err = errors.New(errorReason)\n\t}\n\tr.WriteHeader(httpStatus)\n\tif _, err := r.Write([]byte(errorReason)); err != nil {\n\t\treturn err\n\t}\n\treturn nil\n}\n\n// Flush implements http.Flusher interface, which sends any buffered data to the client.\nfunc (r *Response) Flush() {\n\tif f, ok := r.ResponseWriter.(http.Flusher); ok {\n\t\tf.Flush()\n\t} else if trace {\n\t\ttraceLogger.Printf(\"ResponseWriter %v doesn't support Flush\", r)\n\t}\n}\n\n// WriteHeader is overridden to remember the Status Code that has been written.\n// Changes to the Header of the response have no effect after this.\nfunc (r *Response) WriteHeader(httpStatus int) {\n\tr.statusCode = httpStatus\n\tr.ResponseWriter.WriteHeader(httpStatus)\n}\n\n// StatusCode returns the code that has been written using WriteHeader.\nfunc (r Response) StatusCode() int {\n\tif 0 == r.statusCode {\n\t\t// no status code has been written yet; assume OK\n\t\treturn http.StatusOK\n\t}\n\treturn r.statusCode\n}\n\n// Write writes the data to the connection as part of an HTTP reply.\n// Write is part of http.ResponseWriter interface.\nfunc (r *Response) Write(bytes []byte) (int, error) {\n\twritten, err := r.ResponseWriter.Write(bytes)\n\tr.contentLength += written\n\treturn written, err\n}\n\n// ContentLength returns the number of bytes written for the response content.\n// Note that this value is only correct if all data is written through the Response using its Write* methods.\n// Data written directly using the underlying http.ResponseWriter is not accounted for.\nfunc (r Response) ContentLength() int {\n\treturn r.contentLength\n}\n\n// CloseNotify is part of http.CloseNotifier interface\nfunc (r Response) CloseNotify() <-chan bool {\n\treturn r.ResponseWriter.(http.CloseNotifier).CloseNotify()\n}\n\n// Error returns the err created by WriteError\nfunc (r Response) Error() error {\n\treturn r.err\n}\n",
+        "rank": 0,
+        "truncated": false
+      }
+    ],
+    "selected": [
+      {
+        "id": "74740ed6b629ed40b4b05f44",
+        "revision": "36655eaf7386cc502d5a3a349ad45df2cb128a55",
+        "path": "response.go",
+        "start_byte": 2806,
+        "text": "func (r *Response) EntityWriter() (EntityReaderWriter, bool) {\n\tsorted := sortedMimes(r.requestAccept)\n\tfor _, eachAccept := range sorted {\n\t\tfor _, eachProduce := range r.routeProduces {\n\t\t\tif eachProduce == eachAccept.media {\n\t\t\t\tw, ok := entityAccessRegistry.AccessorAt(eachAccept.media)\n\t\t\t\tif ok {\n\t\t\t\t\treturn w, true\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t\tif eachAccept.media == \"*/*\" {\n\t\t\tfor _, each := range r.routeProduces {\n\t\t\t\tw, ok := entityAccessRegistry.AccessorAt(each)\n\t\t\t\tif ok {\n\t\t\t\t\treturn w, true\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t}\n\t// if requestAccept is empty\n\twriter, ok := entityAccessRegistry.AccessorAt(r.requestAccept)\n\tif !ok {\n\t\t// if not registered then fallback to the defaults (if set)\n\t\tif DefaultResponseMimeType == MIME_JSON {\n\t\t\treturn entityAccessRegistry.AccessorAt(MIME_JSON)\n\t\t}\n\t\tif DefaultResponseMimeType == MIME_XML {\n\t\t\treturn entityAccessRegistry.AccessorAt(MIME_XML)\n\t\t}\n\t\tif trace {\n\t\t\ttraceLogger.Printf(\"no registered EntityReaderWriter found for %s\", r.requestAccept)\n\t\t}\n\t}\n\treturn writer, ok\n}",
+        "rank": 0,
+        "truncated": false
+      },
+      {
+        "id": "3ceb0f5790f6bfe719126fb0",
+        "revision": "77222f84dc6a7a5c3577c61d2487ba8e829606af",
+        "path": "response.go",
+        "start_byte": 2817,
+        "text": "func (r *Response) EntityWriter() (EntityReaderWriter, bool) {\n\tfor _, qualifiedMime := range strings.Split(r.requestAccept, \",\") {\n\t\tmime := strings.Trim(strings.Split(qualifiedMime, \";\")[0], \" \")\n\t\tif 0 == len(mime) || mime == \"*/*\" {\n\t\t\tfor _, each := range r.routeProduces {\n\t\t\t\tif MIME_JSON == each {\n\t\t\t\t\treturn entityAccessRegistry.accessorAt(MIME_JSON)\n\t\t\t\t}\n\t\t\t\tif MIME_XML == each {\n\t\t\t\t\treturn entityAccessRegistry.accessorAt(MIME_XML)\n\t\t\t\t}\n\t\t\t}\n\t\t} else { // mime is not blank; see if we have a match in Produces\n\t\t\tfor _, each := range r.routeProduces {\n\t\t\t\tif mime == each {\n\t\t\t\t\tif MIME_JSON == each {\n\t\t\t\t\t\treturn entityAccessRegistry.accessorAt(MIME_JSON)\n\t\t\t\t\t}\n\t\t\t\t\tif MIME_XML == each {\n\t\t\t\t\t\treturn entityAccessRegistry.accessorAt(MIME_XML)\n\t\t\t\t\t}\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t}\n\twriter, ok := entityAccessRegistry.accessorAt(r.requestAccept)\n\tif !ok {\n\t\t// if not registered then fallback to the defaults (if set)\n\t\tif DefaultResponseMimeType == MIME_JSON {\n\t\t\treturn entityAccessRegistry.accessorAt(MIME_JSON)\n\t\t}\n\t\tif DefaultResponseMimeType == MIME_XML {\n\t\t\treturn entityAccessRegistry.accessorAt(MIME_XML)\n\t\t}\n\t\tif trace {\n\t\t\ttraceLogger.Printf(\"no registered EntityReaderWriter found for %s\", r.requestAccept)\n\t\t}\n\t}\n\treturn writer, ok\n}",
+        "rank": 0,
+        "truncated": false
+      },
+      {
+        "id": "e121856d2312b7aaebba1e26",
+        "revision": "36655eaf7386cc502d5a3a349ad45df2cb128a55",
+        "path": "compressor_cache.go",
+        "start_byte": 1467,
+        "text": "var writer *gzip.Writer",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "871f624cb24f82c770cf7dfa",
+        "revision": "36655eaf7386cc502d5a3a349ad45df2cb128a55",
+        "path": "compressor_cache.go",
+        "start_byte": 2717,
+        "text": "var writer *zlib.Writer",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "05d449ee65f70a26fa72a195",
+        "revision": "36655eaf7386cc502d5a3a349ad45df2cb128a55",
+        "path": "constants.go",
+        "start_byte": 167,
+        "text": "const (\n\tMIME_XML   = \"application/xml\"          // Accept or Content-Type used in Consumes() and/or Produces()\n\tMIME_JSON  = \"application/json\"         // Accept or Content-Type used in Consumes() and/or Produces()\n\tMIME_OCTET = \"application/octet-stream\" // If Content-Type is not present in request, use the default\n\n\tHEADER_Allow                         = \"Allow\"\n\tHEADER_Accept                        = \"Accept\"\n\tHEADER_Origin                        = \"Origin\"\n\tHEADER_ContentType                   = \"Content-Type\"\n\tHEADER_LastModified                  = \"Last-Modified\"\n\tHEADER_AcceptEncoding                = \"Accept-Encoding\"\n\tHEADER_ContentEncoding               = \"Content-Encoding\"\n\tHEADER_AccessControlExposeHeaders    = \"Access-Control-Expose-Headers\"\n\tHEADER_AccessControlRequestMethod    = \"Access-Control-Request-Method\"\n\tHEADER_AccessControlRequestHeaders   = \"Access-Control-Request-Headers\"\n\tHEADER_AccessControlAllowMethods     = \"Access-Control-Allow-Methods\"\n\tHEADER_AccessControlAllowOrigin      = \"Access-Control-Allow-Origin\"\n\tHEADER_AccessControlAllowCredentials = \"Access-Control-Allow-Credentials\"\n\tHEADER_AccessControlAllowHeaders     = \"Access-Control-Allow-Headers\"\n\tHEADER_AccessControlMaxAge           = \"Access-Control-Max-Age\"\n\n\tENCODING_GZIP    = \"gzip\"\n\tENCODING_DEFLATE = \"deflate\"\n)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "2c1026f2870a3d7cd5fd5ebd",
+        "revision": "36655eaf7386cc502d5a3a349ad45df2cb128a55",
+        "path": "entity_accessors.go",
+        "start_byte": 315,
+        "text": "type EntityReaderWriter interface {\n\t// Read a serialized version of the value from the request.\n\t// The Request may have a decompressing reader. Depends on Content-Encoding.\n\tRead(req *Request, v interface{}) error\n\n\t// Write a serialized version of the value on the response.\n\t// The Response may have a compressing writer. Depends on Accept-Encoding.\n\t// status should be a valid Http Status code\n\tWrite(resp *Response, status int, v interface{}) error\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "88cd892316036e22e69cce7e",
+        "revision": "36655eaf7386cc502d5a3a349ad45df2cb128a55",
+        "path": "entity_accessors.go",
+        "start_byte": 813,
+        "text": "var entityAccessRegistry = &entityReaderWriters{\n\tprotection: new(sync.RWMutex),\n\taccessors:  map[string]EntityReaderWriter{},\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "33ee2719cb7d153da539a48b",
+        "revision": "36655eaf7386cc502d5a3a349ad45df2cb128a55",
+        "path": "entity_accessors.go",
+        "start_byte": 1651,
+        "text": "func (r *entityReaderWriters) AccessorAt(mime string) (EntityReaderWriter, bool) {\n\tr.protection.RLock()\n\tdefer r.protection.RUnlock()\n\ter, ok := r.accessors[mime]\n\tif !ok {\n\t\t// retry with reverse lookup\n\t\t// more expensive but we are in an exceptional situation anyway\n\t\tfor k, v := range r.accessors {\n\t\t\tif strings.Contains(mime, k) {\n\t\t\t\treturn v, true\n\t\t\t}\n\t\t}\n\t}\n\treturn er, ok\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "c60fc3a6c9e8979aa5220260",
+        "revision": "36655eaf7386cc502d5a3a349ad45df2cb128a55",
+        "path": "examples/restful-pre-post-filters.go",
+        "start_byte": 1643,
+        "text": "func trace(what string, delta int) {\n\tindented := what\n\tif delta < 0 {\n\t\tindentLevel += delta\n\t}\n\tfor t := 0; t < indentLevel; t++ {\n\t\tindented = \".\" + indented\n\t}\n\tlog.Printf(\"%s\", indented)\n\tif delta > 0 {\n\t\tindentLevel += delta\n\t}\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "f47bb7829f92c7ebb21e67e8",
+        "revision": "36655eaf7386cc502d5a3a349ad45df2cb128a55",
+        "path": "log/log.go",
+        "start_byte": 494,
+        "text": "func Printf(format string, v ...interface{}) {\n\tLogger.Printf(format, v...)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "7ff97c8c8741f696c27493a5",
+        "revision": "36655eaf7386cc502d5a3a349ad45df2cb128a55",
+        "path": "logger.go",
+        "start_byte": 216,
+        "text": "var trace bool = false",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "3a0c0b731b6734df7082ee80",
+        "revision": "36655eaf7386cc502d5a3a349ad45df2cb128a55",
+        "path": "logger.go",
+        "start_byte": 239,
+        "text": "var traceLogger log.StdLogger",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "d0590550c980254d7b90e593",
+        "revision": "36655eaf7386cc502d5a3a349ad45df2cb128a55",
+        "path": "mime.go",
+        "start_byte": 525,
+        "text": "func sortedMimes(accept string) (sorted []mime) {\n\tfor _, each := range strings.Split(accept, \",\") {\n\t\ttypeAndQuality := strings.Split(strings.Trim(each, \" \"), \";\")\n\t\tif len(typeAndQuality) == 1 {\n\t\t\tsorted = insertMime(sorted, mime{typeAndQuality[0], 1.0})\n\t\t} else {\n\t\t\t// take factor\n\t\t\tparts := strings.Split(typeAndQuality[1], \"=\")\n\t\t\tif len(parts) == 2 {\n\t\t\t\tf, err := strconv.ParseFloat(parts[1], 64)\n\t\t\t\tif err != nil {\n\t\t\t\t\ttraceLogger.Printf(\"unable to parse quality in %s, %v\", each, err)\n\t\t\t\t} else {\n\t\t\t\t\tsorted = insertMime(sorted, mime{typeAndQuality[0], f})\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t}\n\treturn\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "0522507b9787ef48ff3358d8",
+        "revision": "36655eaf7386cc502d5a3a349ad45df2cb128a55",
+        "path": "response.go",
+        "start_byte": 253,
+        "text": "var DefaultResponseMimeType string",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "8ff975abee53650e7ae51f4c",
+        "revision": "36655eaf7386cc502d5a3a349ad45df2cb128a55",
+        "path": "response.go",
+        "start_byte": 549,
+        "text": "type Response struct {\n\thttp.ResponseWriter\n\trequestAccept string   // mime-type what the Http Request says it wants to receive\n\trouteProduces []string // mime-types what the Route says it can produce\n\tstatusCode    int      // HTTP status code that has been written explicity (if zero then net/http has written 200)\n\tcontentLength int      // number of bytes written for the response body\n\tprettyPrint   bool     // controls the indentation feature of XML and JSON serialization. It is initialized using var PrettyPrintResponses.\n\terr           error    // err property is kept when WriteError is called\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "fd6ca9602ab12b8f06fe11d5",
+        "revision": "77222f84dc6a7a5c3577c61d2487ba8e829606af",
+        "path": "compressor_cache.go",
+        "start_byte": 1467,
+        "text": "var writer *gzip.Writer",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "e343568c80e3b52733f6ac81",
+        "revision": "77222f84dc6a7a5c3577c61d2487ba8e829606af",
+        "path": "compressor_cache.go",
+        "start_byte": 2717,
+        "text": "var writer *zlib.Writer",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "63bc32b081350bb55b0f4434",
+        "revision": "77222f84dc6a7a5c3577c61d2487ba8e829606af",
+        "path": "constants.go",
+        "start_byte": 167,
+        "text": "const (\n\tMIME_XML   = \"application/xml\"          // Accept or Content-Type used in Consumes() and/or Produces()\n\tMIME_JSON  = \"application/json\"         // Accept or Content-Type used in Consumes() and/or Produces()\n\tMIME_OCTET = \"application/octet-stream\" // If Content-Type is not present in request, use the default\n\n\tHEADER_Allow                         = \"Allow\"\n\tHEADER_Accept                        = \"Accept\"\n\tHEADER_Origin                        = \"Origin\"\n\tHEADER_ContentType                   = \"Content-Type\"\n\tHEADER_LastModified                  = \"Last-Modified\"\n\tHEADER_AcceptEncoding                = \"Accept-Encoding\"\n\tHEADER_ContentEncoding               = \"Content-Encoding\"\n\tHEADER_AccessControlExposeHeaders    = \"Access-Control-Expose-Headers\"\n\tHEADER_AccessControlRequestMethod    = \"Access-Control-Request-Method\"\n\tHEADER_AccessControlRequestHeaders   = \"Access-Control-Request-Headers\"\n\tHEADER_AccessControlAllowMethods     = \"Access-Control-Allow-Methods\"\n\tHEADER_AccessControlAllowOrigin      = \"Access-Control-Allow-Origin\"\n\tHEADER_AccessControlAllowCredentials = \"Access-Control-Allow-Credentials\"\n\tHEADER_AccessControlAllowHeaders     = \"Access-Control-Allow-Headers\"\n\tHEADER_AccessControlMaxAge           = \"Access-Control-Max-Age\"\n\n\tENCODING_GZIP    = \"gzip\"\n\tENCODING_DEFLATE = \"deflate\"\n)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "0e3c2fd359b642e2c688af2b",
+        "revision": "77222f84dc6a7a5c3577c61d2487ba8e829606af",
+        "path": "entity_accessors.go",
+        "start_byte": 315,
+        "text": "type EntityReaderWriter interface {\n\t// Read a serialized version of the value from the request.\n\t// The Request may have a decompressing reader. Depends on Content-Encoding.\n\tRead(req *Request, v interface{}) error\n\n\t// Write a serialized version of the value on the response.\n\t// The Response may have a compressing writer. Depends on Accept-Encoding.\n\t// status should be a valid Http Status code\n\tWrite(resp *Response, status int, v interface{}) error\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "fea01872f6ede6ff74cc3ca0",
+        "revision": "77222f84dc6a7a5c3577c61d2487ba8e829606af",
+        "path": "entity_accessors.go",
+        "start_byte": 813,
+        "text": "var entityAccessRegistry = &entityReaderWriters{\n\tprotection: new(sync.RWMutex),\n\taccessors:  map[string]EntityReaderWriter{},\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "5572cecc3564b1075b032fce",
+        "revision": "77222f84dc6a7a5c3577c61d2487ba8e829606af",
+        "path": "entity_accessors.go",
+        "start_byte": 2234,
+        "text": "func (r *entityReaderWriters) accessorAt(mime string) (EntityReaderWriter, bool) {\n\tr.protection.RLock()\n\tdefer r.protection.RUnlock()\n\ter, ok := r.accessors[mime]\n\tif !ok {\n\t\t// retry with reverse lookup\n\t\t// more expensive but we are in an exceptional situation anyway\n\t\tfor k, v := range r.accessors {\n\t\t\tif strings.Contains(mime, k) {\n\t\t\t\treturn v, true\n\t\t\t}\n\t\t}\n\t}\n\treturn er, ok\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "37fbec9f9e6f3e3f2f094521",
+        "revision": "77222f84dc6a7a5c3577c61d2487ba8e829606af",
+        "path": "examples/restful-pre-post-filters.go",
+        "start_byte": 1643,
+        "text": "func trace(what string, delta int) {\n\tindented := what\n\tif delta < 0 {\n\t\tindentLevel += delta\n\t}\n\tfor t := 0; t < indentLevel; t++ {\n\t\tindented = \".\" + indented\n\t}\n\tlog.Printf(\"%s\", indented)\n\tif delta > 0 {\n\t\tindentLevel += delta\n\t}\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "21e05007597fd0ce80b2aed9",
+        "revision": "77222f84dc6a7a5c3577c61d2487ba8e829606af",
+        "path": "log/log.go",
+        "start_byte": 494,
+        "text": "func Printf(format string, v ...interface{}) {\n\tLogger.Printf(format, v...)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "d21f38fbaf7edfacd75d5db5",
+        "revision": "77222f84dc6a7a5c3577c61d2487ba8e829606af",
+        "path": "logger.go",
+        "start_byte": 216,
+        "text": "var trace bool = false",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "0ce9c694884cf25fefa1a64a",
+        "revision": "77222f84dc6a7a5c3577c61d2487ba8e829606af",
+        "path": "logger.go",
+        "start_byte": 239,
+        "text": "var traceLogger log.StdLogger",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "2bec4ec21309642f49232a2f",
+        "revision": "77222f84dc6a7a5c3577c61d2487ba8e829606af",
+        "path": "response.go",
+        "start_byte": 264,
+        "text": "var DefaultResponseMimeType string",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "9fc5babea6e1936d4336226a",
+        "revision": "77222f84dc6a7a5c3577c61d2487ba8e829606af",
+        "path": "response.go",
+        "start_byte": 560,
+        "text": "type Response struct {\n\thttp.ResponseWriter\n\trequestAccept string   // mime-type what the Http Request says it wants to receive\n\trouteProduces []string // mime-types what the Route says it can produce\n\tstatusCode    int      // HTTP status code that has been written explicity (if zero then net/http has written 200)\n\tcontentLength int      // number of bytes written for the response body\n\tprettyPrint   bool     // controls the indentation feature of XML and JSON serialization. It is initialized using var PrettyPrintResponses.\n\terr           error    // err property is kept when WriteError is called\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "7a1cee79934e150749f05c05",
+        "revision": "36655eaf7386cc502d5a3a349ad45df2cb128a55",
+        "path": "compress.go",
+        "start_byte": 502,
+        "text": "type CompressingResponseWriter struct {\n\twriter     http.ResponseWriter\n\tcompressor io.WriteCloser\n\tencoding   string\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "b48614de0b36090df1372e44",
+        "revision": "36655eaf7386cc502d5a3a349ad45df2cb128a55",
+        "path": "compress.go",
+        "start_byte": 674,
+        "text": "func (c *CompressingResponseWriter) Header() http.Header {\n\treturn c.writer.Header()\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "5673b4bbb1ff3441b7bdfe05",
+        "revision": "36655eaf7386cc502d5a3a349ad45df2cb128a55",
+        "path": "compress.go",
+        "start_byte": 818,
+        "text": "func (c *CompressingResponseWriter) WriteHeader(status int) {\n\tc.writer.WriteHeader(status)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "f3e1f43a7de478eced376a0b",
+        "revision": "36655eaf7386cc502d5a3a349ad45df2cb128a55",
+        "path": "compress.go",
+        "start_byte": 1287,
+        "text": "func (c *CompressingResponseWriter) CloseNotify() <-chan bool {\n\treturn c.writer.(http.CloseNotifier).CloseNotify()\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "ad667d8faeb28908344ce738",
+        "revision": "36655eaf7386cc502d5a3a349ad45df2cb128a55",
+        "path": "compress.go",
+        "start_byte": 1913,
+        "text": "func (c *CompressingResponseWriter) isCompressorClosed() bool {\n\treturn nil == c.compressor\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "3d874bb362f401f7501f2a15",
+        "revision": "36655eaf7386cc502d5a3a349ad45df2cb128a55",
+        "path": "compress.go",
+        "start_byte": 2196,
+        "text": "func (c *CompressingResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {\n\thijacker, ok := c.writer.(http.Hijacker)\n\tif !ok {\n\t\treturn nil, nil, errors.New(\"ResponseWriter doesn't support Hijacker interface\")\n\t}\n\treturn hijacker.Hijack()\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "dfd159b799bb2c551638d737",
+        "revision": "36655eaf7386cc502d5a3a349ad45df2cb128a55",
+        "path": "compress.go",
+        "start_byte": 2550,
+        "text": "func wantsCompressedResponse(httpRequest *http.Request) (bool, string) {\n\theader := httpRequest.Header.Get(HEADER_AcceptEncoding)\n\tgi := strings.Index(header, ENCODING_GZIP)\n\tzi := strings.Index(header, ENCODING_DEFLATE)\n\t// use in order of appearance\n\tif gi == -1 {\n\t\treturn zi != -1, ENCODING_DEFLATE\n\t} else if zi == -1 {\n\t\treturn gi != -1, ENCODING_GZIP\n\t} else {\n\t\tif gi < zi {\n\t\t\treturn true, ENCODING_GZIP\n\t\t}\n\t\treturn true, ENCODING_DEFLATE\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "2120df494de72b72e90f006a",
+        "revision": "36655eaf7386cc502d5a3a349ad45df2cb128a55",
+        "path": "compress.go",
+        "start_byte": 3110,
+        "text": "func NewCompressingResponseWriter(httpWriter http.ResponseWriter, encoding string) (*CompressingResponseWriter, error) {\n\thttpWriter.Header().Set(HEADER_ContentEncoding, encoding)\n\tc := new(CompressingResponseWriter)\n\tc.writer = httpWriter\n\tvar err error\n\tif ENCODING_GZIP == encoding {\n\t\tw := currentCompressorProvider.AcquireGzipWriter()\n\t\tw.Reset(httpWriter)\n\t\tc.compressor = w\n\t\tc.encoding = ENCODING_GZIP\n\t} else if ENCODING_DEFLATE == encoding {\n\t\tw := currentCompressorProvider.AcquireZlibWriter()\n\t\tw.Reset(httpWriter)\n\t\tc.compressor = w\n\t\tc.encoding = ENCODING_DEFLATE\n\t} else {\n\t\treturn nil, errors.New(\"Unknown encoding:\" + encoding)\n\t}\n\treturn c, err\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "319e6ac3b2d5b3c961f853a6",
+        "revision": "36655eaf7386cc502d5a3a349ad45df2cb128a55",
+        "path": "compressor_cache.go",
+        "start_byte": 1396,
+        "text": "func (b *BoundedCachedCompressors) AcquireGzipWriter() *gzip.Writer {\n\tvar writer *gzip.Writer\n\tselect {\n\tcase writer, _ = <-b.gzipWriters:\n\tdefault:\n\t\t// return a new unmanaged one\n\t\twriter = newGzipWriter()\n\t}\n\treturn writer\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "6bd0147f8d571bf56e8ad7ce",
+        "revision": "36655eaf7386cc502d5a3a349ad45df2cb128a55",
+        "path": "compressor_cache.go",
+        "start_byte": 1775,
+        "text": "func (b *BoundedCachedCompressors) ReleaseGzipWriter(w *gzip.Writer) {\n\t// forget the unmanaged ones\n\tif len(b.gzipWriters) < b.writersCapacity {\n\t\tb.gzipWriters <- w\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "cc0d20cecf212a3fda29b866",
+        "revision": "36655eaf7386cc502d5a3a349ad45df2cb128a55",
+        "path": "compressor_cache.go",
+        "start_byte": 2015,
+        "text": "func (b *BoundedCachedCompressors) AcquireGzipReader() *gzip.Reader {\n\tvar reader *gzip.Reader\n\tselect {\n\tcase reader, _ = <-b.gzipReaders:\n\tdefault:\n\t\t// return a new unmanaged one\n\t\treader = newGzipReader()\n\t}\n\treturn reader\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "bd4bfb23fd17d1d2f4cf14dd",
+        "revision": "36655eaf7386cc502d5a3a349ad45df2cb128a55",
+        "path": "compressor_cache.go",
+        "start_byte": 2394,
+        "text": "func (b *BoundedCachedCompressors) ReleaseGzipReader(r *gzip.Reader) {\n\t// forget the unmanaged ones\n\tif len(b.gzipReaders) < b.readersCapacity {\n\t\tb.gzipReaders <- r\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "23a986d192c7a21775d49efe",
+        "revision": "36655eaf7386cc502d5a3a349ad45df2cb128a55",
+        "path": "compressor_cache.go",
+        "start_byte": 2646,
+        "text": "func (b *BoundedCachedCompressors) AcquireZlibWriter() *zlib.Writer {\n\tvar writer *zlib.Writer\n\tselect {\n\tcase writer, _ = <-b.zlibWriters:\n\tdefault:\n\t\t// return a new unmanaged one\n\t\twriter = newZlibWriter()\n\t}\n\treturn writer\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "a570223e92cd2c1bf860353b",
+        "revision": "36655eaf7386cc502d5a3a349ad45df2cb128a55",
+        "path": "compressor_cache.go",
+        "start_byte": 3025,
+        "text": "func (b *BoundedCachedCompressors) ReleaseZlibWriter(w *zlib.Writer) {\n\t// forget the unmanaged ones\n\tif len(b.zlibWriters) < b.writersCapacity {\n\t\tb.zlibWriters <- w\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "3c62ed4164e421c171fb2bbb",
+        "revision": "36655eaf7386cc502d5a3a349ad45df2cb128a55",
+        "path": "compressor_pools.go",
+        "start_byte": 964,
+        "text": "func (s *SyncPoolCompessors) ReleaseGzipWriter(w *gzip.Writer) {\n\ts.GzipWriterPool.Put(w)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "10d2ae3c581764450a953488",
+        "revision": "36655eaf7386cc502d5a3a349ad45df2cb128a55",
+        "path": "compressor_pools.go",
+        "start_byte": 1170,
+        "text": "func (s *SyncPoolCompessors) ReleaseGzipReader(r *gzip.Reader) {\n\ts.GzipReaderPool.Put(r)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "3997bd0f26ec0f9a78790113",
+        "revision": "36655eaf7386cc502d5a3a349ad45df2cb128a55",
+        "path": "compressor_pools.go",
+        "start_byte": 1376,
+        "text": "func (s *SyncPoolCompessors) ReleaseZlibWriter(w *zlib.Writer) {\n\ts.ZlibWriterPool.Put(w)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "1d7fc84ac95cc25ee4658276",
+        "revision": "36655eaf7386cc502d5a3a349ad45df2cb128a55",
+        "path": "compressor_pools.go",
+        "start_byte": 1469,
+        "text": "func newGzipWriter() *gzip.Writer {\n\t// create with an empty bytes writer; it will be replaced before using the gzipWriter\n\twriter, err := gzip.NewWriterLevel(new(bytes.Buffer), gzip.BestSpeed)\n\tif err != nil {\n\t\tpanic(err.Error())\n\t}\n\treturn writer\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "445ccf2ea8691778586156fc",
+        "revision": "36655eaf7386cc502d5a3a349ad45df2cb128a55",
+        "path": "compressor_pools.go",
+        "start_byte": 1722,
+        "text": "func newGzipReader() *gzip.Reader {\n\t// create with an empty reader (but with GZIP header); it will be replaced before using the gzipReader\n\t// we can safely use currentCompressProvider because it is set on package initialization.\n\tw := currentCompressorProvider.AcquireGzipWriter()\n\tdefer currentCompressorProvider.ReleaseGzipWriter(w)\n\tb := new(bytes.Buffer)\n\tw.Reset(b)\n\tw.Flush()\n\tw.Close()\n\treader, err := gzip.NewReader(bytes.NewReader(b.Bytes()))\n\tif err != nil {\n\t\tpanic(err.Error())\n\t}\n\treturn reader\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "108f4a96387111ffbefa29f5",
+        "revision": "36655eaf7386cc502d5a3a349ad45df2cb128a55",
+        "path": "compressor_pools.go",
+        "start_byte": 2235,
+        "text": "func newZlibWriter() *zlib.Writer {\n\twriter, err := zlib.NewWriterLevel(new(bytes.Buffer), gzip.BestSpeed)\n\tif err != nil {\n\t\tpanic(err.Error())\n\t}\n\treturn writer\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "bd8eb229619f915e1528b62e",
+        "revision": "36655eaf7386cc502d5a3a349ad45df2cb128a55",
+        "path": "compressors.go",
+        "start_byte": 213,
+        "text": "type CompressorProvider interface {\n\t// Returns a *gzip.Writer which needs to be released later.\n\t// Before using it, call Reset().\n\tAcquireGzipWriter() *gzip.Writer\n\n\t// Releases an aqcuired *gzip.Writer.\n\tReleaseGzipWriter(w *gzip.Writer)\n\n\t// Returns a *gzip.Reader which needs to be released later.\n\tAcquireGzipReader() *gzip.Reader\n\n\t// Releases an aqcuired *gzip.Reader.\n\tReleaseGzipReader(w *gzip.Reader)\n\n\t// Returns a *zlib.Writer which needs to be released later.\n\t// Before using it, call Reset().\n\tAcquireZlibWriter() *zlib.Writer\n\n\t// Releases an aqcuired *zlib.Writer.\n\tReleaseZlibWriter(w *zlib.Writer)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "da1c762322611803c82bd6cc",
+        "revision": "36655eaf7386cc502d5a3a349ad45df2cb128a55",
+        "path": "container.go",
+        "start_byte": 462,
+        "text": "type Container struct {\n\twebServicesLock        sync.RWMutex\n\twebServices            []*WebService\n\tServeMux               *http.ServeMux\n\tisRegisteredOnRoot     bool\n\tcontainerFilters       []FilterFunction\n\tdoNotRecover           bool // default is false\n\trecoverHandleFunc      RecoverHandleFunction\n\tserviceErrorHandleFunc ServiceErrorHandleFunction\n\trouter                 RouteSelector // default is a RouterJSR311, CurlyRouter is the faster alternative\n\tcontentEncodingEnabled bool          // default is false\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "e0bd2455a80679ea1f2450a6",
+        "revision": "36655eaf7386cc502d5a3a349ad45df2cb128a55",
+        "path": "container.go",
+        "start_byte": 2293,
+        "text": "type ServiceErrorHandleFunction func(ServiceError, *Request, *Response)",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "579b1918f3a3f39983e8bf56",
+        "revision": "36655eaf7386cc502d5a3a349ad45df2cb128a55",
+        "path": "container.go",
+        "start_byte": 2848,
+        "text": "func (c *Container) DoNotRecover(doNot bool) {\n\tc.doNotRecover = doNot\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "5b7be0b0472dc75760854e78",
+        "revision": "36655eaf7386cc502d5a3a349ad45df2cb128a55",
+        "path": "container.go",
+        "start_byte": 3150,
+        "text": "func (c *Container) EnableContentEncoding(enabled bool) {\n\tc.contentEncodingEnabled = enabled\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "5e4b2eb94237be166fd8c0a9",
+        "revision": "36655eaf7386cc502d5a3a349ad45df2cb128a55",
+        "path": "container.go",
+        "start_byte": 3345,
+        "text": "func (c *Container) Add(service *WebService) *Container {\n\tc.webServicesLock.Lock()\n\tdefer c.webServicesLock.Unlock()\n\t// If registered on root then no additional specific mapping is needed\n\tif !c.isRegisteredOnRoot {\n\t\tpattern := c.fixedPrefixPath(service.RootPath())\n\t\t// check if root path registration is needed\n\t\tif \"/\" == pattern || \"\" == pattern {\n\t\t\tc.ServeMux.HandleFunc(\"/\", c.dispatch)\n\t\t\tc.isRegisteredOnRoot = true\n\t\t} else {\n\t\t\t// detect if registration already exists\n\t\t\talreadyMapped := false\n\t\t\tfor _, each := range c.webServices {\n\t\t\t\tif each.RootPath() == service.RootPath() {\n\t\t\t\t\talreadyMapped = true\n\t\t\t\t\tbreak\n\t\t\t\t}\n\t\t\t}\n\t\t\tif !alreadyMapped {\n\t\t\t\tc.ServeMux.HandleFunc(pattern, c.dispatch)\n\t\t\t\tif !strings.HasSuffix(pattern, \"/\") {\n\t\t\t\t\tc.ServeMux.HandleFunc(pattern+\"/\", c.dispatch)\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t}\n\t// cannot have duplicate root paths\n\tfor _, each := range c.webServices {\n\t\tif each.RootPath() == service.RootPath() {\n\t\t\tlog.Printf(\"[restful] WebService with duplicate root path detected:['%v']\", each)\n\t\t\tos.Exit(1)\n\t\t}\n\t}\n\t// if rootPath was not set then lazy initialize it\n\tif len(service.rootPath) == 0 {\n\t\tservice.Path(\"/\")\n\t}\n\tc.webServices = append(c.webServices, service)\n\treturn c\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "00edf036aa240311e61d0f54",
+        "revision": "36655eaf7386cc502d5a3a349ad45df2cb128a55",
+        "path": "container.go",
+        "start_byte": 5215,
+        "text": "func logStackOnRecover(panicReason interface{}, httpWriter http.ResponseWriter) {\n\tvar buffer bytes.Buffer\n\tbuffer.WriteString(fmt.Sprintf(\"[restful] recover from panic situation: - %v\\r\\n\", panicReason))\n\tfor i := 2; ; i += 1 {\n\t\t_, file, line, ok := runtime.Caller(i)\n\t\tif !ok {\n\t\t\tbreak\n\t\t}\n\t\tbuffer.WriteString(fmt.Sprintf(\"    %s:%d\\r\\n\", file, line))\n\t}\n\tlog.Print(buffer.String())\n\thttpWriter.WriteHeader(http.StatusInternalServerError)\n\thttpWriter.Write(buffer.Bytes())\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "0b8d3418d3bb0390d87c3b0e",
+        "revision": "36655eaf7386cc502d5a3a349ad45df2cb128a55",
+        "path": "container.go",
+        "start_byte": 5909,
+        "text": "func writeServiceError(err ServiceError, req *Request, resp *Response) {\n\tresp.WriteErrorString(err.Code, err.Message)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "81aa6c1872435f676038e84b",
+        "revision": "36655eaf7386cc502d5a3a349ad45df2cb128a55",
+        "path": "container.go",
+        "start_byte": 6095,
+        "text": "func (c *Container) dispatch(httpWriter http.ResponseWriter, httpRequest *http.Request) {\n\twriter := httpWriter\n\n\t// CompressingResponseWriter should be closed after all operations are done\n\tdefer func() {\n\t\tif compressWriter, ok := writer.(*CompressingResponseWriter); ok {\n\t\t\tcompressWriter.Close()\n\t\t}\n\t}()\n\n\t// Instal panic recovery unless told otherwise\n\tif !c.doNotRecover { // catch all for 500 response\n\t\tdefer func() {\n\t\t\tif r := recover(); r != nil {\n\t\t\t\tc.recoverHandleFunc(r, writer)\n\t\t\t\treturn\n\t\t\t}\n\t\t}()\n\t}\n\t// Install closing the request body (if any)\n\tdefer func() {\n\t\tif nil != httpRequest.Body {\n\t\t\thttpRequest.Body.Close()\n\t\t}\n\t}()\n\n\t// Detect if compression is needed\n\t// assume without compression, test for override\n\tif c.contentEncodingEnabled {\n\t\tdoCompress, encoding := wantsCompressedResponse(httpRequest)\n\t\tif doCompress {\n\t\t\tvar err error\n\t\t\twriter, err = NewCompressingResponseWriter(httpWriter, encoding)\n\t\t\tif err != nil {\n\t\t\t\tlog.Print(\"[restful] unable to install compressor: \", err)\n\t\t\t\thttpWriter.WriteHeader(http.StatusInternalServerError)\n\t\t\t\treturn\n\t\t\t}\n\t\t}\n\t}\n\t// Find best match Route ; err is non nil if no match was found\n\tvar webService *WebService\n\tvar route *Route\n\tvar err error\n\tfunc() {\n\t\tc.webServicesLock.RLock()\n\t\tdefer c.webServicesLock.RUnlock()\n\t\twebService, route, err = c.router.SelectRoute(\n\t\t\tc.webServices,\n\t\t\thttpRequest)\n\t}()\n\tif err != nil {\n\t\t// a non-200 response has already been written\n\t\t// run container filters anyway ; they should not touch the response...\n\t\tchain := FilterChain{Filters: c.containerFilters, Target: func(req *Request, resp *Response) {\n\t\t\tswitch err.(type) {\n\t\t\tcase ServiceError:\n\t\t\t\tser := err.(ServiceError)\n\t\t\t\tc.serviceErrorHandleFunc(ser, req, resp)\n\t\t\t}\n\t\t\t// TODO\n\t\t}}\n\t\tchain.ProcessFilter(NewRequest(httpRequest), NewResponse(writer))\n\t\treturn\n\t}\n\twrappedRequest, wrappedResponse := route.wrapRequestResponse(writer, httpRequest)\n\t// pass through filters (if any)\n\tif len(c.containerFilters)+len(webService.filters)+len(route.Filters) > 0 {\n\t\t// compose filter chain\n\t\tallFilters := []FilterFunction{}\n\t\tallFilters = append(allFilters, c.containerFilters...)\n\t\tallFilters = append(allFilters, webService.filters...)\n\t\tallFilters = append(allFilters, route.Filters...)\n\t\tchain := FilterChain{Filters: allFilters, Target: func(req *Request, resp *Response) {\n\t\t\t// handle request by route after passing all filters\n\t\t\troute.Function(wrappedRequest, wrappedResponse)\n\t\t}}\n\t\tchain.ProcessFilter(wrappedRequest, wrappedResponse)\n\t} else {\n\t\t// no filters, handle request by route\n\t\troute.Function(wrappedRequest, wrappedResponse)\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "b2726e45dd112a929a0ac9b0",
+        "revision": "36655eaf7386cc502d5a3a349ad45df2cb128a55",
+        "path": "container.go",
+        "start_byte": 9632,
+        "text": "func (c *Container) HandleWithFilter(pattern string, handler http.Handler) {\n\tf := func(httpResponse http.ResponseWriter, httpRequest *http.Request) {\n\t\tif len(c.containerFilters) == 0 {\n\t\t\thandler.ServeHTTP(httpResponse, httpRequest)\n\t\t\treturn\n\t\t}\n\n\t\tchain := FilterChain{Filters: c.containerFilters, Target: func(req *Request, resp *Response) {\n\t\t\thandler.ServeHTTP(httpResponse, httpRequest)\n\t\t}}\n\t\tchain.ProcessFilter(NewRequest(httpRequest), NewResponse(httpResponse))\n\t}\n\n\tc.Handle(pattern, http.HandlerFunc(f))\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "638c267c9c8415b9adbe6d8d",
+        "revision": "36655eaf7386cc502d5a3a349ad45df2cb128a55",
+        "path": "container.go",
+        "start_byte": 10814,
+        "text": "func (c Container) computeAllowedMethods(req *Request) []string {\n\t// Go through all RegisteredWebServices() and all its Routes to collect the options\n\tmethods := []string{}\n\trequestPath := req.Request.URL.Path\n\tfor _, ws := range c.RegisteredWebServices() {\n\t\tmatches := ws.pathExpr.Matcher.FindStringSubmatch(requestPath)\n\t\tif matches != nil {\n\t\t\tfinalMatch := matches[len(matches)-1]\n\t\t\tfor _, rt := range ws.Routes() {\n\t\t\t\tmatches := rt.pathExpr.Matcher.FindStringSubmatch(finalMatch)\n\t\t\t\tif matches != nil {\n\t\t\t\t\tlastMatch := matches[len(matches)-1]\n\t\t\t\t\tif lastMatch == \"\" || lastMatch == \"/\" { // do not include if value is neither empty nor ‘/’.\n\t\t\t\t\t\tmethods = append(methods, rt.Method)\n\t\t\t\t\t}\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t}\n\t// methods = append(methods, \"OPTIONS\")  not sure about this\n\treturn methods\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "d718acc5de78605f89b4013e",
+        "revision": "36655eaf7386cc502d5a3a349ad45df2cb128a55",
+        "path": "container.go",
+        "start_byte": 11792,
+        "text": "func newBasicRequestResponse(httpWriter http.ResponseWriter, httpRequest *http.Request) (*Request, *Response) {\n\tresp := NewResponse(httpWriter)\n\tresp.requestAccept = httpRequest.Header.Get(HEADER_Accept)\n\treturn NewRequest(httpRequest), resp\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "731b1bb5732575ba29d36a3c",
+        "revision": "36655eaf7386cc502d5a3a349ad45df2cb128a55",
+        "path": "cors_filter.go",
+        "start_byte": 663,
+        "text": "type CrossOriginResourceSharing struct {\n\tExposeHeaders  []string // list of Header names\n\tAllowedHeaders []string // list of Header names\n\tAllowedDomains []string // list of allowed values for Http Origin. If empty all are allowed.\n\tAllowedMethods []string\n\tMaxAge         int // number of seconds before requiring new Options request\n\tCookiesAllowed bool\n\tContainer      *Container\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "d4aab7e184479324328b3c2b",
+        "revision": "36655eaf7386cc502d5a3a349ad45df2cb128a55",
+        "path": "cors_filter.go",
+        "start_byte": 1236,
+        "text": "func (c CrossOriginResourceSharing) Filter(req *Request, resp *Response, chain *FilterChain) {\n\torigin := req.Request.Header.Get(HEADER_Origin)\n\tif len(origin) == 0 {\n\t\tif trace {\n\t\t\ttraceLogger.Print(\"no Http header Origin set\")\n\t\t}\n\t\tchain.ProcessFilter(req, resp)\n\t\treturn\n\t}\n\tif len(c.AllowedDomains) > 0 { // if provided then origin must be included\n\t\tincluded := false\n\t\tfor _, each := range c.AllowedDomains {\n\t\t\tif each == origin {\n\t\t\t\tincluded = true\n\t\t\t\tbreak\n\t\t\t}\n\t\t}\n\t\tif !included {\n\t\t\tif trace {\n\t\t\t\ttraceLogger.Printf(\"HTTP Origin:%s is not part of %v\", origin, c.AllowedDomains)\n\t\t\t}\n\t\t\tchain.ProcessFilter(req, resp)\n\t\t\treturn\n\t\t}\n\t}\n\tif req.Request.Method != \"OPTIONS\" {\n\t\tc.doActualRequest(req, resp)\n\t\tchain.ProcessFilter(req, resp)\n\t\treturn\n\t}\n\tif acrm := req.Request.Header.Get(HEADER_AccessControlRequestMethod); acrm != \"\" {\n\t\tc.doPreflightRequest(req, resp)\n\t} else {\n\t\tc.doActualRequest(req, resp)\n\t\tchain.ProcessFilter(req, resp)\n\t\treturn\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "33549a5975a3fba2c209fe1c",
+        "revision": "36655eaf7386cc502d5a3a349ad45df2cb128a55",
+        "path": "cors_filter.go",
+        "start_byte": 2208,
+        "text": "func (c CrossOriginResourceSharing) doActualRequest(req *Request, resp *Response) {\n\tc.setOptionsHeaders(req, resp)\n\t// continue processing the response\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "d898b26e5fb618f7c2434aa1",
+        "revision": "36655eaf7386cc502d5a3a349ad45df2cb128a55",
+        "path": "cors_filter.go",
+        "start_byte": 2364,
+        "text": "func (c *CrossOriginResourceSharing) doPreflightRequest(req *Request, resp *Response) {\n\tif len(c.AllowedMethods) == 0 {\n\t\tif c.Container == nil {\n\t\t\tc.AllowedMethods = DefaultContainer.computeAllowedMethods(req)\n\t\t} else {\n\t\t\tc.AllowedMethods = c.Container.computeAllowedMethods(req)\n\t\t}\n\t}\n\n\tacrm := req.Request.Header.Get(HEADER_AccessControlRequestMethod)\n\tif !c.isValidAccessControlRequestMethod(acrm, c.AllowedMethods) {\n\t\tif trace {\n\t\t\ttraceLogger.Printf(\"Http header %s:%s is not in %v\",\n\t\t\t\tHEADER_AccessControlRequestMethod,\n\t\t\t\tacrm,\n\t\t\t\tc.AllowedMethods)\n\t\t}\n\t\treturn\n\t}\n\tacrhs := req.Request.Header.Get(HEADER_AccessControlRequestHeaders)\n\tif len(acrhs) > 0 {\n\t\tfor _, each := range strings.Split(acrhs, \",\") {\n\t\t\tif !c.isValidAccessControlRequestHeader(strings.Trim(each, \" \")) {\n\t\t\t\tif trace {\n\t\t\t\t\ttraceLogger.Printf(\"Http header %s:%s is not in %v\",\n\t\t\t\t\t\tHEADER_AccessControlRequestHeaders,\n\t\t\t\t\t\tacrhs,\n\t\t\t\t\t\tc.AllowedHeaders)\n\t\t\t\t}\n\t\t\t\treturn\n\t\t\t}\n\t\t}\n\t}\n\tresp.AddHeader(HEADER_AccessControlAllowMethods, strings.Join(c.AllowedMethods, \",\"))\n\tresp.AddHeader(HEADER_AccessControlAllowHeaders, acrhs)\n\tc.setOptionsHeaders(req, resp)\n\n\t// return http 200 response, no body\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "d836ca81396f7ec53bab76d3",
+        "revision": "36655eaf7386cc502d5a3a349ad45df2cb128a55",
+        "path": "cors_filter.go",
+        "start_byte": 3557,
+        "text": "func (c CrossOriginResourceSharing) setOptionsHeaders(req *Request, resp *Response) {\n\tc.checkAndSetExposeHeaders(resp)\n\tc.setAllowOriginHeader(req, resp)\n\tc.checkAndSetAllowCredentials(resp)\n\tif c.MaxAge > 0 {\n\t\tresp.AddHeader(HEADER_AccessControlMaxAge, strconv.Itoa(c.MaxAge))\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "5759797a2cc86c06ba7f5c66",
+        "revision": "36655eaf7386cc502d5a3a349ad45df2cb128a55",
+        "path": "cors_filter.go",
+        "start_byte": 3843,
+        "text": "func (c CrossOriginResourceSharing) isOriginAllowed(origin string) bool {\n\tif len(origin) == 0 {\n\t\treturn false\n\t}\n\tif len(c.AllowedDomains) == 0 {\n\t\treturn true\n\t}\n\tallowed := false\n\tfor _, each := range c.AllowedDomains {\n\t\tif each == origin {\n\t\t\tallowed = true\n\t\t\tbreak\n\t\t}\n\t}\n\treturn allowed\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "c0585a22cdd95ca4ebee757b",
+        "revision": "36655eaf7386cc502d5a3a349ad45df2cb128a55",
+        "path": "cors_filter.go",
+        "start_byte": 4142,
+        "text": "func (c CrossOriginResourceSharing) setAllowOriginHeader(req *Request, resp *Response) {\n\torigin := req.Request.Header.Get(HEADER_Origin)\n\tif c.isOriginAllowed(origin) {\n\t\tresp.AddHeader(HEADER_AccessControlAllowOrigin, origin)\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "3d9fef9a523ac584b698d07b",
+        "revision": "36655eaf7386cc502d5a3a349ad45df2cb128a55",
+        "path": "cors_filter.go",
+        "start_byte": 4376,
+        "text": "func (c CrossOriginResourceSharing) checkAndSetExposeHeaders(resp *Response) {\n\tif len(c.ExposeHeaders) > 0 {\n\t\tresp.AddHeader(HEADER_AccessControlExposeHeaders, strings.Join(c.ExposeHeaders, \",\"))\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "115279fe7879bbffaf2d2c4c",
+        "revision": "36655eaf7386cc502d5a3a349ad45df2cb128a55",
+        "path": "cors_filter.go",
+        "start_byte": 4580,
+        "text": "func (c CrossOriginResourceSharing) checkAndSetAllowCredentials(resp *Response) {\n\tif c.CookiesAllowed {\n\t\tresp.AddHeader(HEADER_AccessControlAllowCredentials, \"true\")\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "886b9c0dfdbce3a99845907d",
+        "revision": "36655eaf7386cc502d5a3a349ad45df2cb128a55",
+        "path": "cors_filter.go",
+        "start_byte": 4754,
+        "text": "func (c CrossOriginResourceSharing) isValidAccessControlRequestMethod(method string, allowedMethods []string) bool {\n\tfor _, each := range allowedMethods {\n\t\tif each == method {\n\t\t\treturn true\n\t\t}\n\t}\n\treturn false\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "1cb4fc747927d3407f1f924d",
+        "revision": "36655eaf7386cc502d5a3a349ad45df2cb128a55",
+        "path": "cors_filter.go",
+        "start_byte": 4971,
+        "text": "func (c CrossOriginResourceSharing) isValidAccessControlRequestHeader(header string) bool {\n\tfor _, each := range c.AllowedHeaders {\n\t\tif strings.ToLower(each) == strings.ToLower(header) {\n\t\t\treturn true\n\t\t}\n\t}\n\treturn false\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "6973c256373a8522cfdb0f08",
+        "revision": "36655eaf7386cc502d5a3a349ad45df2cb128a55",
+        "path": "curly_route.go",
+        "start_byte": 537,
+        "text": "func (s *sortableCurlyRoutes) routes() (routes []Route) {\n\tfor _, each := range s.candidates {\n\t\troutes = append(routes, each.route) // TODO change return type\n\t}\n\treturn routes\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "c793b391d5ee1b8a9303ed28",
+        "revision": "36655eaf7386cc502d5a3a349ad45df2cb128a55",
+        "path": "curly_route.go",
+        "start_byte": 906,
+        "text": "func (s *sortableCurlyRoutes) Less(i, j int) bool {\n\tci := s.candidates[i]\n\tcj := s.candidates[j]\n\n\t// primary key\n\tif ci.staticCount < cj.staticCount {\n\t\treturn true\n\t}\n\tif ci.staticCount > cj.staticCount {\n\t\treturn false\n\t}\n\t// secundary key\n\tif ci.paramCount < cj.paramCount {\n\t\treturn true\n\t}\n\tif ci.paramCount > cj.paramCount {\n\t\treturn false\n\t}\n\treturn ci.route.Path < cj.route.Path\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "348536447dcfc3a6a89a2113",
+        "revision": "36655eaf7386cc502d5a3a349ad45df2cb128a55",
+        "path": "curly.go",
+        "start_byte": 477,
+        "text": "func (c CurlyRouter) SelectRoute(\n\twebServices []*WebService,\n\thttpRequest *http.Request) (selectedService *WebService, selected *Route, err error) {\n\n\trequestTokens := tokenizePath(httpRequest.URL.Path)\n\n\tdetectedService := c.detectWebService(requestTokens, webServices)\n\tif detectedService == nil {\n\t\tif trace {\n\t\t\ttraceLogger.Printf(\"no WebService was found to match URL path:%s\\n\", httpRequest.URL.Path)\n\t\t}\n\t\treturn nil, nil, NewError(http.StatusNotFound, \"404: Page Not Found\")\n\t}\n\tcandidateRoutes := c.selectRoutes(detectedService, requestTokens)\n\tif len(candidateRoutes) == 0 {\n\t\tif trace {\n\t\t\ttraceLogger.Printf(\"no Route in WebService with path %s was found to match URL path:%s\\n\", detectedService.rootPath, httpRequest.URL.Path)\n\t\t}\n\t\treturn detectedService, nil, NewError(http.StatusNotFound, \"404: Page Not Found\")\n\t}\n\tselectedRoute, err := c.detectRoute(candidateRoutes, httpRequest)\n\tif selectedRoute == nil {\n\t\treturn detectedService, nil, err\n\t}\n\treturn detectedService, selectedRoute, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "8fe27d51766d7b562696ddcf",
+        "revision": "36655eaf7386cc502d5a3a349ad45df2cb128a55",
+        "path": "curly.go",
+        "start_byte": 1598,
+        "text": "func (c CurlyRouter) selectRoutes(ws *WebService, requestTokens []string) []Route {\n\tcandidates := &sortableCurlyRoutes{[]*curlyRoute{}}\n\tfor _, each := range ws.routes {\n\t\tmatches, paramCount, staticCount := c.matchesRouteByPathTokens(each.pathParts, requestTokens)\n\t\tif matches {\n\t\t\tcandidates.add(&curlyRoute{each, paramCount, staticCount}) // TODO make sure Routes() return pointers?\n\t\t}\n\t}\n\tsort.Sort(sort.Reverse(candidates))\n\treturn candidates.routes()\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "8c7e08668fb3f36f5003cfae",
+        "revision": "36655eaf7386cc502d5a3a349ad45df2cb128a55",
+        "path": "curly.go",
+        "start_byte": 2195,
+        "text": "func (c CurlyRouter) matchesRouteByPathTokens(routeTokens, requestTokens []string) (matches bool, paramCount int, staticCount int) {\n\tif len(routeTokens) < len(requestTokens) {\n\t\t// proceed in matching only if last routeToken is wildcard\n\t\tcount := len(routeTokens)\n\t\tif count == 0 || !strings.HasSuffix(routeTokens[count-1], \"*}\") {\n\t\t\treturn false, 0, 0\n\t\t}\n\t\t// proceed\n\t}\n\tfor i, routeToken := range routeTokens {\n\t\tif i == len(requestTokens) {\n\t\t\t// reached end of request path\n\t\t\treturn false, 0, 0\n\t\t}\n\t\trequestToken := requestTokens[i]\n\t\tif strings.HasPrefix(routeToken, \"{\") {\n\t\t\tparamCount++\n\t\t\tif colon := strings.Index(routeToken, \":\"); colon != -1 {\n\t\t\t\t// match by regex\n\t\t\t\tmatchesToken, matchesRemainder := c.regularMatchesPathToken(routeToken, colon, requestToken)\n\t\t\t\tif !matchesToken {\n\t\t\t\t\treturn false, 0, 0\n\t\t\t\t}\n\t\t\t\tif matchesRemainder {\n\t\t\t\t\tbreak\n\t\t\t\t}\n\t\t\t}\n\t\t} else { // no { prefix\n\t\t\tif requestToken != routeToken {\n\t\t\t\treturn false, 0, 0\n\t\t\t}\n\t\t\tstaticCount++\n\t\t}\n\t}\n\treturn true, paramCount, staticCount\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "2219d9090d50c270fc6b5f7b",
+        "revision": "36655eaf7386cc502d5a3a349ad45df2cb128a55",
+        "path": "curly.go",
+        "start_byte": 3456,
+        "text": "func (c CurlyRouter) regularMatchesPathToken(routeToken string, colon int, requestToken string) (matchesToken bool, matchesRemainder bool) {\n\tregPart := routeToken[colon+1 : len(routeToken)-1]\n\tif regPart == \"*\" {\n\t\tif trace {\n\t\t\ttraceLogger.Printf(\"wildcard parameter detected in route token %s that matches %s\\n\", routeToken, requestToken)\n\t\t}\n\t\treturn true, true\n\t}\n\tmatched, err := regexp.MatchString(regPart, requestToken)\n\treturn (matched && err == nil), false\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "68a4d93a163a41bdacb17bce",
+        "revision": "36655eaf7386cc502d5a3a349ad45df2cb128a55",
+        "path": "curly.go",
+        "start_byte": 4429,
+        "text": "func (c CurlyRouter) detectWebService(requestTokens []string, webServices []*WebService) *WebService {\n\tvar best *WebService\n\tscore := -1\n\tfor _, each := range webServices {\n\t\tmatches, eachScore := c.computeWebserviceScore(requestTokens, each.pathExpr.tokens)\n\t\tif matches && (eachScore > score) {\n\t\t\tbest = each\n\t\t\tscore = eachScore\n\t\t}\n\t}\n\treturn best\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "443051f1ec88ba22d01e352f",
+        "revision": "36655eaf7386cc502d5a3a349ad45df2cb128a55",
+        "path": "curly.go",
+        "start_byte": 4930,
+        "text": "func (c CurlyRouter) computeWebserviceScore(requestTokens []string, tokens []string) (bool, int) {\n\tif len(tokens) > len(requestTokens) {\n\t\treturn false, 0\n\t}\n\tscore := 0\n\tfor i := 0; i < len(tokens); i++ {\n\t\teach := requestTokens[i]\n\t\tother := tokens[i]\n\t\tif len(each) == 0 && len(other) == 0 {\n\t\t\tscore++\n\t\t\tcontinue\n\t\t}\n\t\tif len(other) > 0 && strings.HasPrefix(other, \"{\") {\n\t\t\t// no empty match\n\t\t\tif len(each) == 0 {\n\t\t\t\treturn false, score\n\t\t\t}\n\t\t\tscore += 1\n\t\t} else {\n\t\t\t// not a parameter\n\t\t\tif each != other {\n\t\t\t\treturn false, score\n\t\t\t}\n\t\t\tscore += (len(tokens) - i) * 10 //fuzzy\n\t\t}\n\t}\n\treturn true, score\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "6dd006023224e7970a2bcfdf",
+        "revision": "36655eaf7386cc502d5a3a349ad45df2cb128a55",
+        "path": "entity_accessors.go",
+        "start_byte": 1007,
+        "text": "type entityReaderWriters struct {\n\tprotection *sync.RWMutex\n\taccessors  map[string]EntityReaderWriter\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "458c0974a8ba357f892329c8",
+        "revision": "36655eaf7386cc502d5a3a349ad45df2cb128a55",
+        "path": "entity_accessors.go",
+        "start_byte": 1112,
+        "text": "func init() {\n\tRegisterEntityAccessor(MIME_JSON, entityJSONAccess{ContentType: MIME_JSON})\n\tRegisterEntityAccessor(MIME_XML, entityXMLAccess{ContentType: MIME_XML})\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "ad6573412c7d136d74b0069b",
+        "revision": "36655eaf7386cc502d5a3a349ad45df2cb128a55",
+        "path": "entity_accessors.go",
+        "start_byte": 1379,
+        "text": "func RegisterEntityAccessor(mime string, erw EntityReaderWriter) {\n\tentityAccessRegistry.protection.Lock()\n\tdefer entityAccessRegistry.protection.Unlock()\n\tentityAccessRegistry.accessors[mime] = erw\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "6c1b033487c477d06e966b00",
+        "revision": "36655eaf7386cc502d5a3a349ad45df2cb128a55",
+        "path": "entity_accessors.go",
+        "start_byte": 2448,
+        "text": "func (e entityXMLAccess) Write(resp *Response, status int, v interface{}) error {\n\treturn writeXML(resp, status, e.ContentType, v)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "d0622bd340b91fb9bbc0be60",
+        "revision": "36655eaf7386cc502d5a3a349ad45df2cb128a55",
+        "path": "entity_accessors.go",
+        "start_byte": 2655,
+        "text": "func writeXML(resp *Response, status int, contentType string, v interface{}) error {\n\tif v == nil {\n\t\tresp.WriteHeader(status)\n\t\t// do not write a nil representation\n\t\treturn nil\n\t}\n\tif resp.prettyPrint {\n\t\t// pretty output must be created and written explicitly\n\t\toutput, err := xml.MarshalIndent(v, \" \", \" \")\n\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n\t\tresp.Header().Set(HEADER_ContentType, contentType)\n\t\tresp.WriteHeader(status)\n\t\t_, err = resp.Write([]byte(xml.Header))\n\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n\t\t_, err = resp.Write(output)\n\t\treturn err\n\t}\n\t// not-so-pretty\n\tresp.Header().Set(HEADER_ContentType, contentType)\n\tresp.WriteHeader(status)\n\treturn xml.NewEncoder(resp).Encode(v)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "2c707bde213d8305d64276e9",
+        "revision": "36655eaf7386cc502d5a3a349ad45df2cb128a55",
+        "path": "entity_accessors.go",
+        "start_byte": 3800,
+        "text": "func (e entityJSONAccess) Write(resp *Response, status int, v interface{}) error {\n\treturn writeJSON(resp, status, e.ContentType, v)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "c0c202cafbe79b6cffb6ab4d",
+        "revision": "36655eaf7386cc502d5a3a349ad45df2cb128a55",
+        "path": "entity_accessors.go",
+        "start_byte": 4006,
+        "text": "func writeJSON(resp *Response, status int, contentType string, v interface{}) error {\n\tif v == nil {\n\t\tresp.WriteHeader(status)\n\t\t// do not write a nil representation\n\t\treturn nil\n\t}\n\tif resp.prettyPrint {\n\t\t// pretty output must be created and written explicitly\n\t\toutput, err := json.MarshalIndent(v, \" \", \" \")\n\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n\t\tresp.Header().Set(HEADER_ContentType, contentType)\n\t\tresp.WriteHeader(status)\n\t\t_, err = resp.Write(output)\n\t\treturn err\n\t}\n\t// not-so-pretty\n\tresp.Header().Set(HEADER_ContentType, contentType)\n\tresp.WriteHeader(status)\n\treturn json.NewEncoder(resp).Encode(v)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "8263af0dd19a24aa6a6db084",
+        "revision": "36655eaf7386cc502d5a3a349ad45df2cb128a55",
+        "path": "examples/google_app_engine/datastore/main.go",
+        "start_byte": 2071,
+        "text": "func (u ProfileApi) register() {\n\tws := new(restful.WebService)\n\n\tws.\n\t\tPath(u.Path).\n\t\t// You can specify consumes and produces per route as well.\n\t\tConsumes(restful.MIME_JSON, restful.MIME_XML).\n\t\tProduces(restful.MIME_JSON, restful.MIME_XML)\n\n\tws.Route(ws.POST(\"\").To(u.insert).\n\t\t// Swagger documentation.\n\t\tDoc(\"insert a new profile\").\n\t\tParam(ws.BodyParameter(\"Profile\", \"representation of a profile\").DataType(\"main.Profile\")).\n\t\tReads(Profile{}))\n\n\tws.Route(ws.GET(\"/{profile-id}\").To(u.read).\n\t\t// Swagger documentation.\n\t\tDoc(\"read a profile\").\n\t\tParam(ws.PathParameter(\"profile-id\", \"identifier for a profile\").DataType(\"string\")).\n\t\tWrites(Profile{}))\n\n\tws.Route(ws.PUT(\"/{",
+        "rank": 2,
+        "truncated": true
+      }
+    ]
+  },
+  "retrieval": {
+    "unresolved": [
+      {
+        "side": "ours",
+        "identifier": "r",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "EntityWriter",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "bool",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "_",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "qualifiedMime",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "strings",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Split",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "requestAccept",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "mime",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Trim",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "len",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "each",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "routeProduces",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "MIME_JSON",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "writer",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "compressor_cache.go",
+            "start": 1467
+          },
+          {
+            "path": "compressor_cache.go",
+            "start": 2717
+          }
+        ]
+      },
+      {
+        "side": "ours",
+        "identifier": "ok",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "trace",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "examples/restful-pre-post-filters.go",
+            "start": 1643
+          },
+          {
+            "path": "logger.go",
+            "start": 216
+          }
+        ]
+      },
+      {
+        "side": "theirs",
+        "identifier": "r",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "EntityWriter",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "bool",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "sorted",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "requestAccept",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "_",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "eachAccept",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "eachProduce",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "routeProduces",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "media",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "w",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "ok",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "each",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "writer",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "compressor_cache.go",
+            "start": 1467
+          },
+          {
+            "path": "compressor_cache.go",
+            "start": 2717
+          }
+        ]
+      },
+      {
+        "side": "theirs",
+        "identifier": "MIME_JSON",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "trace",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "examples/restful-pre-post-filters.go",
+            "start": 1643
+          },
+          {
+            "path": "logger.go",
+            "start": 216
+          }
+        ]
+      }
+    ],
+    "method": "syntax-ranges-and-identifier-candidates/3",
+    "budget_bytes": 32768,
+    "libraries": {
+      "C": "cbbd4827ee02cd5c018ab41f10d8404ff8741159054b352d9a6d763c506ba3c7",
+      "Go": "1612f8fd958ba1ec981bf4b91e2ff399f1e54d26a9da68e5b60b0d7cd00616fc"
+    }
+  }
+}

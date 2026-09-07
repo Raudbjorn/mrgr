@@ -1,136 +1,64 @@
 import { spawnSync } from "node:child_process";
-import { readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { chmodSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { err, ok, type Result } from "./result.js";
 
 export type Mechanism = "git_text" | "gnu_diff3" | "mergiraf";
-
-export interface MechanismInput {
-	base: string;
-	ours: string;
-	theirs: string;
-	path: string;
-}
-
+export interface MechanismInput { base: string; ours: string; theirs: string; path: string }
 export interface MechanismResult {
 	mechanism: Mechanism;
-	rawStatus: number;
+	/** Actual exit code; null when no exit code was obtained. Never a synthetic 130. */
+	rawStatus: number | null;
+	signal: string | null;
+	error: string | null;
+	stderr: string;
 	normalizedStatus: 0 | 1 | 130;
 	durationMs: number;
 	hasConflictMarkers: boolean;
 }
 
-const CONFLICT_MARKER_LINE = "<<<<<<< OURS";
-
-function hasConflictMarkerLine(content: string): boolean {
-	return content.split("\n").some((line) => line === CONFLICT_MARKER_LINE);
-}
-
-const DEFAULT_MECHANISM_TIMEOUT_MS = 30_000;
-
-function mechanismTimeoutMs(): number {
-	const override = Number(process.env.MRGR_MECHANISM_TIMEOUT_MS);
-	return Number.isSafeInteger(override) && override > 0 ? override : DEFAULT_MECHANISM_TIMEOUT_MS;
-}
-
-function runGitText(input: MechanismInput): { rawStatus: number; content: string } {
-	const result = spawnSync(
-		"git",
-		["merge-file", "--stdout", "--diff3", "-L", "OURS", "-L", "BASE", "-L", "THEIRS", input.ours, input.base, input.theirs],
-		{ encoding: "buffer", timeout: mechanismTimeoutMs() },
-	);
-	const rawStatus = result.status ?? 130;
-	return { rawStatus, content: result.stdout ? result.stdout.toString("utf8") : "" };
-}
-
-function runGnuDiff3(input: MechanismInput): { rawStatus: number; content: string } {
-	const result = spawnSync(
-		"diff3",
-		["-m", "-A", "-L", "OURS", "-L", "BASE", "-L", "THEIRS", input.ours, input.base, input.theirs],
-		{ encoding: "buffer", timeout: mechanismTimeoutMs() },
-	);
-	const rawStatus = result.status ?? 130;
-	return { rawStatus, content: result.stdout ? result.stdout.toString("utf8") : "" };
-}
-
-function runMergiraf(input: MechanismInput): { rawStatus: number; content: string } {
-	const out = join(dirname(input.ours), `.mrgr-mergiraf-out.${process.pid}.${Date.now()}`);
-	const result = spawnSync(
-		process.env.MERGIRAF_BIN ?? "mergiraf",
-		[
-			"merge",
-			"-o", out,
-			input.base, input.ours, input.theirs,
-			"-s", "BASE",
-			"-x", "OURS",
-			"-y", "THEIRS",
-			"-p", input.path,
-			"-l", "7",
-			"-t", "0",
-		],
-		{ encoding: "buffer", timeout: mechanismTimeoutMs() },
-	);
-	let rawStatus = result.status ?? 130;
-	let content = "";
-	try {
-		content = readFileSync(out, "utf8");
-	} catch {
-		// mergiraf claimed success (or a recoverable conflict) but left no
-		// readable output — never accept that as an empty clean merge, which
-		// would silently overwrite `ours` with nothing.
-		rawStatus = 130;
-	} finally {
-		rmSync(out, { force: true });
-	}
-	return { rawStatus, content };
-}
-
-function isAccepted(mechanism: Mechanism, rawStatus: number): boolean {
-	if (mechanism === "git_text") return rawStatus >= 0 && rawStatus <= 127;
-	return rawStatus === 0 || rawStatus === 1;
-}
-
 export async function runMechanism(mechanism: Mechanism, input: MechanismInput): Promise<Result<MechanismResult>> {
-	const startNs = process.hrtime.bigint();
-
-	let rawStatus: number;
-	let content: string;
-	switch (mechanism) {
-		case "git_text": {
-			const run = runGitText(input);
-			rawStatus = run.rawStatus;
-			content = run.content;
-			break;
-		}
-		case "gnu_diff3": {
-			const run = runGnuDiff3(input);
-			rawStatus = run.rawStatus;
-			content = run.content;
-			break;
-		}
-		case "mergiraf": {
-			const run = runMergiraf(input);
-			rawStatus = run.rawStatus;
-			content = run.content;
-			break;
-		}
-		default:
-			return err("unsupported", "run-mechanism", `mechanism not yet implemented: ${mechanism}`, { mechanism });
+	if (!["git_text", "gnu_diff3", "mergiraf"].includes(mechanism)) {
+		return err("unsupported", "run-mechanism", `mechanism not yet implemented: ${mechanism}`, { mechanism });
 	}
-
-	const durationMs = Number((process.hrtime.bigint() - startNs) / 1_000_000n);
-	const accepted = isAccepted(mechanism, rawStatus);
-
-	if (!accepted) {
-		return ok({ mechanism, rawStatus, normalizedStatus: 130, durationMs, hasConflictMarkers: false });
+	const start = process.hrtime.bigint();
+	let rawStatus: number | null = null, signal: string | null = null, error: string | null = null;
+	let stderr = "";
+	let normalizedStatus: 0 | 1 | 130 = 130, hasConflictMarkers = false, temp: string | undefined;
+	try {
+		// Private, same-filesystem staging avoids collisions and preserves arbitrary output bytes.
+		temp = mkdtempSync(join(dirname(resolve(input.ours)), ".mrgr-mechanism-"));
+		const output = join(temp, "output");
+		const base = resolve(input.base), ours = resolve(input.ours), theirs = resolve(input.theirs);
+		const mode = statSync(ours).mode;
+		const labels = ["-L", "OURS", "-L", "BASE", "-L", "THEIRS"];
+		const command = mechanism === "git_text" ? "git" : mechanism === "gnu_diff3" ? "diff3" : process.env.MERGIRAF_BIN ?? "mergiraf";
+		const args = mechanism === "git_text" ? ["merge-file", "--stdout", "--diff3", ...labels, ours, base, theirs]
+			: mechanism === "gnu_diff3" ? ["-m", "-A", ...labels, ours, base, theirs]
+			: ["merge", "-o", output, base, ours, theirs, "-s", "BASE", "-x", "OURS", "-y", "THEIRS", "-p", input.path, "-l", "7", "-t", "0"];
+		const override = Number(process.env.MRGR_MECHANISM_TIMEOUT_MS);
+		const timeout = Number.isSafeInteger(override) && override > 0 ? override : 30_000;
+		const result = spawnSync(command, args, { encoding: "buffer", timeout, maxBuffer: 16 * 1024 * 1024 });
+		rawStatus = result.status;
+		stderr = result.stderr?.toString("utf8") ?? "";
+		signal = result.signal;
+		error = result.error?.message ?? null;
+		const accepted = !error && !signal && rawStatus !== null && (mechanism === "git_text"
+			? rawStatus >= 0 && rawStatus <= 127 : rawStatus === 0 || rawStatus === 1);
+		if (accepted) {
+			// A missing Mergiraf output is an I/O failure, not a replacement raw engine status.
+			const content = mechanism === "mergiraf" ? readFileSync(output) : result.stdout;
+			hasConflictMarkers = content.toString("utf8").split("\n").includes("<<<<<<< OURS");
+			writeFileSync(output, content, { mode });
+			chmodSync(output, mode);
+			renameSync(output, ours);
+			normalizedStatus = hasConflictMarkers || rawStatus !== 0 ? 1 : 0;
+		}
+	} catch (cause) {
+		error = cause instanceof Error ? cause.message : String(cause);
+	} finally {
+		if (temp) rmSync(temp, { recursive: true, force: true });
 	}
-
-	const hasConflictMarkers = hasConflictMarkerLine(content);
-	const normalizedStatus: 0 | 1 = hasConflictMarkers ? 1 : rawStatus === 0 ? 0 : 1;
-
-	const tmp = join(dirname(input.ours), `.mrgr-mechanism-driver.${process.pid}.${Date.now()}`);
-	writeFileSync(tmp, content);
-	renameSync(tmp, input.ours);
-
-	return ok({ mechanism, rawStatus, normalizedStatus, durationMs, hasConflictMarkers });
+	return ok({ mechanism, rawStatus, signal, error, stderr, normalizedStatus, hasConflictMarkers,
+		durationMs: Number((process.hrtime.bigint() - start) / 1_000_000n) });
 }

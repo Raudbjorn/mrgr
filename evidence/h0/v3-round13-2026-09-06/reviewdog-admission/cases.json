@@ -1,0 +1,2452 @@
+[
+  {
+    "repo": "reviewdog/reviewdog",
+    "event": "a7cbef119afec69bc83fe8c6f025372f4e3c8192",
+    "group_id": "reviewdog/reviewdog:a7cbef119afec69bc83fe8c6f025372f4e3c8192",
+    "language": "Go",
+    "path": "doghouse/server/cookieman/cookieman.go",
+    "base": "",
+    "ours": "package cookieman\n\nimport (\n\t\"encoding/base64\"\n\t\"net/http\"\n)\n\ntype Cipher interface {\n\tEncrypt(plaintext []byte) ([]byte, error)\n\tDecrypt(ciphertext []byte) ([]byte, error)\n}\n\ntype CookieMan struct {\n\tdefaultOpt CookieOption\n\tcipher     Cipher\n}\n\ntype CookieOption struct {\n\thttp.Cookie\n}\n\ntype CookieStore struct {\n\tname      string\n\tcookieman *CookieMan\n\topt       *CookieOption\n}\n\nfunc (cs *CookieStore) Name() string {\n\treturn cs.name\n}\n\nfunc (cs *CookieStore) Set(w http.ResponseWriter, value []byte) error {\n\treturn cs.cookieman.Set(w, cs.name, value, cs.opt)\n}\n\nfunc (cs *CookieStore) Get(r *http.Request) ([]byte, error) {\n\treturn cs.cookieman.Get(r, cs.name)\n}\n\nfunc (cs *CookieStore) Clear(w http.ResponseWriter) {\n\tcs.cookieman.Clear(w, cs.name)\n}\n\nfunc New(cipher Cipher, defaultOpt CookieOption) *CookieMan {\n\treturn &CookieMan{defaultOpt: defaultOpt, cipher: cipher}\n}\n\nfunc (c *CookieMan) NewCookieStore(name string, opt *CookieOption) *CookieStore {\n\treturn &CookieStore{\n\t\tname:      name,\n\t\tcookieman: c,\n\t\topt:       opt,\n\t}\n}\n\nfunc (c *CookieMan) Set(w http.ResponseWriter, name string, value []byte, opt *CookieOption) error {\n\tv, err := c.cipher.Encrypt(value)\n\tif err != nil {\n\t\treturn err\n\t}\n\thttp.SetCookie(w, c.cookie(name, base64.URLEncoding.EncodeToString(v), opt))\n\treturn nil\n}\n\nfunc (c *CookieMan) Get(r *http.Request, name string) ([]byte, error) {\n\tcookie, err := r.Cookie(name)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\tciphertext, err := base64.URLEncoding.DecodeString(cookie.Value)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\treturn c.cipher.Decrypt(ciphertext)\n}\n\nfunc (c *CookieMan) Clear(w http.ResponseWriter, name string) {\n\topt := &CookieOption{}\n\topt.MaxAge = -1\n\thttp.SetCookie(w, c.cookie(name, \"\", opt))\n}\n\nfunc (c *CookieMan) cookie(name, value string, opt *CookieOption) *http.Cookie {\n\tcookie := c.defaultOpt.Cookie\n\tcookie.Name = name\n\tcookie.Value = value\n\tif opt == nil {\n\t\treturn &cookie\n\t}\n\tif opt.Path != \"\" {\n\t\tcookie.Path = opt.Path\n\t}\n\tif opt.Domain != \"\" {\n\t\tcookie.Domain = opt.Domain\n\t}\n\tif opt.MaxAge != 0 {\n\t\tcookie.MaxAge = opt.MaxAge\n\t}\n\tif !opt.Expires.IsZero() {\n\t\tcookie.Expires = opt.Expires\n\t}\n\tif opt.Secure {\n\t\tcookie.Secure = opt.Secure\n\t}\n\tif opt.HttpOnly {\n\t\tcookie.HttpOnly = opt.HttpOnly\n\t}\n\treturn &cookie\n}\n",
+    "theirs": "package cookieman\n\nimport (\n\t\"encoding/base64\"\n\t\"net/http\"\n)\n\n// Cipher is crypt interface to encrypt/decrypt cookie.\ntype Cipher interface {\n\tEncrypt(plaintext []byte) ([]byte, error)\n\tDecrypt(ciphertext []byte) ([]byte, error)\n}\n\n// CookieMan manages cookies.\ntype CookieMan struct {\n\tdefaultOpt CookieOption\n\tcipher     Cipher\n}\n\n// CookieOption represents cookie options.\ntype CookieOption struct {\n\thttp.Cookie\n}\n\n// CookieStore stores a cookie.\ntype CookieStore struct {\n\tname      string\n\tcookieman *CookieMan\n\topt       *CookieOption\n}\n\n// Name returns the cookie name this CookieStore manages.\nfunc (cs *CookieStore) Name() string {\n\treturn cs.name\n}\n\n// Set sets cookie value.\nfunc (cs *CookieStore) Set(w http.ResponseWriter, value []byte) error {\n\treturn cs.cookieman.Set(w, cs.name, value, cs.opt)\n}\n\n// Get returns cookie value.\nfunc (cs *CookieStore) Get(r *http.Request) ([]byte, error) {\n\treturn cs.cookieman.Get(r, cs.name)\n}\n\n// Clear clears the cookie.\nfunc (cs *CookieStore) Clear(w http.ResponseWriter) {\n\tcs.cookieman.Clear(w, cs.name)\n}\n\n// New returns new CookieMan with default cookie option.\nfunc New(cipher Cipher, defaultOpt CookieOption) *CookieMan {\n\treturn &CookieMan{defaultOpt: defaultOpt, cipher: cipher}\n}\n\n// NewCookieStore returns new CookieStore which mangages cookie whose key is\n// given name and with given cookie option.\nfunc (c *CookieMan) NewCookieStore(name string, opt *CookieOption) *CookieStore {\n\treturn &CookieStore{\n\t\tname:      name,\n\t\tcookieman: c,\n\t\topt:       opt,\n\t}\n}\n\n// Set sets cookie.\nfunc (c *CookieMan) Set(w http.ResponseWriter, name string, value []byte, opt *CookieOption) error {\n\tv, err := c.cipher.Encrypt(value)\n\tif err != nil {\n\t\treturn err\n\t}\n\thttp.SetCookie(w, c.cookie(name, base64.URLEncoding.EncodeToString(v), opt))\n\treturn nil\n}\n\n// Get returns a cookie with given name.\nfunc (c *CookieMan) Get(r *http.Request, name string) ([]byte, error) {\n\tcookie, err := r.Cookie(name)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\tciphertext, err := base64.URLEncoding.DecodeString(cookie.Value)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\treturn c.cipher.Decrypt(ciphertext)\n}\n\n// Clear clears a cookie with given name.\nfunc (c *CookieMan) Clear(w http.ResponseWriter, name string) {\n\topt := &CookieOption{}\n\topt.MaxAge = -1\n\thttp.SetCookie(w, c.cookie(name, \"\", opt))\n}\n\nfunc (c *CookieMan) cookie(name, value string, opt *CookieOption) *http.Cookie {\n\tcookie := c.defaultOpt.Cookie\n\tcookie.Name = name\n\tcookie.Value = value\n\tif opt == nil {\n\t\treturn &cookie\n\t}\n\tif opt.Path != \"\" {\n\t\tcookie.Path = opt.Path\n\t}\n\tif opt.Domain != \"\" {\n\t\tcookie.Domain = opt.Domain\n\t}\n\tif opt.MaxAge != 0 {\n\t\tcookie.MaxAge = opt.MaxAge\n\t}\n\tif !opt.Expires.IsZero() {\n\t\tcookie.Expires = opt.Expires\n\t}\n\tif opt.Secure {\n\t\tcookie.Secure = opt.Secure\n\t}\n\tif opt.HttpOnly {\n\t\tcookie.HttpOnly = opt.HttpOnly\n\t}\n\treturn &cookie\n}\n",
+    "reference": "package cookieman\n\nimport (\n\t\"encoding/base64\"\n\t\"net/http\"\n)\n\n// Cipher is crypt interface to encrypt/decrypt cookie.\ntype Cipher interface {\n\tEncrypt(plaintext []byte) ([]byte, error)\n\tDecrypt(ciphertext []byte) ([]byte, error)\n}\n\n// CookieMan manages cookies.\ntype CookieMan struct {\n\tdefaultOpt CookieOption\n\tcipher     Cipher\n}\n\n// CookieOption represents cookie options.\ntype CookieOption struct {\n\thttp.Cookie\n}\n\n// CookieStore stores a cookie.\ntype CookieStore struct {\n\tname      string\n\tcookieman *CookieMan\n\topt       *CookieOption\n}\n\n// Name returns the cookie name this CookieStore manages.\nfunc (cs *CookieStore) Name() string {\n\treturn cs.name\n}\n\n// Set sets cookie value.\nfunc (cs *CookieStore) Set(w http.ResponseWriter, value []byte) error {\n\treturn cs.cookieman.Set(w, cs.name, value, cs.opt)\n}\n\n// Get returns cookie value.\nfunc (cs *CookieStore) Get(r *http.Request) ([]byte, error) {\n\treturn cs.cookieman.Get(r, cs.name)\n}\n\n// Clear clears the cookie.\nfunc (cs *CookieStore) Clear(w http.ResponseWriter) {\n\tcs.cookieman.Clear(w, cs.name)\n}\n\n// New returns new CookieMan with default cookie option.\nfunc New(cipher Cipher, defaultOpt CookieOption) *CookieMan {\n\treturn &CookieMan{defaultOpt: defaultOpt, cipher: cipher}\n}\n\n// NewCookieStore returns new CookieStore which mangages cookie whose key is\n// given name and with given cookie option.\nfunc (c *CookieMan) NewCookieStore(name string, opt *CookieOption) *CookieStore {\n\treturn &CookieStore{\n\t\tname:      name,\n\t\tcookieman: c,\n\t\topt:       opt,\n\t}\n}\n\n// Set sets cookie.\nfunc (c *CookieMan) Set(w http.ResponseWriter, name string, value []byte, opt *CookieOption) error {\n\tv, err := c.cipher.Encrypt(value)\n\tif err != nil {\n\t\treturn err\n\t}\n\thttp.SetCookie(w, c.cookie(name, base64.URLEncoding.EncodeToString(v), opt))\n\treturn nil\n}\n\n// Get returns a cookie with given name.\nfunc (c *CookieMan) Get(r *http.Request, name string) ([]byte, error) {\n\tcookie, err := r.Cookie(name)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\tciphertext, err := base64.URLEncoding.DecodeString(cookie.Value)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\treturn c.cipher.Decrypt(ciphertext)\n}\n\n// Clear clears a cookie with given name.\nfunc (c *CookieMan) Clear(w http.ResponseWriter, name string) {\n\topt := &CookieOption{}\n\topt.MaxAge = -1\n\thttp.SetCookie(w, c.cookie(name, \"\", opt))\n}\n\nfunc (c *CookieMan) cookie(name, value string, opt *CookieOption) *http.Cookie {\n\tcookie := c.defaultOpt.Cookie\n\tcookie.Name = name\n\tcookie.Value = value\n\tif opt == nil {\n\t\treturn &cookie\n\t}\n\tif opt.Path != \"\" {\n\t\tcookie.Path = opt.Path\n\t}\n\tif opt.Domain != \"\" {\n\t\tcookie.Domain = opt.Domain\n\t}\n\tif opt.MaxAge != 0 {\n\t\tcookie.MaxAge = opt.MaxAge\n\t}\n\tif !opt.Expires.IsZero() {\n\t\tcookie.Expires = opt.Expires\n\t}\n\tif opt.Secure {\n\t\tcookie.Secure = opt.Secure\n\t}\n\tif opt.HttpOnly {\n\t\tcookie.HttpOnly = opt.HttpOnly\n\t}\n\treturn &cookie\n}\n",
+    "git": {
+      "directory": "/home/svnbjrn/rsrch/mrgr/.do-not-commit/h0-v3-round13/mirrors/reviewdog--reviewdog-c9a9fc2fa5e26e3bb5aa9ef37043228a69f521b210abc90e9a93243fe368a6c9",
+      "base": "283a946106f94147161d419ff54591b8b5777923",
+      "ours": "d43d22cc7a4a0ddf34e0feb5a6909cb7470426a2",
+      "theirs": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7"
+    },
+    "evaluator": {
+      "scaffold": "/home/svnbjrn/rsrch/mrgr/.do-not-commit/h0-v3-round13/reviewdog--reviewdog-screen/a7cbef119afec69bc83fe8c6f025372f4e3c8192/scaffold",
+      "oracle": "/home/svnbjrn/rsrch/mrgr/.do-not-commit/h0-v3-round13/reviewdog--reviewdog-screen/a7cbef119afec69bc83fe8c6f025372f4e3c8192/oracle",
+      "target": "doghouse/server/cookieman/cookieman.go",
+      "start_byte": 0,
+      "end_byte": 5190,
+      "preimage_sha256": "b10f4c2a8b0e8d6719464d3e9aa853f7bd12e29b6714b023636a6f77f16baff5",
+      "scaffold_sha256": "2bb0b545b4388f2f4106698790de4c05fbd7aea3dd40c7a09a5bd8f82370a083",
+      "oracle_sha256": "ebff5c6373adf1f178dd313dd60254f62d053b53a1b3cb7f12b3457e1b8f2dc2",
+      "build": [
+        "/bin/sh",
+        "/oracle/build.sh"
+      ],
+      "test": [
+        "/bin/sh",
+        "/oracle/test.sh"
+      ],
+      "test_completion": [
+        {
+          "pattern": "^PASS$",
+          "count": 1
+        },
+        {
+          "pattern": "^--- PASS: Test",
+          "count": 7
+        }
+      ],
+      "environment_sha256": "09d0267aa199b98d654a9a8f968bca5f65d32e1bf7f347f2fd18486aa36abfbf"
+    },
+    "mutations": [
+      {
+        "name": "token-1687-true",
+        "resolution": "package cookieman\n\nimport (\n\t\"encoding/base64\"\n\t\"net/http\"\n)\n\n// Cipher is crypt interface to encrypt/decrypt cookie.\ntype Cipher interface {\n\tEncrypt(plaintext []byte) ([]byte, error)\n\tDecrypt(ciphertext []byte) ([]byte, error)\n}\n\n// CookieMan manages cookies.\ntype CookieMan struct {\n\tdefaultOpt CookieOption\n\tcipher     Cipher\n}\n\n// CookieOption represents cookie options.\ntype CookieOption struct {\n\thttp.Cookie\n}\n\n// CookieStore stores a cookie.\ntype CookieStore struct {\n\tname      string\n\tcookieman *CookieMan\n\topt       *CookieOption\n}\n\n// Name returns the cookie name this CookieStore manages.\nfunc (cs *CookieStore) Name() string {\n\treturn cs.name\n}\n\n// Set sets cookie value.\nfunc (cs *CookieStore) Set(w http.ResponseWriter, value []byte) error {\n\treturn cs.cookieman.Set(w, cs.name, value, cs.opt)\n}\n\n// Get returns cookie value.\nfunc (cs *CookieStore) Get(r *http.Request) ([]byte, error) {\n\treturn cs.cookieman.Get(r, cs.name)\n}\n\n// Clear clears the cookie.\nfunc (cs *CookieStore) Clear(w http.ResponseWriter) {\n\tcs.cookieman.Clear(w, cs.name)\n}\n\n// New returns new CookieMan with default cookie option.\nfunc New(cipher Cipher, defaultOpt CookieOption) *CookieMan {\n\treturn &CookieMan{defaultOpt: defaultOpt, cipher: cipher}\n}\n\n// NewCookieStore returns new CookieStore which mangages cookie whose key is\n// given name and with given cookie option.\nfunc (c *CookieMan) NewCookieStore(name string, opt *CookieOption) *CookieStore {\n\treturn &CookieStore{\n\t\tname:      name,\n\t\tcookieman: c,\n\t\topt:       opt,\n\t}\n}\n\n// Set sets cookie.\nfunc (c *CookieMan) Set(w http.ResponseWriter, name string, value []byte, opt *CookieOption) error {\n\tv, err := c.cipher.Encrypt(value)\n\tif true {\n\t\treturn err\n\t}\n\thttp.SetCookie(w, c.cookie(name, base64.URLEncoding.EncodeToString(v), opt))\n\treturn nil\n}\n\n// Get returns a cookie with given name.\nfunc (c *CookieMan) Get(r *http.Request, name string) ([]byte, error) {\n\tcookie, err := r.Cookie(name)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\tciphertext, err := base64.URLEncoding.DecodeString(cookie.Value)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\treturn c.cipher.Decrypt(ciphertext)\n}\n\n// Clear clears a cookie with given name.\nfunc (c *CookieMan) Clear(w http.ResponseWriter, name string) {\n\topt := &CookieOption{}\n\topt.MaxAge = -1\n\thttp.SetCookie(w, c.cookie(name, \"\", opt))\n}\n\nfunc (c *CookieMan) cookie(name, value string, opt *CookieOption) *http.Cookie {\n\tcookie := c.defaultOpt.Cookie\n\tcookie.Name = name\n\tcookie.Value = value\n\tif opt == nil {\n\t\treturn &cookie\n\t}\n\tif opt.Path != \"\" {\n\t\tcookie.Path = opt.Path\n\t}\n\tif opt.Domain != \"\" {\n\t\tcookie.Domain = opt.Domain\n\t}\n\tif opt.MaxAge != 0 {\n\t\tcookie.MaxAge = opt.MaxAge\n\t}\n\tif !opt.Expires.IsZero() {\n\t\tcookie.Expires = opt.Expires\n\t}\n\tif opt.Secure {\n\t\tcookie.Secure = opt.Secure\n\t}\n\tif opt.HttpOnly {\n\t\tcookie.HttpOnly = opt.HttpOnly\n\t}\n\treturn &cookie\n}\n"
+      },
+      {
+        "name": "token-1687-false",
+        "resolution": "package cookieman\n\nimport (\n\t\"encoding/base64\"\n\t\"net/http\"\n)\n\n// Cipher is crypt interface to encrypt/decrypt cookie.\ntype Cipher interface {\n\tEncrypt(plaintext []byte) ([]byte, error)\n\tDecrypt(ciphertext []byte) ([]byte, error)\n}\n\n// CookieMan manages cookies.\ntype CookieMan struct {\n\tdefaultOpt CookieOption\n\tcipher     Cipher\n}\n\n// CookieOption represents cookie options.\ntype CookieOption struct {\n\thttp.Cookie\n}\n\n// CookieStore stores a cookie.\ntype CookieStore struct {\n\tname      string\n\tcookieman *CookieMan\n\topt       *CookieOption\n}\n\n// Name returns the cookie name this CookieStore manages.\nfunc (cs *CookieStore) Name() string {\n\treturn cs.name\n}\n\n// Set sets cookie value.\nfunc (cs *CookieStore) Set(w http.ResponseWriter, value []byte) error {\n\treturn cs.cookieman.Set(w, cs.name, value, cs.opt)\n}\n\n// Get returns cookie value.\nfunc (cs *CookieStore) Get(r *http.Request) ([]byte, error) {\n\treturn cs.cookieman.Get(r, cs.name)\n}\n\n// Clear clears the cookie.\nfunc (cs *CookieStore) Clear(w http.ResponseWriter) {\n\tcs.cookieman.Clear(w, cs.name)\n}\n\n// New returns new CookieMan with default cookie option.\nfunc New(cipher Cipher, defaultOpt CookieOption) *CookieMan {\n\treturn &CookieMan{defaultOpt: defaultOpt, cipher: cipher}\n}\n\n// NewCookieStore returns new CookieStore which mangages cookie whose key is\n// given name and with given cookie option.\nfunc (c *CookieMan) NewCookieStore(name string, opt *CookieOption) *CookieStore {\n\treturn &CookieStore{\n\t\tname:      name,\n\t\tcookieman: c,\n\t\topt:       opt,\n\t}\n}\n\n// Set sets cookie.\nfunc (c *CookieMan) Set(w http.ResponseWriter, name string, value []byte, opt *CookieOption) error {\n\tv, err := c.cipher.Encrypt(value)\n\tif false {\n\t\treturn err\n\t}\n\thttp.SetCookie(w, c.cookie(name, base64.URLEncoding.EncodeToString(v), opt))\n\treturn nil\n}\n\n// Get returns a cookie with given name.\nfunc (c *CookieMan) Get(r *http.Request, name string) ([]byte, error) {\n\tcookie, err := r.Cookie(name)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\tciphertext, err := base64.URLEncoding.DecodeString(cookie.Value)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\treturn c.cipher.Decrypt(ciphertext)\n}\n\n// Clear clears a cookie with given name.\nfunc (c *CookieMan) Clear(w http.ResponseWriter, name string) {\n\topt := &CookieOption{}\n\topt.MaxAge = -1\n\thttp.SetCookie(w, c.cookie(name, \"\", opt))\n}\n\nfunc (c *CookieMan) cookie(name, value string, opt *CookieOption) *http.Cookie {\n\tcookie := c.defaultOpt.Cookie\n\tcookie.Name = name\n\tcookie.Value = value\n\tif opt == nil {\n\t\treturn &cookie\n\t}\n\tif opt.Path != \"\" {\n\t\tcookie.Path = opt.Path\n\t}\n\tif opt.Domain != \"\" {\n\t\tcookie.Domain = opt.Domain\n\t}\n\tif opt.MaxAge != 0 {\n\t\tcookie.MaxAge = opt.MaxAge\n\t}\n\tif !opt.Expires.IsZero() {\n\t\tcookie.Expires = opt.Expires\n\t}\n\tif opt.Secure {\n\t\tcookie.Secure = opt.Secure\n\t}\n\tif opt.HttpOnly {\n\t\tcookie.HttpOnly = opt.HttpOnly\n\t}\n\treturn &cookie\n}\n"
+      }
+    ],
+    "id": "c66f1520093ece7484e14350d722edd14b4eb3f85d082dc459d66e5cd2dcc010",
+    "repository_provenance": {
+      "url": "https://api.github.com/repos/reviewdog/reviewdog",
+      "body": {
+        "id": 71133469,
+        "node_id": "MDEwOlJlcG9zaXRvcnk3MTEzMzQ2OQ==",
+        "name": "reviewdog",
+        "full_name": "reviewdog/reviewdog",
+        "private": false,
+        "owner": {
+          "login": "reviewdog",
+          "id": 48765237,
+          "node_id": "MDEyOk9yZ2FuaXphdGlvbjQ4NzY1MjM3",
+          "avatar_url": "https://avatars.githubusercontent.com/u/48765237?v=4",
+          "gravatar_id": "",
+          "url": "https://api.github.com/users/reviewdog",
+          "html_url": "https://github.com/reviewdog",
+          "followers_url": "https://api.github.com/users/reviewdog/followers",
+          "following_url": "https://api.github.com/users/reviewdog/following{/other_user}",
+          "gists_url": "https://api.github.com/users/reviewdog/gists{/gist_id}",
+          "starred_url": "https://api.github.com/users/reviewdog/starred{/owner}{/repo}",
+          "subscriptions_url": "https://api.github.com/users/reviewdog/subscriptions",
+          "organizations_url": "https://api.github.com/users/reviewdog/orgs",
+          "repos_url": "https://api.github.com/users/reviewdog/repos",
+          "events_url": "https://api.github.com/users/reviewdog/events{/privacy}",
+          "received_events_url": "https://api.github.com/users/reviewdog/received_events",
+          "type": "Organization",
+          "user_view_type": "public",
+          "site_admin": false
+        },
+        "html_url": "https://github.com/reviewdog/reviewdog",
+        "description": "🐶 Automated code review tool integrated with any code analysis tools regardless of programming language",
+        "fork": false,
+        "url": "https://api.github.com/repos/reviewdog/reviewdog",
+        "forks_url": "https://api.github.com/repos/reviewdog/reviewdog/forks",
+        "keys_url": "https://api.github.com/repos/reviewdog/reviewdog/keys{/key_id}",
+        "collaborators_url": "https://api.github.com/repos/reviewdog/reviewdog/collaborators{/collaborator}",
+        "teams_url": "https://api.github.com/repos/reviewdog/reviewdog/teams",
+        "hooks_url": "https://api.github.com/repos/reviewdog/reviewdog/hooks",
+        "issue_events_url": "https://api.github.com/repos/reviewdog/reviewdog/issues/events{/number}",
+        "events_url": "https://api.github.com/repos/reviewdog/reviewdog/events",
+        "assignees_url": "https://api.github.com/repos/reviewdog/reviewdog/assignees{/user}",
+        "branches_url": "https://api.github.com/repos/reviewdog/reviewdog/branches{/branch}",
+        "tags_url": "https://api.github.com/repos/reviewdog/reviewdog/tags",
+        "blobs_url": "https://api.github.com/repos/reviewdog/reviewdog/git/blobs{/sha}",
+        "git_tags_url": "https://api.github.com/repos/reviewdog/reviewdog/git/tags{/sha}",
+        "git_refs_url": "https://api.github.com/repos/reviewdog/reviewdog/git/refs{/sha}",
+        "trees_url": "https://api.github.com/repos/reviewdog/reviewdog/git/trees{/sha}",
+        "statuses_url": "https://api.github.com/repos/reviewdog/reviewdog/statuses/{sha}",
+        "languages_url": "https://api.github.com/repos/reviewdog/reviewdog/languages",
+        "stargazers_url": "https://api.github.com/repos/reviewdog/reviewdog/stargazers",
+        "contributors_url": "https://api.github.com/repos/reviewdog/reviewdog/contributors",
+        "subscribers_url": "https://api.github.com/repos/reviewdog/reviewdog/subscribers",
+        "subscription_url": "https://api.github.com/repos/reviewdog/reviewdog/subscription",
+        "commits_url": "https://api.github.com/repos/reviewdog/reviewdog/commits{/sha}",
+        "git_commits_url": "https://api.github.com/repos/reviewdog/reviewdog/git/commits{/sha}",
+        "comments_url": "https://api.github.com/repos/reviewdog/reviewdog/comments{/number}",
+        "issue_comment_url": "https://api.github.com/repos/reviewdog/reviewdog/issues/comments{/number}",
+        "contents_url": "https://api.github.com/repos/reviewdog/reviewdog/contents/{+path}",
+        "compare_url": "https://api.github.com/repos/reviewdog/reviewdog/compare/{base}...{head}",
+        "merges_url": "https://api.github.com/repos/reviewdog/reviewdog/merges",
+        "archive_url": "https://api.github.com/repos/reviewdog/reviewdog/{archive_format}{/ref}",
+        "downloads_url": "https://api.github.com/repos/reviewdog/reviewdog/downloads",
+        "issues_url": "https://api.github.com/repos/reviewdog/reviewdog/issues{/number}",
+        "pulls_url": "https://api.github.com/repos/reviewdog/reviewdog/pulls{/number}",
+        "milestones_url": "https://api.github.com/repos/reviewdog/reviewdog/milestones{/number}",
+        "notifications_url": "https://api.github.com/repos/reviewdog/reviewdog/notifications{?since,all,participating}",
+        "labels_url": "https://api.github.com/repos/reviewdog/reviewdog/labels{/name}",
+        "releases_url": "https://api.github.com/repos/reviewdog/reviewdog/releases{/id}",
+        "deployments_url": "https://api.github.com/repos/reviewdog/reviewdog/deployments",
+        "created_at": "2016-10-17T11:58:34Z",
+        "updated_at": "2026-09-06T18:18:11Z",
+        "pushed_at": "2026-09-06T18:18:07Z",
+        "git_url": "git://github.com/reviewdog/reviewdog.git",
+        "ssh_url": "git@github.com:reviewdog/reviewdog.git",
+        "clone_url": "https://github.com/reviewdog/reviewdog.git",
+        "svn_url": "https://github.com/reviewdog/reviewdog",
+        "homepage": "https://medium.com/@haya14busa/reviewdog-a-code-review-dog-who-keeps-your-codebase-healthy-d957c471938b#.8xctbaw5u",
+        "size": 7010,
+        "stargazers_count": 9565,
+        "watchers_count": 9565,
+        "language": "Go",
+        "has_issues": true,
+        "has_projects": true,
+        "has_downloads": false,
+        "has_wiki": true,
+        "has_pages": false,
+        "has_discussions": true,
+        "forks_count": 492,
+        "mirror_url": null,
+        "archived": false,
+        "disabled": false,
+        "open_issues_count": 141,
+        "license": {
+          "key": "mit",
+          "name": "MIT License",
+          "spdx_id": "MIT",
+          "url": "https://api.github.com/licenses/mit",
+          "node_id": "MDc6TGljZW5zZTEz"
+        },
+        "allow_forking": true,
+        "is_template": false,
+        "web_commit_signoff_required": false,
+        "has_pull_requests": true,
+        "pull_request_creation_policy": "all",
+        "topics": [
+          "bitbucket",
+          "ci",
+          "cli",
+          "code-quality",
+          "code-review",
+          "codereview",
+          "github",
+          "gitlab",
+          "go",
+          "lint",
+          "linter",
+          "static-analysis",
+          "static-code-analysis"
+        ],
+        "visibility": "public",
+        "forks": 492,
+        "open_issues": 141,
+        "watchers": 9565,
+        "default_branch": "master",
+        "temp_clone_token": null,
+        "custom_properties": {},
+        "organization": {
+          "login": "reviewdog",
+          "id": 48765237,
+          "node_id": "MDEyOk9yZ2FuaXphdGlvbjQ4NzY1MjM3",
+          "avatar_url": "https://avatars.githubusercontent.com/u/48765237?v=4",
+          "gravatar_id": "",
+          "url": "https://api.github.com/users/reviewdog",
+          "html_url": "https://github.com/reviewdog",
+          "followers_url": "https://api.github.com/users/reviewdog/followers",
+          "following_url": "https://api.github.com/users/reviewdog/following{/other_user}",
+          "gists_url": "https://api.github.com/users/reviewdog/gists{/gist_id}",
+          "starred_url": "https://api.github.com/users/reviewdog/starred{/owner}{/repo}",
+          "subscriptions_url": "https://api.github.com/users/reviewdog/subscriptions",
+          "organizations_url": "https://api.github.com/users/reviewdog/orgs",
+          "repos_url": "https://api.github.com/users/reviewdog/repos",
+          "events_url": "https://api.github.com/users/reviewdog/events{/privacy}",
+          "received_events_url": "https://api.github.com/users/reviewdog/received_events",
+          "type": "Organization",
+          "user_view_type": "public",
+          "site_admin": false
+        },
+        "network_count": 492,
+        "subscribers_count": 64
+      },
+      "retrieved_at": "2026-09-06T20:33:56.861Z"
+    },
+    "cluster_id": "reviewdog/reviewdog",
+    "git_validation": {
+      "automatic_sha256": "00d897208a47284dd927b79b2b28dd26373dbae572386d97e65e367ae7369af8",
+      "shipped_sha256": "f6533cd4dc36e8f180fb213a2cf35f559376591d0f43ba515bad5674d0952db5",
+      "localized": {
+        "path": "doghouse/server/cookieman/cookieman.go",
+        "ordinal": 1,
+        "category": "other",
+        "conflictKind": "CONFLICT (content)",
+        "stageOids": {
+          "base": null,
+          "ours": null,
+          "theirs": null
+        },
+        "localizationStatus": "exact",
+        "automaticRanges": {
+          "base": {
+            "startLine": 112,
+            "endLineExclusive": 112
+          },
+          "ours": {
+            "startLine": 2,
+            "endLineExclusive": 111
+          },
+          "theirs": {
+            "startLine": 113,
+            "endLineExclusive": 236
+          }
+        },
+        "resolutionRange": {
+          "startLine": 1,
+          "endLineExclusive": 124
+        },
+        "rawDigests": {
+          "base": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "ours": "014381e8a7d9ba1e76fdc88bf4aa068112ffe3bb03bf6d5222c5124a1cf327e6",
+          "theirs": "f6533cd4dc36e8f180fb213a2cf35f559376591d0f43ba515bad5674d0952db5",
+          "resolution": "f6533cd4dc36e8f180fb213a2cf35f559376591d0f43ba515bad5674d0952db5"
+        },
+        "normalizedDigests": {
+          "base": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "ours": "56512d8b74e018baf219a96bada934ccaa05b85fca83e8039441415a085fcfb9",
+          "theirs": "81af0dbcc07d73e44026d4bbef9506e80395554491bbbc61b2eca476b7a434e1",
+          "resolution": "81af0dbcc07d73e44026d4bbef9506e80395554491bbbc61b2eca476b7a434e1"
+        },
+        "rawCounts": {
+          "base": {
+            "lines": 0,
+            "bytes": 0
+          },
+          "ours": {
+            "lines": 109,
+            "bytes": 2279
+          },
+          "theirs": {
+            "lines": 123,
+            "bytes": 2862
+          },
+          "resolution": {
+            "lines": 123,
+            "bytes": 2862
+          }
+        },
+        "resolutionClass": "novel",
+        "novelAfterNormalization": true,
+        "tripleKey": "709e80c88487a2411e1ee4dfb9f22a861492d20c4765150c0c794abd70f8147c"
+      },
+      "tracked_files": 119,
+      "parents": {
+        "directory": "/home/svnbjrn/rsrch/mrgr/.do-not-commit/h0-v3-round13/mirrors/reviewdog--reviewdog-c9a9fc2fa5e26e3bb5aa9ef37043228a69f521b210abc90e9a93243fe368a6c9",
+        "base": "283a946106f94147161d419ff54591b8b5777923",
+        "ours": "d43d22cc7a4a0ddf34e0feb5a6909cb7470426a2",
+        "theirs": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7"
+      },
+      "reference_sha256": "f6533cd4dc36e8f180fb213a2cf35f559376591d0f43ba515bad5674d0952db5"
+    },
+    "oracle_validation": {
+      "valid": true,
+      "reference": [
+        {
+          "pass": true,
+          "category": "behavioral-pass",
+          "candidate_sha256": "f6533cd4dc36e8f180fb213a2cf35f559376591d0f43ba515bad5674d0952db5",
+          "environment_sha256": "09d0267aa199b98d654a9a8f968bca5f65d32e1bf7f347f2fd18486aa36abfbf",
+          "stages": [
+            {
+              "stage": "build",
+              "command": [
+                "/bin/sh",
+                "/oracle/build.sh"
+              ],
+              "status": 0,
+              "signal": null,
+              "error": null,
+              "stdout": "",
+              "stderr": ""
+            },
+            {
+              "stage": "test",
+              "command": [
+                "/bin/sh",
+                "/oracle/test.sh"
+              ],
+              "status": 0,
+              "signal": null,
+              "error": null,
+              "stdout": "=== RUN   TestCookieStore_Set_Get\n--- PASS: TestCookieStore_Set_Get (0.00s)\n=== RUN   TestCookieStore_Set_encrypt_failure\n--- PASS: TestCookieStore_Set_encrypt_failure (0.00s)\n=== RUN   TestCookieStore_Get_decrypt_failure\n--- PASS: TestCookieStore_Get_decrypt_failure (0.00s)\n=== RUN   TestCookieStore_Get_decode_base64_error\n--- PASS: TestCookieStore_Get_decode_base64_error (0.00s)\n=== RUN   TestCookieStore_Get_not_found\n--- PASS: TestCookieStore_Get_not_found (0.00s)\n=== RUN   TestCookieStore_Clear\n--- PASS: TestCookieStore_Clear (0.00s)\n=== RUN   TestCookieOption\n--- PASS: TestCookieOption (0.00s)\nPASS\n",
+              "stderr": ""
+            }
+          ],
+          "completion": [
+            {
+              "pattern": "^PASS$",
+              "count": 1,
+              "observed": 1,
+              "pass": true
+            },
+            {
+              "pattern": "^--- PASS: Test",
+              "count": 7,
+              "observed": 7,
+              "pass": true
+            }
+          ]
+        },
+        {
+          "pass": true,
+          "category": "behavioral-pass",
+          "candidate_sha256": "f6533cd4dc36e8f180fb213a2cf35f559376591d0f43ba515bad5674d0952db5",
+          "environment_sha256": "09d0267aa199b98d654a9a8f968bca5f65d32e1bf7f347f2fd18486aa36abfbf",
+          "stages": [
+            {
+              "stage": "build",
+              "command": [
+                "/bin/sh",
+                "/oracle/build.sh"
+              ],
+              "status": 0,
+              "signal": null,
+              "error": null,
+              "stdout": "",
+              "stderr": ""
+            },
+            {
+              "stage": "test",
+              "command": [
+                "/bin/sh",
+                "/oracle/test.sh"
+              ],
+              "status": 0,
+              "signal": null,
+              "error": null,
+              "stdout": "=== RUN   TestCookieStore_Set_Get\n--- PASS: TestCookieStore_Set_Get (0.00s)\n=== RUN   TestCookieStore_Set_encrypt_failure\n--- PASS: TestCookieStore_Set_encrypt_failure (0.00s)\n=== RUN   TestCookieStore_Get_decrypt_failure\n--- PASS: TestCookieStore_Get_decrypt_failure (0.00s)\n=== RUN   TestCookieStore_Get_decode_base64_error\n--- PASS: TestCookieStore_Get_decode_base64_error (0.00s)\n=== RUN   TestCookieStore_Get_not_found\n--- PASS: TestCookieStore_Get_not_found (0.00s)\n=== RUN   TestCookieStore_Clear\n--- PASS: TestCookieStore_Clear (0.00s)\n=== RUN   TestCookieOption\n--- PASS: TestCookieOption (0.00s)\nPASS\n",
+              "stderr": ""
+            }
+          ],
+          "completion": [
+            {
+              "pattern": "^PASS$",
+              "count": 1,
+              "observed": 1,
+              "pass": true
+            },
+            {
+              "pattern": "^--- PASS: Test",
+              "count": 7,
+              "observed": 7,
+              "pass": true
+            }
+          ]
+        },
+        {
+          "pass": true,
+          "category": "behavioral-pass",
+          "candidate_sha256": "f6533cd4dc36e8f180fb213a2cf35f559376591d0f43ba515bad5674d0952db5",
+          "environment_sha256": "09d0267aa199b98d654a9a8f968bca5f65d32e1bf7f347f2fd18486aa36abfbf",
+          "stages": [
+            {
+              "stage": "build",
+              "command": [
+                "/bin/sh",
+                "/oracle/build.sh"
+              ],
+              "status": 0,
+              "signal": null,
+              "error": null,
+              "stdout": "",
+              "stderr": ""
+            },
+            {
+              "stage": "test",
+              "command": [
+                "/bin/sh",
+                "/oracle/test.sh"
+              ],
+              "status": 0,
+              "signal": null,
+              "error": null,
+              "stdout": "=== RUN   TestCookieStore_Set_Get\n--- PASS: TestCookieStore_Set_Get (0.00s)\n=== RUN   TestCookieStore_Set_encrypt_failure\n--- PASS: TestCookieStore_Set_encrypt_failure (0.00s)\n=== RUN   TestCookieStore_Get_decrypt_failure\n--- PASS: TestCookieStore_Get_decrypt_failure (0.00s)\n=== RUN   TestCookieStore_Get_decode_base64_error\n--- PASS: TestCookieStore_Get_decode_base64_error (0.00s)\n=== RUN   TestCookieStore_Get_not_found\n--- PASS: TestCookieStore_Get_not_found (0.00s)\n=== RUN   TestCookieStore_Clear\n--- PASS: TestCookieStore_Clear (0.00s)\n=== RUN   TestCookieOption\n--- PASS: TestCookieOption (0.00s)\nPASS\n",
+              "stderr": ""
+            }
+          ],
+          "completion": [
+            {
+              "pattern": "^PASS$",
+              "count": 1,
+              "observed": 1,
+              "pass": true
+            },
+            {
+              "pattern": "^--- PASS: Test",
+              "count": 7,
+              "observed": 7,
+              "pass": true
+            }
+          ]
+        }
+      ],
+      "mutations": [
+        {
+          "name": "token-1687-true",
+          "pass": false,
+          "category": "test-failure",
+          "candidate_sha256": "327dfd41f93051b2d1b3da0cb8d2eb503394901bcf09345dee6682dfd95f34c8",
+          "environment_sha256": "09d0267aa199b98d654a9a8f968bca5f65d32e1bf7f347f2fd18486aa36abfbf",
+          "stages": [
+            {
+              "stage": "build",
+              "command": [
+                "/bin/sh",
+                "/oracle/build.sh"
+              ],
+              "status": 0,
+              "signal": null,
+              "error": null,
+              "stdout": "",
+              "stderr": ""
+            },
+            {
+              "stage": "test",
+              "command": [
+                "/bin/sh",
+                "/oracle/test.sh"
+              ],
+              "status": 1,
+              "signal": null,
+              "error": null,
+              "stdout": "=== RUN   TestCookieStore_Set_Get\n    cookieman_test.go:63: CookieStore.Get: Set-Cookie value: got \"\", want \"vim=dmltIHZpbSB2aW0=\"\n    cookieman_test.go:69: http: named cookie not present\n--- FAIL: TestCookieStore_Set_Get (0.00s)\n=== RUN   TestCookieStore_Set_encrypt_failure\n--- PASS: TestCookieStore_Set_encrypt_failure (0.00s)\n=== RUN   TestCookieStore_Get_decrypt_failure\n--- PASS: TestCookieStore_Get_decrypt_failure (0.00s)\n=== RUN   TestCookieStore_Get_decode_base64_error\n--- PASS: TestCookieStore_Get_decode_base64_error (0.00s)\n=== RUN   TestCookieStore_Get_not_found\n--- PASS: TestCookieStore_Get_not_found (0.00s)\n=== RUN   TestCookieStore_Clear\n--- PASS: TestCookieStore_Clear (0.00s)\n=== RUN   TestCookieOption\n    cookieman_test.go:190: got 0 cookies, want 1 cookie\n--- FAIL: TestCookieOption (0.00s)\nFAIL\n",
+              "stderr": ""
+            }
+          ]
+        },
+        {
+          "name": "token-1687-false",
+          "pass": false,
+          "category": "test-failure",
+          "candidate_sha256": "a1af6a3b512fb605b6192cbd570ce7c98a99778c983b67b867ad55e563decf67",
+          "environment_sha256": "09d0267aa199b98d654a9a8f968bca5f65d32e1bf7f347f2fd18486aa36abfbf",
+          "stages": [
+            {
+              "stage": "build",
+              "command": [
+                "/bin/sh",
+                "/oracle/build.sh"
+              ],
+              "status": 0,
+              "signal": null,
+              "error": null,
+              "stdout": "",
+              "stderr": ""
+            },
+            {
+              "stage": "test",
+              "command": [
+                "/bin/sh",
+                "/oracle/test.sh"
+              ],
+              "status": 1,
+              "signal": null,
+              "error": null,
+              "stdout": "=== RUN   TestCookieStore_Set_Get\n--- PASS: TestCookieStore_Set_Get (0.00s)\n=== RUN   TestCookieStore_Set_encrypt_failure\n    cookieman_test.go:89: got nil, but want error\n--- FAIL: TestCookieStore_Set_encrypt_failure (0.00s)\n=== RUN   TestCookieStore_Get_decrypt_failure\n--- PASS: TestCookieStore_Get_decrypt_failure (0.00s)\n=== RUN   TestCookieStore_Get_decode_base64_error\n--- PASS: TestCookieStore_Get_decode_base64_error (0.00s)\n=== RUN   TestCookieStore_Get_not_found\n--- PASS: TestCookieStore_Get_not_found (0.00s)\n=== RUN   TestCookieStore_Clear\n--- PASS: TestCookieStore_Clear (0.00s)\n=== RUN   TestCookieOption\n--- PASS: TestCookieOption (0.00s)\nFAIL\n",
+              "stderr": ""
+            }
+          ]
+        }
+      ]
+    },
+    "contexts": {
+      "local-context": [
+        {
+          "id": "3329bd397de2c606bc62dcca",
+          "revision": "d43d22cc7a4a0ddf34e0feb5a6909cb7470426a2",
+          "path": "doghouse/server/cookieman/cookieman.go",
+          "start_byte": 0,
+          "text": "package cookieman\n\nimport (\n\t\"encoding/base64\"\n\t\"net/http\"\n)\n\ntype Cipher interface {\n\tEncrypt(plaintext []byte) ([]byte, error)\n\tDecrypt(ciphertext []byte) ([]byte, error)\n}\n\ntype CookieMan struct {\n\tdefaultOpt CookieOption\n\tcipher     Cipher\n}\n\ntype CookieOption struct {\n\thttp.Cookie\n}\n\ntype CookieStore struct {\n\tname      string\n\tcookieman *CookieMan\n\topt       *CookieOption\n}\n\nfunc (cs *CookieStore) Name() string {\n\treturn cs.name\n}\n\nfunc (cs *CookieStore) Set(w http.ResponseWriter, value []byte) error {\n\treturn cs.cookieman.Set(w, cs.name, value, cs.opt)\n}\n\nfunc (cs *CookieStore) Get(r *http.Request) ([]byte, error) {\n\treturn cs.cookieman.Get(r, cs.name)\n}\n\nfunc (cs *CookieStore) Clear(w http.ResponseWriter) {\n\tcs.cookieman.Clear(w, cs.name)\n}\n\nfunc New(cipher Cipher, defaultOpt CookieOption) *CookieMan {\n\treturn &CookieMan{defaultOpt: defaultOpt, cipher: cipher}\n}\n\nfunc (c *CookieMan) NewCookieStore(name string, opt *CookieOption) *CookieStore {\n\treturn &CookieStore{\n\t\tname:      name,\n\t\tcookieman: c,\n\t\topt:       opt,\n\t}\n}\n\nfunc (c *CookieMan) Set(w http.ResponseWriter, name string, value []byte, opt *CookieOption) error {\n\tv, err := c.cipher.Encrypt(value)\n\tif err != nil {\n\t\treturn err\n\t}\n\thttp.SetCookie(w, c.cookie(name, base64.URLEncoding.EncodeToString(v), opt))\n\treturn nil\n}\n\nfunc (c *CookieMan) Get(r *http.Request, name string) ([]byte, error) {\n\tcookie, err := r.Cookie(name)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\tciphertext, err := base64.URLEncoding.DecodeString(cookie.Value)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\treturn c.cipher.Decrypt(ciphertext)\n}\n\nfunc (c *CookieMan) Clear(w http.ResponseWriter, name string) {\n\topt := &CookieOption{}\n\topt.MaxAge = -1\n\thttp.SetCookie(w, c.cookie(name, \"\", opt))\n}\n\nfunc (c *CookieMan) cookie(name, value string, opt *CookieOption) *http.Cookie {\n\tcookie := c.defaultOpt.Cookie\n\tcookie.Name = name\n\tcookie.Value = value\n\tif opt == nil {\n\t\treturn &cookie\n\t}\n\tif opt.Path != \"\" {\n\t\tcookie.Path = opt.Path\n\t}\n\tif opt.Domain != \"\" {\n\t\tcookie.Domain = opt.Domain\n\t}\n\tif opt.MaxAge != 0 {\n\t\tcookie.MaxAge = opt.MaxAge\n\t}\n\tif !opt.Expires.IsZero() {\n\t\tcookie.Expires = opt.Expires\n\t}\n\tif opt.Secure {\n\t\tcookie.Secure = opt.Secure\n\t}\n\tif opt.HttpOnly {\n\t\tcookie.HttpOnly = opt.HttpOnly\n\t}\n\treturn &cookie\n}\n",
+          "rank": 0,
+          "truncated": false
+        },
+        {
+          "id": "06fe106b0ad40a9a80781d41",
+          "revision": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7",
+          "path": "doghouse/server/cookieman/cookieman.go",
+          "start_byte": 0,
+          "text": "package cookieman\n\nimport (\n\t\"encoding/base64\"\n\t\"net/http\"\n)\n\n// Cipher is crypt interface to encrypt/decrypt cookie.\ntype Cipher interface {\n\tEncrypt(plaintext []byte) ([]byte, error)\n\tDecrypt(ciphertext []byte) ([]byte, error)\n}\n\n// CookieMan manages cookies.\ntype CookieMan struct {\n\tdefaultOpt CookieOption\n\tcipher     Cipher\n}\n\n// CookieOption represents cookie options.\ntype CookieOption struct {\n\thttp.Cookie\n}\n\n// CookieStore stores a cookie.\ntype CookieStore struct {\n\tname      string\n\tcookieman *CookieMan\n\topt       *CookieOption\n}\n\n// Name returns the cookie name this CookieStore manages.\nfunc (cs *CookieStore) Name() string {\n\treturn cs.name\n}\n\n// Set sets cookie value.\nfunc (cs *CookieStore) Set(w http.ResponseWriter, value []byte) error {\n\treturn cs.cookieman.Set(w, cs.name, value, cs.opt)\n}\n\n// Get returns cookie value.\nfunc (cs *CookieStore) Get(r *http.Request) ([]byte, error) {\n\treturn cs.cookieman.Get(r, cs.name)\n}\n\n// Clear clears the cookie.\nfunc (cs *CookieStore) Clear(w http.ResponseWriter) {\n\tcs.cookieman.Clear(w, cs.name)\n}\n\n// New returns new CookieMan with default cookie option.\nfunc New(cipher Cipher, defaultOpt CookieOption) *CookieMan {\n\treturn &CookieMan{defaultOpt: defaultOpt, cipher: cipher}\n}\n\n// NewCookieStore returns new CookieStore which mangages cookie whose key is\n// given name and with given cookie option.\nfunc (c *CookieMan) NewCookieStore(name string, opt *CookieOption) *CookieStore {\n\treturn &CookieStore{\n\t\tname:      name,\n\t\tcookieman: c,\n\t\topt:       opt,\n\t}\n}\n\n// Set sets cookie.\nfunc (c *CookieMan) Set(w http.ResponseWriter, name string, value []byte, opt *CookieOption) error {\n\tv, err := c.cipher.Encrypt(value)\n\tif err != nil {\n\t\treturn err\n\t}\n\thttp.SetCookie(w, c.cookie(name, base64.URLEncoding.EncodeToString(v), opt))\n\treturn nil\n}\n\n// Get returns a cookie with given name.\nfunc (c *CookieMan) Get(r *http.Request, name string) ([]byte, error) {\n\tcookie, err := r.Cookie(name)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\tciphertext, err := base64.URLEncoding.DecodeString(cookie.Value)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\treturn c.cipher.Decrypt(ciphertext)\n}\n\n// Clear clears a cookie with given name.\nfunc (c *CookieMan) Clear(w http.ResponseWriter, name string) {\n\topt := &CookieOption{}\n\topt.MaxAge = -1\n\thttp.SetCookie(w, c.cookie(name, \"\", opt))\n}\n\nfunc (c *CookieMan) cookie(name, value string, opt *CookieOption) *http.Cookie {\n\tcookie := c.defaultOpt.Cookie\n\tcookie.Name = name\n\tcookie.Value = value\n\tif opt == nil {\n\t\treturn &cookie\n\t}\n\tif opt.Path != \"\" {\n\t\tcookie.Path = opt.Path\n\t}\n\tif opt.Domain != \"\" {\n\t\tcookie.Domain = opt.Domain\n\t}\n\tif opt.MaxAge != 0 {\n\t\tcookie.MaxAge = opt.MaxAge\n\t}\n\tif !opt.Expires.IsZero() {\n\t\tcookie.Expires = opt.Expires\n\t}\n\tif opt.Secure {\n\t\tcookie.Secure = opt.Secure\n\t}\n\tif opt.HttpOnly {\n\t\tcookie.HttpOnly = opt.HttpOnly\n\t}\n\treturn &cookie\n}\n",
+          "rank": 0,
+          "truncated": false
+        }
+      ],
+      "selected": [
+        {
+          "id": "78ce06441fee342d28ae529c",
+          "revision": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7",
+          "path": "cmd/reviewdog/main.go",
+          "start_byte": 3828,
+          "text": "var opt = &option{}",
+          "rank": 1,
+          "truncated": false
+        },
+        {
+          "id": "a66b717198012e8a8b41b5af",
+          "revision": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7",
+          "path": "cmd/reviewdog/main.go",
+          "start_byte": 5365,
+          "text": "var cs reviewdog.CommentService",
+          "rank": 1,
+          "truncated": false
+        },
+        {
+          "id": "637049916286c18eddc11eb5",
+          "revision": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7",
+          "path": "cmd/reviewdog/main.go",
+          "start_byte": 9921,
+          "text": "var err error",
+          "rank": 1,
+          "truncated": false
+        },
+        {
+          "id": "ba16764e1a7d29a9ad18db4f",
+          "revision": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7",
+          "path": "doghouse/client/client.go",
+          "start_byte": 661,
+          "text": "func New(client *http.Client) *DogHouseClient {\n\tdh := &DogHouseClient{Client: client}\n\tif dh.Client == nil {\n\t\tdh.Client = http.DefaultClient\n\t}\n\tbase := baseEndpoint\n\tif baseEnvURL := os.Getenv(\"REVIEWDOG_GITHUB_APP_URL\"); baseEnvURL != \"\" {\n\t\tbase = baseEnvURL\n\t}\n\tvar err error\n\tdh.BaseURL, err = url.Parse(base)\n\tif err != nil {\n\t\tlog.Fatal(err)\n\t}\n\treturn dh\n}",
+          "rank": 1,
+          "truncated": false
+        },
+        {
+          "id": "b23cbe1805e9df14422ebde0",
+          "revision": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7",
+          "path": "doghouse/client/client.go",
+          "start_byte": 929,
+          "text": "var err error",
+          "rank": 1,
+          "truncated": false
+        },
+        {
+          "id": "4b18db921ae11267ebd9b370",
+          "revision": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7",
+          "path": "doghouse/client/client.go",
+          "start_byte": 1071,
+          "text": "func (c *DogHouseClient) Check(ctx context.Context, req *doghouse.CheckRequest) (*doghouse.CheckResponse, error) {\n\turl := c.BaseURL.String() + \"/check\"\n\tb, err := json.Marshal(req)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\thttpReq, err := http.NewRequest(\"POST\", url, bytes.NewReader(b))\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\thttpReq = httpReq.WithContext(ctx)\n\thttpReq.Header.Set(\"Content-Type\", \"application/json\")\n\thttpReq.Header.Set(\"User-Agent\", fmt.Sprintf(\"reviewdog/%s\", reviewdog.Version))\n\n\thttpResp, err := c.Client.Do(httpReq)\n\tif err != nil {\n\t\treturn nil, fmt.Errorf(\"Check request failed: %v\", err)\n\t}\n\tdefer httpResp.Body.Close()\n\n\trespb, err := ioutil.ReadAll(httpResp.Body)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\n\tif httpResp.StatusCode != http.StatusOK {\n\t\treturn nil, fmt.Errorf(\"status=%v: %s\", httpResp.StatusCode, respb)\n\t}\n\n\tvar resp doghouse.CheckResponse\n\tif err := json.Unmarshal(respb, &resp); err != nil {\n\t\treturn nil, fmt.Errorf(\"failed to decode response: error=%v, resp=%s\", err, respb)\n\t}\n\treturn &resp, nil\n}",
+          "rank": 1,
+          "truncated": false
+        },
+        {
+          "id": "d40e9132ac225ec4b89a5732",
+          "revision": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7",
+          "path": "doghouse/server/cookieman/cookieman.go",
+          "start_byte": 118,
+          "text": "type Cipher interface {\n\tEncrypt(plaintext []byte) ([]byte, error)\n\tDecrypt(ciphertext []byte) ([]byte, error)\n}",
+          "rank": 1,
+          "truncated": false
+        },
+        {
+          "id": "34cf846c7323e93115add711",
+          "revision": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7",
+          "path": "doghouse/server/cookieman/cookieman.go",
+          "start_byte": 603,
+          "text": "func (cs *CookieStore) Name() string {\n\treturn cs.name\n}",
+          "rank": 1,
+          "truncated": false
+        },
+        {
+          "id": "003c93c9e19a3fad730fda0e",
+          "revision": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7",
+          "path": "doghouse/server/cookieman/cookieman.go",
+          "start_byte": 687,
+          "text": "func (cs *CookieStore) Set(w http.ResponseWriter, value []byte) error {\n\treturn cs.cookieman.Set(w, cs.name, value, cs.opt)\n}",
+          "rank": 1,
+          "truncated": false
+        },
+        {
+          "id": "5b4e76be04c0a5da3ad6eaf4",
+          "revision": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7",
+          "path": "doghouse/server/cookieman/cookieman.go",
+          "start_byte": 843,
+          "text": "func (cs *CookieStore) Get(r *http.Request) ([]byte, error) {\n\treturn cs.cookieman.Get(r, cs.name)\n}",
+          "rank": 1,
+          "truncated": false
+        },
+        {
+          "id": "d411ad20399c78c64bf73362",
+          "revision": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7",
+          "path": "doghouse/server/cookieman/cookieman.go",
+          "start_byte": 973,
+          "text": "func (cs *CookieStore) Clear(w http.ResponseWriter) {\n\tcs.cookieman.Clear(w, cs.name)\n}",
+          "rank": 1,
+          "truncated": false
+        },
+        {
+          "id": "b50c3102894dc9fa1079ec1b",
+          "revision": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7",
+          "path": "doghouse/server/cookieman/cookieman.go",
+          "start_byte": 1119,
+          "text": "func New(cipher Cipher, defaultOpt CookieOption) *CookieMan {\n\treturn &CookieMan{defaultOpt: defaultOpt, cipher: cipher}\n}",
+          "rank": 1,
+          "truncated": false
+        },
+        {
+          "id": "5356d88978beac61238e4982",
+          "revision": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7",
+          "path": "doghouse/server/cookieman/cookieman.go",
+          "start_byte": 1364,
+          "text": "func (c *CookieMan) NewCookieStore(name string, opt *CookieOption) *CookieStore {\n\treturn &CookieStore{\n\t\tname:      name,\n\t\tcookieman: c,\n\t\topt:       opt,\n\t}\n}",
+          "rank": 1,
+          "truncated": false
+        },
+        {
+          "id": "f8217177cc490cdf971105d2",
+          "revision": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7",
+          "path": "doghouse/server/cookieman/cookieman.go",
+          "start_byte": 1547,
+          "text": "func (c *CookieMan) Set(w http.ResponseWriter, name string, value []byte, opt *CookieOption) error {\n\tv, err := c.cipher.Encrypt(value)\n\tif err != nil {\n\t\treturn err\n\t}\n\thttp.SetCookie(w, c.cookie(name, base64.URLEncoding.EncodeToString(v), opt))\n\treturn nil\n}",
+          "rank": 1,
+          "truncated": false
+        },
+        {
+          "id": "d145609c2fb69bc72a5e9364",
+          "revision": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7",
+          "path": "doghouse/server/cookieman/cookieman.go",
+          "start_byte": 1850,
+          "text": "func (c *CookieMan) Get(r *http.Request, name string) ([]byte, error) {\n\tcookie, err := r.Cookie(name)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\tciphertext, err := base64.URLEncoding.DecodeString(cookie.Value)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\treturn c.cipher.Decrypt(ciphertext)\n}",
+          "rank": 1,
+          "truncated": false
+        },
+        {
+          "id": "1ad551ce5dfda3e37b71ca2d",
+          "revision": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7",
+          "path": "doghouse/server/cookieman/cookieman.go",
+          "start_byte": 2177,
+          "text": "func (c *CookieMan) Clear(w http.ResponseWriter, name string) {\n\topt := &CookieOption{}\n\topt.MaxAge = -1\n\thttp.SetCookie(w, c.cookie(name, \"\", opt))\n}",
+          "rank": 1,
+          "truncated": false
+        },
+        {
+          "id": "db7214cb88536aaa74429891",
+          "revision": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7",
+          "path": "doghouse/server/cookieman/cookieman.go",
+          "start_byte": 2329,
+          "text": "func (c *CookieMan) cookie(name, value string, opt *CookieOption) *http.Cookie {\n\tcookie := c.defaultOpt.Cookie\n\tcookie.Name = name\n\tcookie.Value = value\n\tif opt == nil {\n\t\treturn &cookie\n\t}\n\tif opt.Path != \"\" {\n\t\tcookie.Path = opt.Path\n\t}\n\tif opt.Domain != \"\" {\n\t\tcookie.Domain = opt.Domain\n\t}\n\tif opt.MaxAge != 0 {\n\t\tcookie.MaxAge = opt.MaxAge\n\t}\n\tif !opt.Expires.IsZero() {\n\t\tcookie.Expires = opt.Expires\n\t}\n\tif opt.Secure {\n\t\tcookie.Secure = opt.Secure\n\t}\n\tif opt.HttpOnly {\n\t\tcookie.HttpOnly = opt.HttpOnly\n\t}\n\treturn &cookie\n}",
+          "rank": 1,
+          "truncated": false
+        },
+        {
+          "id": "4dc11fb871fdfce6f6330b84",
+          "revision": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7",
+          "path": "parser.go",
+          "start_byte": 2349,
+          "text": "var cs = new(CheckStyleResult)",
+          "rank": 1,
+          "truncated": false
+        },
+        {
+          "id": "b99f065ebde41c6ecf1fd8fc",
+          "revision": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7",
+          "path": "reviewdog.go",
+          "start_byte": 1326,
+          "text": "type Parser interface {\n\tParse(r io.Reader) ([]*CheckResult, error)\n}",
+          "rank": 1,
+          "truncated": false
+        },
+        {
+          "id": "c1508de16f6bcb30acbc86c6",
+          "revision": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7",
+          "path": "reviewdog.go",
+          "start_byte": 2011,
+          "text": "func (w *Reviewdog) runFromResult(ctx context.Context, results []*CheckResult,\n\tfilediffs []*diff.FileDiff, strip int) error {\n\twd, err := os.Getwd()\n\tif err != nil {\n\t\treturn err\n\t}\n\n\tchecks := FilterCheck(results, filediffs, strip, wd)\n\tfor _, check := range checks {\n\t\tif !check.InDiff {\n\t\t\tcontinue\n\t\t}\n\t\tcomment := &Comment{\n\t\t\tCheckResult: check.CheckResult,\n\t\t\tBody:        check.Message, // TODO: format message\n\t\t\tLnumDiff:    check.LnumDiff,\n\t\t\tToolName:    w.toolname,\n\t\t}\n\t\tif err := w.c.Post(ctx, comment); err != nil {\n\t\t\treturn err\n\t\t}\n\t}\n\n\tif bulk, ok := w.c.(BulkCommentService); ok {\n\t\treturn bulk.Flush(ctx)\n\t}\n\n\treturn nil\n}",
+          "rank": 1,
+          "truncated": false
+        },
+        {
+          "id": "4ee9d296f6799f0a55b37263",
+          "revision": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7",
+          "path": "reviewdog.go",
+          "start_byte": 2692,
+          "text": "func (w *Reviewdog) Run(ctx context.Context, r io.Reader) error {\n\tresults, err := w.p.Parse(r)\n\tif err != nil {\n\t\treturn fmt.Errorf(\"parse error: %v\", err)\n\t}\n\n\td, err := w.d.Diff(ctx)\n\tif err != nil {\n\t\treturn fmt.Errorf(\"fail to get diff: %v\", err)\n\t}\n\n\tfilediffs, err := diff.ParseMultiFile(bytes.NewReader(d))\n\tif err != nil {\n\t\treturn fmt.Errorf(\"fail to parse diff: %v\", err)\n\t}\n\n\treturn w.runFromResult(ctx, results, filediffs, w.d.Strip())\n}",
+          "rank": 1,
+          "truncated": false
+        },
+        {
+          "id": "aec50224f37de59870d0fbed",
+          "revision": "d43d22cc7a4a0ddf34e0feb5a6909cb7470426a2",
+          "path": "cmd/reviewdog/main.go",
+          "start_byte": 3828,
+          "text": "var opt = &option{}",
+          "rank": 1,
+          "truncated": false
+        },
+        {
+          "id": "ea4045e0470574719406245e",
+          "revision": "d43d22cc7a4a0ddf34e0feb5a6909cb7470426a2",
+          "path": "cmd/reviewdog/main.go",
+          "start_byte": 5365,
+          "text": "var cs reviewdog.CommentService",
+          "rank": 1,
+          "truncated": false
+        },
+        {
+          "id": "9411d107e1e474d755144337",
+          "revision": "d43d22cc7a4a0ddf34e0feb5a6909cb7470426a2",
+          "path": "cmd/reviewdog/main.go",
+          "start_byte": 9921,
+          "text": "var err error",
+          "rank": 1,
+          "truncated": false
+        },
+        {
+          "id": "a6c1d706db03a544bfc5da13",
+          "revision": "d43d22cc7a4a0ddf34e0feb5a6909cb7470426a2",
+          "path": "doghouse/appengine/github_webhook.go",
+          "start_byte": 1565,
+          "text": "var c CheckSuiteEvent",
+          "rank": 1,
+          "truncated": false
+        },
+        {
+          "id": "b9cc51df70791f7b723656ff",
+          "revision": "d43d22cc7a4a0ddf34e0feb5a6909cb7470426a2",
+          "path": "doghouse/client/client.go",
+          "start_byte": 661,
+          "text": "func New(client *http.Client) *DogHouseClient {\n\tdh := &DogHouseClient{Client: client}\n\tif dh.Client == nil {\n\t\tdh.Client = http.DefaultClient\n\t}\n\tbase := baseEndpoint\n\tif baseEnvURL := os.Getenv(\"REVIEWDOG_GITHUB_APP_URL\"); baseEnvURL != \"\" {\n\t\tbase = baseEnvURL\n\t}\n\tvar err error\n\tdh.BaseURL, err = url.Parse(base)\n\tif err != nil {\n\t\tlog.Fatal(err)\n\t}\n\treturn dh\n}",
+          "rank": 1,
+          "truncated": false
+        },
+        {
+          "id": "08076440f52fd35f4dc39ded",
+          "revision": "d43d22cc7a4a0ddf34e0feb5a6909cb7470426a2",
+          "path": "doghouse/client/client.go",
+          "start_byte": 929,
+          "text": "var err error",
+          "rank": 1,
+          "truncated": false
+        },
+        {
+          "id": "4452532e26f2a79cab3d7f38",
+          "revision": "d43d22cc7a4a0ddf34e0feb5a6909cb7470426a2",
+          "path": "doghouse/client/client.go",
+          "start_byte": 1071,
+          "text": "func (c *DogHouseClient) Check(ctx context.Context, req *doghouse.CheckRequest) (*doghouse.CheckResponse, error) {\n\turl := c.BaseURL.String() + \"/check\"\n\tb, err := json.Marshal(req)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\thttpReq, err := http.NewRequest(\"POST\", url, bytes.NewReader(b))\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\thttpReq = httpReq.WithContext(ctx)\n\thttpReq.Header.Set(\"Content-Type\", \"application/json\")\n\thttpReq.Header.Set(\"User-Agent\", fmt.Sprintf(\"reviewdog/%s\", reviewdog.Version))\n\n\thttpResp, err := c.Client.Do(httpReq)\n\tif err != nil {\n\t\treturn nil, fmt.Errorf(\"Check request failed: %v\", err)\n\t}\n\tdefer httpResp.Body.Close()\n\n\trespb, err := ioutil.ReadAll(httpResp.Body)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\n\tif httpResp.StatusCode != http.StatusOK {\n\t\treturn nil, fmt.Errorf(\"status=%v: %s\", httpResp.StatusCode, respb)\n\t}\n\n\tvar resp doghouse.CheckResponse\n\tif err := json.Unmarshal(respb, &resp); err != nil {\n\t\treturn nil, fmt.Errorf(\"failed to decode response: error=%v, resp=%s\", err, respb)\n\t}\n\treturn &resp, nil\n}",
+          "rank": 1,
+          "truncated": false
+        },
+        {
+          "id": "e39ef83f4f1dc0f5aa3e321e",
+          "revision": "d43d22cc7a4a0ddf34e0feb5a6909cb7470426a2",
+          "path": "doghouse/server/cookieman/cookieman.go",
+          "start_byte": 62,
+          "text": "type Cipher interface {\n\tEncrypt(plaintext []byte) ([]byte, error)\n\tDecrypt(ciphertext []byte) ([]byte, error)\n}",
+          "rank": 1,
+          "truncated": false
+        },
+        {
+          "id": "56c0774d13a414b9a6b6254d",
+          "revision": "d43d22cc7a4a0ddf34e0feb5a6909cb7470426a2",
+          "path": "doghouse/server/cookieman/cookieman.go",
+          "start_byte": 384,
+          "text": "func (cs *CookieStore) Name() string {\n\treturn cs.name\n}",
+          "rank": 1,
+          "truncated": false
+        },
+        {
+          "id": "9d793cc66db524bd201e787d",
+          "revision": "d43d22cc7a4a0ddf34e0feb5a6909cb7470426a2",
+          "path": "doghouse/server/cookieman/cookieman.go",
+          "start_byte": 442,
+          "text": "func (cs *CookieStore) Set(w http.ResponseWriter, value []byte) error {\n\treturn cs.cookieman.Set(w, cs.name, value, cs.opt)\n}",
+          "rank": 1,
+          "truncated": false
+        },
+        {
+          "id": "c14b45cc1401dc534dc79afa",
+          "revision": "d43d22cc7a4a0ddf34e0feb5a6909cb7470426a2",
+          "path": "doghouse/server/cookieman/cookieman.go",
+          "start_byte": 569,
+          "text": "func (cs *CookieStore) Get(r *http.Request) ([]byte, error) {\n\treturn cs.cookieman.Get(r, cs.name)\n}",
+          "rank": 1,
+          "truncated": false
+        },
+        {
+          "id": "5fda3584536fef1cddb5fc6c",
+          "revision": "d43d22cc7a4a0ddf34e0feb5a6909cb7470426a2",
+          "path": "doghouse/server/cookieman/cookieman.go",
+          "start_byte": 671,
+          "text": "func (cs *CookieStore) Clear(w http.ResponseWriter) {\n\tcs.cookieman.Clear(w, cs.name)\n}",
+          "rank": 1,
+          "truncated": false
+        },
+        {
+          "id": "52947b69f847f9a7a110b14b",
+          "revision": "d43d22cc7a4a0ddf34e0feb5a6909cb7470426a2",
+          "path": "doghouse/server/cookieman/cookieman.go",
+          "start_byte": 760,
+          "text": "func New(cipher Cipher, defaultOpt CookieOption) *CookieMan {\n\treturn &CookieMan{defaultOpt: defaultOpt, cipher: cipher}\n}",
+          "rank": 1,
+          "truncated": false
+        },
+        {
+          "id": "e705c7756ebe46d01c74da08",
+          "revision": "d43d22cc7a4a0ddf34e0feb5a6909cb7470426a2",
+          "path": "doghouse/server/cookieman/cookieman.go",
+          "start_byte": 884,
+          "text": "func (c *CookieMan) NewCookieStore(name string, opt *CookieOption) *CookieStore {\n\treturn &CookieStore{\n\t\tname:      name,\n\t\tcookieman: c,\n\t\topt:       opt,\n\t}\n}",
+          "rank": 1,
+          "truncated": false
+        },
+        {
+          "id": "fdbbb4828d70f6a3612055eb",
+          "revision": "d43d22cc7a4a0ddf34e0feb5a6909cb7470426a2",
+          "path": "doghouse/server/cookieman/cookieman.go",
+          "start_byte": 1047,
+          "text": "func (c *CookieMan) Set(w http.ResponseWriter, name string, value []byte, opt *CookieOption) error {\n\tv, err := c.cipher.Encrypt(value)\n\tif err != nil {\n\t\treturn err\n\t}\n\thttp.SetCookie(w, c.cookie(name, base64.URLEncoding.EncodeToString(v), opt))\n\treturn nil\n}",
+          "rank": 1,
+          "truncated": false
+        },
+        {
+          "id": "787b12b4c515fcda3633ceb1",
+          "revision": "d43d22cc7a4a0ddf34e0feb5a6909cb7470426a2",
+          "path": "doghouse/server/cookieman/cookieman.go",
+          "start_byte": 1309,
+          "text": "func (c *CookieMan) Get(r *http.Request, name string) ([]byte, error) {\n\tcookie, err := r.Cookie(name)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\tciphertext, err := base64.URLEncoding.DecodeString(cookie.Value)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\treturn c.cipher.Decrypt(ciphertext)\n}",
+          "rank": 1,
+          "truncated": false
+        },
+        {
+          "id": "237bfb75d6dc0303505d8bea",
+          "revision": "d43d22cc7a4a0ddf34e0feb5a6909cb7470426a2",
+          "path": "doghouse/server/cookieman/cookieman.go",
+          "start_byte": 1594,
+          "text": "func (c *CookieMan) Clear(w http.ResponseWriter, name string) {\n\topt := &CookieOption{}\n\topt.MaxAge = -1\n\thttp.SetCookie(w, c.cookie(name, \"\", opt))\n}",
+          "rank": 1,
+          "truncated": false
+        },
+        {
+          "id": "5332a1bb87791d554fc34c36",
+          "revision": "d43d22cc7a4a0ddf34e0feb5a6909cb7470426a2",
+          "path": "doghouse/server/cookieman/cookieman.go",
+          "start_byte": 1746,
+          "text": "func (c *CookieMan) cookie(name, value string, opt *CookieOption) *http.Cookie {\n\tcookie := c.defaultOpt.Cookie\n\tcookie.Name = name\n\tcookie.Value = value\n\tif opt == nil {\n\t\treturn &cookie\n\t}\n\tif opt.Path != \"\" {\n\t\tcookie.Path = opt.Path\n\t}\n\tif opt.Domain != \"\" {\n\t\tcookie.Domain = opt.Domain\n\t}\n\tif opt.MaxAge != 0 {\n\t\tcookie.MaxAge = opt.MaxAge\n\t}\n\tif !opt.Expires.IsZero() {\n\t\tcookie.Expires = opt.Expires\n\t}\n\tif opt.Secure {\n\t\tcookie.Secure = opt.Secure\n\t}\n\tif opt.HttpOnly {\n\t\tcookie.HttpOnly = opt.HttpOnly\n\t}\n\treturn &cookie\n}",
+          "rank": 1,
+          "truncated": false
+        },
+        {
+          "id": "c2579745e5860c75fdddce0d",
+          "revision": "d43d22cc7a4a0ddf34e0feb5a6909cb7470426a2",
+          "path": "doghouse/server/github_checker.go",
+          "start_byte": 484,
+          "text": "func (c *checkerGitHubClient) GetPullRequest(ctx context.Context, owner, repo string, number int) (*github.PullRequest, error) {\n\tpr, _, err := c.PullRequests.Get(ctx, owner, repo, number)\n\treturn pr, err\n}",
+          "rank": 1,
+          "truncated": false
+        },
+        {
+          "id": "9501c2a5acc28416415e9037",
+          "revision": "d43d22cc7a4a0ddf34e0feb5a6909cb7470426a2",
+          "path": "doghouse/server/github_checker.go",
+          "start_byte": 692,
+          "text": "func (c *checkerGitHubClient) GetPullRequestDiff(ctx context.Context, owner, repo string, number int) ([]byte, error) {\n\topt := github.RawOptions{Type: github.Diff}\n\td, _, err := c.PullRequests.GetRaw(ctx, owner, repo, number, opt)\n\treturn []byte(d), err\n}",
+          "rank": 1,
+          "truncated": false
+        },
+        {
+          "id": "1ca59d3217c1bcb093cfbdc7",
+          "revision": "d43d22cc7a4a0ddf34e0feb5a6909cb7470426a2",
+          "path": "doghouse/server/github_checker.go",
+          "start_byte": 950,
+          "text": "func (c *checkerGitHubClient) CreateCheckRun(ctx context.Context, owner, repo string, opt github.CreateCheckRunOptions) (*github.CheckRun, error) {\n\tcheckRun, _, err := c.Checks.CreateCheckRun(ctx, owner, repo, opt)\n\treturn checkRun, err\n}",
+          "rank": 1,
+          "truncated": false
+        },
+        {
+          "id": "e743900daa2bfc70dbc8fe53",
+          "revision": "d43d22cc7a4a0ddf34e0feb5a6909cb7470426a2",
+          "path": "parser.go",
+          "start_byte": 2349,
+          "text": "var cs = new(CheckStyleResult)",
+          "rank": 1,
+          "truncated": false
+        },
+        {
+          "id": "6592d6c529246a5cf4559eef",
+          "revision": "d43d22cc7a4a0ddf34e0feb5a6909cb7470426a2",
+          "path": "reviewdog.go",
+          "start_byte": 1326,
+          "text": "type Parser interface {\n\tParse(r io.Reader) ([]*CheckResult, error)\n}",
+          "rank": 1,
+          "truncated": false
+        },
+        {
+          "id": "27de45ed517cd3c58037c4ec",
+          "revision": "d43d22cc7a4a0ddf34e0feb5a6909cb7470426a2",
+          "path": "reviewdog.go",
+          "start_byte": 2011,
+          "text": "func (w *Reviewdog) runFromResult(ctx context.Context, results []*CheckResult,\n\tfilediffs []*diff.FileDiff, strip int) error {\n\twd, err := os.Getwd()\n\tif err != nil {\n\t\treturn err\n\t}\n\n\tchecks := FilterCheck(results, filediffs, strip, wd)\n\tfor _, check := range checks {\n\t\tif !check.InDiff {\n\t\t\tcontinue\n\t\t}\n\t\tcomment := &Comment{\n\t\t\tCheckResult: check.CheckResult,\n\t\t\tBody:        check.Message, // TODO: format message\n\t\t\tLnumDiff:    check.LnumDiff,\n\t\t\tToolName:    w.toolname,\n\t\t}\n\t\tif err := w.c.Post(ctx, comment); err != nil {\n\t\t\treturn err\n\t\t}\n\t}\n\n\tif bulk, ok := w.c.(BulkCommentService); ok {\n\t\treturn bulk.Flush(ctx)\n\t}\n\n\treturn nil\n}",
+          "rank": 1,
+          "truncated": false
+        },
+        {
+          "id": "57a1e3b866ba00a4dd4df714",
+          "revision": "d43d22cc7a4a0ddf34e0feb5a6909cb7470426a2",
+          "path": "reviewdog.go",
+          "start_byte": 2692,
+          "text": "func (w *Reviewdog) Run(ctx context.Context, r io.Reader) error {\n\tresults, err := w.p.Parse(r)\n\tif err != nil {\n\t\treturn fmt.Errorf(\"parse error: %v\", err)\n\t}\n\n\td, err := w.d.Diff(ctx)\n\tif err != nil {\n\t\treturn fmt.Errorf(\"fail to get diff: %v\", err)\n\t}\n\n\tfilediffs, err := diff.ParseMultiFile(bytes.NewReader(d))\n\tif err != nil {\n\t\treturn fmt.Errorf(\"fail to parse diff: %v\", err)\n\t}\n\n\treturn w.runFromResult(ctx, results, filediffs, w.d.Strip())\n}",
+          "rank": 1,
+          "truncated": false
+        },
+        {
+          "id": "c4e8a66032398e4343278661",
+          "revision": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7",
+          "path": "cienv/cienv.go",
+          "start_byte": 224,
+          "text": "type BuildInfo struct {\n\tOwner string\n\tRepo  string\n\tSHA   string\n\n\t// Optional.\n\tPullRequest int // MergeRequest for GitLab.\n\n\t// Optional.\n\tBranch string\n}",
+          "rank": 2,
+          "truncated": false
+        },
+        {
+          "id": "985ab66f13394b46734b0a84",
+          "revision": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7",
+          "path": "cienv/cienv.go",
+          "start_byte": 887,
+          "text": "func GetBuildInfo() (prInfo *BuildInfo, isPR bool, err error) {\n\towner, repo := getOwnerAndRepoFromSlug([]string{\n\t\t\"TRAVIS_REPO_SLUG\",\n\t\t\"DRONE_REPO\", // drone<=0.4\n\t})\n\tif owner == \"\" {\n\t\towner = getOneEnvValue([]string{\n\t\t\t\"CI_REPO_OWNER\", // common\n\t\t\t\"CIRCLE_PROJECT_USERNAME\",\n\t\t\t\"DRONE_REPO_OWNER\",\n\t\t\t\"CI_PROJECT_NAMESPACE\", // GitLab CI\n\t\t})\n\t}\n\tif owner == \"\" {\n\t\treturn nil, false, errors.New(\"cannot get repo owner from environment variable. Set CI_REPO_OWNER?\")\n\t}\n\n\tif repo == \"\" {\n\t\trepo = getOneEnvValue([]string{\n\t\t\t\"CI_REPO_NAME\", // common\n\t\t\t\"CIRCLE_PROJECT_REPONAME\",\n\t\t\t\"DRONE_REPO_NAME\",\n\t\t\t\"CI_PROJECT_NAME\", // GitLab CI\n\t\t})\n\t}\n\n\tif repo == \"\" {\n\t\treturn nil, false, errors.New(\"cannot get repo name from environment variable. Set CI_REPO_NAME?\")\n\t}\n\n\tsha := getOneEnvValue([]string{\n\t\t\"CI_COMMIT\", // common\n\t\t\"TRAVIS_PULL_REQUEST_SHA\",\n\t\t\"TRAVIS_COMMIT\",\n\t\t\"CIRCLE_SHA1\",\n\t\t\"DRONE_COMMIT\",\n\t\t\"CI_COMMIT_SHA\", // GitLab CI\n\t})\n\tif sha == \"\" {\n\t\treturn nil, false, errors.New(\"cannot get commit SHA from environment variable. Set CI_COMMIT?\")\n\t}\n\n\tbranch := getOneEnvValue([]string{\n\t\t\"CI_BRANCH\", // common\n\t\t\"TRAVIS_PULL_REQUEST_BRANCH\",\n\t\t\"CIRCLE_BRANCH\",\n\t\t\"DRONE_COMMIT_BRANCH\",\n\t})\n\n\tpr := getPullRequestNum()\n\n\treturn &BuildInfo{\n\t\tOwner:       owner,\n\t\tRepo:        repo,\n\t\tPullRequest: pr,\n\t\tSHA:         sha,\n\t\tBranch:      branch,\n\t}, pr != 0, nil\n}",
+          "rank": 2,
+          "truncated": false
+        },
+        {
+          "id": "235956dcc10f302a705d864e",
+          "revision": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7",
+          "path": "cienv/cienv.go",
+          "start_byte": 2275,
+          "text": "func getPullRequestNum() int {\n\tenvs := []string{\n\t\t// Common.\n\t\t\"CI_PULL_REQUEST\",\n\t\t// Travis CI.\n\t\t\"TRAVIS_PULL_REQUEST\",\n\t\t// Circle CI.\n\t\t\"CIRCLE_PULL_REQUEST\", // CircleCI 2.0\n\t\t\"CIRCLE_PR_NUMBER\",    // For Pull Request by a fork repository\n\t\t// drone.io.\n\t\t\"DRONE_PULL_REQUEST\",\n\t}\n\t// regexp.MustCompile() in func intentionally because this func is called\n\t// once for one run.\n\tre := regexp.MustCompile(`[1-9]\\d*$`)\n\tfor _, env := range envs {\n\t\tprm := re.FindString(os.Getenv(env))\n\t\tpr, _ := strconv.Atoi(prm)\n\t\tif pr != 0 {\n\t\t\treturn pr\n\t\t}\n\t}\n\treturn 0\n}",
+          "rank": 2,
+          "truncated": false
+        },
+        {
+          "id": "d73e2a692346395f58147055",
+          "revision": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7",
+          "path": "cienv/cienv.go",
+          "start_byte": 2845,
+          "text": "func getOneEnvValue(envs []string) string {\n\tfor _, env := range envs {\n\t\tif v := os.Getenv(env); v != \"\" {\n\t\t\treturn v\n\t\t}\n\t}\n\treturn \"\"\n}",
+          "rank": 2,
+          "truncated": false
+        },
+        {
+          "id": "caf7ca2b86bae1d004c86cc4",
+          "revision": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7",
+          "path": "cienv/cienv.go",
+          "start_byte": 2986,
+          "text": "func getOwnerAndRepoFromSlug(slugEnvs []string) (string, string) {\n\trepoSlug := getOneEnvValue(slugEnvs)\n\townerAndRepo := strings.SplitN(repoSlug, \"/\", 2)\n\tif len(ownerAndRepo) < 2 {\n\t\treturn \"\", \"\"\n\t}\n\treturn ownerAndRepo[0], ownerAndRepo[1]\n}",
+          "rank": 2,
+          "truncated": false
+        },
+        {
+          "id": "a5bcd7a709e42c775fbf0bcc",
+          "revision": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7",
+          "path": "cmd/reviewdog/doghouse.go",
+          "start_byte": 354,
+          "text": "func runDoghouse(ctx context.Context, r io.Reader, opt *option, isProject bool) error {\n\tghInfo, isPr, err := cienv.GetBuildInfo()\n\tif err != nil {\n\t\treturn err\n\t}\n\tif !isPr {\n\t\tfmt.Fprintf(os.Stderr, \"reviewdog: this is not PullRequest build.\")\n\t\treturn nil\n\t}\n\tresultSet, err := checkResultSet(ctx, r, opt, isProject)\n\tif err != nil {\n\t\treturn err\n\t}\n\tcli := newDoghouseCli(ctx)\n\treturn postResultSet(ctx, resultSet, ghInfo, cli)\n}",
+          "rank": 2,
+          "truncated": false
+        },
+        {
+          "id": "c49aae210717f686bdd43e43",
+          "revision": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7",
+          "path": "cmd/reviewdog/doghouse.go",
+          "start_byte": 789,
+          "text": "func newDoghouseCli(ctx context.Context) *client.DogHouseClient {\n\thttpCli := http.DefaultClient\n\tif token := os.Getenv(\"REVIEWDOG_TOKEN\"); token != \"\" {\n\t\tts := oauth2.StaticTokenSource(\n\t\t\t&oauth2.Token{AccessToken: token},\n\t\t)\n\t\thttpCli = oauth2.NewClient(ctx, ts)\n\t}\n\treturn client.New(httpCli)\n}",
+          "rank": 2,
+          "truncated": false
+        },
+        {
+          "id": "4424fae26cde00f6dd4453a9",
+          "revision": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7",
+          "path": "cmd/reviewdog/doghouse.go",
+          "start_byte": 1137,
+          "text": "func checkResultSet(ctx context.Context, r io.Reader, opt *option, isProject bool) (map[string][]*reviewdog.CheckResult, error) {\n\tresultSet := make(map[string][]*reviewdog.CheckResult)\n\tif isProject {\n\t\tconf, err := projectConfig(opt.conf)\n\t\tif err != nil {\n\t\t\treturn nil, err\n\t\t}\n\t\tresultSet, err = projectRunAndParse(ctx, conf)\n\t\tif err != nil {\n\t\t\treturn nil, err\n\t\t}\n\t} else {\n\t\tp, err := newParserFromOpt(opt)\n\t\tif err != nil {\n\t\t\treturn nil, err\n\t\t}\n\t\trs, err := p.Parse(r)\n\t\tif err != nil {\n\t\t\treturn nil, err\n\t\t}\n\t\tresultSet[toolName(opt)] = rs\n\t}\n\treturn resultSet, nil\n}",
+          "rank": 2,
+          "truncated": false
+        },
+        {
+          "id": "d9ce996ed23825e7484ced8b",
+          "revision": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7",
+          "path": "cmd/reviewdog/doghouse.go",
+          "start_byte": 1720,
+          "text": "func postResultSet(ctx context.Context, resultSet map[string][]*reviewdog.CheckResult, ghInfo *cienv.BuildInfo, cli client.DogHouseClientInterface) error {\n\tvar g errgroup.Group\n\twd, _ := os.Getwd()\n\tfor name, results := range resultSet {\n\t\tname := name\n\t\tas := make([]*doghouse.Annotation, 0, len(results))\n\t\tfor _, r := range results {\n\t\t\tas = append(as, checkResultToAnnotation(r, wd))\n\t\t}\n\t\treq := &doghouse.CheckRequest{\n\t\t\tName:        name,\n\t\t\tOwner:       ghInfo.Owner,\n\t\t\tRepo:        ghInfo.Repo,\n\t\t\tPullRequest: ghInfo.PullRequest,\n\t\t\tSHA:         ghInfo.SHA,\n\t\t\tBranch:      ghInfo.Branch,\n\t\t\tAnnotations: as,\n\t\t}\n\t\tg.Go(func() error {\n\t\t\tres, err := cli.Check(ctx, req)\n\t\t\tif err != nil {\n\t\t\t\treturn err\n\t\t\t}\n\t\t\tlog.Printf(\"[%s] reported: %s\", name, res.ReportURL)\n\t\t\treturn nil\n\t\t})\n\t}\n\treturn g.Wait()\n}",
+          "rank": 2,
+          "truncated": false
+        },
+        {
+          "id": "08f4c669d7df8d10d13550e3",
+          "revision": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7",
+          "path": "cmd/reviewdog/doghouse.go",
+          "start_byte": 2540,
+          "text": "func checkResultToAnnotation(c *reviewdog.CheckResult, wd string) *doghouse.Annotation {\n\treturn &doghouse.Annotation{\n\t\tPath:       reviewdog.CleanPath(c.Path, wd),\n\t\tLine:       c.Lnum,\n\t\tMessage:    c.Message,\n\t\tRawMessage: strings.Join(c.Lines, \"\\n\"),\n\t}\n}",
+          "rank": 2,
+          "truncated": false
+        },
+        {
+          "id": "0b53a7f5950447f83d7eaa60",
+          "revision": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7",
+          "path": "cmd/reviewdog/main.go",
+          "start_byte": 743,
+          "text": "type option struct {\n\tversion   bool\n\tdiffCmd   string\n\tdiffStrip int\n\tefms      strslice\n\tf         string // errorformat name\n\tlist      bool   // list supported errorformat name\n\tname      string // tool name which is used in comment\n\tci        string\n\tconf      string\n\treporter  string\n}",
+          "rank": 2,
+          "truncated": false
+        },
+        {
+          "id": "c2bc40bceab9c39505f8f74b",
+          "revision": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7",
+          "path": "cmd/reviewdog/main.go",
+          "start_byte": 3849,
+          "text": "func init() {\n\tflag.BoolVar(&opt.version, \"version\", false, \"print version\")\n\tflag.StringVar(&opt.diffCmd, \"diff\", \"\", diffCmdDoc)\n\tflag.IntVar(&opt.diffStrip, \"strip\", 1, diffStripDoc)\n\tflag.Var(&opt.efms, \"efm\", efmsDoc)\n\tflag.StringVar(&opt.f, \"f\", \"\", fDoc)\n\tflag.BoolVar(&opt.list, \"list\", false, listDoc)\n\tflag.StringVar(&opt.name, \"name\", \"\", nameDoc)\n\tflag.StringVar(&opt.ci, \"ci\", \"\", ciDoc)\n\tflag.StringVar(&opt.conf, \"conf\", \"\", confDoc)\n\tflag.StringVar(&opt.reporter, \"reporter\", \"local\", reporterDoc)\n}",
+          "rank": 2,
+          "truncated": false
+        },
+        {
+          "id": "051c0d72517d24d2bdd855d3",
+          "revision": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7",
+          "path": "cmd/reviewdog/main.go",
+          "start_byte": 4597,
+          "text": "func main() {\n\tflag.Usage = usage\n\tflag.Parse()\n\tif err := run(os.Stdin, os.Stdout, opt); err != nil {\n\t\tfmt.Fprintf(os.Stderr, \"reviewdog: %v\\n\", err)\n\t\tos.Exit(1)\n\t}\n}",
+          "rank": 2,
+          "truncated": false
+        },
+        {
+          "id": "3089b2a22c3a316d3a6b9e05",
+          "revision": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7",
+          "path": "cmd/reviewdog/main.go",
+          "start_byte": 4768,
+          "text": "func run(r io.Reader, w io.Writer, opt *option) error {\n\tctx := context.Background()\n\n\tif opt.version {\n\t\tfmt.Fprintln(w, reviewdog.Version)\n\t\treturn nil\n\t}\n\n\tif opt.list {\n\t\treturn runList(w)\n\t}\n\n\t// TODO(haya14busa): clean up when removing -ci flag from next release.\n\tif opt.ci != \"\" {\n\t\treturn errors.New(`-ci flag is deprecated.\nSee -reporter flag for migration and set -reporter=\"github-pr-review\" or -reporter=\"github-pr-check\" or -reporter=\"gitlab-mr-commit\"`)\n\t}\n\n\t// assume it's project based run when both -efm ane -f are not specified\n\tisProject := len(opt.efms) == 0 && opt.f == \"\"\n\n\tvar cs reviewdog.CommentService\n\tvar ds reviewdog.DiffService\n\n\tif isProject {\n\t\tcs = reviewdog.NewUnifiedCommentWriter(w)\n\t} else {\n\t\tcs = reviewdog.NewRawCommentWriter(w)\n\t}\n\n\tswitch opt.reporter {\n\tdefault:\n\t\treturn fmt.Errorf(\"unknown -reporter: %s\", opt.reporter)\n\tcase \"github-pr-check\":\n\t\treturn runDoghouse(ctx, r, opt, isProject)\n\tcase \"github-pr-review\":\n\t\tif os.Getenv(\"REVIEWDOG_GITHUB_API_TOKEN\") == \"\" {\n\t\t\tfmt.Fprintln(os.Stderr, \"REVIEWDOG_GITHUB_API_TOKEN is not set\")\n\t\t\treturn nil\n\t\t}\n\t\tgs, isPR, err := githubService(ctx)\n\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n\t\tif !isPR {\n\t\t\tfmt.Fprintln(os.Stderr, \"reviewdog: this is not PullRequest build.\")\n\t\t\treturn nil\n\t\t}\n\t\tcs = reviewdog.MultiCommentService(gs, cs)\n\t\tds = gs\n\tcase \"gitlab-mr-discussion\":\n\t\tbuild, cli, err := gitlabBuildWithClient()\n\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n\t\tif build.PullRequest == 0 {\n\t\t\tfmt.Fprintln(os.Stderr, \"this is not MergeRequest build.\")\n\t\t\treturn nil\n\t\t}\n\n\t\tgc, err := reviewdog.NewGitLabMergeRequestDiscussionCommenter(cli, build.Owner, build.Repo, build.PullRequest, build.SHA)\n\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n\n\t\tcs = reviewdog.MultiCommentService(gc, cs)\n\t\tds, err = reviewdog.NewGitLabMergeRequestDiff(cli, build.Owner, build.Repo, build.PullRequest, build.SHA)\n\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n\tcase \"gitlab-mr-commit\":\n\t\tbuild, cli, err := gitlabBuildWithClient()\n\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n\t\tif build.PullRequest == 0 {\n\t\t\tfmt.Fprintln(os.Stderr, \"this is not MergeRequest build.\")\n\t\t\treturn nil\n\t\t}\n\n\t\tgc, err := reviewdog.NewGitLabMergeRequestCommitCommenter(cli, build.Owner, build.Repo, build.PullRequest, build.SHA)\n\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n\n\t\tcs = reviewdog.MultiCommentService(gc, cs)\n\t\tds, err = reviewdog.NewGitLabMergeRequestDiff(cli, build.Owner, build.Repo, build.PullRequest, build.SHA)\n\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n\tcase \"local\":\n\t\td, err := diffService(opt.diffCmd, opt.diffStrip)\n\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n\t\tds = d\n\t}\n\n\tif isProject {\n\t\tconf, err := projectConfig(opt.conf)\n\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n\t\treturn project.Run(ctx, conf, cs, ds)\n\t}\n\n\tp, err := newParserFromOpt(opt)\n\tif err != nil {\n\t\treturn err\n\t}\n\n\tapp := reviewdog.NewReviewdog(toolName(opt), p, cs, ds)\n\treturn app.Run(ctx, r)\n}",
+          "rank": 2,
+          "truncated": false
+        },
+        {
+          "id": "8526f6308f0cf142e794f405",
+          "revision": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7",
+          "path": "cmd/reviewdog/main.go",
+          "start_byte": 7639,
+          "text": "func runList(w io.Writer) error {\n\ttabw := tabwriter.NewWriter(w, 0, 8, 0, '\\t', 0)\n\tfor _, f := range sortedFmts(fmts.DefinedFmts()) {\n\t\tfmt.Fprintf(tabw, \"%s\\t%s\\t- %s\\n\", f.Name, f.Description, f.URL)\n\t}\n\tfmt.Fprintf(tabw, \"%s\\t%s\\t- %s\\n\", \"checkstyle\", \"checkstyle XML format\", \"http://checkstyle.sourceforge.net/\")\n\treturn tabw.Flush()\n}",
+          "rank": 2,
+          "truncated": false
+        },
+        {
+          "id": "578113645b04aacc87bfe336",
+          "revision": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7",
+          "path": "cmd/reviewdog/main.go",
+          "start_byte": 8069,
+          "text": "func (p byFmtName) Less(i, j int) bool { return p[i].Name < p[j].Name }",
+          "rank": 2,
+          "truncated": false
+        },
+        {
+          "id": "d377ac492a93f51f89240303",
+          "revision": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7",
+          "path": "cmd/reviewdog/main.go",
+          "start_byte": 8209,
+          "text": "func sortedFmts(fs fmts.Fmts) []*fmts.Fmt {\n\tr := make([]*fmts.Fmt, 0, len(fs))\n\tfor _, f := range fs {\n\t\tr = append(r, f)\n\t}\n\tsort.Sort(byFmtName(r))\n\treturn r\n}",
+          "rank": 2,
+          "truncated": false
+        },
+        {
+          "id": "9b7c45eea23b94d818eb971c",
+          "revision": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7",
+          "path": "cmd/reviewdog/main.go",
+          "start_byte": 8373,
+          "text": "func diffService(s string, strip int) (reviewdog.DiffService, error) {\n\tcmds, err := shellwords.Parse(s)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\tif len(cmds) < 1 {\n\t\treturn nil, errors.New(\"diff command is empty\")\n\t}\n\tcmd := exec.Command(cmds[0], cmds[1:]...)\n\td := reviewdog.NewDiffCmd(cmd, strip)\n\treturn d, nil\n}",
+          "rank": 2,
+          "truncated": false
+        },
+        {
+          "id": "8a443d7b94890562e685ee11",
+          "revision": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7",
+          "path": "cmd/reviewdog/main.go",
+          "start_byte": 8689,
+          "text": "func newHTTPClient() *http.Client {\n\ttr := &http.Transport{\n\t\tProxy:           http.ProxyFromEnvironment,\n\t\tTLSClientConfig: &tls.Config{InsecureSkipVerify: insecureSkipVerify()},\n\t}\n\treturn &http.Client{Transport: tr}\n}",
+          "rank": 2,
+          "truncated": false
+        },
+        {
+          "id": "ea9e0f5053c7680b8889c2c1",
+          "revision": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7",
+          "path": "cmd/reviewdog/main.go",
+          "start_byte": 9009,
+          "text": "func githubService(ctx context.Context) (githubservice *reviewdog.GitHubPullRequest, isPR bool, err error) {\n\ttoken, err := nonEmptyEnv(\"REVIEWDOG_GITHUB_API_TOKEN\")\n\tif err != nil {\n\t\treturn nil, isPR, err\n\t}\n\tg, isPR, err := cienv.GetBuildInfo()\n\tif err != nil {\n\t\treturn nil, isPR, err\n\t}\n\t// TODO: support commit build\n\tif !isPR {\n\t\treturn nil, isPR, nil\n\t}\n\n\tclient, err := githubClient(ctx, token)\n\tif err != nil {\n\t\treturn nil, isPR, err\n\t}\n\n\tgithubservice, err = reviewdog.NewGitHubPullReqest(client, g.Owner, g.Repo, g.PullRequest, g.SHA)\n\tif err != nil {\n\t\treturn nil, isPR, err\n\t}\n\treturn githubservice, isPR, nil\n}",
+          "rank": 2,
+          "truncated": false
+        },
+        {
+          "id": "61e0dd9f864b6bd7f16fa718",
+          "revision": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7",
+          "path": "cmd/reviewdog/main.go",
+          "start_byte": 9637,
+          "text": "func githubClient(ctx context.Context, token string) (*github.Client, error) {\n\tctx = context.WithValue(ctx, oauth2.HTTPClient, newHTTPClient())\n\tts := oauth2.StaticTokenSource(\n\t\t&oauth2.Token{AccessToken: token},\n\t)\n\ttc := oauth2.NewClient(ctx, ts)\n\tclient := github.NewClient(tc)\n\tvar err error\n\tclient.BaseURL, err = githubBaseURL()\n\treturn client, err\n}",
+          "rank": 2,
+          "truncated": false
+        },
+        {
+          "id": "5662ce81b1b2bf421574c40e",
+          "revision": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7",
+          "path": "cmd/reviewdog/main.go",
+          "start_byte": 10049,
+          "text": "func githubBaseURL() (*url.URL, error) {\n\tbaseURL := os.Getenv(\"GITHUB_API\")\n\tif baseURL == \"\" {\n\t\tbaseURL = defaultGitHubAPI\n\t}\n\tu, err := url.Parse(baseURL)\n\tif err != nil {\n\t\treturn nil, fmt.Errorf(\"GitHub base URL is invalid: %v, %v\", baseURL, err)\n\t}\n\treturn u, nil\n}",
+          "rank": 2,
+          "truncated": false
+        },
+        {
+          "id": "54853029c472da2c94061204",
+          "revision": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7",
+          "path": "cmd/reviewdog/main.go",
+          "start_byte": 10323,
+          "text": "func gitlabBuildWithClient() (*cienv.BuildInfo, *gitlab.Client, error) {\n\ttoken, err := nonEmptyEnv(\"REVIEWDOG_GITLAB_API_TOKEN\")\n\tif err != nil {\n\t\treturn nil, nil, err\n\t}\n\n\tg, _, err := cienv.GetBuildInfo()\n\tif err != nil {\n\t\treturn nil, nil, err\n\t}\n\n\tclient, err := gitlabClient(token)\n\tif err != nil {\n\t\treturn nil, nil, err\n\t}\n\n\tif g.PullRequest == 0 {\n\t\tprNr, err := fetchMergeRequestIDFromCommit(client, g.SHA)\n\t\tif err != nil {\n\t\t\treturn nil, nil, err\n\t\t}\n\t\tif prNr != 0 {\n\t\t\tg.PullRequest = prNr\n\t\t}\n\t}\n\n\treturn g, client, err\n}",
+          "rank": 2,
+          "truncated": false
+        },
+        {
+          "id": "fe5bb29ee50ee7580e64a679",
+          "revision": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7",
+          "path": "cmd/reviewdog/main.go",
+          "start_byte": 10862,
+          "text": "func fetchMergeRequestIDFromCommit(cli *gitlab.Client, sha string) (id int, err error) {\n\t// https://docs.gitlab.com/ce/api/merge_requests.html#list-merge-requests\n\topt := &gitlab.ListMergeRequestsOptions{\n\t\tState:   gitlab.String(\"opened\"),\n\t\tOrderBy: gitlab.String(\"updated_at\"),\n\t}\n\tmrs, _, err := cli.MergeRequests.ListMergeRequests(opt)\n\tif err != nil {\n\t\treturn 0, err\n\t}\n\tfor _, mr := range mrs {\n\t\tif mr.SHA == sha {\n\t\t\treturn mr.IID, nil\n\t\t}\n\t}\n\treturn 0, nil\n}",
+          "rank": 2,
+          "truncated": false
+        },
+        {
+          "id": "f916a666d0486f9a8585745b",
+          "revision": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7",
+          "path": "cmd/reviewdog/main.go",
+          "start_byte": 11334,
+          "text": "func gitlabClient(token string) (*gitlab.Client, error) {\n\tclient := gitlab.NewClient(newHTTPClient(), token)\n\tbaseURL, err := gitlabBaseURL()\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\tif err := client.SetBaseURL(baseURL.String()); err != nil {\n\t\treturn nil, err\n\t}\n\treturn client, nil\n}",
+          "rank": 2,
+          "truncated": false
+        },
+        {
+          "id": "8395d1dea3dd2b1b8624bdde",
+          "revision": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7",
+          "path": "cmd/reviewdog/main.go",
+          "start_byte": 11674,
+          "text": "func gitlabBaseURL() (*url.URL, error) {\n\tbaseURL := os.Getenv(\"GITLAB_API\")\n\tif baseURL == \"\" {\n\t\tbaseURL = defaultGitLabAPI\n\t}\n\tu, err := url.Parse(baseURL)\n\tif err != nil {\n\t\treturn nil, fmt.Errorf(\"GitLab base URL is invalid: %v, %v\", baseURL, err)\n\t}\n\treturn u, nil\n}",
+          "rank": 2,
+          "truncated": false
+        },
+        {
+          "id": "c432404ffc7a0907dd2a0fe2",
+          "revision": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7",
+          "path": "cmd/reviewdog/main.go",
+          "start_byte": 11948,
+          "text": "func nonEmptyEnv(env string) (string, error) {\n\tv := os.Getenv(env)\n\tif v == \"\" {\n\t\treturn \"\", fmt.Errorf(\"environment variable $%v is not set\", env)\n\t}\n\treturn v, nil\n}",
+          "rank": 2,
+          "truncated": false
+        },
+        {
+          "id": "6ca988ee3debb2cd41359c67",
+          "revision": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7",
+          "path": "cmd/reviewdog/main.go",
+          "start_byte": 12119,
+          "text": "type strslice []string",
+          "rank": 2,
+          "truncated": false
+        },
+        {
+          "id": "2cf6dfae91de1e7d869cae98",
+          "revision": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7",
+          "path": "cmd/reviewdog/main.go",
+          "start_byte": 12143,
+          "text": "func (ss *strslice) String() string {\n\treturn fmt.Sprintf(\"%v\", *ss)\n}",
+          "rank": 2,
+          "truncated": false
+        },
+        {
+          "id": "773b0e33088507bf90019e5b",
+          "revision": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7",
+          "path": "cmd/reviewdog/main.go",
+          "start_byte": 12215,
+          "text": "func (ss *strslice) Set(value string) error {\n\t*ss = append(*ss, value)\n\treturn nil\n}",
+          "rank": 2,
+          "truncated": false
+        },
+        {
+          "id": "59d73e56084d77d13df286a5",
+          "revision": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7",
+          "path": "cmd/reviewdog/main.go",
+          "start_byte": 12302,
+          "text": "func projectConfig(path string) (*project.Config, error) {\n\tb, err := readConf(path)\n\tif err != nil {\n\t\treturn nil, fmt.Errorf(\"fail to open config: %v\", err)\n\t}\n\tconf, err := project.Parse(b)\n\tif err != nil {\n\t\treturn nil, fmt.Errorf(\"config is invalid: %v\", err)\n\t}\n\treturn conf, nil\n}",
+          "rank": 2,
+          "truncated": false
+        },
+        {
+          "id": "752c9f4e0017c79043b7f82c",
+          "revision": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7",
+          "path": "cmd/reviewdog/main.go",
+          "start_byte": 12591,
+          "text": "func readConf(conf string) ([]byte, error) {\n\tvar conffiles []string\n\tif conf != \"\" {\n\t\tconffiles = []string{conf}\n\t} else {\n\t\tconffiles = []string{\n\t\t\t\".reviewdog.yaml\",\n\t\t\t\".reviewdog.yml\",\n\t\t\t\"reviewdog.yaml\",\n\t\t\t\"reviewdog.yml\",\n\t\t}\n\t}\n\tfor _, f := range conffiles {\n\t\tbytes, err := ioutil.ReadFile(f)\n\t\tif err == nil {\n\t\t\treturn bytes, nil\n\t\t}\n\t}\n\treturn nil, errors.New(\".reviewdog.yml not found\")\n}",
+          "rank": 2,
+          "truncated": false
+        },
+        {
+          "id": "d54cfa686dd88960543edc87",
+          "revision": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7",
+          "path": "cmd/reviewdog/main.go",
+          "start_byte": 12637,
+          "text": "var conffiles []string",
+          "rank": 2,
+          "truncated": false
+        },
+        {
+          "id": "5aa963ab36136ce8bc14689f",
+          "revision": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7",
+          "path": "cmd/reviewdog/main.go",
+          "start_byte": 12998,
+          "text": "func newParserFromOpt(opt *option) (reviewdog.Parser, error) {\n\tp, err := reviewdog.NewParser(&reviewdog.ParserOpt{FormatName: opt.f, Errorformat: opt.efms})\n\tif err != nil {\n\t\treturn nil, fmt.Errorf(\"fail to create parser. use either -f or -efm: %v\", err)\n\t}\n\treturn p, err\n}",
+          "rank": 2,
+          "truncated": false
+        },
+        {
+          "id": "6422507c349c737b545bdc3a",
+          "revision": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7",
+          "path": "cmd/reviewdog/main.go",
+          "start_byte": 13276,
+          "text": "func toolName(opt *option) string {\n\tname := opt.name\n\tif name == \"\" && opt.f != \"\" {\n\t\tname = opt.f\n\t}\n\treturn name\n}",
+          "rank": 2,
+          "truncated": false
+        },
+        {
+          "id": "329d6369accd3c3f0e38eaf1",
+          "revision": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7",
+          "path": "comment_iowriter.go",
+          "start_byte": 212,
+          "text": "type RawCommentWriter struct {\n\tw io.Writer\n}",
+          "rank": 2,
+          "truncated": false
+        },
+        {
+          "id": "63ecbbcd0162aa7a07ba814f",
+          "revision": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7",
+          "path": "comment_iowriter.go",
+          "start_byte": 259,
+          "text": "func NewRawCommentWriter(w io.Writer) *RawCommentWriter {\n\treturn &RawCommentWriter{w: w}\n}",
+          "rank": 2,
+          "truncated": false
+        },
+        {
+          "id": "605eef7deba44ea72aee3b3f",
+          "revision": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7",
+          "path": "comment_iowriter.go",
+          "start_byte": 352,
+          "text": "func (s *RawCommentWriter) Post(_ context.Context, c *Comment) error {\n\t_, err := fmt.Fprintln(s.w, strings.Join(c.CheckResult.Lines, \"\\n\"))\n\treturn err\n}",
+          "rank": 2,
+          "truncated": false
+        },
+        {
+          "id": "a1ade5d99d7e86bbf57363bc",
+          "revision": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7",
+          "path": "comment_iowriter.go",
+          "start_byte": 868,
+          "text": "type UnifiedCommentWriter struct {\n\tw io.Writer\n}",
+          "rank": 2,
+          "truncated": false
+        },
+        {
+          "id": "313076e49b3b937af752ec92",
+          "revision": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7",
+          "path": "comment_iowriter.go",
+          "start_byte": 919,
+          "text": "func NewUnifiedCommentWriter(w io.Writer) *UnifiedCommentWriter {\n\treturn &UnifiedCommentWriter{w: w}\n}",
+          "rank": 2,
+          "truncated": false
+        },
+        {
+          "id": "b737b38555b076bb7339bfaa",
+          "revision": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7",
+          "path": "comment_iowriter.go",
+          "start_byte": 1024,
+          "text": "func (mc *UnifiedCommentWriter) Post(_ context.Context, c *Comment) error {\n\ts := c.Path\n\tif c.Lnum > 0 {\n\t\ts += fmt.Sprintf(\":%d\", c.Lnum)\n\t\tif c.Col > 0 {\n\t\t\ts += fmt.Sprintf(\":%d\", c.Col)\n\t\t}\n\t}\n\ts += fmt.Sprintf(\": [%s] %s\", c.ToolName, c.Body)\n\t_, err := fmt.Fprintln(mc.w, s)\n\treturn err\n}",
+          "rank": 2,
+          "truncated": false
+        },
+        {
+          "id": "0a7d60b99e16b59c9e1a7d08",
+          "revision": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7",
+          "path": "comment.go",
+          "start_byte": 152,
+          "text": "func (m *multiCommentService) Post(ctx context.Context, c *Comment) error {\n\tfor _, cs := range m.services {\n\t\tif err := cs.Post(ctx, c); err != nil {\n\t\t\treturn err\n\t\t}\n\t}\n\treturn nil\n}",
+          "rank": 2,
+          "truncated": false
+        },
+        {
+          "id": "b9420f208888cbff2a3d95e5",
+          "revision": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7",
+          "path": "comment.go",
+          "start_byte": 339,
+          "text": "func (m *multiCommentService) Flush(ctx context.Context) error {\n\tfor _, cs := range m.services {\n\t\tif bulk, ok := cs.(BulkCommentService); ok {\n\t\t\tif err := bulk.Flush(ctx); err != nil {\n\t\t\t\treturn err\n\t\t\t}\n\t\t}\n\t}\n\treturn nil\n}",
+          "rank": 2,
+          "truncated": false
+        },
+        {
+          "id": "253213ce38a14ccef6e17a6d",
+          "revision": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7",
+          "path": "diff.go",
+          "start_byte": 96,
+          "text": "type DiffString struct {\n\tb     []byte\n\tstrip int\n}",
+          "rank": 2,
+          "truncated": false
+        },
+        {
+          "id": "01dcb2ccdbb932d171ee3fd4",
+          "revision": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7",
+          "path": "diff.go",
+          "start_byte": 149,
+          "text": "func NewDiffString(diff string, strip int) DiffService {\n\treturn &DiffString{b: []byte(diff), strip: strip}\n}",
+          "rank": 2,
+          "truncated": false
+        },
+        {
+          "id": "402ee4f1f7b11f20ef6f0615",
+          "revision": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7",
+          "path": "diff.go",
+          "start_byte": 260,
+          "text": "func (d *DiffString) Diff(_ context.Context) ([]byte, error) {\n\treturn d.b, nil\n}",
+          "rank": 2,
+          "truncated": false
+        },
+        {
+          "id": "e1896a69e4988e29b3b0eaca",
+          "revision": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7",
+          "path": "diff.go",
+          "start_byte": 429,
+          "text": "type DiffCmd struct {\n\tcmd   *exec.Cmd\n\tstrip int\n\tout   []byte\n\tdone  bool\n\tmu    sync.RWMutex\n}",
+          "rank": 2,
+          "truncated": false
+        },
+        {
+          "id": "569637ec7d324a1511fbf6e5",
+          "revision": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7",
+          "path": "diff.go",
+          "start_byte": 700,
+          "text": "func (d *DiffCmd) Diff(_ context.Context) ([]byte, error) {\n\td.mu.Lock()\n\tdefer d.mu.Unlock()\n\tif d.done {\n\t\treturn d.out, nil\n\t}\n\tout, err := d.cmd.Output()\n\t// Exit status of `git diff` is 1 if diff exists, so ignore the error if diff\n\t// presents.\n\tif err != nil && len(out) == 0 {\n\t\treturn nil, err\n\t}\n\td.out = out\n\td.done = true\n\treturn d.out, nil\n}",
+          "rank": 2,
+          "truncated": false
+        },
+        {
+          "id": "b612975eaa0c22dd72b236d5",
+          "revision": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7",
+          "path": "diff/diff.go",
+          "start_byte": 311,
+          "text": "type FileDiff struct {\n\t// the old path of the file\n\tPathOld string\n\t// the new path of the file\n\tPathNew string\n\n\t// the old timestamp (empty if not present)\n\tTimeOld string\n\t// the new timestamp (empty if not present)\n\tTimeNew string\n\n\tHunks []*Hunk\n\n\t// extended header lines (e.g., git's \"new mode <mode>\", \"rename from <path>\", index fb14f33..c19311b 100644, etc.)\n\tExtended []string\n\n\t// TODO: we may want `\\ No newline at end of file` information for both the\n\t// old and new file.\n}",
+          "rank": 2,
+          "truncated": false
+        },
+        {
+          "id": "5fa6fb514df8ab0fbb425e1c",
+          "revision": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7",
+          "path": "diff/diff.go",
+          "start_byte": 1315,
+          "text": "type Hunk struct {\n\t// the starting line number of the old file\n\tStartLineOld int\n\t// the number of lines the change hunk applies to for the old file\n\tLineLengthOld int\n\n\t// the starting line number of the new file\n\tStartLineNew int\n\t// the number of lines the change hunk applies to for the new file\n\tLineLengthNew int\n\n\t// optional section heading\n\tSection string\n\n\t// the body lines of the hunk\n\tLines []*Line\n}",
+          "rank": 2,
+          "truncated": false
+        },
+        {
+          "id": "6411f30517e5beb45e63cc8e",
+          "revision": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7",
+          "path": "diff/diff.go",
+          "start_byte": 2074,
+          "text": "type Line struct {\n\t// type of this line\n\tType LineType\n\t// the line content without a preceded character (' ', '+', '-')\n\tContent string\n\n\t// the line in the file to a position in the diff.\n\t// the number of lines down from the first \"@@\" hunk header in the file.\n\t// e.g. The line just below the \"@@\" line is position 1, the next line is\n\t// position 2, and so on. The position in the file's diff continues to\n\t// increase through lines of whitespace and additional hunks until a new file\n\t// is reached. It's equivalent to the `position` field of input for cooment\n\t// API of GitHub https://developer.github.com/v3/pulls/comments/#input\n\tLnumDiff int\n\n\t// the line number of the old file for LineUnchanged and LineDeleted\n\t// type. 0 for LineAdded type.\n\tLnumOld int\n\n\t// the line number of the new file for LineUnchanged and LineAdded type.\n\t// 0 for LineDeleted type.\n\tLnumNew int\n}",
+          "rank": 2,
+          "truncated": false
+        },
+        {
+          "id": "fd7fab4ecdbaaf5d2227931b",
+          "revision": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7",
+          "path": "diff/parse.go",
+          "start_byte": 665,
+          "text": "var (\n\t// ErrNoNewFile represents error which there are no expected new file line.\n\tErrNoNewFile = errors.New(\"no expected new file line\") // +++ newfile\n\t// ErrNoHunks represents error which there are no expected hunks.\n\tErrNoHunks = errors.New(\"no expected hunks\") // @@ -1,3 +1,4 @@\n)",
+          "rank": 2,
+          "truncated": false
+        },
+        {
+          "id": "55919bf567aa738470a0e11a",
+          "revision": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7",
+          "path": "diff/parse.go",
+          "start_byte": 1032,
+          "text": "type ErrInvalidHunkRange struct {\n\tinvalid string\n}",
+          "rank": 2,
+          "truncated": false
+        },
+        {
+          "id": "65ca35ceea05cf63baac16ec",
+          "revision": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7",
+          "path": "diff/parse.go",
+          "start_byte": 1085,
+          "text": "func (e *ErrInvalidHunkRange) Error() string {\n\treturn fmt.Sprintf(\"invalid hunk range: %v\", e.invalid)\n}",
+          "rank": 2,
+          "truncated": false
+        },
+        {
+          "id": "eb1a7441339ad049aaedfb58",
+          "revision": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7",
+          "path": "diff/parse.go",
+          "start_byte": 1244,
+          "text": "func ParseMultiFile(r io.Reader) ([]*FileDiff, error) {\n\treturn (&multiFileParser{r: bufio.NewReader(r)}).Parse()\n}",
+          "rank": 2,
+          "truncated": false
+        },
+        {
+          "id": "eb1cb2b4d800ead668fab783",
+          "revision": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7",
+          "path": "diff/parse.go",
+          "start_byte": 1361,
+          "text": "type multiFileParser struct {\n\tr *bufio.Reader\n}",
+          "rank": 2,
+          "truncated": false
+        },
+        {
+          "id": "864e6c074cecc6d78dfa079e",
+          "revision": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7",
+          "path": "diff/parse.go",
+          "start_byte": 1411,
+          "text": "func (p *multiFileParser) Parse() ([]*FileDiff, error) {\n\tvar fds []*FileDiff\n\tfp := &fileParser{r: p.r}\n\tfor {\n\t\tfd, err := fp.Parse()\n\t\tif err != nil || fd == nil {\n\t\t\tbreak\n\t\t}\n\t\tfds = append(fds, fd)\n\t}\n\treturn fds, nil\n}",
+          "rank": 2,
+          "truncated": false
+        },
+        {
+          "id": "56c2a1c158e9643a678499a3",
+          "revision": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7",
+          "path": "diff/parse.go",
+          "start_byte": 1679,
+          "text": "func ParseFile(r io.Reader) (*FileDiff, error) {\n\treturn (&fileParser{r: bufio.NewReader(r)}).Parse()\n}",
+          "rank": 2,
+          "truncated": false
+        },
+        {
+          "id": "953c0e543008c3b2ed5ae585",
+          "revision": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7",
+          "path": "diff/parse.go",
+          "start_byte": 1784,
+          "text": "type fileParser struct {\n\tr *bufio.Reader\n}",
+          "rank": 2,
+          "truncated": false
+        },
+        {
+          "id": "55cf2e3e6503b1b14ed8cb8d",
+          "revision": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7",
+          "path": "diff/parse.go",
+          "start_byte": 1829,
+          "text": "func (p *fileParser) Parse() (*FileDiff, error) {\n\tfd := &FileDiff{}\n\tfd.Extended = parseExtendedHeader(p.r)\n\tb, err := p.r.Peek(len(tokenOldFile))\n\tif err != nil {\n\t\tif err == io.EOF && len(fd.Extended) > 0 {\n\t\t\treturn fd, nil\n\t\t}\n\t\treturn nil, nil\n\t}\n\tif bytes.HasPrefix(b, []byte(tokenOldFile)) {\n\t\t// parse `--- sample.old.txt\t2016-10-13 05:09:35.820791185 +0900`\n\t\toldline, _ := readline(p.r) // ignore err because we know it can read something\n\t\tfd.PathOld, fd.TimeOld = parseFileHeader(oldline)\n\t\t// parse `+++ sample.new.txt\t2016-10-13 05:09:35.820791185 +0900`\n\t\tif b, err := p.r.Peek(len(tokenNewFile)); err != nil || !bytes.HasPrefix(b, []byte(tokenNewFile)) {\n\t\t\treturn nil, ErrNoNewFile\n\t\t}\n\t\tnewline, _ := readline(p.r) // ignore err because we know it can read something\n\t\tfd.PathNew, fd.TimeNew = parseFileHeader(newline)\n\t}\n\t// parse hunks\n\tfd.Hunks, err = p.parseHunks()\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\treturn fd, nil\n}",
+          "rank": 2,
+          "truncated": false
+        },
+        {
+          "id": "cbdb22156dc07546babe71db",
+          "revision": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7",
+          "path": "diff/parse.go",
+          "start_byte": 2775,
+          "text": "func (p *fileParser) parseHunks() ([]*Hunk, error) {\n\tb, err := p.r.Peek(len(tokenOldFile))\n\tif err != nil {\n\t\treturn nil, ErrNoHunks\n\t}\n\tif !bytes.HasPrefix(b, []byte(tokenStartHunk)) {\n\t\tb, err := p.r.Peek(len(tokenDiffGit))\n\t\tif err != nil {\n\t\t\treturn nil, ErrNoHunks\n\t\t}\n\t\tif bytes.HasPrefix(b, []byte(tokenDiffGit)) {\n\t\t\t// git diff may contain a file diff with empty hunks.\n\t\t\t// e.g. delete an empty file.\n\t\t\treturn []*Hunk{}, nil\n\t\t}\n\t\treturn nil, ErrNoHunks\n\t}\n\tvar hunks []*Hunk\n\thp := &hunkParser{r: p.r}\n\tfor {\n\t\th, err := hp.Parse()\n\t\tif err != nil {\n\t\t\treturn nil, err\n\t\t}\n\t\tif h == nil {\n\t\t\tbreak\n\t\t}\n\t\thunks = append(hunks, h)\n\t}\n\treturn hunks, nil\n}",
+          "rank": 2,
+          "truncated": false
+        },
+        {
+          "id": "feadc3e0c3f7afcfbae510d7",
+          "revision": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7",
+          "path": "diff/parse.go",
+          "start_byte": 3549,
+          "text": "func parseFileHeader(line string) (filename, timestamp string) {\n\t// strip `+++ ` or `--- `\n\tss := line[len(tokenOldFile)+1:]\n\ttabi := strings.LastIndex(ss, \"\\t\")\n\tif tabi == -1 {\n\t\treturn ss, \"\"\n\t}\n\treturn ss[:tabi], ss[tabi+1:]\n}",
+          "rank": 2,
+          "truncated": false
+        },
+        {
+          "id": "3b8d31895563f6d4c8345af5",
+          "revision": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7",
+          "path": "diff/parse.go",
+          "start_byte": 3782,
+          "text": "func parseExtendedHeader(r *bufio.Reader) []string {\n\tvar es []string\n\tb, err := r.Peek(len(tokenDiffGit))\n\tif err != nil {\n\t\treturn nil\n\t}\n\t// if starts with 'diff --git', parse extended header\n\tif bytes.HasPrefix(b, []byte(tokenDiffGit)) {\n\t\tdiffgitline, _ := readline(r) // ignore err because we know it can read something\n\t\tes = append(es, diffgitline)\n\t\tfor {\n\t\t\tb, err := r.Peek(len(tokenDiffGit))\n\t\t\tif err != nil || bytes.HasPrefix(b, []byte(tokenOldFile)) || bytes.HasPrefix(b, []byte(tokenDiffGit)) {\n\t\t\t\tbreak\n\t\t\t}\n\t\t\tline, _ := readline(r)\n\t\t\tes = append(es, string(line))\n\t\t}\n\t}\n\treturn es\n}",
+          "rank": 2,
+          "truncated": false
+        },
+        {
+          "id": "9a46dbf33c002853ae1ea892",
+          "revision": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7",
+          "path": "diff/parse.go",
+          "start_byte": 3836,
+          "text": "var es []string",
+          "rank": 2,
+          "truncated": false
+        },
+        {
+          "id": "c7a4a2dfda677c37686e75c6",
+          "revision": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7",
+          "path": "diff/parse.go",
+          "start_byte": 4388,
+          "text": "type hunkParser struct {\n\tr        *bufio.Reader\n\tlnumdiff int\n}",
+          "rank": 2,
+          "truncated": false
+        },
+        {
+          "id": "6f6f45d3a89dc87823cb84aa",
+          "revision": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7",
+          "path": "diff/parse.go",
+          "start_byte": 4454,
+          "text": "func (p *hunkParser) Parse() (*Hunk, error) {\n\tif b, err := p.r.Peek(len(tokenStartHunk)); err != nil || !bytes.HasPrefix(b, []byte(tokenStartHunk)) {\n\t\treturn nil, nil\n\t}\n\trangeline, _ := readline(p.r)\n\thr, err := parseHunkRange(rangeline)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\thunk := &Hunk{\n\t\tStartLineOld:  hr.lold,\n\t\tLineLengthOld: hr.sold,\n\t\tStartLineNew:  hr.lnew,\n\t\tLineLengthNew: hr.snew,\n\t\tSection:       hr.section,\n\t}\n\tlold := hr.lold\n\tlnew := hr.lnew\nendhunk:\n\tfor !p.done(lold, lnew, hr) {\n\t\tb, err := p.r.Peek(1)\n\t\tif err != nil {\n\t\t\tbreak\n\t\t}\n\t\ttoken := string(b)\n\t\tswitch token {\n\t\tcase tokenUnchangedLine, tokenAddedLine, tokenDeletedLine:\n\t\t\tp.lnumdiff++\n\t\t\tl, _ := readline(p.r)\n\t\t\tline := &Line{Content: l[len(token):]} // trim first token\n\t\t\tswitch token {\n\t\t\tcase tokenUnchangedLine:\n\t\t\t\tline.Type = LineUnchanged\n\t\t\t\tline.LnumDiff = p.lnumdiff\n\t\t\t\tline.LnumOld = lold\n\t\t\t\tline.LnumNew = lnew\n\t\t\t\tlold++\n\t\t\t\tlnew++\n\t\t\tcase tokenAddedLine:\n\t\t\t\tline.Type = LineAdded\n\t\t\t\tline.LnumDiff = p.lnumdiff\n\t\t\t\tline.LnumNew = lnew\n\t\t\t\tlnew++\n\t\t\tcase tokenDeletedLine:\n\t\t\t\tline.Type = LineDeleted\n\t\t\t\tline.LnumDiff = p.lnumdiff\n\t\t\t\tline.LnumOld = lold\n\t\t\t\tlold++\n\t\t\t}\n\t\t\thunk.Lines = append(hunk.Lines, line)\n\t\tcase tokenNoNewlineAtEOF:\n\t\t\t// skip \\ No newline at end of file. just consume line\n\t\t\treadline(p.r)\n\t\tdefault:\n\t\t\tbreak endhunk\n\t\t}\n\t}\n\tp.lnumdiff++ // count up by an additional hunk\n\treturn hunk, nil\n}",
+          "rank": 2,
+          "truncated": false
+        },
+        {
+          "id": "f876910655f93f388b86c6ea",
+          "revision": "23b3cab9128b31078d4449fafaa73cd5b61f2bc7",
+          "path": "diff/parse.go",
+          "start_byte": 5882,
+          "text": "func (p *hunkParser) done(lold, lnew int, ",
+          "rank": 2,
+          "truncated": true
+        }
+      ]
+    },
+    "retrieval": {
+      "unresolved": [
+        {
+          "side": "ours",
+          "identifier": "cookieman",
+          "reason": "no-unique-declaration-established"
+        },
+        {
+          "side": "ours",
+          "identifier": "Cipher",
+          "reason": "no-unique-declaration-established"
+        },
+        {
+          "side": "ours",
+          "identifier": "Encrypt",
+          "reason": "no-unique-declaration-established"
+        },
+        {
+          "side": "ours",
+          "identifier": "byte",
+          "reason": "no-unique-declaration-established"
+        },
+        {
+          "side": "ours",
+          "identifier": "error",
+          "reason": "no-unique-declaration-established"
+        },
+        {
+          "side": "ours",
+          "identifier": "Decrypt",
+          "reason": "no-unique-declaration-established"
+        },
+        {
+          "side": "ours",
+          "identifier": "ciphertext",
+          "reason": "no-unique-declaration-established"
+        },
+        {
+          "side": "ours",
+          "identifier": "CookieMan",
+          "reason": "no-unique-declaration-established"
+        },
+        {
+          "side": "ours",
+          "identifier": "defaultOpt",
+          "reason": "no-unique-declaration-established"
+        },
+        {
+          "side": "ours",
+          "identifier": "CookieOption",
+          "reason": "no-unique-declaration-established"
+        },
+        {
+          "side": "ours",
+          "identifier": "cipher",
+          "reason": "no-unique-declaration-established"
+        },
+        {
+          "side": "ours",
+          "identifier": "http",
+          "reason": "no-unique-declaration-established"
+        },
+        {
+          "side": "ours",
+          "identifier": "Cookie",
+          "reason": "no-unique-declaration-established"
+        },
+        {
+          "side": "ours",
+          "identifier": "CookieStore",
+          "reason": "no-unique-declaration-established"
+        },
+        {
+          "side": "ours",
+          "identifier": "name",
+          "reason": "no-unique-declaration-established"
+        },
+        {
+          "side": "ours",
+          "identifier": "string",
+          "reason": "no-unique-declaration-established"
+        },
+        {
+          "side": "ours",
+          "identifier": "cs",
+          "reason": "ambiguous",
+          "candidates": [
+            {
+              "path": "cmd/reviewdog/main.go",
+              "start": 5365
+            },
+            {
+              "path": "doghouse/server/cookieman/cookieman.go",
+              "start": 384
+            },
+            {
+              "path": "doghouse/server/cookieman/cookieman.go",
+              "start": 442
+            },
+            {
+              "path": "doghouse/server/cookieman/cookieman.go",
+              "start": 569
+            },
+            {
+              "path": "doghouse/server/cookieman/cookieman.go",
+              "start": 671
+            },
+            {
+              "path": "parser.go",
+              "start": 2349
+            }
+          ]
+        },
+        {
+          "side": "ours",
+          "identifier": "Name",
+          "reason": "no-unique-declaration-established"
+        },
+        {
+          "side": "ours",
+          "identifier": "Set",
+          "reason": "no-unique-declaration-established"
+        },
+        {
+          "side": "ours",
+          "identifier": "w",
+          "reason": "ambiguous",
+          "candidates": [
+            {
+              "path": "reviewdog.go",
+              "start": 2011
+            },
+            {
+              "path": "reviewdog.go",
+              "start": 2692
+            }
+          ]
+        },
+        {
+          "side": "ours",
+          "identifier": "ResponseWriter",
+          "reason": "no-unique-declaration-established"
+        },
+        {
+          "side": "ours",
+          "identifier": "value",
+          "reason": "no-unique-declaration-established"
+        },
+        {
+          "side": "ours",
+          "identifier": "Get",
+          "reason": "no-unique-declaration-established"
+        },
+        {
+          "side": "ours",
+          "identifier": "Request",
+          "reason": "no-unique-declaration-established"
+        },
+        {
+          "side": "ours",
+          "identifier": "Clear",
+          "reason": "no-unique-declaration-established"
+        },
+        {
+          "side": "ours",
+          "identifier": "New",
+          "reason": "ambiguous",
+          "candidates": [
+            {
+              "path": "doghouse/client/client.go",
+              "start": 661
+            },
+            {
+              "path": "doghouse/server/cookieman/cookieman.go",
+              "start": 760
+            }
+          ]
+        },
+        {
+          "side": "ours",
+          "identifier": "c",
+          "reason": "ambiguous",
+          "candidates": [
+            {
+              "path": "doghouse/appengine/github_webhook.go",
+              "start": 1565
+            },
+            {
+              "path": "doghouse/client/client.go",
+              "start": 1071
+            },
+            {
+              "path": "doghouse/server/cookieman/cookieman.go",
+              "start": 884
+            },
+            {
+              "path": "doghouse/server/cookieman/cookieman.go",
+              "start": 1047
+            },
+            {
+              "path": "doghouse/server/cookieman/cookieman.go",
+              "start": 1309
+            },
+            {
+              "path": "doghouse/server/cookieman/cookieman.go",
+              "start": 1594
+            },
+            {
+              "path": "doghouse/server/cookieman/cookieman.go",
+              "start": 1746
+            },
+            {
+              "path": "doghouse/server/github_checker.go",
+              "start": 484
+            },
+            {
+              "path": "doghouse/server/github_checker.go",
+              "start": 692
+            },
+            {
+              "path": "doghouse/server/github_checker.go",
+              "start": 950
+            }
+          ]
+        },
+        {
+          "side": "ours",
+          "identifier": "NewCookieStore",
+          "reason": "no-unique-declaration-established"
+        },
+        {
+          "side": "ours",
+          "identifier": "v",
+          "reason": "no-unique-declaration-established"
+        },
+        {
+          "side": "ours",
+          "identifier": "err",
+          "reason": "ambiguous",
+          "candidates": [
+            {
+              "path": "cmd/reviewdog/main.go",
+              "start": 9921
+            },
+            {
+              "path": "doghouse/client/client.go",
+              "start": 929
+            }
+          ]
+        },
+        {
+          "side": "ours",
+          "identifier": "SetCookie",
+          "reason": "no-unique-declaration-established"
+        },
+        {
+          "side": "ours",
+          "identifier": "cookie",
+          "reason": "no-unique-declaration-established"
+        },
+        {
+          "side": "ours",
+          "identifier": "base64",
+          "reason": "no-unique-declaration-established"
+        },
+        {
+          "side": "ours",
+          "identifier": "URLEncoding",
+          "reason": "no-unique-declaration-established"
+        },
+        {
+          "side": "ours",
+          "identifier": "EncodeToString",
+          "reason": "no-unique-declaration-established"
+        },
+        {
+          "side": "ours",
+          "identifier": "DecodeString",
+          "reason": "no-unique-declaration-established"
+        },
+        {
+          "side": "ours",
+          "identifier": "Value",
+          "reason": "no-unique-declaration-established"
+        },
+        {
+          "side": "ours",
+          "identifier": "MaxAge",
+          "reason": "no-unique-declaration-established"
+        },
+        {
+          "side": "ours",
+          "identifier": "Path",
+          "reason": "no-unique-declaration-established"
+        },
+        {
+          "side": "ours",
+          "identifier": "Domain",
+          "reason": "no-unique-declaration-established"
+        },
+        {
+          "side": "ours",
+          "identifier": "Expires",
+          "reason": "no-unique-declaration-established"
+        },
+        {
+          "side": "ours",
+          "identifier": "IsZero",
+          "reason": "no-unique-declaration-established"
+        },
+        {
+          "side": "ours",
+          "identifier": "Secure",
+          "reason": "no-unique-declaration-established"
+        },
+        {
+          "side": "ours",
+          "identifier": "HttpOnly",
+          "reason": "no-unique-declaration-established"
+        },
+        {
+          "side": "theirs",
+          "identifier": "cookieman",
+          "reason": "no-unique-declaration-established"
+        },
+        {
+          "side": "theirs",
+          "identifier": "Cipher",
+          "reason": "no-unique-declaration-established"
+        },
+        {
+          "side": "theirs",
+          "identifier": "Encrypt",
+          "reason": "no-unique-declaration-established"
+        },
+        {
+          "side": "theirs",
+          "identifier": "byte",
+          "reason": "no-unique-declaration-established"
+        },
+        {
+          "side": "theirs",
+          "identifier": "error",
+          "reason": "no-unique-declaration-established"
+        },
+        {
+          "side": "theirs",
+          "identifier": "Decrypt",
+          "reason": "no-unique-declaration-established"
+        },
+        {
+          "side": "theirs",
+          "identifier": "ciphertext",
+          "reason": "no-unique-declaration-established"
+        },
+        {
+          "side": "theirs",
+          "identifier": "CookieMan",
+          "reason": "no-unique-declaration-established"
+        },
+        {
+          "side": "theirs",
+          "identifier": "defaultOpt",
+          "reason": "no-unique-declaration-established"
+        },
+        {
+          "side": "theirs",
+          "identifier": "CookieOption",
+          "reason": "no-unique-declaration-established"
+        },
+        {
+          "side": "theirs",
+          "identifier": "cipher",
+          "reason": "no-unique-declaration-established"
+        },
+        {
+          "side": "theirs",
+          "identifier": "http",
+          "reason": "no-unique-declaration-established"
+        },
+        {
+          "side": "theirs",
+          "identifier": "Cookie",
+          "reason": "no-unique-declaration-established"
+        },
+        {
+          "side": "theirs",
+          "identifier": "CookieStore",
+          "reason": "no-unique-declaration-established"
+        },
+        {
+          "side": "theirs",
+          "identifier": "name",
+          "reason": "no-unique-declaration-established"
+        },
+        {
+          "side": "theirs",
+          "identifier": "string",
+          "reason": "no-unique-declaration-established"
+        },
+        {
+          "side": "theirs",
+          "identifier": "cs",
+          "reason": "ambiguous",
+          "candidates": [
+            {
+              "path": "cmd/reviewdog/main.go",
+              "start": 5365
+            },
+            {
+              "path": "doghouse/server/cookieman/cookieman.go",
+              "start": 603
+            },
+            {
+              "path": "doghouse/server/cookieman/cookieman.go",
+              "start": 687
+            },
+            {
+              "path": "doghouse/server/cookieman/cookieman.go",
+              "start": 843
+            },
+            {
+              "path": "doghouse/server/cookieman/cookieman.go",
+              "start": 973
+            },
+            {
+              "path": "parser.go",
+              "start": 2349
+            }
+          ]
+        },
+        {
+          "side": "theirs",
+          "identifier": "Name",
+          "reason": "no-unique-declaration-established"
+        },
+        {
+          "side": "theirs",
+          "identifier": "Set",
+          "reason": "no-unique-declaration-established"
+        },
+        {
+          "side": "theirs",
+          "identifier": "w",
+          "reason": "ambiguous",
+          "candidates": [
+            {
+              "path": "reviewdog.go",
+              "start": 2011
+            },
+            {
+              "path": "reviewdog.go",
+              "start": 2692
+            }
+          ]
+        },
+        {
+          "side": "theirs",
+          "identifier": "ResponseWriter",
+          "reason": "no-unique-declaration-established"
+        },
+        {
+          "side": "theirs",
+          "identifier": "value",
+          "reason": "no-unique-declaration-established"
+        },
+        {
+          "side": "theirs",
+          "identifier": "Get",
+          "reason": "no-unique-declaration-established"
+        },
+        {
+          "side": "theirs",
+          "identifier": "Request",
+          "reason": "no-unique-declaration-established"
+        },
+        {
+          "side": "theirs",
+          "identifier": "Clear",
+          "reason": "no-unique-declaration-established"
+        },
+        {
+          "side": "theirs",
+          "identifier": "New",
+          "reason": "ambiguous",
+          "candidates": [
+            {
+              "path": "doghouse/client/client.go",
+              "start": 661
+            },
+            {
+              "path": "doghouse/server/cookieman/cookieman.go",
+              "start": 1119
+            }
+          ]
+        },
+        {
+          "side": "theirs",
+          "identifier": "c",
+          "reason": "ambiguous",
+          "candidates": [
+            {
+              "path": "doghouse/client/client.go",
+              "start": 1071
+            },
+            {
+              "path": "doghouse/server/cookieman/cookieman.go",
+              "start": 1364
+            },
+            {
+              "path": "doghouse/server/cookieman/cookieman.go",
+              "start": 1547
+            },
+            {
+              "path": "doghouse/server/cookieman/cookieman.go",
+              "start": 1850
+            },
+            {
+              "path": "doghouse/server/cookieman/cookieman.go",
+              "start": 2177
+            },
+            {
+              "path": "doghouse/server/cookieman/cookieman.go",
+              "start": 2329
+            }
+          ]
+        },
+        {
+          "side": "theirs",
+          "identifier": "NewCookieStore",
+          "reason": "no-unique-declaration-established"
+        },
+        {
+          "side": "theirs",
+          "identifier": "v",
+          "reason": "no-unique-declaration-established"
+        },
+        {
+          "side": "theirs",
+          "identifier": "err",
+          "reason": "ambiguous",
+          "candidates": [
+            {
+              "path": "cmd/reviewdog/main.go",
+              "start": 9921
+            },
+            {
+              "path": "doghouse/client/client.go",
+              "start": 929
+            }
+          ]
+        },
+        {
+          "side": "theirs",
+          "identifier": "SetCookie",
+          "reason": "no-unique-declaration-established"
+        },
+        {
+          "side": "theirs",
+          "identifier": "cookie",
+          "reason": "no-unique-declaration-established"
+        },
+        {
+          "side": "theirs",
+          "identifier": "base64",
+          "reason": "no-unique-declaration-established"
+        },
+        {
+          "side": "theirs",
+          "identifier": "URLEncoding",
+          "reason": "no-unique-declaration-established"
+        },
+        {
+          "side": "theirs",
+          "identifier": "EncodeToString",
+          "reason": "no-unique-declaration-established"
+        },
+        {
+          "side": "theirs",
+          "identifier": "DecodeString",
+          "reason": "no-unique-declaration-established"
+        },
+        {
+          "side": "theirs",
+          "identifier": "Value",
+          "reason": "no-unique-declaration-established"
+        },
+        {
+          "side": "theirs",
+          "identifier": "MaxAge",
+          "reason": "no-unique-declaration-established"
+        },
+        {
+          "side": "theirs",
+          "identifier": "Path",
+          "reason": "no-unique-declaration-established"
+        },
+        {
+          "side": "theirs",
+          "identifier": "Domain",
+          "reason": "no-unique-declaration-established"
+        },
+        {
+          "side": "theirs",
+          "identifier": "Expires",
+          "reason": "no-unique-declaration-established"
+        },
+        {
+          "side": "theirs",
+          "identifier": "IsZero",
+          "reason": "no-unique-declaration-established"
+        },
+        {
+          "side": "theirs",
+          "identifier": "Secure",
+          "reason": "no-unique-declaration-established"
+        },
+        {
+          "side": "theirs",
+          "identifier": "HttpOnly",
+          "reason": "no-unique-declaration-established"
+        }
+      ],
+      "method": "syntax-ranges-and-identifier-candidates/2",
+      "budget_bytes": 32768,
+      "libraries": {
+        "C": "cbbd4827ee02cd5c018ab41f10d8404ff8741159054b352d9a6d763c506ba3c7",
+        "Go": "1612f8fd958ba1ec981bf4b91e2ff399f1e54d26a9da68e5b60b0d7cd00616fc"
+      }
+    },
+    "baselines": {
+      "keep-ours": {
+        "resolution": "package cookieman\n\nimport (\n\t\"encoding/base64\"\n\t\"net/http\"\n)\n\ntype Cipher interface {\n\tEncrypt(plaintext []byte) ([]byte, error)\n\tDecrypt(ciphertext []byte) ([]byte, error)\n}\n\ntype CookieMan struct {\n\tdefaultOpt CookieOption\n\tcipher     Cipher\n}\n\ntype CookieOption struct {\n\thttp.Cookie\n}\n\ntype CookieStore struct {\n\tname      string\n\tcookieman *CookieMan\n\topt       *CookieOption\n}\n\nfunc (cs *CookieStore) Name() string {\n\treturn cs.name\n}\n\nfunc (cs *CookieStore) Set(w http.ResponseWriter, value []byte) error {\n\treturn cs.cookieman.Set(w, cs.name, value, cs.opt)\n}\n\nfunc (cs *CookieStore) Get(r *http.Request) ([]byte, error) {\n\treturn cs.cookieman.Get(r, cs.name)\n}\n\nfunc (cs *CookieStore) Clear(w http.ResponseWriter) {\n\tcs.cookieman.Clear(w, cs.name)\n}\n\nfunc New(cipher Cipher, defaultOpt CookieOption) *CookieMan {\n\treturn &CookieMan{defaultOpt: defaultOpt, cipher: cipher}\n}\n\nfunc (c *CookieMan) NewCookieStore(name string, opt *CookieOption) *CookieStore {\n\treturn &CookieStore{\n\t\tname:      name,\n\t\tcookieman: c,\n\t\topt:       opt,\n\t}\n}\n\nfunc (c *CookieMan) Set(w http.ResponseWriter, name string, value []byte, opt *CookieOption) error {\n\tv, err := c.cipher.Encrypt(value)\n\tif err != nil {\n\t\treturn err\n\t}\n\thttp.SetCookie(w, c.cookie(name, base64.URLEncoding.EncodeToString(v), opt))\n\treturn nil\n}\n\nfunc (c *CookieMan) Get(r *http.Request, name string) ([]byte, error) {\n\tcookie, err := r.Cookie(name)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\tciphertext, err := base64.URLEncoding.DecodeString(cookie.Value)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\treturn c.cipher.Decrypt(ciphertext)\n}\n\nfunc (c *CookieMan) Clear(w http.ResponseWriter, name string) {\n\topt := &CookieOption{}\n\topt.MaxAge = -1\n\thttp.SetCookie(w, c.cookie(name, \"\", opt))\n}\n\nfunc (c *CookieMan) cookie(name, value string, opt *CookieOption) *http.Cookie {\n\tcookie := c.defaultOpt.Cookie\n\tcookie.Name = name\n\tcookie.Value = value\n\tif opt == nil {\n\t\treturn &cookie\n\t}\n\tif opt.Path != \"\" {\n\t\tcookie.Path = opt.Path\n\t}\n\tif opt.Domain != \"\" {\n\t\tcookie.Domain = opt.Domain\n\t}\n\tif opt.MaxAge != 0 {\n\t\tcookie.MaxAge = opt.MaxAge\n\t}\n\tif !opt.Expires.IsZero() {\n\t\tcookie.Expires = opt.Expires\n\t}\n\tif opt.Secure {\n\t\tcookie.Secure = opt.Secure\n\t}\n\tif opt.HttpOnly {\n\t\tcookie.HttpOnly = opt.HttpOnly\n\t}\n\treturn &cookie\n}\n",
+        "evaluation": {
+          "pass": true,
+          "category": "behavioral-pass",
+          "candidate_sha256": "014381e8a7d9ba1e76fdc88bf4aa068112ffe3bb03bf6d5222c5124a1cf327e6",
+          "environment_sha256": "09d0267aa199b98d654a9a8f968bca5f65d32e1bf7f347f2fd18486aa36abfbf",
+          "stages": [
+            {
+              "stage": "build",
+              "command": [
+                "/bin/sh",
+                "/oracle/build.sh"
+              ],
+              "status": 0,
+              "signal": null,
+              "error": null,
+              "stdout": "",
+              "stderr": ""
+            },
+            {
+              "stage": "test",
+              "command": [
+                "/bin/sh",
+                "/oracle/test.sh"
+              ],
+              "status": 0,
+              "signal": null,
+              "error": null,
+              "stdout": "=== RUN   TestCookieStore_Set_Get\n--- PASS: TestCookieStore_Set_Get (0.00s)\n=== RUN   TestCookieStore_Set_encrypt_failure\n--- PASS: TestCookieStore_Set_encrypt_failure (0.00s)\n=== RUN   TestCookieStore_Get_decrypt_failure\n--- PASS: TestCookieStore_Get_decrypt_failure (0.00s)\n=== RUN   TestCookieStore_Get_decode_base64_error\n--- PASS: TestCookieStore_Get_decode_base64_error (0.00s)\n=== RUN   TestCookieStore_Get_not_found\n--- PASS: TestCookieStore_Get_not_found (0.00s)\n=== RUN   TestCookieStore_Clear\n--- PASS: TestCookieStore_Clear (0.00s)\n=== RUN   TestCookieOption\n--- PASS: TestCookieOption (0.00s)\nPASS\n",
+              "stderr": ""
+            }
+          ],
+          "completion": [
+            {
+              "pattern": "^PASS$",
+              "count": 1,
+              "observed": 1,
+              "pass": true
+            },
+            {
+              "pattern": "^--- PASS: Test",
+              "count": 7,
+              "observed": 7,
+              "pass": true
+            }
+          ]
+        }
+      },
+      "keep-theirs": {
+        "resolution": "package cookieman\n\nimport (\n\t\"encoding/base64\"\n\t\"net/http\"\n)\n\n// Cipher is crypt interface to encrypt/decrypt cookie.\ntype Cipher interface {\n\tEncrypt(plaintext []byte) ([]byte, error)\n\tDecrypt(ciphertext []byte) ([]byte, error)\n}\n\n// CookieMan manages cookies.\ntype CookieMan struct {\n\tdefaultOpt CookieOption\n\tcipher     Cipher\n}\n\n// CookieOption represents cookie options.\ntype CookieOption struct {\n\thttp.Cookie\n}\n\n// CookieStore stores a cookie.\ntype CookieStore struct {\n\tname      string\n\tcookieman *CookieMan\n\topt       *CookieOption\n}\n\n// Name returns the cookie name this CookieStore manages.\nfunc (cs *CookieStore) Name() string {\n\treturn cs.name\n}\n\n// Set sets cookie value.\nfunc (cs *CookieStore) Set(w http.ResponseWriter, value []byte) error {\n\treturn cs.cookieman.Set(w, cs.name, value, cs.opt)\n}\n\n// Get returns cookie value.\nfunc (cs *CookieStore) Get(r *http.Request) ([]byte, error) {\n\treturn cs.cookieman.Get(r, cs.name)\n}\n\n// Clear clears the cookie.\nfunc (cs *CookieStore) Clear(w http.ResponseWriter) {\n\tcs.cookieman.Clear(w, cs.name)\n}\n\n// New returns new CookieMan with default cookie option.\nfunc New(cipher Cipher, defaultOpt CookieOption) *CookieMan {\n\treturn &CookieMan{defaultOpt: defaultOpt, cipher: cipher}\n}\n\n// NewCookieStore returns new CookieStore which mangages cookie whose key is\n// given name and with given cookie option.\nfunc (c *CookieMan) NewCookieStore(name string, opt *CookieOption) *CookieStore {\n\treturn &CookieStore{\n\t\tname:      name,\n\t\tcookieman: c,\n\t\topt:       opt,\n\t}\n}\n\n// Set sets cookie.\nfunc (c *CookieMan) Set(w http.ResponseWriter, name string, value []byte, opt *CookieOption) error {\n\tv, err := c.cipher.Encrypt(value)\n\tif err != nil {\n\t\treturn err\n\t}\n\thttp.SetCookie(w, c.cookie(name, base64.URLEncoding.EncodeToString(v), opt))\n\treturn nil\n}\n\n// Get returns a cookie with given name.\nfunc (c *CookieMan) Get(r *http.Request, name string) ([]byte, error) {\n\tcookie, err := r.Cookie(name)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\tciphertext, err := base64.URLEncoding.DecodeString(cookie.Value)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\treturn c.cipher.Decrypt(ciphertext)\n}\n\n// Clear clears a cookie with given name.\nfunc (c *CookieMan) Clear(w http.ResponseWriter, name string) {\n\topt := &CookieOption{}\n\topt.MaxAge = -1\n\thttp.SetCookie(w, c.cookie(name, \"\", opt))\n}\n\nfunc (c *CookieMan) cookie(name, value string, opt *CookieOption) *http.Cookie {\n\tcookie := c.defaultOpt.Cookie\n\tcookie.Name = name\n\tcookie.Value = value\n\tif opt == nil {\n\t\treturn &cookie\n\t}\n\tif opt.Path != \"\" {\n\t\tcookie.Path = opt.Path\n\t}\n\tif opt.Domain != \"\" {\n\t\tcookie.Domain = opt.Domain\n\t}\n\tif opt.MaxAge != 0 {\n\t\tcookie.MaxAge = opt.MaxAge\n\t}\n\tif !opt.Expires.IsZero() {\n\t\tcookie.Expires = opt.Expires\n\t}\n\tif opt.Secure {\n\t\tcookie.Secure = opt.Secure\n\t}\n\tif opt.HttpOnly {\n\t\tcookie.HttpOnly = opt.HttpOnly\n\t}\n\treturn &cookie\n}\n",
+        "evaluation": {
+          "pass": true,
+          "category": "behavioral-pass",
+          "candidate_sha256": "f6533cd4dc36e8f180fb213a2cf35f559376591d0f43ba515bad5674d0952db5",
+          "environment_sha256": "09d0267aa199b98d654a9a8f968bca5f65d32e1bf7f347f2fd18486aa36abfbf",
+          "stages": [
+            {
+              "stage": "build",
+              "command": [
+                "/bin/sh",
+                "/oracle/build.sh"
+              ],
+              "status": 0,
+              "signal": null,
+              "error": null,
+              "stdout": "",
+              "stderr": ""
+            },
+            {
+              "stage": "test",
+              "command": [
+                "/bin/sh",
+                "/oracle/test.sh"
+              ],
+              "status": 0,
+              "signal": null,
+              "error": null,
+              "stdout": "=== RUN   TestCookieStore_Set_Get\n--- PASS: TestCookieStore_Set_Get (0.00s)\n=== RUN   TestCookieStore_Set_encrypt_failure\n--- PASS: TestCookieStore_Set_encrypt_failure (0.00s)\n=== RUN   TestCookieStore_Get_decrypt_failure\n--- PASS: TestCookieStore_Get_decrypt_failure (0.00s)\n=== RUN   TestCookieStore_Get_decode_base64_error\n--- PASS: TestCookieStore_Get_decode_base64_error (0.00s)\n=== RUN   TestCookieStore_Get_not_found\n--- PASS: TestCookieStore_Get_not_found (0.00s)\n=== RUN   TestCookieStore_Clear\n--- PASS: TestCookieStore_Clear (0.00s)\n=== RUN   TestCookieOption\n--- PASS: TestCookieOption (0.00s)\nPASS\n",
+              "stderr": ""
+            }
+          ],
+          "completion": [
+            {
+              "pattern": "^PASS$",
+              "count": 1,
+              "observed": 1,
+              "pass": true
+            },
+            {
+              "pattern": "^--- PASS: Test",
+              "count": 7,
+              "observed": 7,
+              "pass": true
+            }
+          ]
+        }
+      },
+      "longer-side": {
+        "resolution": "package cookieman\n\nimport (\n\t\"encoding/base64\"\n\t\"net/http\"\n)\n\n// Cipher is crypt interface to encrypt/decrypt cookie.\ntype Cipher interface {\n\tEncrypt(plaintext []byte) ([]byte, error)\n\tDecrypt(ciphertext []byte) ([]byte, error)\n}\n\n// CookieMan manages cookies.\ntype CookieMan struct {\n\tdefaultOpt CookieOption\n\tcipher     Cipher\n}\n\n// CookieOption represents cookie options.\ntype CookieOption struct {\n\thttp.Cookie\n}\n\n// CookieStore stores a cookie.\ntype CookieStore struct {\n\tname      string\n\tcookieman *CookieMan\n\topt       *CookieOption\n}\n\n// Name returns the cookie name this CookieStore manages.\nfunc (cs *CookieStore) Name() string {\n\treturn cs.name\n}\n\n// Set sets cookie value.\nfunc (cs *CookieStore) Set(w http.ResponseWriter, value []byte) error {\n\treturn cs.cookieman.Set(w, cs.name, value, cs.opt)\n}\n\n// Get returns cookie value.\nfunc (cs *CookieStore) Get(r *http.Request) ([]byte, error) {\n\treturn cs.cookieman.Get(r, cs.name)\n}\n\n// Clear clears the cookie.\nfunc (cs *CookieStore) Clear(w http.ResponseWriter) {\n\tcs.cookieman.Clear(w, cs.name)\n}\n\n// New returns new CookieMan with default cookie option.\nfunc New(cipher Cipher, defaultOpt CookieOption) *CookieMan {\n\treturn &CookieMan{defaultOpt: defaultOpt, cipher: cipher}\n}\n\n// NewCookieStore returns new CookieStore which mangages cookie whose key is\n// given name and with given cookie option.\nfunc (c *CookieMan) NewCookieStore(name string, opt *CookieOption) *CookieStore {\n\treturn &CookieStore{\n\t\tname:      name,\n\t\tcookieman: c,\n\t\topt:       opt,\n\t}\n}\n\n// Set sets cookie.\nfunc (c *CookieMan) Set(w http.ResponseWriter, name string, value []byte, opt *CookieOption) error {\n\tv, err := c.cipher.Encrypt(value)\n\tif err != nil {\n\t\treturn err\n\t}\n\thttp.SetCookie(w, c.cookie(name, base64.URLEncoding.EncodeToString(v), opt))\n\treturn nil\n}\n\n// Get returns a cookie with given name.\nfunc (c *CookieMan) Get(r *http.Request, name string) ([]byte, error) {\n\tcookie, err := r.Cookie(name)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\tciphertext, err := base64.URLEncoding.DecodeString(cookie.Value)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\treturn c.cipher.Decrypt(ciphertext)\n}\n\n// Clear clears a cookie with given name.\nfunc (c *CookieMan) Clear(w http.ResponseWriter, name string) {\n\topt := &CookieOption{}\n\topt.MaxAge = -1\n\thttp.SetCookie(w, c.cookie(name, \"\", opt))\n}\n\nfunc (c *CookieMan) cookie(name, value string, opt *CookieOption) *http.Cookie {\n\tcookie := c.defaultOpt.Cookie\n\tcookie.Name = name\n\tcookie.Value = value\n\tif opt == nil {\n\t\treturn &cookie\n\t}\n\tif opt.Path != \"\" {\n\t\tcookie.Path = opt.Path\n\t}\n\tif opt.Domain != \"\" {\n\t\tcookie.Domain = opt.Domain\n\t}\n\tif opt.MaxAge != 0 {\n\t\tcookie.MaxAge = opt.MaxAge\n\t}\n\tif !opt.Expires.IsZero() {\n\t\tcookie.Expires = opt.Expires\n\t}\n\tif opt.Secure {\n\t\tcookie.Secure = opt.Secure\n\t}\n\tif opt.HttpOnly {\n\t\tcookie.HttpOnly = opt.HttpOnly\n\t}\n\treturn &cookie\n}\n",
+        "evaluation": {
+          "pass": true,
+          "category": "behavioral-pass",
+          "candidate_sha256": "f6533cd4dc36e8f180fb213a2cf35f559376591d0f43ba515bad5674d0952db5",
+          "environment_sha256": "09d0267aa199b98d654a9a8f968bca5f65d32e1bf7f347f2fd18486aa36abfbf",
+          "stages": [
+            {
+              "stage": "build",
+              "command": [
+                "/bin/sh",
+                "/oracle/build.sh"
+              ],
+              "status": 0,
+              "signal": null,
+              "error": null,
+              "stdout": "",
+              "stderr": ""
+            },
+            {
+              "stage": "test",
+              "command": [
+                "/bin/sh",
+                "/oracle/test.sh"
+              ],
+              "status": 0,
+              "signal": null,
+              "error": null,
+              "stdout": "=== RUN   TestCookieStore_Set_Get\n--- PASS: TestCookieStore_Set_Get (0.00s)\n=== RUN   TestCookieStore_Set_encrypt_failure\n--- PASS: TestCookieStore_Set_encrypt_failure (0.00s)\n=== RUN   TestCookieStore_Get_decrypt_failure\n--- PASS: TestCookieStore_Get_decrypt_failure (0.00s)\n=== RUN   TestCookieStore_Get_decode_base64_error\n--- PASS: TestCookieStore_Get_decode_base64_error (0.00s)\n=== RUN   TestCookieStore_Get_not_found\n--- PASS: TestCookieStore_Get_not_found (0.00s)\n=== RUN   TestCookieStore_Clear\n--- PASS: TestCookieStore_Clear (0.00s)\n=== RUN   TestCookieOption\n--- PASS: TestCookieOption (0.00s)\nPASS\n",
+              "stderr": ""
+            }
+          ],
+          "completion": [
+            {
+              "pattern": "^PASS$",
+              "count": 1,
+              "observed": 1,
+              "pass": true
+            },
+            {
+              "pattern": "^--- PASS: Test",
+              "count": 7,
+              "observed": 7,
+              "pass": true
+            }
+          ]
+        }
+      },
+      "git-union": {
+        "resolution": "package cookieman\n\nimport (\n\t\"encoding/base64\"\n\t\"net/http\"\n)\n\n// Cipher is crypt interface to encrypt/decrypt cookie.\ntype Cipher interface {\n\tEncrypt(plaintext []byte) ([]byte, error)\n\tDecrypt(ciphertext []byte) ([]byte, error)\n}\n\n// CookieMan manages cookies.\ntype CookieMan struct {\n\tdefaultOpt CookieOption\n\tcipher     Cipher\n}\n\n// CookieOption represents cookie options.\ntype CookieOption struct {\n\thttp.Cookie\n}\n\n// CookieStore stores a cookie.\ntype CookieStore struct {\n\tname      string\n\tcookieman *CookieMan\n\topt       *CookieOption\n}\n\n// Name returns the cookie name this CookieStore manages.\nfunc (cs *CookieStore) Name() string {\n\treturn cs.name\n}\n\n// Set sets cookie value.\nfunc (cs *CookieStore) Set(w http.ResponseWriter, value []byte) error {\n\treturn cs.cookieman.Set(w, cs.name, value, cs.opt)\n}\n\n// Get returns cookie value.\nfunc (cs *CookieStore) Get(r *http.Request) ([]byte, error) {\n\treturn cs.cookieman.Get(r, cs.name)\n}\n\n// Clear clears the cookie.\nfunc (cs *CookieStore) Clear(w http.ResponseWriter) {\n\tcs.cookieman.Clear(w, cs.name)\n}\n\n// New returns new CookieMan with default cookie option.\nfunc New(cipher Cipher, defaultOpt CookieOption) *CookieMan {\n\treturn &CookieMan{defaultOpt: defaultOpt, cipher: cipher}\n}\n\n// NewCookieStore returns new CookieStore which mangages cookie whose key is\n// given name and with given cookie option.\nfunc (c *CookieMan) NewCookieStore(name string, opt *CookieOption) *CookieStore {\n\treturn &CookieStore{\n\t\tname:      name,\n\t\tcookieman: c,\n\t\topt:       opt,\n\t}\n}\n\n// Set sets cookie.\nfunc (c *CookieMan) Set(w http.ResponseWriter, name string, value []byte, opt *CookieOption) error {\n\tv, err := c.cipher.Encrypt(value)\n\tif err != nil {\n\t\treturn err\n\t}\n\thttp.SetCookie(w, c.cookie(name, base64.URLEncoding.EncodeToString(v), opt))\n\treturn nil\n}\n\n// Get returns a cookie with given name.\nfunc (c *CookieMan) Get(r *http.Request, name string) ([]byte, error) {\n\tcookie, err := r.Cookie(name)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\tciphertext, err := base64.URLEncoding.DecodeString(cookie.Value)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\treturn c.cipher.Decrypt(ciphertext)\n}\n\n// Clear clears a cookie with given name.\nfunc (c *CookieMan) Clear(w http.ResponseWriter, name string) {\n\topt := &CookieOption{}\n\topt.MaxAge = -1\n\thttp.SetCookie(w, c.cookie(name, \"\", opt))\n}\n\nfunc (c *CookieMan) cookie(name, value string, opt *CookieOption) *http.Cookie {\n\tcookie := c.defaultOpt.Cookie\n\tcookie.Name = name\n\tcookie.Value = value\n\tif opt == nil {\n\t\treturn &cookie\n\t}\n\tif opt.Path != \"\" {\n\t\tcookie.Path = opt.Path\n\t}\n\tif opt.Domain != \"\" {\n\t\tcookie.Domain = opt.Domain\n\t}\n\tif opt.MaxAge != 0 {\n\t\tcookie.MaxAge = opt.MaxAge\n\t}\n\tif !opt.Expires.IsZero() {\n\t\tcookie.Expires = opt.Expires\n\t}\n\tif opt.Secure {\n\t\tcookie.Secure = opt.Secure\n\t}\n\tif opt.HttpOnly {\n\t\tcookie.HttpOnly = opt.HttpOnly\n\t}\n\treturn &cookie\n}\n",
+        "evaluation": {
+          "pass": true,
+          "category": "behavioral-pass",
+          "candidate_sha256": "f6533cd4dc36e8f180fb213a2cf35f559376591d0f43ba515bad5674d0952db5",
+          "environment_sha256": "09d0267aa199b98d654a9a8f968bca5f65d32e1bf7f347f2fd18486aa36abfbf",
+          "stages": [
+            {
+              "stage": "build",
+              "command": [
+                "/bin/sh",
+                "/oracle/build.sh"
+              ],
+              "status": 0,
+              "signal": null,
+              "error": null,
+              "stdout": "",
+              "stderr": ""
+            },
+            {
+              "stage": "test",
+              "command": [
+                "/bin/sh",
+                "/oracle/test.sh"
+              ],
+              "status": 0,
+              "signal": null,
+              "error": null,
+              "stdout": "=== RUN   TestCookieStore_Set_Get\n--- PASS: TestCookieStore_Set_Get (0.00s)\n=== RUN   TestCookieStore_Set_encrypt_failure\n--- PASS: TestCookieStore_Set_encrypt_failure (0.00s)\n=== RUN   TestCookieStore_Get_decrypt_failure\n--- PASS: TestCookieStore_Get_decrypt_failure (0.00s)\n=== RUN   TestCookieStore_Get_decode_base64_error\n--- PASS: TestCookieStore_Get_decode_base64_error (0.00s)\n=== RUN   TestCookieStore_Get_not_found\n--- PASS: TestCookieStore_Get_not_found (0.00s)\n=== RUN   TestCookieStore_Clear\n--- PASS: TestCookieStore_Clear (0.00s)\n=== RUN   TestCookieOption\n--- PASS: TestCookieOption (0.00s)\nPASS\n",
+              "stderr": ""
+            }
+          ],
+          "completion": [
+            {
+              "pattern": "^PASS$",
+              "count": 1,
+              "observed": 1,
+              "pass": true
+            },
+            {
+              "pattern": "^--- PASS: Test",
+              "count": 7,
+              "observed": 7,
+              "pass": true
+            }
+          ]
+        }
+      },
+      "always-halt": {
+        "resolution": null,
+        "evaluation": {
+          "pass": false,
+          "category": "abstain"
+        }
+      },
+      "git_text": {
+        "raw": {
+          "ok": true,
+          "value": {
+            "mechanism": "git_text",
+            "rawStatus": 1,
+            "signal": null,
+            "error": null,
+            "stderr": "",
+            "normalizedStatus": 1,
+            "hasConflictMarkers": true,
+            "durationMs": 2
+          }
+        },
+        "scope": "same-scaffold-focal-conflict",
+        "engine_error": false,
+        "output_sha256": "a578f7f9d90f1fd11ac4b277242b83eb2b8eb8d82c28c3e8d5ef4b4d168acb17",
+        "output": "<<<<<<< OURS\npackage cookieman\n\nimport (\n\t\"encoding/base64\"\n\t\"net/http\"\n)\n\ntype Cipher interface {\n\tEncrypt(plaintext []byte) ([]byte, error)\n\tDecrypt(ciphertext []byte) ([]byte, error)\n}\n\ntype CookieMan struct {\n\tdefaultOpt CookieOption\n\tcipher     Cipher\n}\n\ntype CookieOption struct {\n\thttp.Cookie\n}\n\ntype CookieStore struct {\n\tname      string\n\tcookieman *CookieMan\n\topt       *CookieOption\n}\n\nfunc (cs *CookieStore) Name() string {\n\treturn cs.name\n}\n\nfunc (cs *CookieStore) Set(w http.ResponseWriter, value []byte) error {\n\treturn cs.cookieman.Set(w, cs.name, value, cs.opt)\n}\n\nfunc (cs *CookieStore) Get(r *http.Request) ([]byte, error) {\n\treturn cs.cookieman.Get(r, cs.name)\n}\n\nfunc (cs *CookieStore) Clear(w http.ResponseWriter) {\n\tcs.cookieman.Clear(w, cs.name)\n}\n\nfunc New(cipher Cipher, defaultOpt CookieOption) *CookieMan {\n\treturn &CookieMan{defaultOpt: defaultOpt, cipher: cipher}\n}\n\nfunc (c *CookieMan) NewCookieStore(name string, opt *CookieOption) *CookieStore {\n\treturn &CookieStore{\n\t\tname:      name,\n\t\tcookieman: c,\n\t\topt:       opt,\n\t}\n}\n\nfunc (c *CookieMan) Set(w http.ResponseWriter, name string, value []byte, opt *CookieOption) error {\n\tv, err := c.cipher.Encrypt(value)\n\tif err != nil {\n\t\treturn err\n\t}\n\thttp.SetCookie(w, c.cookie(name, base64.URLEncoding.EncodeToString(v), opt))\n\treturn nil\n}\n\nfunc (c *CookieMan) Get(r *http.Request, name string) ([]byte, error) {\n\tcookie, err := r.Cookie(name)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\tciphertext, err := base64.URLEncoding.DecodeString(cookie.Value)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\treturn c.cipher.Decrypt(ciphertext)\n}\n\nfunc (c *CookieMan) Clear(w http.ResponseWriter, name string) {\n\topt := &CookieOption{}\n\topt.MaxAge = -1\n\thttp.SetCookie(w, c.cookie(name, \"\", opt))\n}\n\nfunc (c *CookieMan) cookie(name, value string, opt *CookieOption) *http.Cookie {\n\tcookie := c.defaultOpt.Cookie\n\tcookie.Name = name\n\tcookie.Value = value\n\tif opt == nil {\n\t\treturn &cookie\n\t}\n\tif opt.Path != \"\" {\n\t\tcookie.Path = opt.Path\n\t}\n\tif opt.Domain != \"\" {\n\t\tcookie.Domain = opt.Domain\n\t}\n\tif opt.MaxAge != 0 {\n\t\tcookie.MaxAge = opt.MaxAge\n\t}\n\tif !opt.Expires.IsZero() {\n\t\tcookie.Expires = opt.Expires\n\t}\n\tif opt.Secure {\n\t\tcookie.Secure = opt.Secure\n\t}\n\tif opt.HttpOnly {\n\t\tcookie.HttpOnly = opt.HttpOnly\n\t}\n\treturn &cookie\n}\n||||||| BASE\n=======\npackage cookieman\n\nimport (\n\t\"encoding/base64\"\n\t\"net/http\"\n)\n\n// Cipher is crypt interface to encrypt/decrypt cookie.\ntype Cipher interface {\n\tEncrypt(plaintext []byte) ([]byte, error)\n\tDecrypt(ciphertext []byte) ([]byte, error)\n}\n\n// CookieMan manages cookies.\ntype CookieMan struct {\n\tdefaultOpt CookieOption\n\tcipher     Cipher\n}\n\n// CookieOption represents cookie options.\ntype CookieOption struct {\n\thttp.Cookie\n}\n\n// CookieStore stores a cookie.\ntype CookieStore struct {\n\tname      string\n\tcookieman *CookieMan\n\topt       *CookieOption\n}\n\n// Name returns the cookie name this CookieStore manages.\nfunc (cs *CookieStore) Name() string {\n\treturn cs.name\n}\n\n// Set sets cookie value.\nfunc (cs *CookieStore) Set(w http.ResponseWriter, value []byte) error {\n\treturn cs.cookieman.Set(w, cs.name, value, cs.opt)\n}\n\n// Get returns cookie value.\nfunc (cs *CookieStore) Get(r *http.Request) ([]byte, error) {\n\treturn cs.cookieman.Get(r, cs.name)\n}\n\n// Clear clears the cookie.\nfunc (cs *CookieStore) Clear(w http.ResponseWriter) {\n\tcs.cookieman.Clear(w, cs.name)\n}\n\n// New returns new CookieMan with default cookie option.\nfunc New(cipher Cipher, defaultOpt CookieOption) *CookieMan {\n\treturn &CookieMan{defaultOpt: defaultOpt, cipher: cipher}\n}\n\n// NewCookieStore returns new CookieStore which mangages cookie whose key is\n// given name and with given cookie option.\nfunc (c *CookieMan) NewCookieStore(name string, opt *CookieOption) *CookieStore {\n\treturn &CookieStore{\n\t\tname:      name,\n\t\tcookieman: c,\n\t\topt:       opt,\n\t}\n}\n\n// Set sets cookie.\nfunc (c *CookieMan) Set(w http.ResponseWriter, name string, value []byte, opt *CookieOption) error {\n\tv, err := c.cipher.Encrypt(value)\n\tif err != nil {\n\t\treturn err\n\t}\n\thttp.SetCookie(w, c.cookie(name, base64.URLEncoding.EncodeToString(v), opt))\n\treturn nil\n}\n\n// Get returns a cookie with given name.\nfunc (c *CookieMan) Get(r *http.Request, name string) ([]byte, error) {\n\tcookie, err := r.Cookie(name)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\tciphertext, err := base64.URLEncoding.DecodeString(cookie.Value)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\treturn c.cipher.Decrypt(ciphertext)\n}\n\n// Clear clears a cookie with given name.\nfunc (c *CookieMan) Clear(w http.ResponseWriter, name string) {\n\topt := &CookieOption{}\n\topt.MaxAge = -1\n\thttp.SetCookie(w, c.cookie(name, \"\", opt))\n}\n\nfunc (c *CookieMan) cookie(name, value string, opt *CookieOption) *http.Cookie {\n\tcookie := c.defaultOpt.Cookie\n\tcookie.Name = name\n\tcookie.Value = value\n\tif opt == nil {\n\t\treturn &cookie\n\t}\n\tif opt.Path != \"\" {\n\t\tcookie.Path = opt.Path\n\t}\n\tif opt.Domain != \"\" {\n\t\tcookie.Domain = opt.Domain\n\t}\n\tif opt.MaxAge != 0 {\n\t\tcookie.MaxAge = opt.MaxAge\n\t}\n\tif !opt.Expires.IsZero() {\n\t\tcookie.Expires = opt.Expires\n\t}\n\tif opt.Secure {\n\t\tcookie.Secure = opt.Secure\n\t}\n\tif opt.HttpOnly {\n\t\tcookie.HttpOnly = opt.HttpOnly\n\t}\n\treturn &cookie\n}\n>>>>>>> THEIRS\n",
+        "projection": true,
+        "reason": "unresolved-or-engine-error",
+        "resolution": null,
+        "evaluation": {
+          "pass": false,
+          "category": "abstain"
+        }
+      },
+      "gnu_diff3": {
+        "raw": {
+          "ok": true,
+          "value": {
+            "mechanism": "gnu_diff3",
+            "rawStatus": 1,
+            "signal": null,
+            "error": null,
+            "stderr": "",
+            "normalizedStatus": 1,
+            "hasConflictMarkers": true,
+            "durationMs": 3
+          }
+        },
+        "scope": "same-scaffold-focal-conflict",
+        "engine_error": false,
+        "output_sha256": "a578f7f9d90f1fd11ac4b277242b83eb2b8eb8d82c28c3e8d5ef4b4d168acb17",
+        "output": "<<<<<<< OURS\npackage cookieman\n\nimport (\n\t\"encoding/base64\"\n\t\"net/http\"\n)\n\ntype Cipher interface {\n\tEncrypt(plaintext []byte) ([]byte, error)\n\tDecrypt(ciphertext []byte) ([]byte, error)\n}\n\ntype CookieMan struct {\n\tdefaultOpt CookieOption\n\tcipher     Cipher\n}\n\ntype CookieOption struct {\n\thttp.Cookie\n}\n\ntype CookieStore struct {\n\tname      string\n\tcookieman *CookieMan\n\topt       *CookieOption\n}\n\nfunc (cs *CookieStore) Name() string {\n\treturn cs.name\n}\n\nfunc (cs *CookieStore) Set(w http.ResponseWriter, value []byte) error {\n\treturn cs.cookieman.Set(w, cs.name, value, cs.opt)\n}\n\nfunc (cs *CookieStore) Get(r *http.Request) ([]byte, error) {\n\treturn cs.cookieman.Get(r, cs.name)\n}\n\nfunc (cs *CookieStore) Clear(w http.ResponseWriter) {\n\tcs.cookieman.Clear(w, cs.name)\n}\n\nfunc New(cipher Cipher, defaultOpt CookieOption) *CookieMan {\n\treturn &CookieMan{defaultOpt: defaultOpt, cipher: cipher}\n}\n\nfunc (c *CookieMan) NewCookieStore(name string, opt *CookieOption) *CookieStore {\n\treturn &CookieStore{\n\t\tname:      name,\n\t\tcookieman: c,\n\t\topt:       opt,\n\t}\n}\n\nfunc (c *CookieMan) Set(w http.ResponseWriter, name string, value []byte, opt *CookieOption) error {\n\tv, err := c.cipher.Encrypt(value)\n\tif err != nil {\n\t\treturn err\n\t}\n\thttp.SetCookie(w, c.cookie(name, base64.URLEncoding.EncodeToString(v), opt))\n\treturn nil\n}\n\nfunc (c *CookieMan) Get(r *http.Request, name string) ([]byte, error) {\n\tcookie, err := r.Cookie(name)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\tciphertext, err := base64.URLEncoding.DecodeString(cookie.Value)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\treturn c.cipher.Decrypt(ciphertext)\n}\n\nfunc (c *CookieMan) Clear(w http.ResponseWriter, name string) {\n\topt := &CookieOption{}\n\topt.MaxAge = -1\n\thttp.SetCookie(w, c.cookie(name, \"\", opt))\n}\n\nfunc (c *CookieMan) cookie(name, value string, opt *CookieOption) *http.Cookie {\n\tcookie := c.defaultOpt.Cookie\n\tcookie.Name = name\n\tcookie.Value = value\n\tif opt == nil {\n\t\treturn &cookie\n\t}\n\tif opt.Path != \"\" {\n\t\tcookie.Path = opt.Path\n\t}\n\tif opt.Domain != \"\" {\n\t\tcookie.Domain = opt.Domain\n\t}\n\tif opt.MaxAge != 0 {\n\t\tcookie.MaxAge = opt.MaxAge\n\t}\n\tif !opt.Expires.IsZero() {\n\t\tcookie.Expires = opt.Expires\n\t}\n\tif opt.Secure {\n\t\tcookie.Secure = opt.Secure\n\t}\n\tif opt.HttpOnly {\n\t\tcookie.HttpOnly = opt.HttpOnly\n\t}\n\treturn &cookie\n}\n||||||| BASE\n=======\npackage cookieman\n\nimport (\n\t\"encoding/base64\"\n\t\"net/http\"\n)\n\n// Cipher is crypt interface to encrypt/decrypt cookie.\ntype Cipher interface {\n\tEncrypt(plaintext []byte) ([]byte, error)\n\tDecrypt(ciphertext []byte) ([]byte, error)\n}\n\n// CookieMan manages cookies.\ntype CookieMan struct {\n\tdefaultOpt CookieOption\n\tcipher     Cipher\n}\n\n// CookieOption represents cookie options.\ntype CookieOption struct {\n\thttp.Cookie\n}\n\n// CookieStore stores a cookie.\ntype CookieStore struct {\n\tname      string\n\tcookieman *CookieMan\n\topt       *CookieOption\n}\n\n// Name returns the cookie name this CookieStore manages.\nfunc (cs *CookieStore) Name() string {\n\treturn cs.name\n}\n\n// Set sets cookie value.\nfunc (cs *CookieStore) Set(w http.ResponseWriter, value []byte) error {\n\treturn cs.cookieman.Set(w, cs.name, value, cs.opt)\n}\n\n// Get returns cookie value.\nfunc (cs *CookieStore) Get(r *http.Request) ([]byte, error) {\n\treturn cs.cookieman.Get(r, cs.name)\n}\n\n// Clear clears the cookie.\nfunc (cs *CookieStore) Clear(w http.ResponseWriter) {\n\tcs.cookieman.Clear(w, cs.name)\n}\n\n// New returns new CookieMan with default cookie option.\nfunc New(cipher Cipher, defaultOpt CookieOption) *CookieMan {\n\treturn &CookieMan{defaultOpt: defaultOpt, cipher: cipher}\n}\n\n// NewCookieStore returns new CookieStore which mangages cookie whose key is\n// given name and with given cookie option.\nfunc (c *CookieMan) NewCookieStore(name string, opt *CookieOption) *CookieStore {\n\treturn &CookieStore{\n\t\tname:      name,\n\t\tcookieman: c,\n\t\topt:       opt,\n\t}\n}\n\n// Set sets cookie.\nfunc (c *CookieMan) Set(w http.ResponseWriter, name string, value []byte, opt *CookieOption) error {\n\tv, err := c.cipher.Encrypt(value)\n\tif err != nil {\n\t\treturn err\n\t}\n\thttp.SetCookie(w, c.cookie(name, base64.URLEncoding.EncodeToString(v), opt))\n\treturn nil\n}\n\n// Get returns a cookie with given name.\nfunc (c *CookieMan) Get(r *http.Request, name string) ([]byte, error) {\n\tcookie, err := r.Cookie(name)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\tciphertext, err := base64.URLEncoding.DecodeString(cookie.Value)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\treturn c.cipher.Decrypt(ciphertext)\n}\n\n// Clear clears a cookie with given name.\nfunc (c *CookieMan) Clear(w http.ResponseWriter, name string) {\n\topt := &CookieOption{}\n\topt.MaxAge = -1\n\thttp.SetCookie(w, c.cookie(name, \"\", opt))\n}\n\nfunc (c *CookieMan) cookie(name, value string, opt *CookieOption) *http.Cookie {\n\tcookie := c.defaultOpt.Cookie\n\tcookie.Name = name\n\tcookie.Value = value\n\tif opt == nil {\n\t\treturn &cookie\n\t}\n\tif opt.Path != \"\" {\n\t\tcookie.Path = opt.Path\n\t}\n\tif opt.Domain != \"\" {\n\t\tcookie.Domain = opt.Domain\n\t}\n\tif opt.MaxAge != 0 {\n\t\tcookie.MaxAge = opt.MaxAge\n\t}\n\tif !opt.Expires.IsZero() {\n\t\tcookie.Expires = opt.Expires\n\t}\n\tif opt.Secure {\n\t\tcookie.Secure = opt.Secure\n\t}\n\tif opt.HttpOnly {\n\t\tcookie.HttpOnly = opt.HttpOnly\n\t}\n\treturn &cookie\n}\n>>>>>>> THEIRS\n",
+        "projection": true,
+        "reason": "unresolved-or-engine-error",
+        "resolution": null,
+        "evaluation": {
+          "pass": false,
+          "category": "abstain"
+        }
+      },
+      "mergiraf": {
+        "raw": {
+          "ok": true,
+          "value": {
+            "mechanism": "mergiraf",
+            "rawStatus": 1,
+            "signal": null,
+            "error": null,
+            "stderr": "",
+            "normalizedStatus": 1,
+            "hasConflictMarkers": true,
+            "durationMs": 15
+          }
+        },
+        "scope": "same-scaffold-focal-conflict",
+        "engine_error": false,
+        "output_sha256": "a578f7f9d90f1fd11ac4b277242b83eb2b8eb8d82c28c3e8d5ef4b4d168acb17",
+        "output": "<<<<<<< OURS\npackage cookieman\n\nimport (\n\t\"encoding/base64\"\n\t\"net/http\"\n)\n\ntype Cipher interface {\n\tEncrypt(plaintext []byte) ([]byte, error)\n\tDecrypt(ciphertext []byte) ([]byte, error)\n}\n\ntype CookieMan struct {\n\tdefaultOpt CookieOption\n\tcipher     Cipher\n}\n\ntype CookieOption struct {\n\thttp.Cookie\n}\n\ntype CookieStore struct {\n\tname      string\n\tcookieman *CookieMan\n\topt       *CookieOption\n}\n\nfunc (cs *CookieStore) Name() string {\n\treturn cs.name\n}\n\nfunc (cs *CookieStore) Set(w http.ResponseWriter, value []byte) error {\n\treturn cs.cookieman.Set(w, cs.name, value, cs.opt)\n}\n\nfunc (cs *CookieStore) Get(r *http.Request) ([]byte, error) {\n\treturn cs.cookieman.Get(r, cs.name)\n}\n\nfunc (cs *CookieStore) Clear(w http.ResponseWriter) {\n\tcs.cookieman.Clear(w, cs.name)\n}\n\nfunc New(cipher Cipher, defaultOpt CookieOption) *CookieMan {\n\treturn &CookieMan{defaultOpt: defaultOpt, cipher: cipher}\n}\n\nfunc (c *CookieMan) NewCookieStore(name string, opt *CookieOption) *CookieStore {\n\treturn &CookieStore{\n\t\tname:      name,\n\t\tcookieman: c,\n\t\topt:       opt,\n\t}\n}\n\nfunc (c *CookieMan) Set(w http.ResponseWriter, name string, value []byte, opt *CookieOption) error {\n\tv, err := c.cipher.Encrypt(value)\n\tif err != nil {\n\t\treturn err\n\t}\n\thttp.SetCookie(w, c.cookie(name, base64.URLEncoding.EncodeToString(v), opt))\n\treturn nil\n}\n\nfunc (c *CookieMan) Get(r *http.Request, name string) ([]byte, error) {\n\tcookie, err := r.Cookie(name)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\tciphertext, err := base64.URLEncoding.DecodeString(cookie.Value)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\treturn c.cipher.Decrypt(ciphertext)\n}\n\nfunc (c *CookieMan) Clear(w http.ResponseWriter, name string) {\n\topt := &CookieOption{}\n\topt.MaxAge = -1\n\thttp.SetCookie(w, c.cookie(name, \"\", opt))\n}\n\nfunc (c *CookieMan) cookie(name, value string, opt *CookieOption) *http.Cookie {\n\tcookie := c.defaultOpt.Cookie\n\tcookie.Name = name\n\tcookie.Value = value\n\tif opt == nil {\n\t\treturn &cookie\n\t}\n\tif opt.Path != \"\" {\n\t\tcookie.Path = opt.Path\n\t}\n\tif opt.Domain != \"\" {\n\t\tcookie.Domain = opt.Domain\n\t}\n\tif opt.MaxAge != 0 {\n\t\tcookie.MaxAge = opt.MaxAge\n\t}\n\tif !opt.Expires.IsZero() {\n\t\tcookie.Expires = opt.Expires\n\t}\n\tif opt.Secure {\n\t\tcookie.Secure = opt.Secure\n\t}\n\tif opt.HttpOnly {\n\t\tcookie.HttpOnly = opt.HttpOnly\n\t}\n\treturn &cookie\n}\n||||||| BASE\n=======\npackage cookieman\n\nimport (\n\t\"encoding/base64\"\n\t\"net/http\"\n)\n\n// Cipher is crypt interface to encrypt/decrypt cookie.\ntype Cipher interface {\n\tEncrypt(plaintext []byte) ([]byte, error)\n\tDecrypt(ciphertext []byte) ([]byte, error)\n}\n\n// CookieMan manages cookies.\ntype CookieMan struct {\n\tdefaultOpt CookieOption\n\tcipher     Cipher\n}\n\n// CookieOption represents cookie options.\ntype CookieOption struct {\n\thttp.Cookie\n}\n\n// CookieStore stores a cookie.\ntype CookieStore struct {\n\tname      string\n\tcookieman *CookieMan\n\topt       *CookieOption\n}\n\n// Name returns the cookie name this CookieStore manages.\nfunc (cs *CookieStore) Name() string {\n\treturn cs.name\n}\n\n// Set sets cookie value.\nfunc (cs *CookieStore) Set(w http.ResponseWriter, value []byte) error {\n\treturn cs.cookieman.Set(w, cs.name, value, cs.opt)\n}\n\n// Get returns cookie value.\nfunc (cs *CookieStore) Get(r *http.Request) ([]byte, error) {\n\treturn cs.cookieman.Get(r, cs.name)\n}\n\n// Clear clears the cookie.\nfunc (cs *CookieStore) Clear(w http.ResponseWriter) {\n\tcs.cookieman.Clear(w, cs.name)\n}\n\n// New returns new CookieMan with default cookie option.\nfunc New(cipher Cipher, defaultOpt CookieOption) *CookieMan {\n\treturn &CookieMan{defaultOpt: defaultOpt, cipher: cipher}\n}\n\n// NewCookieStore returns new CookieStore which mangages cookie whose key is\n// given name and with given cookie option.\nfunc (c *CookieMan) NewCookieStore(name string, opt *CookieOption) *CookieStore {\n\treturn &CookieStore{\n\t\tname:      name,\n\t\tcookieman: c,\n\t\topt:       opt,\n\t}\n}\n\n// Set sets cookie.\nfunc (c *CookieMan) Set(w http.ResponseWriter, name string, value []byte, opt *CookieOption) error {\n\tv, err := c.cipher.Encrypt(value)\n\tif err != nil {\n\t\treturn err\n\t}\n\thttp.SetCookie(w, c.cookie(name, base64.URLEncoding.EncodeToString(v), opt))\n\treturn nil\n}\n\n// Get returns a cookie with given name.\nfunc (c *CookieMan) Get(r *http.Request, name string) ([]byte, error) {\n\tcookie, err := r.Cookie(name)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\tciphertext, err := base64.URLEncoding.DecodeString(cookie.Value)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\treturn c.cipher.Decrypt(ciphertext)\n}\n\n// Clear clears a cookie with given name.\nfunc (c *CookieMan) Clear(w http.ResponseWriter, name string) {\n\topt := &CookieOption{}\n\topt.MaxAge = -1\n\thttp.SetCookie(w, c.cookie(name, \"\", opt))\n}\n\nfunc (c *CookieMan) cookie(name, value string, opt *CookieOption) *http.Cookie {\n\tcookie := c.defaultOpt.Cookie\n\tcookie.Name = name\n\tcookie.Value = value\n\tif opt == nil {\n\t\treturn &cookie\n\t}\n\tif opt.Path != \"\" {\n\t\tcookie.Path = opt.Path\n\t}\n\tif opt.Domain != \"\" {\n\t\tcookie.Domain = opt.Domain\n\t}\n\tif opt.MaxAge != 0 {\n\t\tcookie.MaxAge = opt.MaxAge\n\t}\n\tif !opt.Expires.IsZero() {\n\t\tcookie.Expires = opt.Expires\n\t}\n\tif opt.Secure {\n\t\tcookie.Secure = opt.Secure\n\t}\n\tif opt.HttpOnly {\n\t\tcookie.HttpOnly = opt.HttpOnly\n\t}\n\treturn &cookie\n}\n>>>>>>> THEIRS\n",
+        "projection": true,
+        "reason": "unresolved-or-engine-error",
+        "resolution": null,
+        "evaluation": {
+          "pass": false,
+          "category": "abstain"
+        }
+      }
+    }
+  }
+]

@@ -1,0 +1,1660 @@
+{
+  "id": "3ac14a25c2b21fc8098e20ce164da1468e6e6c89b7d5007d156a064d674939f4",
+  "source_protocol_sha256": "86ffe38086e217acf6e1a4aa4162e226862463d1bde3160478f9a6f4d2b968ce",
+  "repair_module_sha256": "b6a7cf123b0ac50001e1498cdf64964b8ac56e8e6a68cbbc6dcc01c8517b4a20",
+  "contexts": {
+    "local-context": [
+      {
+        "id": "c2cdaf028cf00e5d2b97dc58",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "node.go",
+        "start_byte": 0,
+        "text": "package bolt\n\nimport (\n\t\"bytes\"\n\t\"sort\"\n\t\"unsafe\"\n)\n\n// node represents an in-memory, deserialized page.\ntype node struct {\n\tbucket     *Bucket\n\tisLeaf     bool\n\tunbalanced bool\n\tkey        []byte\n\tpgid       pgid\n\tparent     *node\n\tchildren   []*node\n\tinodes     inodes\n}\n\n// root returns the top-level node this node is attached to.\nfunc (n *node) root() *node {\n\tif n.parent == nil {\n\t\treturn n\n\t}\n\treturn n.parent.root()\n}\n\n// minKeys returns the minimum number of inodes this node should have.\nfunc (n *node) minKeys() int {\n\tif n.isLeaf {\n\t\treturn 1\n\t}\n\treturn 2\n}\n\n// size returns the size of the node after serialization.\nfunc (n *node) size() int {\n\tvar elementSize = n.pageElementSize()\n\n\tvar size = pageHeaderSize\n\tfor _, item := range n.inodes {\n\t\tsize += elementSize + len(item.key) + len(item.value)\n\t}\n\treturn size\n}\n\n// pageElementSize returns the size of each page element based on the type of node.\nfunc (n *node) pageElementSize() int {\n\tif n.isLeaf {\n\t\treturn leafPageElementSize\n\t}\n\treturn branchPageElementSize\n}\n\n// childAt returns the child node at a given index.\nfunc (n *node) childAt(index int) *node {\n\t_assert(!n.isLeaf, \"invalid childAt(%d) on a leaf node\", index)\n\treturn n.bucket.node(n.inodes[index].pgid, n)\n}\n\n// childIndex returns the index of a given child node.\nfunc (n *node) childIndex(child *node) int {\n\tindex := sort.Search(len(n.inodes), func(i int) bool { return bytes.Compare(n.inodes[i].key, child.key) != -1 })\n\treturn index\n}\n\n// numChildren returns the number of children.\nfunc (n *node) numChildren() int {\n\treturn len(n.inodes)\n}\n\n// nextSibling returns the next node with the same parent.\nfunc (n *node) nextSibling() *node {\n\tif n.parent == nil {\n\t\treturn nil\n\t}\n\tindex := n.parent.childIndex(n)\n\tif index >= n.parent.numChildren()-1 {\n\t\treturn nil\n\t}\n\treturn n.parent.childAt(index + 1)\n}\n\n// prevSibling returns the previous node with the same parent.\nfunc (n *node) prevSibling() *node {\n\tif n.parent == nil {\n\t\treturn nil\n\t}\n\tindex := n.parent.childIndex(n)\n\tif index == 0 {\n\t\treturn nil\n\t}\n\treturn n.parent.childAt(index - 1)\n}\n\n// put inserts a key/value.\nfunc (n *node) put(oldKey, newKey, value []byte, pgid pgid, flags uint32) {\n\t_assert(len(oldKey) > 0, \"put: zero-length old key\")\n\t_assert(len(newKey) > 0, \"put: zero-length new key\")\n\n\t// Find insertion index.\n\tindex := sort.Search(len(n.inodes), func(i int) bool { return bytes.Compare(n.inodes[i].key, oldKey) != -1 })\n\n\t// Add capacity and shift nodes if we don't have an exact match and need to insert.\n\texact := (len(n.inodes) > 0 && index < len(n.inodes) && bytes.Equal(n.inodes[index].key, oldKey))\n\tif !exact {\n\t\tn.inodes = append(n.inodes, inode{})\n\t\tcopy(n.inodes[index+1:], n.inodes[index:])\n\t}\n\n\tinode := &n.inodes[index]\n\tinode.flags = flags\n\tinode.key = newKey\n\tinode.value = value\n\tinode.pgid = pgid\n\t_assert(len(inode.key) > 0, \"put: zero-length inode key\")\n}\n\n// del removes a key from the node.\nfunc (n *node) del(key []byte) {\n\t// Find index of key.\n\tindex := sort.Search(len(n.inodes), func(i int) bool { return bytes.Compare(n.inodes[i].key, key) != -1 })\n\n\t// Exit if the key isn't found.\n\tif index >= len(n.inodes) || !bytes.Equal(n.inodes[index].key, key) {\n\t\treturn\n\t}\n\n\t// Delete inode from the node.\n\tn.inodes = append(n.inodes[:index], n.inodes[index+1:]...)\n\n\t// Mark the node as needing rebalancing.\n\tn.unbalanced = true\n}\n\n// read initializes the node from a page.\nfunc (n *node) read(p *page) {\n\tn.pgid = p.id\n\tn.isLeaf = ((p.flags & leafPageFlag) != 0)\n\tn.inodes = make(inodes, int(p.count))\n\n\tfor i := 0; i < int(p.count); i++ {\n\t\tinode := &n.inodes[i]\n\t\tif n.isLeaf {\n\t\t\telem := p.leafPageElement(uint16(i))\n\t\t\tinode.flags = elem.flags\n\t\t\tinode.key = elem.key()\n\t\t\tinode.value = elem.value()\n\t\t} else {\n\t\t\telem := p.branchPageElement(uint16(i))\n\t\t\tinode.pgid = elem.pgid\n\t\t\tinode.key = elem.key()\n\t\t}\n\t\t_assert(len(inode.key) > 0, \"read: zero-length inode key\")\n\t}\n\n\t// Save first key so we can find the node in the parent when we spill.\n\tif len(n.inodes) > 0 {\n\t\tn.key = n.inodes[0].key\n\t\t_assert(len(n.key) > 0, \"read: zero-length node key\")\n\t} else {\n\t\tn.key = nil\n\t}\n}\n\n// write writes the items onto one or more pages.\nfunc (n *node) write(p *page) {\n\t// Initialize page.\n\tif n.isLeaf {\n\t\tp.flags |= leafPageFlag\n\t} else {\n\t\tp.flags |= branchPageFlag\n\t}\n\tp.count = uint16(len(n.inodes))\n\n\t// Loop over each item and write it to the page.\n\tb := (*[maxAllocSize]byte)(unsafe.Pointer(&p.ptr))[n.pageElementSize()*len(n.inodes):]\n\tfor i, item := range n.inodes {\n\t\t_assert(len(item.key) > 0, \"write: zero-length inode key\")\n\n\t\t// Write the page element.\n\t\tif n.isLeaf {\n\t\t\telem := p.leafPageElement(uint16(i))\n\t\t\telem.pos = uint32(uintptr(unsafe.Pointer(&b[0])) - uintptr(unsafe.Pointer(elem)))\n\t\t\telem.flags = item.flags\n\t\t\telem.ksize = uint32(len(item.key))\n\t\t\telem.vsize = uint32(len(item.value))\n\t\t} else {\n\t\t\telem := p.branchPageElement(uint16(i))\n\t\t\telem.pos = uint32(uintptr(unsafe.Pointer(&b[0])) - uintptr(unsafe.Pointer(elem)))\n\t\t\telem.ksize = uint32(len(item.key))\n\t\t\telem.pgid = item.pgid\n\t\t}\n\n\t\t// Write data for the element to the end of the page.\n\t\tcopy(b[0:], item.key)\n\t\tb = b[len(item.key):]\n\t\tcopy(b[0:], item.value)\n\t\tb = b[len(item.value):]\n\t}\n\n\t// DEBUG ONLY: n.dump()\n}\n\n// split breaks up a node into smaller nodes, if appropriate.\n// This should only be called from the spill() function.\nfunc (n *node) split(pageSize int) []*node {\n\tvar nodes = []*node{n}\n\n\t// Ignore the split if the page doesn't have at least enough nodes for\n\t// multiple pages or if the data can fit on a single page.\n\tif len(n.inodes) <= (minKeysPerPage*2) || n.size() < pageSize {\n\t\treturn nodes\n\t}\n\n\t// Set fill threshold to 50%.\n\tthreshold := pageSize / 2\n\n\t// Group into smaller pages and target a given fill size.\n\tsize := pageHeaderSize\n\tinternalNodes := n.inodes\n\tcurrent := n\n\tcurrent.inodes = nil\n\n\t// Loop over every inode and split once we reach our threshold.\n\tfor i, inode := range internalNodes {\n\t\telemSize := n.pageElementSize() + len(inode.key) + len(inode.value)\n\n\t\t// Split once we reach our threshold split size. However, this should\n\t\t// only be done if we have enough keys for this node and we will have\n\t\t// enough keys for the next node.\n\t\tif len(current.inodes) >= minKeysPerPage && i < len(internalNodes)-minKeysPerPage && size+elemSize > threshold {\n\t\t\t// If there's no parent then we need to create one.\n\t\t\tif n.parent == nil {\n\t\t\t\tn.parent = &node{bucket: n.bucket, children: []*node{n}}\n\t\t\t}\n\n\t\t\t// Create a new node and add it to the parent.\n\t\t\tcurrent = &node{bucket: n.bucket, isLeaf: n.isLeaf, parent: n.parent}\n\t\t\tn.parent.children = append(n.parent.children, current)\n\t\t\tnodes = append(nodes, current)\n\n\t\t\t// Reset our running total back to zero (plus header size).\n\t\t\tsize = pageHeaderSize\n\n\t\t\t// Update the statistics.\n\t\t\tn.bucket.tx.stats.Split++\n\t\t}\n\n\t\t// Increase our running total of the size and append the inode.\n\t\tsize += elemSize\n\t\tcurrent.inodes = append(current.inodes, inode)\n\t}\n\n\treturn nodes\n}\n\n// spill writes the nodes to dirty pages and splits nodes as it goes.\n// Returns an error if dirty pages cannot be allocated.\nfunc (n *node) spill() error {\n\tvar tx = n.bucket.tx\n\n\t// Spill child nodes first.\n\tfor _, child := range n.children {\n\t\tif err := child.spill(); err != nil {\n\t\t\treturn err\n\t\t}\n\t}\n\n\t// Add node's page to the freelist if it's not new.\n\tif n.pgid > 0 {\n\t\ttx.db.freelist.free(tx.id(), tx.page(n.pgid))\n\t\tn.pgid = 0\n\t}\n\n\t// Spill nodes by deepest first.\n\tvar nodes = n.split(tx.db.pageSize)\n\tfor _, node := range nodes {\n\t\t// Allocate contiguous space for the node.\n\t\tp, err := tx.allocate((node.size() / tx.db.pageSize) + 1)\n\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n\n\t\t// Write the node.\n\t\tnode.pgid = p.id\n\t\tnode.write(p)\n\n\t\t// Insert into parent inodes.\n\t\tif node.parent != nil {\n\t\t\tvar key = node.key\n\t\t\tif key == nil {\n\t\t\t\tkey = node.inodes[0].key\n\t\t\t}\n\n\t\t\tnode.parent.put(key, node.inodes[0].key, nil, node.pgid, 0)\n\t\t\tnode.key = node.inodes[0].key\n\t\t\t_assert(len(n.key) > 0, \"spill: zero-length node key\")\n\t\t}\n\n\t\t// Update the statistics.\n\t\ttx.stats.Spill++\n\t}\n\n\t// This is a special case where we need to write the parent if it is new\n\t// and caused by a split in the root.\n\tvar parent = n.parent\n\tif parent != nil && parent.pgid == 0 {\n\t\t// Allocate contiguous space for the node.\n\t\tp, err := tx.allocate((parent.size() / tx.db.pageSize) + 1)\n\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n\n\t\t// Write the new root.\n\t\tparent.pgid = p.id\n\t\tparent.write(p)\n\t}\n\n\treturn nil\n}\n\n// rebalance attempts to combine the node with sibling nodes if the node fill\n// size is below a threshold or if there are not enough keys.\nfunc (n *node) rebalance() {\n\tif !n.unbalanced {\n\t\treturn\n\t}\n\tn.unbalanced = false\n\n\t// Update statistics.\n\tn.bucket.tx.stats.Rebalance++\n\n\t// Ignore if node is above threshold (25%) and has enough keys.\n\tvar threshold = n.bucket.tx.db.pageSize / 4\n\tif n.size() > threshold && len(n.inodes) > n.minKeys() {\n\t\treturn\n\t}\n\n\t// Root node has special handling.\n\tif n.parent == nil {\n\t\t// If root node is a branch and only has one node then collapse it.\n\t\tif !n.isLeaf && len(n.inodes) == 1 {\n\t\t\t// Move root's child up.\n\t\t\tchild := n.bucket.node(n.inodes[0].pgid, n)\n\t\t\tn.isLeaf = child.isLeaf\n\t\t\tn.inodes = child.inodes[:]\n\t\t\tn.children = child.children\n\n\t\t\t// Reparent all child nodes being moved.\n\t\t\tfor _, inode := range n.inodes {\n\t\t\t\tif child, ok := n.bucket.nodes[inode.pgid]; ok {\n\t\t\t\t\tchild.parent = n\n\t\t\t\t}\n\t\t\t}\n\n\t\t\t// Remove old child.\n\t\t\tchild.parent = nil\n\t\t\tdelete(n.bucket.nodes, child.pgid)\n\t\t\tchild.free()\n\t\t}\n\n\t\treturn\n\t}\n\n\t// If node has no keys then just remove it.\n\tif n.numChildren() == 0 {\n\t\tn.parent.del(n.key)\n\t\tn.parent.removeChild(n)\n\t\tdelete(n.bucket.nodes, n.pgid)\n\t\tn.free()\n\t\tn.parent.rebalance()\n\t\treturn\n\t}\n\n\t_assert(n.parent.numChildren() > 1, \"parent must have at least 2 children\")\n\n\t// Destination node is right sibling if idx == 0, otherwise left sibling.\n\tvar target *node\n\tvar useNextSibling = (n.parent.childIndex(n) == 0)\n\tif useNextSibling {\n\t\ttarget = n.nextSibling()\n\t} else {\n\t\ttarget = n.prevSibling()\n\t}\n\n\t// If target node has extra nodes then just move one over.\n\tif target.numChildren() > target.minKeys() {\n\t\tif useNextSibling {\n\t\t\t// Reparent and move node.\n\t\t\tif child, ok := n.bucket.nodes[target.inodes[0].pgid]; ok {\n\t\t\t\tchild.parent.removeChild(child)\n\t\t\t\tchild.parent = n\n\t\t\t\tchild.parent.children = append(child.parent.children, child)\n\t\t\t}\n\t\t\tn.inodes = append(n.inodes, target.inodes[0])\n\t\t\ttarget.inodes = target.inodes[1:]\n\n\t\t\t// Update target key on parent.\n\t\t\ttarget.parent.put(target.key, target.inodes[0].key, nil, target.pgid, 0)\n\t\t\ttarget.key = target.inodes[0].key\n\t\t\t_assert(len(target.key) > 0, \"rebalance(1): zero-length node key\")\n\t\t} else {\n\t\t\t// Reparent and move node.\n\t\t\tif child, ok := n.bucket.nodes[target.inodes[len(target.inodes)-1].pgid]; ok {\n\t\t\t\tchild.parent.removeChild(child)\n\t\t\t\tchild.parent = n\n\t\t\t\tchild.parent.children = append(child.parent.children, child)\n\t\t\t}\n\t\t\tn.inodes = append(n.inodes, inode{})\n\t\t\tcopy(n.inodes[1:], n.inodes)\n\t\t\tn.inodes[0] = target.inodes[len(target.inodes)-1]\n\t\t\ttarget.inodes = target.inodes[:len(target.inodes)-1]\n\t\t}\n\n\t\t// Update parent key for node.\n\t\tn.parent.put(n.key, n.inodes[0].key, nil, n.pgid, 0)\n\t\tn.key = n.inodes[0].key\n\t\t_assert(len(n.key) > 0, \"rebalance(2): zero-length node key\")\n\n\t\treturn\n\t}\n\n\t// If both this node and the target node are too small then merge them.\n\tif useNextSibling {\n\t\t// Reparent all child nodes being moved.\n\t\tfor _, inode := range target.inodes {\n\t\t\tif child, ok := n.bucket.nodes[inode.pgid]; ok {\n\t\t\t\tchild.parent.removeChild(child)\n\t\t\t\tchild.parent = n\n\t\t\t\tchild.parent.children = append(child.parent.children, child)\n\t\t\t}\n\t\t}\n\n\t\t// Copy over inodes from target and remove target.\n\t\tn.inodes = append(n.inodes, target.inodes...)\n\t\tn.parent.del(target.key)\n\t\tn.parent.removeChild(target)\n\t\tdelete(n.bucket.nodes, target.pgid)\n\t\ttarget.free()\n\t} else {\n\t\t// Reparent all child nodes being moved.\n\t\tfor _, inode := range n.inodes {\n\t\t\tif child, ok := n.bucket.nodes[inode.pgid]; ok {\n\t\t\t\tchild.parent.removeChild(child)\n\t\t\t\tchild.parent = target\n\t\t\t\tchild.parent.children = append(child.parent.children, child)\n\t\t\t}\n\t\t}\n\n\t\t// Copy over inodes to target and remove node.\n\t\ttarget.inodes = append(target.inodes, n.inodes...)\n\t\tn.parent.del(n.key)\n\t\tn.parent.removeChild(n)\n\t\tn.parent.put(target.key, target.inodes[0].key, nil, target.pgid, 0)\n\t\tdelete(n.bucket.nodes, n.pgid)\n\t\tn.free()\n\t}\n\n\t// Either this node or the target node was deleted from the parent so rebalance it.\n\tn.parent.rebalance()\n}\n\n// removes a node from the list of in-memory children.\n// This does not affect the inodes.\nfunc (n *node) removeChild(target *node) {\n\tfor i, child := range n.children {\n\t\tif child == target {\n\t\t\tn.children = append(n.children[:i], n.children[i+1:]...)\n\t\t\treturn\n\t\t}\n\t}\n}\n\n// dereference causes the node to copy all its inode key/value references to heap memory.\n// This is required when the mmap is reallocated so inodes are not pointing to stale data.\nfunc (n *node) dereference() {\n\tif n.key != nil {\n\t\tkey := make([]byte, len(n.key))\n\t\tcopy(key, n.key)\n\t\tn.key = key\n\t\t_assert(n.pgid == 0 || len(n.key) > 0, \"dereference: zero-length node key on existing node\")\n\t}\n\n\tfor i := range n.inodes {\n\t\tinode := &n.inodes[i]\n\n\t\tkey := make([]byte, len(inode.key))\n\t\tcopy(key, inode.key)\n\t\tinode.key = key\n\t\t_assert(len(inode.key) > 0, \"dereference: zero-length inode key\")\n\n\t\tvalue := make([]byte, len(inode.value))\n\t\tcopy(value, inode.value)\n\t\tinode.value = value\n\t}\n\n\t// Recursively dereference children.\n\tfor _, child := range n.children {\n\t\tchild.dereference()\n\t}\n\n\t// Update statistics.\n\tn.bucket.tx.stats.NodeDeref++\n}\n\n// free adds the node's underlying page to the freelist.\nfunc (n *node) free() {\n\tif n.pgid != 0 {\n\t\tn.bucket.tx.db.freelist.free(n.bucket.tx.id(), n.bucket.tx.page(n.pgid))\n\t\tn.pgid = 0\n\t}\n}\n\n// dump writes the contents of the node to STDERR for debugging purposes.\n/*\nfunc (n *node) dump() {\n\t// Write node header.\n\tvar typ = \"branch\"\n\tif n.isLeaf {\n\t\ttyp = \"leaf\"\n\t}\n\twarnf(\"[NODE %d {type=%s count=%d}]\", n.pgid, typ, len(n.inodes))\n\n\t// Write out abbreviated version of each item.\n\tfor _, item := range n.inodes {\n\t\tif n.isLeaf {\n\t\t\tif item.flags&bucketLeafFlag != 0 {\n\t\t\t\tbucket := (*bucket)(unsafe.Pointer(&item.value[0]))\n\t\t\t\twarnf(\"+L %08x -> (bucket root=%d)\", trunc(item.key, 4), bucket.root)\n\t\t\t} else {\n\t\t\t\twarnf(\"+L %08x -> %08x\", trunc(item.key, 4), trunc(item.value, 4))\n\t\t\t}\n\t\t} else {\n\t\t\twarnf(\"+B %08x -> pgid=%d\", trunc(item.key, 4), item.pgid)\n\t\t}\n\t}\n\twarn(\"\")\n}\n*/\n\n// inode represents an internal node inside of a node.\n// It can be used to point to elements in a page or point\n// to an element which hasn't been added to a page yet.\ntype inode struct {\n\tflags uint32\n\tpgid  pgid\n\tkey   []byte\n\tvalue []byte\n}\n\ntype inodes []inode\n",
+        "rank": 0,
+        "truncated": false
+      },
+      {
+        "id": "37ec9dc18cacb182c852f6dd",
+        "revision": "c595561faae918374670ed667c64a7b95bbde9df",
+        "path": "node.go",
+        "start_byte": 0,
+        "text": "package bolt\n\nimport (\n\t\"bytes\"\n\t\"fmt\"\n\t\"io\"\n\t\"sort\"\n\t\"unsafe\"\n)\n\n// node represents an in-memory, deserialized page.\ntype node struct {\n\tbucket     *Bucket\n\tisLeaf     bool\n\tunbalanced bool\n\tkey        []byte\n\tpgid       pgid\n\tparent     *node\n\tchildren   []*node\n\tinodes     inodes\n}\n\n// root returns the top-level node this node is attached to.\nfunc (n *node) root() *node {\n\tif n.parent == nil {\n\t\treturn n\n\t}\n\treturn n.parent.root()\n}\n\n// minKeys returns the minimum number of inodes this node should have.\nfunc (n *node) minKeys() int {\n\tif n.isLeaf {\n\t\treturn 1\n\t}\n\treturn 2\n}\n\n// size returns the size of the node after serialization.\nfunc (n *node) size() int {\n\tvar elementSize = n.pageElementSize()\n\n\tvar size = pageHeaderSize\n\tfor _, item := range n.inodes {\n\t\tsize += elementSize + len(item.key) + len(item.value)\n\t}\n\treturn size\n}\n\n// pageElementSize returns the size of each page element based on the type of node.\nfunc (n *node) pageElementSize() int {\n\tif n.isLeaf {\n\t\treturn leafPageElementSize\n\t}\n\treturn branchPageElementSize\n}\n\n// childAt returns the child node at a given index.\nfunc (n *node) childAt(index int) *node {\n\t_assert(!n.isLeaf, \"invalid childAt(%d) on a leaf node\", index)\n\treturn n.bucket.node(n.inodes[index].pgid, n)\n}\n\n// childIndex returns the index of a given child node.\nfunc (n *node) childIndex(child *node) int {\n\tindex := sort.Search(len(n.inodes), func(i int) bool { return bytes.Compare(n.inodes[i].key, child.key) != -1 })\n\treturn index\n}\n\n// numChildren returns the number of children.\nfunc (n *node) numChildren() int {\n\treturn len(n.inodes)\n}\n\n// nextSibling returns the next node with the same parent.\nfunc (n *node) nextSibling() *node {\n\tif n.parent == nil {\n\t\treturn nil\n\t}\n\tindex := n.parent.childIndex(n)\n\tif index >= n.parent.numChildren()-1 {\n\t\treturn nil\n\t}\n\treturn n.parent.childAt(index + 1)\n}\n\n// prevSibling returns the previous node with the same parent.\nfunc (n *node) prevSibling() *node {\n\tif n.parent == nil {\n\t\treturn nil\n\t}\n\tindex := n.parent.childIndex(n)\n\tif index == 0 {\n\t\treturn nil\n\t}\n\treturn n.parent.childAt(index - 1)\n}\n\n// put inserts a key/value.\nfunc (n *node) put(oldKey, newKey, value []byte, pgid pgid, flags uint32) {\n\t_assert(pgid < n.bucket.tx.meta.pgid, \"pgid (%d) above high water mark (%d)\", pgid, n.bucket.tx.meta.pgid)\n\n\t// Find insertion index.\n\tindex := sort.Search(len(n.inodes), func(i int) bool { return bytes.Compare(n.inodes[i].key, oldKey) != -1 })\n\n\t// Add capacity and shift nodes if we don't have an exact match and need to insert.\n\texact := (len(n.inodes) > 0 && index < len(n.inodes) && bytes.Equal(n.inodes[index].key, oldKey))\n\tif !exact {\n\t\tn.inodes = append(n.inodes, inode{})\n\t\tcopy(n.inodes[index+1:], n.inodes[index:])\n\t}\n\n\tinode := &n.inodes[index]\n\tinode.flags = flags\n\tinode.key = newKey\n\tinode.value = value\n\tinode.pgid = pgid\n}\n\n// del removes a key from the node.\nfunc (n *node) del(key []byte) {\n\t// Find index of key.\n\tindex := sort.Search(len(n.inodes), func(i int) bool { return bytes.Compare(n.inodes[i].key, key) != -1 })\n\n\t// Exit if the key isn't found.\n\tif index >= len(n.inodes) || !bytes.Equal(n.inodes[index].key, key) {\n\t\treturn\n\t}\n\n\t// Delete inode from the node.\n\tn.inodes = append(n.inodes[:index], n.inodes[index+1:]...)\n\n\t// Mark the node as needing rebalancing.\n\tn.unbalanced = true\n}\n\n// read initializes the node from a page.\nfunc (n *node) read(p *page) {\n\tn.pgid = p.id\n\tn.isLeaf = ((p.flags & leafPageFlag) != 0)\n\tn.inodes = make(inodes, int(p.count))\n\n\tfor i := 0; i < int(p.count); i++ {\n\t\tinode := &n.inodes[i]\n\t\tif n.isLeaf {\n\t\t\telem := p.leafPageElement(uint16(i))\n\t\t\tinode.flags = elem.flags\n\t\t\tinode.key = elem.key()\n\t\t\tinode.value = elem.value()\n\t\t} else {\n\t\t\telem := p.branchPageElement(uint16(i))\n\t\t\tinode.pgid = elem.pgid\n\t\t\tinode.key = elem.key()\n\t\t}\n\t}\n\n\t// Save first key so we can find the node in the parent when we spill.\n\tif len(n.inodes) > 0 {\n\t\tn.key = n.inodes[0].key\n\t} else {\n\t\tn.key = nil\n\t}\n}\n\n// write writes the items onto one or more pages.\nfunc (n *node) write(p *page) {\n\t// Initialize page.\n\tif n.isLeaf {\n\t\tp.flags |= leafPageFlag\n\t} else {\n\t\tp.flags |= branchPageFlag\n\t}\n\tp.count = uint16(len(n.inodes))\n\n\t// Loop over each item and write it to the page.\n\tb := (*[maxAllocSize]byte)(unsafe.Pointer(&p.ptr))[n.pageElementSize()*len(n.inodes):]\n\tfor i, item := range n.inodes {\n\t\t// Write the page element.\n\t\tif n.isLeaf {\n\t\t\telem := p.leafPageElement(uint16(i))\n\t\t\telem.pos = uint32(uintptr(unsafe.Pointer(&b[0])) - uintptr(unsafe.Pointer(elem)))\n\t\t\telem.flags = item.flags\n\t\t\telem.ksize = uint32(len(item.key))\n\t\t\telem.vsize = uint32(len(item.value))\n\t\t} else {\n\t\t\telem := p.branchPageElement(uint16(i))\n\t\t\telem.pos = uint32(uintptr(unsafe.Pointer(&b[0])) - uintptr(unsafe.Pointer(elem)))\n\t\t\telem.ksize = uint32(len(item.key))\n\t\t\telem.pgid = item.pgid\n\t\t}\n\n\t\t// Write data for the element to the end of the page.\n\t\tcopy(b[0:], item.key)\n\t\tb = b[len(item.key):]\n\t\tcopy(b[0:], item.value)\n\t\tb = b[len(item.value):]\n\t}\n\n\t// DEBUG ONLY: n.dump(os.Stderr)\n}\n\n// split breaks up a node into smaller nodes, if appropriate.\n// This should only be called from the spill() function.\nfunc (n *node) split(pageSize int) []*node {\n\tvar nodes = []*node{n}\n\n\t// Ignore the split if the page doesn't have at least enough nodes for\n\t// multiple pages or if the data can fit on a single page.\n\tif len(n.inodes) <= (minKeysPerPage*2) || n.size() < pageSize {\n\t\treturn nodes\n\t}\n\n\t// Set fill threshold to 50%.\n\tthreshold := pageSize / 2\n\n\t// Group into smaller pages and target a given fill size.\n\tsize := pageHeaderSize\n\tinternalNodes := n.inodes\n\tcurrent := n\n\tcurrent.inodes = nil\n\n\t// Loop over every inode and split once we reach our threshold.\n\tfor i, inode := range internalNodes {\n\t\telemSize := n.pageElementSize() + len(inode.key) + len(inode.value)\n\n\t\t// Split once we reach our threshold split size. However, this should\n\t\t// only be done if we have enough keys for this node and we will have\n\t\t// enough keys for the next node.\n\t\tif len(current.inodes) >= minKeysPerPage && i < len(internalNodes)-minKeysPerPage && size+elemSize > threshold {\n\t\t\t// If there's no parent then we need to create one.\n\t\t\tif n.parent == nil {\n\t\t\t\tn.parent = &node{bucket: n.bucket, children: []*node{n}}\n\t\t\t}\n\n\t\t\t// Create a new node and add it to the parent.\n\t\t\tcurrent = &node{bucket: n.bucket, isLeaf: n.isLeaf, parent: n.parent}\n\t\t\tn.parent.children = append(n.parent.children, current)\n\t\t\tnodes = append(nodes, current)\n\n\t\t\t// Reset our running total back to zero (plus header size).\n\t\t\tsize = pageHeaderSize\n\n\t\t\t// Update the statistics.\n\t\t\tn.bucket.tx.stats.Split++\n\t\t}\n\n\t\t// Increase our running total of the size and append the inode.\n\t\tsize += elemSize\n\t\tcurrent.inodes = append(current.inodes, inode)\n\t}\n\n\treturn nodes\n}\n\n// spill writes the nodes to dirty pages and splits nodes as it goes.\n// Returns an error if dirty pages cannot be allocated.\nfunc (n *node) spill() error {\n\tvar tx = n.bucket.tx\n\n\t// Spill child nodes first.\n\tfor _, child := range n.children {\n\t\tif err := child.spill(); err != nil {\n\t\t\treturn err\n\t\t}\n\t}\n\n\t// Add node's page to the freelist if it's not new.\n\tif n.pgid > 0 {\n\t\ttx.db.freelist.free(tx.id(), tx.page(n.pgid))\n\t\tn.pgid = 0\n\t}\n\n\t// Spill nodes by deepest first.\n\tvar nodes = n.split(tx.db.pageSize)\n\tfor _, node := range nodes {\n\t\t// Allocate contiguous space for the node.\n\t\tp, err := tx.allocate((node.size() / tx.db.pageSize) + 1)\n\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n\n\t\t// Write the node.\n\t\t_assert(p.id < tx.meta.pgid, \"pgid (%d) above high water mark (%d)\", p.id, tx.meta.pgid)\n\t\tnode.pgid = p.id\n\t\tnode.write(p)\n\n\t\t// Insert into parent inodes.\n\t\tif node.parent != nil {\n\t\t\tvar key = node.key\n\t\t\tif key == nil {\n\t\t\t\tkey = node.inodes[0].key\n\t\t\t}\n\n\t\t\tnode.parent.put(key, node.inodes[0].key, nil, node.pgid, 0)\n\t\t\tnode.key = node.inodes[0].key\n\t\t}\n\n\t\t// Update the statistics.\n\t\ttx.stats.Spill++\n\t}\n\n\t// This is a special case where we need to write the parent if it is new\n\t// and caused by a split in the root.\n\tvar parent = n.parent\n\tif parent != nil && parent.pgid == 0 {\n\t\t// Allocate contiguous space for the node.\n\t\tp, err := tx.allocate((parent.size() / tx.db.pageSize) + 1)\n\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n\n\t\t// Write the new root.\n\t\t_assert(p.id < tx.meta.pgid, \"pgid (%d) above high water mark (%d)\", p.id, tx.meta.pgid)\n\t\tparent.pgid = p.id\n\t\tparent.write(p)\n\t}\n\n\treturn nil\n}\n\n// rebalance attempts to combine the node with sibling nodes if the node fill\n// size is below a threshold or if there are not enough keys.\nfunc (n *node) rebalance() {\n\tif !n.unbalanced {\n\t\treturn\n\t}\n\tn.unbalanced = false\n\n\t// Update statistics.\n\tn.bucket.tx.stats.Rebalance++\n\n\t// Ignore if node is above threshold (25%) and has enough keys.\n\tvar threshold = n.bucket.tx.db.pageSize / 4\n\tif n.size() > threshold && len(n.inodes) > n.minKeys() {\n\t\treturn\n\t}\n\n\t// Root node has special handling.\n\tif n.parent == nil {\n\t\t// If root node is a branch and only has one node then collapse it.\n\t\tif !n.isLeaf && len(n.inodes) == 1 {\n\t\t\t// Move root's child up.\n\t\t\tchild := n.bucket.node(n.inodes[0].pgid, n)\n\t\t\tn.isLeaf = child.isLeaf\n\t\t\tn.inodes = child.inodes[:]\n\t\t\tn.children = child.children\n\n\t\t\t// Reparent all child nodes being moved.\n\t\t\tfor _, inode := range n.inodes {\n\t\t\t\tif child, ok := n.bucket.nodes[inode.pgid]; ok {\n\t\t\t\t\tchild.parent = n\n\t\t\t\t}\n\t\t\t}\n\n\t\t\t// Remove old child.\n\t\t\tchild.parent = nil\n\t\t\tdelete(n.bucket.nodes, child.pgid)\n\t\t\tchild.free()\n\t\t}\n\n\t\treturn\n\t}\n\n\t// If node has no keys then just remove it.\n\tif n.numChildren() == 0 {\n\t\tn.parent.del(n.key)\n\t\tn.parent.removeChild(n)\n\t\tdelete(n.bucket.nodes, n.pgid)\n\t\tn.free()\n\t\tn.parent.rebalance()\n\t\treturn\n\t}\n\n\t_assert(n.parent.numChildren() > 1, \"parent must have at least 2 children\")\n\n\t// Destination node is right sibling if idx == 0, otherwise left sibling.\n\tvar target *node\n\tvar useNextSibling = (n.parent.childIndex(n) == 0)\n\tif useNextSibling {\n\t\ttarget = n.nextSibling()\n\t} else {\n\t\ttarget = n.prevSibling()\n\t}\n\n\t// If target node has extra nodes then just move one over.\n\tif target.numChildren() > target.minKeys() {\n\t\tif useNextSibling {\n\t\t\t// Reparent and move node.\n\t\t\tif child, ok := n.bucket.nodes[target.inodes[0].pgid]; ok {\n\t\t\t\tchild.parent.removeChild(child)\n\t\t\t\tchild.parent = n\n\t\t\t\tchild.parent.children = append(child.parent.children, child)\n\t\t\t}\n\t\t\tn.inodes = append(n.inodes, target.inodes[0])\n\t\t\ttarget.inodes = target.inodes[1:]\n\n\t\t\t// Update target key on parent.\n\t\t\ttarget.parent.put(target.key, target.inodes[0].key, nil, target.pgid, 0)\n\t\t\ttarget.key = target.inodes[0].key\n\t\t} else {\n\t\t\t// Reparent and move node.\n\t\t\tif child, ok := n.bucket.nodes[target.inodes[len(target.inodes)-1].pgid]; ok {\n\t\t\t\tchild.parent.removeChild(child)\n\t\t\t\tchild.parent = n\n\t\t\t\tchild.parent.children = append(child.parent.children, child)\n\t\t\t}\n\t\t\tn.inodes = append(n.inodes, inode{})\n\t\t\tcopy(n.inodes[1:], n.inodes)\n\t\t\tn.inodes[0] = target.inodes[len(target.inodes)-1]\n\t\t\ttarget.inodes = target.inodes[:len(target.inodes)-1]\n\t\t}\n\n\t\t// Update parent key for node.\n\t\tn.parent.put(n.key, n.inodes[0].key, nil, n.pgid, 0)\n\t\tn.key = n.inodes[0].key\n\n\t\treturn\n\t}\n\n\t// If both this node and the target node are too small then merge them.\n\tif useNextSibling {\n\t\t// Reparent all child nodes being moved.\n\t\tfor _, inode := range target.inodes {\n\t\t\tif child, ok := n.bucket.nodes[inode.pgid]; ok {\n\t\t\t\tchild.parent.removeChild(child)\n\t\t\t\tchild.parent = n\n\t\t\t\tchild.parent.children = append(child.parent.children, child)\n\t\t\t}\n\t\t}\n\n\t\t// Copy over inodes from target and remove target.\n\t\tn.inodes = append(n.inodes, target.inodes...)\n\t\tn.parent.del(target.key)\n\t\tn.parent.removeChild(target)\n\t\tdelete(n.bucket.nodes, target.pgid)\n\t\ttarget.free()\n\t} else {\n\t\t// Reparent all child nodes being moved.\n\t\tfor _, inode := range n.inodes {\n\t\t\tif child, ok := n.bucket.nodes[inode.pgid]; ok {\n\t\t\t\tchild.parent.removeChild(child)\n\t\t\t\tchild.parent = target\n\t\t\t\tchild.parent.children = append(child.parent.children, child)\n\t\t\t}\n\t\t}\n\n\t\t// Copy over inodes to target and remove node.\n\t\ttarget.inodes = append(target.inodes, n.inodes...)\n\t\tn.parent.del(n.key)\n\t\tn.parent.removeChild(n)\n\t\tn.parent.put(target.key, target.inodes[0].key, nil, target.pgid, 0)\n\t\tdelete(n.bucket.nodes, n.pgid)\n\t\tn.free()\n\t}\n\n\t// Either this node or the target node was deleted from the parent so rebalance it.\n\tn.parent.rebalance()\n}\n\n// removes a node from the list of in-memory children.\n// This does not affect the inodes.\nfunc (n *node) removeChild(target *node) {\n\tfor i, child := range n.children {\n\t\tif child == target {\n\t\t\tn.children = append(n.children[:i], n.children[i+1:]...)\n\t\t\treturn\n\t\t}\n\t}\n}\n\n// dereference causes the node to copy all its inode key/value references to heap memory.\n// This is required when the mmap is reallocated so inodes are not pointing to stale data.\nfunc (n *node) dereference() {\n\tkey := make([]byte, len(n.key))\n\tcopy(key, n.key)\n\tn.key = key\n\n\tfor i := range n.inodes {\n\t\tinode := &n.inodes[i]\n\n\t\tkey := make([]byte, len(inode.key))\n\t\tcopy(key, inode.key)\n\t\tinode.key = key\n\n\t\tvalue := make([]byte, len(inode.value))\n\t\tcopy(value, inode.value)\n\t\tinode.value = value\n\t}\n}\n\n// free adds the node's underlying page to the freelist.\nfunc (n *node) free() {\n\tif n.pgid != 0 {\n\t\tn.bucket.tx.db.freelist.free(n.bucket.tx.id(), n.bucket.tx.page(n.pgid))\n\t\tn.pgid = 0\n\t}\n}\n\n// dump writes the contents of the node for debugging purposes.\nfunc (n *node) dump(w io.Writer) {\n\t// Write node header.\n\tvar typ = \"branch\"\n\tif n.isLeaf {\n\t\ttyp = \"leaf\"\n\t}\n\tfmt.Fprintf(w, \"[NODE %d {type=%s count=%d}]\\n\", n.pgid, typ, len(n.inodes))\n\n\t// Write out abbreviated version of each item.\n\tfor _, item := range n.inodes {\n\t\tif n.isLeaf {\n\t\t\tif item.flags&bucketLeafFlag != 0 {\n\t\t\t\tbucket := (*bucket)(unsafe.Pointer(&item.value[0]))\n\t\t\t\tfmt.Fprintf(w, \"[L \\\"%s\\\" -> (bucket root=%d)]\\n\", item.key, bucket.root)\n\t\t\t} else {\n\t\t\t\tfmt.Fprintf(w, \"[L \\\"%s\\\" -> \\\"%s\\\"]\\n\", item.key, item.value)\n\t\t\t}\n\t\t} else {\n\t\t\tfmt.Fprintf(w, \"[B \\\"%s\\\" -> pgid=%d]\\n\", item.key, item.pgid)\n\t\t}\n\t}\n\tfmt.Fprint(w, \"\\n\")\n}\n\n// inode represents an internal node inside of a node.\n// It can be used to point to elements in a page or point\n// to an element which hasn't been added to a page yet.\ntype inode struct {\n\tflags uint32\n\tpgid  pgid\n\tkey   []byte\n\tvalue []byte\n}\n\ntype inodes []inode\n",
+        "rank": 0,
+        "truncated": false
+      }
+    ],
+    "selected": [
+      {
+        "id": "970bd08bdf111a906af892aa",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "node.go",
+        "start_byte": 2116,
+        "text": "func (n *node) put(oldKey, newKey, value []byte, pgid pgid, flags uint32) {\n\t_assert(len(oldKey) > 0, \"put: zero-length old key\")\n\t_assert(len(newKey) > 0, \"put: zero-length new key\")\n\n\t// Find insertion index.\n\tindex := sort.Search(len(n.inodes), func(i int) bool { return bytes.Compare(n.inodes[i].key, oldKey) != -1 })\n\n\t// Add capacity and shift nodes if we don't have an exact match and need to insert.\n\texact := (len(n.inodes) > 0 && index < len(n.inodes) && bytes.Equal(n.inodes[index].key, oldKey))\n\tif !exact {\n\t\tn.inodes = append(n.inodes, inode{})\n\t\tcopy(n.inodes[index+1:], n.inodes[index:])\n\t}\n\n\tinode := &n.inodes[index]\n\tinode.flags = flags\n\tinode.key = newKey\n\tinode.value = value\n\tinode.pgid = pgid\n\t_assert(len(inode.key) > 0, \"put: zero-length inode key\")\n}",
+        "rank": 0,
+        "truncated": false
+      },
+      {
+        "id": "f8dda4f8eda4374dea3ef362",
+        "revision": "c595561faae918374670ed667c64a7b95bbde9df",
+        "path": "node.go",
+        "start_byte": 2129,
+        "text": "func (n *node) put(oldKey, newKey, value []byte, pgid pgid, flags uint32) {\n\t_assert(pgid < n.bucket.tx.meta.pgid, \"pgid (%d) above high water mark (%d)\", pgid, n.bucket.tx.meta.pgid)\n\n\t// Find insertion index.\n\tindex := sort.Search(len(n.inodes), func(i int) bool { return bytes.Compare(n.inodes[i].key, oldKey) != -1 })\n\n\t// Add capacity and shift nodes if we don't have an exact match and need to insert.\n\texact := (len(n.inodes) > 0 && index < len(n.inodes) && bytes.Equal(n.inodes[index].key, oldKey))\n\tif !exact {\n\t\tn.inodes = append(n.inodes, inode{})\n\t\tcopy(n.inodes[index+1:], n.inodes[index:])\n\t}\n\n\tinode := &n.inodes[index]\n\tinode.flags = flags\n\tinode.key = newKey\n\tinode.value = value\n\tinode.pgid = pgid\n}",
+        "rank": 0,
+        "truncated": false
+      },
+      {
+        "id": "160b531c1ff7562f2251a3c7",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "bucket.go",
+        "start_byte": 4914,
+        "text": "var value = bucket.write()",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "8b6253eb690c0e16097443c4",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "bucket.go",
+        "start_byte": 12290,
+        "text": "var value []byte",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "c987e402341180c82e5110a0",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "bucket.go",
+        "start_byte": 13540,
+        "text": "var n = b.rootNode",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "c5561c56d3255b71cc9f5f55",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "bucket.go",
+        "start_byte": 14328,
+        "text": "var n = b.rootNode",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "8e40c70ebbc0069fc7c90c2e",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "bucket.go",
+        "start_byte": 14348,
+        "text": "var value = make([]byte, bucketHeaderSize+pageHeaderSize+n.size())",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "7f54f444f8cbb20b8b4d66c5",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "bucket.go",
+        "start_byte": 14926,
+        "text": "func (b *Bucket) node(pgid pgid, parent *node) *node {\n\t_assert(b.nodes != nil, \"nodes map expected\")\n\t// Retrieve node if it's already been created.\n\tif n := b.nodes[pgid]; n != nil {\n\t\treturn n\n\t}\n\n\t// Otherwise create a node and cache it.\n\tn := &node{bucket: b, parent: parent}\n\tif parent == nil {\n\t\tb.rootNode = n\n\t} else {\n\t\tparent.children = append(parent.children, n)\n\t}\n\n\t// Use the inline page if this is an inline bucket.\n\tvar p = b.page\n\tif p == nil {\n\t\tp = b.tx.page(pgid)\n\t}\n\n\t// Read the page into the node and cache it.\n\tn.read(p)\n\tb.nodes[pgid] = n\n\n\t// Update statistics.\n\tb.tx.stats.NodeCount++\n\n\treturn n\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "6566041e3258c0e8a2363583",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "cmd/bolt/bench.go",
+        "start_byte": 2504,
+        "text": "var i = uint32(0)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "b81162b29904eeb872276f19",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "cmd/bolt/bench.go",
+        "start_byte": 3212,
+        "text": "var key = make([]byte, options.KeySize)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "88c97d5686f30c905d81a2d4",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "cmd/bolt/bench.go",
+        "start_byte": 3256,
+        "text": "var value = make([]byte, options.ValueSize)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "ee0556f1fa71d67a1088b8d2",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "cmd/bolt/import.go",
+        "start_byte": 2312,
+        "text": "var value []byte",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "5e022e7848b04e1246c3d82f",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "cursor.go",
+        "start_byte": 4492,
+        "text": "var pgid pgid",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "a3c1eba39d4064d707ebfad7",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "cursor.go",
+        "start_byte": 5040,
+        "text": "var pgid pgid",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "8d493806fb3be20bb38252d9",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "cursor.go",
+        "start_byte": 5953,
+        "text": "var exact bool",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "09f840efaf97d47df714411f",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "cursor.go",
+        "start_byte": 6585,
+        "text": "var exact bool",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "bc54a7abc9066d931566190a",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "cursor.go",
+        "start_byte": 8245,
+        "text": "func (c *Cursor) node() *node {\n\t_assert(len(c.stack) > 0, \"accessing a node with a zero-length cursor stack\")\n\n\t// If the top of the stack is a leaf node then just return it.\n\tif ref := &c.stack[len(c.stack)-1]; ref.node != nil && ref.isLeaf() {\n\t\treturn ref.node\n\t}\n\n\t// Start from root and traverse down the hierarchy.\n\tvar n = c.stack[0].node\n\tif n == nil {\n\t\tn = c.bucket.node(c.stack[0].page.id, nil)\n\t}\n\tfor _, ref := range c.stack[:len(c.stack)-1] {\n\t\t_assert(!n.isLeaf, \"expected branch node\")\n\t\tn = n.childAt(int(ref.index))\n\t}\n\t_assert(n.isLeaf, \"expected leaf node\")\n\treturn n\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "925fe4d0dbe3f1b3b2cb7474",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "cursor.go",
+        "start_byte": 8568,
+        "text": "var n = c.stack[0].node",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "728dc701f293eaa293681c1d",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "db.go",
+        "start_byte": 17896,
+        "text": "func (m *meta) copy(dest *meta) {\n\t*dest = *m\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "9c958bab0d9524f78e2c70ee",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "db.go",
+        "start_byte": 18726,
+        "text": "func _assert(condition bool, msg string, v ...interface{}) {\n\tif !condition {\n\t\tpanic(fmt.Sprintf(\"assertion failed: \"+msg, v...))\n\t}\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "c5a8fca054d8c7d7a13cb43a",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "node.go",
+        "start_byte": 105,
+        "text": "type node struct {\n\tbucket     *Bucket\n\tisLeaf     bool\n\tunbalanced bool\n\tkey        []byte\n\tpgid       pgid\n\tparent     *node\n\tchildren   []*node\n\tinodes     inodes\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "bbde1d305a8af3b06aa05f1a",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "node.go",
+        "start_byte": 7800,
+        "text": "var key = node.key",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "ca9acc7102482e2dc4f6507f",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "node.go",
+        "start_byte": 14763,
+        "text": "type inode struct {\n\tflags uint32\n\tpgid  pgid\n\tkey   []byte\n\tvalue []byte\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "f8fe5123244b11471626ff8c",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "node.go",
+        "start_byte": 14840,
+        "text": "type inodes []inode",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "211b1ebf516c1665a97b1b58",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "page.go",
+        "start_byte": 483,
+        "text": "type pgid uint64",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "d80b6a26595b12f0674e0e67",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "page.go",
+        "start_byte": 2484,
+        "text": "func (n *branchPageElement) key() []byte {\n\tbuf := (*[maxAllocSize]byte)(unsafe.Pointer(n))\n\treturn buf[n.pos : n.pos+n.ksize]\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "ae41e4d19ca02fa1a5145c5d",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "page.go",
+        "start_byte": 2801,
+        "text": "func (n *leafPageElement) key() []byte {\n\tbuf := (*[maxAllocSize]byte)(unsafe.Pointer(n))\n\treturn buf[n.pos : n.pos+n.ksize]\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "1481ab6d69bcc3ea4042fe6a",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "page.go",
+        "start_byte": 2978,
+        "text": "func (n *leafPageElement) value() []byte {\n\tbuf := (*[maxAllocSize]byte)(unsafe.Pointer(n))\n\treturn buf[n.pos+n.ksize : n.pos+n.ksize+n.vsize]\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "d80a10740defd197cf792361",
+        "revision": "c595561faae918374670ed667c64a7b95bbde9df",
+        "path": "bucket.go",
+        "start_byte": 2292,
+        "text": "type bucket struct {\n\troot     pgid   // page id of the bucket's root-level page\n\tsequence uint64 // monotonically incrementing, used by NextSequence()\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "841f32b5b66904e4a5f58507",
+        "revision": "c595561faae918374670ed667c64a7b95bbde9df",
+        "path": "bucket.go",
+        "start_byte": 4843,
+        "text": "var bucket = Bucket{bucket: &bucket{}, rootNode: &node{isLeaf: true}}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "8f0919509e81ebebc2032dca",
+        "revision": "c595561faae918374670ed667c64a7b95bbde9df",
+        "path": "bucket.go",
+        "start_byte": 4914,
+        "text": "var value = bucket.write()",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "c729c7a49f996096103bc87c",
+        "revision": "c595561faae918374670ed667c64a7b95bbde9df",
+        "path": "bucket.go",
+        "start_byte": 12290,
+        "text": "var value []byte",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "3acf3bb3f3ed033bb323339a",
+        "revision": "c595561faae918374670ed667c64a7b95bbde9df",
+        "path": "bucket.go",
+        "start_byte": 12552,
+        "text": "var bucket = (*bucket)(unsafe.Pointer(&value[0]))",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "3a1323848e171ac3b4880b7b",
+        "revision": "c595561faae918374670ed667c64a7b95bbde9df",
+        "path": "bucket.go",
+        "start_byte": 13656,
+        "text": "var n = b.rootNode",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "76a5f6559f2534a2d191d3f2",
+        "revision": "c595561faae918374670ed667c64a7b95bbde9df",
+        "path": "bucket.go",
+        "start_byte": 14444,
+        "text": "var n = b.rootNode",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "a7369c8163c06fa938b8954f",
+        "revision": "c595561faae918374670ed667c64a7b95bbde9df",
+        "path": "bucket.go",
+        "start_byte": 14464,
+        "text": "var value = make([]byte, bucketHeaderSize+pageHeaderSize+n.size())",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "723e8a977204217db3fe570d",
+        "revision": "c595561faae918374670ed667c64a7b95bbde9df",
+        "path": "bucket.go",
+        "start_byte": 14560,
+        "text": "var bucket = (*bucket)(unsafe.Pointer(&value[0]))",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "8b2f55ea82bd4b7e185d381b",
+        "revision": "c595561faae918374670ed667c64a7b95bbde9df",
+        "path": "bucket.go",
+        "start_byte": 15042,
+        "text": "func (b *Bucket) node(pgid pgid, parent *node) *node {\n\t_assert(b.nodes != nil, \"nodes map expected\")\n\t// Retrieve node if it's already been created.\n\tif n := b.nodes[pgid]; n != nil {\n\t\treturn n\n\t}\n\n\t// Otherwise create a node and cache it.\n\tn := &node{bucket: b, parent: parent}\n\tif parent == nil {\n\t\tb.rootNode = n\n\t} else {\n\t\tparent.children = append(parent.children, n)\n\t}\n\n\t// Use the inline page if this is an inline bucket.\n\tvar p = b.page\n\tif p == nil {\n\t\tp = b.tx.page(pgid)\n\t}\n\n\t// Read the page into the node and cache it.\n\tn.read(p)\n\tb.nodes[pgid] = n\n\n\t// Update statistics.\n\tb.tx.stats.NodeCount++\n\n\treturn n\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "381c01783a240d701b37f6df",
+        "revision": "c595561faae918374670ed667c64a7b95bbde9df",
+        "path": "bucket.go",
+        "start_byte": 15778,
+        "text": "var tx = b.tx",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "a1457bf3859019c4aa8e58ad",
+        "revision": "c595561faae918374670ed667c64a7b95bbde9df",
+        "path": "cmd/bolt/bench.go",
+        "start_byte": 2504,
+        "text": "var i = uint32(0)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "82cfb68026c6ee3185455d50",
+        "revision": "c595561faae918374670ed667c64a7b95bbde9df",
+        "path": "cmd/bolt/bench.go",
+        "start_byte": 3212,
+        "text": "var key = make([]byte, options.KeySize)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "be0d5b504ae71cbb1c8c5dfd",
+        "revision": "c595561faae918374670ed667c64a7b95bbde9df",
+        "path": "cmd/bolt/bench.go",
+        "start_byte": 3256,
+        "text": "var value = make([]byte, options.ValueSize)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "b3bbe46d6bf709b54637afca",
+        "revision": "c595561faae918374670ed667c64a7b95bbde9df",
+        "path": "cmd/bolt/import.go",
+        "start_byte": 2312,
+        "text": "var value []byte",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "e092d01073f48a1577d73da5",
+        "revision": "c595561faae918374670ed667c64a7b95bbde9df",
+        "path": "cursor.go",
+        "start_byte": 4492,
+        "text": "var pgid pgid",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "997948562222a159899acd03",
+        "revision": "c595561faae918374670ed667c64a7b95bbde9df",
+        "path": "cursor.go",
+        "start_byte": 5040,
+        "text": "var pgid pgid",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "4995d7280a96e92f1fede58d",
+        "revision": "c595561faae918374670ed667c64a7b95bbde9df",
+        "path": "cursor.go",
+        "start_byte": 5953,
+        "text": "var exact bool",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "2a73737c24c294cf252c11ee",
+        "revision": "c595561faae918374670ed667c64a7b95bbde9df",
+        "path": "cursor.go",
+        "start_byte": 6585,
+        "text": "var exact bool",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "d5d03883c0085227c5ed9631",
+        "revision": "c595561faae918374670ed667c64a7b95bbde9df",
+        "path": "cursor.go",
+        "start_byte": 8245,
+        "text": "func (c *Cursor) node() *node {\n\t_assert(len(c.stack) > 0, \"accessing a node with a zero-length cursor stack\")\n\n\t// If the top of the stack is a leaf node then just return it.\n\tif ref := &c.stack[len(c.stack)-1]; ref.node != nil && ref.isLeaf() {\n\t\treturn ref.node\n\t}\n\n\t// Start from root and traverse down the hierarchy.\n\tvar n = c.stack[0].node\n\tif n == nil {\n\t\tn = c.bucket.node(c.stack[0].page.id, nil)\n\t}\n\tfor _, ref := range c.stack[:len(c.stack)-1] {\n\t\t_assert(!n.isLeaf, \"expected branch node\")\n\t\tn = n.childAt(int(ref.index))\n\t}\n\t_assert(n.isLeaf, \"expected leaf node\")\n\treturn n\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "d1036c0811ccbcbeca4191ba",
+        "revision": "c595561faae918374670ed667c64a7b95bbde9df",
+        "path": "cursor.go",
+        "start_byte": 8568,
+        "text": "var n = c.stack[0].node",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "88d01f8dd532ec0cfa21b285",
+        "revision": "c595561faae918374670ed667c64a7b95bbde9df",
+        "path": "db.go",
+        "start_byte": 15899,
+        "text": "func (db *DB) meta() *meta {\n\tif db.meta0.txid > db.meta1.txid {\n\t\treturn db.meta0\n\t}\n\treturn db.meta1\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "58a04cca7b5c2a06ad8fa28f",
+        "revision": "c595561faae918374670ed667c64a7b95bbde9df",
+        "path": "db.go",
+        "start_byte": 17351,
+        "text": "type meta struct {\n\tmagic    uint32\n\tversion  uint32\n\tpageSize uint32\n\tflags    uint32\n\troot     bucket\n\tfreelist pgid\n\tpgid     pgid\n\ttxid     txid\n\tchecksum uint64\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "66fdef835fe2e324555dda2d",
+        "revision": "c595561faae918374670ed667c64a7b95bbde9df",
+        "path": "db.go",
+        "start_byte": 17896,
+        "text": "func (m *meta) copy(dest *meta) {\n\t*dest = *m\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "90ef1d2a982a4a33a3d7fad3",
+        "revision": "c595561faae918374670ed667c64a7b95bbde9df",
+        "path": "db.go",
+        "start_byte": 18931,
+        "text": "func _assert(condition bool, msg string, v ...interface{}) {\n\tif !condition {\n\t\tpanic(fmt.Sprintf(\"assertion failed: \"+msg, v...))\n\t}\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "f094c605d411177231835778",
+        "revision": "c595561faae918374670ed667c64a7b95bbde9df",
+        "path": "node.go",
+        "start_byte": 118,
+        "text": "type node struct {\n\tbucket     *Bucket\n\tisLeaf     bool\n\tunbalanced bool\n\tkey        []byte\n\tpgid       pgid\n\tparent     *node\n\tchildren   []*node\n\tinodes     inodes\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "8307e3486bc0d2766402c8be",
+        "revision": "c595561faae918374670ed667c64a7b95bbde9df",
+        "path": "node.go",
+        "start_byte": 6939,
+        "text": "var tx = n.bucket.tx",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "8ff21bb277ae41514968e736",
+        "revision": "c595561faae918374670ed667c64a7b95bbde9df",
+        "path": "node.go",
+        "start_byte": 7675,
+        "text": "var key = node.key",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "8ef302f49cba4616769c9244",
+        "revision": "c595561faae918374670ed667c64a7b95bbde9df",
+        "path": "node.go",
+        "start_byte": 14215,
+        "text": "type inode struct {\n\tflags uint32\n\tpgid  pgid\n\tkey   []byte\n\tvalue []byte\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "6de8e17623d04e78d78c7175",
+        "revision": "c595561faae918374670ed667c64a7b95bbde9df",
+        "path": "node.go",
+        "start_byte": 14292,
+        "text": "type inodes []inode",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "5325685decb9fa078f4541fd",
+        "revision": "c595561faae918374670ed667c64a7b95bbde9df",
+        "path": "page.go",
+        "start_byte": 483,
+        "text": "type pgid uint64",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "ea42e2d7ec4e4b81f4a8d392",
+        "revision": "c595561faae918374670ed667c64a7b95bbde9df",
+        "path": "page.go",
+        "start_byte": 1062,
+        "text": "func (p *page) meta() *meta {\n\treturn (*meta)(unsafe.Pointer(&p.ptr))\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "5e5b858040ea59285b25d124",
+        "revision": "c595561faae918374670ed667c64a7b95bbde9df",
+        "path": "page.go",
+        "start_byte": 2484,
+        "text": "func (n *branchPageElement) key() []byte {\n\tbuf := (*[maxAllocSize]byte)(unsafe.Pointer(n))\n\treturn buf[n.pos : n.pos+n.ksize]\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "67728b6d3c8784b164476df5",
+        "revision": "c595561faae918374670ed667c64a7b95bbde9df",
+        "path": "page.go",
+        "start_byte": 2801,
+        "text": "func (n *leafPageElement) key() []byte {\n\tbuf := (*[maxAllocSize]byte)(unsafe.Pointer(n))\n\treturn buf[n.pos : n.pos+n.ksize]\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "44515fbe35ccdb7b536f61e6",
+        "revision": "c595561faae918374670ed667c64a7b95bbde9df",
+        "path": "page.go",
+        "start_byte": 2978,
+        "text": "func (n *leafPageElement) value() []byte {\n\tbuf := (*[maxAllocSize]byte)(unsafe.Pointer(n))\n\treturn buf[n.pos+n.ksize : n.pos+n.ksize+n.vsize]\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "8cf022264a077fd12487bdd5",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "bolt_linux.go",
+        "start_byte": 43,
+        "text": "func fdatasync(f *os.File) error {\n\treturn syscall.Fdatasync(int(f.Fd()))\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "7fb48efd9e62440618a4d26e",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "bucket.go",
+        "start_byte": 1478,
+        "text": "const (\n\tmaxUint = ^uint(0)\n\tminUint = 0\n\tmaxInt  = int(^uint(0) >> 1)\n\tminInt  = -maxInt - 1\n)",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "0cbe5c441e5f754d5fe0cf85",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "bucket.go",
+        "start_byte": 1575,
+        "text": "const bucketHeaderSize = int(unsafe.Sizeof(bucket{}))",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "aa1dd8a039cb421ee1712a1b",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "bucket.go",
+        "start_byte": 1704,
+        "text": "type Bucket struct {\n\t*bucket\n\ttx       *Tx                // the associated transaction\n\tbuckets  map[string]*Bucket // subbucket cache\n\tpage     *page              // inline page reference\n\trootNode *node              // materialized node for the root page.\n\tnodes    map[pgid]*node     // node cache\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "b87476f7c6345e7c8c96cdba",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "bucket.go",
+        "start_byte": 2292,
+        "text": "type bucket struct {\n\troot     pgid   // page id of the bucket's root-level page\n\tsequence uint64 // monotonically incrementing, used by NextSequence()\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "bc9d341c7721ffd9cdc62c83",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "bucket.go",
+        "start_byte": 2512,
+        "text": "func newBucket(tx *Tx) Bucket {\n\tvar b = Bucket{tx: tx}\n\tb.buckets = make(map[string]*Bucket)\n\tif tx.writable {\n\t\tb.nodes = make(map[pgid]*node)\n\t}\n\treturn b\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "24c8dda435c530f7671feea0",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "bucket.go",
+        "start_byte": 2793,
+        "text": "func (b *Bucket) Root() pgid {\n\treturn b.root\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "1f1c1a7586c13feef7de608d",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "bucket.go",
+        "start_byte": 2894,
+        "text": "func (b *Bucket) Writable() bool {\n\treturn b.tx.writable\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "5a744ff3b387f2eda0f3364e",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "bucket.go",
+        "start_byte": 3417,
+        "text": "func (b *Bucket) Bucket(name []byte) *Bucket {\n\tif child := b.buckets[string(name)]; child != nil {\n\t\treturn child\n\t}\n\n\t// Move cursor to key.\n\tc := b.Cursor()\n\tk, v, flags := c.seek(name)\n\n\t// Return nil if the key doesn't exist or it is not a bucket.\n\tif !bytes.Equal(name, k) || (flags&bucketLeafFlag) == 0 {\n\t\treturn nil\n\t}\n\n\t// Otherwise create a bucket and cache it.\n\tvar child = newBucket(b.tx)\n\tchild.bucket = &bucket{}\n\t*child.bucket = *(*bucket)(unsafe.Pointer(&v[0]))\n\tb.buckets[string(name)] = &child\n\n\t// Save a reference to the inline page if the bucket is inline.\n\tif child.root == 0 {\n\t\tchild.page = (*page)(unsafe.Pointer(&v[bucketHeaderSize]))\n\t}\n\n\treturn &child\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "5158c93e71e46ae473cdccd2",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "bucket.go",
+        "start_byte": 4294,
+        "text": "func (b *Bucket) CreateBucket(key []byte) (*Bucket, error) {\n\tif b.tx.db == nil {\n\t\treturn nil, ErrTxClosed\n\t} else if !b.tx.writable {\n\t\treturn nil, ErrTxNotWritable\n\t} else if len(key) == 0 {\n\t\treturn nil, ErrBucketNameRequired\n\t}\n\n\t// Move cursor to correct position.\n\tc := b.Cursor()\n\tk, _, flags := c.seek(key)\n\n\t// Return an error if there is an existing key.\n\tif bytes.Equal(key, k) {\n\t\tif (flags & bucketLeafFlag) != 0 {\n\t\t\treturn nil, ErrBucketExists\n\t\t} else {\n\t\t\treturn nil, ErrIncompatibleValue\n\t\t}\n\t}\n\n\t// Create empty, inline bucket.\n\tvar bucket = Bucket{bucket: &bucket{}, rootNode: &node{isLeaf: true}}\n\tvar value = bucket.write()\n\n\t// Insert into node.\n\tkey = cloneBytes(key)\n\tc.node().put(key, key, value, 0, bucketLeafFlag)\n\n\t// Since subbuckets are not allowed on inline buckets, we need to\n\t// dereference the inline page, if it exists. This will cause the bucket\n\t// to be treated as a regular, non-inline bucket for the rest of the tx.\n\tb.page = nil\n\n\treturn b.Bucket(key), nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "990343c22b1415280d9bdaf5",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "bucket.go",
+        "start_byte": 4843,
+        "text": "var bucket = Bucket{bucket: &bucket{}, rootNode: &node{isLeaf: true}}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "4e35e4a364e0f36fea097655",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "bucket.go",
+        "start_byte": 5489,
+        "text": "func (b *Bucket) CreateBucketIfNotExists(key []byte) (*Bucket, error) {\n\tchild, err := b.CreateBucket(key)\n\tif err == ErrBucketExists {\n\t\treturn b.Bucket(key), nil\n\t} else if err != nil {\n\t\treturn nil, err\n\t}\n\treturn child, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "e2347fc88570cd8ab0d2f499",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "bucket.go",
+        "start_byte": 5867,
+        "text": "func (b *Bucket) DeleteBucket(key []byte) error {\n\tif b.tx.db == nil {\n\t\treturn ErrTxClosed\n\t} else if !b.Writable() {\n\t\treturn ErrTxNotWritable\n\t}\n\n\t// Move cursor to correct position.\n\tc := b.Cursor()\n\tk, _, flags := c.seek(key)\n\n\t// Return an error if bucket doesn't exist or is not a bucket.\n\tif !bytes.Equal(key, k) {\n\t\treturn ErrBucketNotFound\n\t} else if (flags & bucketLeafFlag) == 0 {\n\t\treturn ErrIncompatibleValue\n\t}\n\n\t// Recursively delete all child buckets.\n\tchild := b.Bucket(key)\n\terr := child.ForEach(func(k, v []byte) error {\n\t\tif v == nil {\n\t\t\tif err := child.DeleteBucket(k); err != nil {\n\t\t\t\treturn fmt.Errorf(\"delete bucket: %s\", err)\n\t\t\t}\n\t\t}\n\t\treturn nil\n\t})\n\tif err != nil {\n\t\treturn err\n\t}\n\n\t// Remove cached copy.\n\tdelete(b.buckets, string(key))\n\n\t// Release all bucket pages to freelist.\n\tchild.nodes = nil\n\tchild.rootNode = nil\n\tchild.free()\n\n\t// Delete the node if we have a matching key.\n\tc.node().del(key)\n\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "7ddde138cdaba2c70b4f3aa1",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "bucket.go",
+        "start_byte": 6953,
+        "text": "func (b *Bucket) Get(key []byte) []byte {\n\tk, v, flags := b.Cursor().seek(key)\n\n\t// Return nil if this is a bucket.\n\tif (flags & bucketLeafFlag) != 0 {\n\t\treturn nil\n\t}\n\n\t// If our target node isn't the same key as what's passed in then return nil.\n\tif !bytes.Equal(key, k) {\n\t\treturn nil\n\t}\n\treturn v\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "b10450bb9d9bd9fdd0318f4f",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "bucket.go",
+        "start_byte": 7521,
+        "text": "func (b *Bucket) Put(key []byte, value []byte) error {\n\tif b.tx.db == nil {\n\t\treturn ErrTxClosed\n\t} else if !b.Writable() {\n\t\treturn ErrTxNotWritable\n\t} else if len(key) == 0 {\n\t\treturn ErrKeyRequired\n\t} else if len(key) > MaxKeySize {\n\t\treturn ErrKeyTooLarge\n\t} else if int64(len(value)) > MaxValueSize {\n\t\treturn ErrValueTooLarge\n\t}\n\n\t// Move cursor to correct position.\n\tc := b.Cursor()\n\tk, _, flags := c.seek(key)\n\n\t// Return an error if there is an existing key with a bucket value.\n\tif bytes.Equal(key, k) && (flags&bucketLeafFlag) != 0 {\n\t\treturn ErrIncompatibleValue\n\t}\n\n\t// Insert into node.\n\tkey = cloneBytes(key)\n\tc.node().put(key, key, value, 0, 0)\n\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "94f1be3672e21c2de9a7a3b6",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "bucket.go",
+        "start_byte": 8394,
+        "text": "func (b *Bucket) Delete(key []byte) error {\n\tif b.tx.db == nil {\n\t\treturn ErrTxClosed\n\t} else if !b.Writable() {\n\t\treturn ErrTxNotWritable\n\t}\n\n\t// Move cursor to correct position.\n\tc := b.Cursor()\n\t_, _, flags := c.seek(key)\n\n\t// Return an error if there is already existing bucket value.\n\tif (flags & bucketLeafFlag) != 0 {\n\t\treturn ErrIncompatibleValue\n\t}\n\n\t// Delete the node if we have a matching key.\n\tc.node().del(key)\n\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "3fc9ec53d7cefa9bc8dd1517",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "bucket.go",
+        "start_byte": 8903,
+        "text": "func (b *Bucket) NextSequence() (int, error) {\n\tif b.tx.db == nil {\n\t\treturn 0, ErrTxClosed\n\t} else if !b.Writable() {\n\t\treturn 0, ErrTxNotWritable\n\t}\n\n\t// Make sure next sequence number will not be larger than the maximum\n\t// integer size of the system.\n\tif b.bucket.sequence == uint64(maxInt) {\n\t\treturn 0, ErrSequenceOverflow\n\t}\n\n\t// Increment and return the sequence.\n\tb.bucket.sequence++\n\n\treturn int(b.bucket.sequence), nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "6df6316fffd35a0f5cd37634",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "bucket.go",
+        "start_byte": 9523,
+        "text": "func (b *Bucket) ForEach(fn func(k, v []byte) error) error {\n\tif b.tx.db == nil {\n\t\treturn ErrTxClosed\n\t}\n\tc := b.Cursor()\n\tfor k, v := c.First(); k != nil; k, v = c.Next() {\n\t\tif err := fn(k, v); err != nil {\n\t\t\treturn err\n\t\t}\n\t}\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "0a7f8e012712347c79dabff9",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "bucket.go",
+        "start_byte": 9804,
+        "text": "func (b *Bucket) Stats() BucketStats {\n\tvar s BucketStats\n\tpageSize := b.tx.db.pageSize\n\tb.forEachPage(func(p *page, depth int) {\n\t\tif (p.flags & leafPageFlag) != 0 {\n\t\t\ts.LeafPageN++\n\t\t\ts.KeyN += int(p.count)\n\t\t\tlastElement := p.leafPageElement(p.count - 1)\n\t\t\tused := pageHeaderSize + (leafPageElementSize * int(p.count-1))\n\t\t\tused += int(lastElement.pos + lastElement.ksize + lastElement.vsize)\n\t\t\ts.LeafInuse += used\n\t\t\ts.LeafOverflowN += int(p.overflow)\n\t\t} else if (p.flags & branchPageFlag) != 0 {\n\t\t\ts.BranchPageN++\n\t\t\tlastElement := p.branchPageElement(p.count - 1)\n\t\t\tused := pageHeaderSize + (branchPageElementSize * int(p.count-1))\n\t\t\tused += int(lastElement.pos + lastElement.ksize)\n\t\t\ts.BranchInuse += used\n\t\t\ts.BranchOverflowN += int(p.overflow)\n\t\t}\n\n\t\tif depth+1 > s.Depth {\n\t\t\ts.Depth = (depth + 1)\n\t\t}\n\t})\n\ts.BranchAlloc = (s.BranchPageN + s.BranchOverflowN) * pageSize\n\ts.LeafAlloc = (s.LeafPageN + s.LeafOverflowN) * pageSize\n\treturn s\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "10b965f740804abbcf794951",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "bucket.go",
+        "start_byte": 10840,
+        "text": "func (b *Bucket) forEachPage(fn func(*page, int)) {\n\t// If we have an inline page then just use that.\n\tif b.page != nil {\n\t\tfn(b.page, 0)\n\t\treturn\n\t}\n\n\t// Otherwise traverse the page hierarchy.\n\tb.tx.forEachPage(b.root, 0, fn)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "7de39ad35e6bfc12dc707c82",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "bucket.go",
+        "start_byte": 11173,
+        "text": "func (b *Bucket) forEachPageNode(fn func(*page, *node, int)) {\n\t// If we have an inline page or root node then just use that.\n\tif b.page != nil {\n\t\tfn(b.page, nil, 0)\n\t\treturn\n\t}\n\tb._forEachPageNode(b.root, 0, fn)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "ac889d90b7250cc37e693ff3",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "bucket.go",
+        "start_byte": 11390,
+        "text": "func (b *Bucket) _forEachPageNode(pgid pgid, depth int, fn func(*page, *node, int)) {\n\tvar p, n = b.pageNode(pgid)\n\n\t// Execute function.\n\tfn(p, n, depth)\n\n\t// Recursively loop over children.\n\tif p != nil {\n\t\tif (p.flags & branchPageFlag) != 0 {\n\t\t\tfor i := 0; i < int(p.count); i++ {\n\t\t\t\telem := p.branchPageElement(uint16(i))\n\t\t\t\tb._forEachPageNode(elem.pgid, depth+1, fn)\n\t\t\t}\n\t\t}\n\t} else {\n\t\tif !n.isLeaf {\n\t\t\tfor _, inode := range n.inodes {\n\t\t\t\tb._forEachPageNode(inode.pgid, depth+1, fn)\n\t\t\t}\n\t\t}\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "1b3814f72b4d466969a7cc17",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "bucket.go",
+        "start_byte": 11477,
+        "text": "var p, n = b.pageNode(pgid)",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "c8428c19b5a3de6d9619d57d",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "bucket.go",
+        "start_byte": 11962,
+        "text": "func (b *Bucket) spill() error {\n\t// Spill all child buckets first.\n\tfor name, child := range b.buckets {\n\t\t// If the child bucket is small enough and it has no child buckets then\n\t\t// write it inline into the parent bucket's page. Otherwise spill it\n\t\t// like a normal bucket and make the parent value a pointer to the page.\n\t\tvar value []byte\n\t\tif child.inlineable() {\n\t\t\tchild.free()\n\t\t\tvalue = child.write()\n\t\t} else {\n\t\t\tif err := child.spill(); err != nil {\n\t\t\t\treturn err\n\t\t\t}\n\n\t\t\t// Update the child bucket header in this bucket.\n\t\t\tvalue = make([]byte, unsafe.Sizeof(bucket{}))\n\t\t\tvar bucket = (*bucket)(unsafe.Pointer(&value[0]))\n\t\t\t*bucket = *child.bucket\n\t\t}\n\n\t\t// Skip writing the bucket if there are no materialized nodes.\n\t\tif child.rootNode == nil {\n\t\t\tcontinue\n\t\t}\n\n\t\t// Update parent node.\n\t\tvar c = b.Cursor()\n\t\tk, _, flags := c.seek([]byte(name))\n\t\t_assert(bytes.Equal([]byte(name), k), \"misplaced bucket header: %x -> %x\", []byte(name), k)\n\t\t_assert(flags&bucketLeafFlag != 0, \"unexpected bucket header flag: %x\", flags)\n\t\tc.node().put([]byte(name), []byte(name), value, 0, bucketLeafFlag)\n\t}\n\n\t// Ignore if there's not a materialized root node.\n\tif b.rootNode == nil {\n\t\treturn nil\n\t}\n\n\t// Spill nodes.\n\tif err := b.rootNode.spill(); err != nil {\n\t\treturn err\n\t}\n\tb.rootNode = b.rootNode.root()\n\n\t// Update the root node for this bucket.\n\tb.root = b.rootNode.pgid\n\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "dead324c70c50bddac78c713",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "bucket.go",
+        "start_byte": 12552,
+        "text": "var bucket = (*bucket)(unsafe.Pointer(&value[0]))",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "19d4fa9e4cebaeb2510e4335",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "bucket.go",
+        "start_byte": 13502,
+        "text": "func (b *Bucket) inlineable() bool {\n\tvar n = b.rootNode\n\n\t// Bucket must only contain a single leaf node.\n\tif n == nil || !n.isLeaf {\n\t\treturn false\n\t}\n\n\t// Bucket is not inlineable if it contains subbuckets or if it goes beyond\n\t// our threshold for inline bucket size.\n\tvar size = pageHeaderSize\n\tfor _, inode := range n.inodes {\n\t\tsize += leafPageElementSize + len(inode.key) + len(inode.value)\n\n\t\tif inode.flags&bucketLeafFlag != 0 {\n\t\t\treturn false\n\t\t} else if size > b.maxInlineBucketSize() {\n\t\t\treturn false\n\t\t}\n\t}\n\n\treturn true\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "a098e28cb3a5bbc1b629173b",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "bucket.go",
+        "start_byte": 14125,
+        "text": "func (b *Bucket) maxInlineBucketSize() int {\n\treturn b.tx.db.pageSize / 4\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "2e7a42898076e2f7518098b8",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "bucket.go",
+        "start_byte": 14258,
+        "text": "func (b *Bucket) write() []byte {\n\t// Allocate the appropriate size.\n\tvar n = b.rootNode\n\tvar value = make([]byte, bucketHeaderSize+pageHeaderSize+n.size())\n\n\t// Write a bucket header.\n\tvar bucket = (*bucket)(unsafe.Pointer(&value[0]))\n\t*bucket = *b.bucket\n\n\t// Convert byte slice to a fake page and write the root node.\n\tvar p = (*page)(unsafe.Pointer(&value[bucketHeaderSize]))\n\tn.write(p)\n\n\treturn value\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "61586e447bbebe55faa15098",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "bucket.go",
+        "start_byte": 14444,
+        "text": "var bucket = (*bucket)(unsafe.Pointer(&value[0]))",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "acec76a1c43671e577d21ed1",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "bucket.go",
+        "start_byte": 14580,
+        "text": "var p = (*page)(unsafe.Pointer(&value[bucketHeaderSize]))",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "4d7e7e65f334496be8f9f39d",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "bucket.go",
+        "start_byte": 14712,
+        "text": "func (b *Bucket) rebalance() {\n\tfor _, n := range b.nodes {\n\t\tn.rebalance()\n\t}\n\tfor _, child := range b.buckets {\n\t\tchild.rebalance()\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "5d654cdb2293a650f8d05475",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "bucket.go",
+        "start_byte": 15604,
+        "text": "func (b *Bucket) free() {\n\tif b.root == 0 {\n\t\treturn\n\t}\n\n\tvar tx = b.tx\n\tb.forEachPageNode(func(p *page, n *node, _ int) {\n\t\tif p != nil {\n\t\t\ttx.db.freelist.free(tx.id(), p)\n\t\t} else {\n\t\t\tn.free()\n\t\t}\n\t})\n\tb.root = 0\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "f0e15daba4505ae12529e40e",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "bucket.go",
+        "start_byte": 16126,
+        "text": "func (b *Bucket) pageNode(id pgid) (*page, *node) {\n\t// Inline buckets have a fake page embedded in their value so treat them\n\t// differently. We'll return the rootNode (if available) or the fake page.\n\tif b.root == 0 {\n\t\t_assert(id == 0, \"inline bucket non-zero page access(2): %d != 0\", id)\n\t\tif b.rootNode != nil {\n\t\t\treturn nil, b.rootNode\n\t\t}\n\t\treturn b.page, nil\n\t}\n\n\t// Check the node cache for non-inline buckets.\n\tif b.nodes != nil {\n\t\tif n := b.nodes[id]; n != nil {\n\t\t\treturn nil, n\n\t\t}\n\t}\n\n\t// Finally lookup the page from the transaction if no node is materialized.\n\treturn b.tx.page(id), nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "cab778294c479f7387978131",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "bucket.go",
+        "start_byte": 16803,
+        "text": "type BucketStats struct {\n\t// Page count statistics.\n\tBranchPageN     int // number of logical branch pages\n\tBranchOverflowN int // number of physical branch overflow pages\n\tLeafPageN       int // number of logical leaf pages\n\tLeafOverflowN   int // number of physical leaf overflow pages\n\n\t// Tree statistics.\n\tKeyN  int // number of keys/value pairs\n\tDepth int // number of levels in B+tree\n\n\t// Page size utilization.\n\tBranchAlloc int // bytes allocated for physical branch pages\n\tBranchInuse int // bytes actually used for branch data\n\tLeafAlloc   int // bytes allocated for physical leaf pages\n\tLeafInuse   int // bytes actually used for leaf data\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "a428033c79f5221954be4c43",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "bucket.go",
+        "start_byte": 17506,
+        "text": "func cloneBytes(v []byte) []byte {\n\tvar clone = make([]byte, len(v))\n\tcopy(clone, v)\n\treturn clone\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "40a0eed0bb87b2365758b794",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "bucket.go",
+        "start_byte": 17542,
+        "text": "var clone = make([]byte, len(v))",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "a7b35dc5e81f5d7e5212279d",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "cmd/bolt/bench.go",
+        "start_byte": 268,
+        "text": "var benchBucketName = []byte(\"bench\")",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "2810714822dbe9bc777ba602",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "cmd/bolt/bench.go",
+        "start_byte": 2410,
+        "text": "func benchWriteSequential(db *bolt.DB, options *BenchOptions, results *BenchResults) error {\n\tvar i = uint32(0)\n\treturn benchWriteWithSource(db, options, results, func() uint32 { i++; return i })\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "10cc8d16b926a3f17f0bdee9",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "cmd/bolt/bench.go",
+        "start_byte": 2609,
+        "text": "func benchWriteRandom(db *bolt.DB, options *BenchOptions, results *BenchResults) error {\n\tr := rand.New(rand.NewSource(time.Now().UnixNano()))\n\treturn benchWriteWithSource(db, options, results, func() uint32 { return r.Uint32() })\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "75763aaa57ed179e759a9db1",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "cmd/bolt/bench.go",
+        "start_byte": 2843,
+        "text": "func benchWriteWithSource(db *bolt.DB, options *BenchOptions, results *BenchResults, keySource func() uint32) error {\n\tresults.WriteOps = options.Iterations\n\n\tfor i := 0; i < options.Iterations; i += options.BatchSize {\n\t\terr := db.Update(func(tx *bolt.Tx) error {\n\t\t\tb, _ := tx.CreateBucketIfNotExists(benchBucketName)\n\n\t\t\tfor j := 0; j < options.BatchSize; j++ {\n\t\t\t\tvar key = make([]byte, options.KeySize)\n\t\t\t\tvar value = make([]byte, options.ValueSize)\n\t\t\t\tbinary.BigEndian.PutUint32(key, keySource())\n\t\t\t\tif err := b.Put(key, value); err != nil {\n\t\t\t\t\treturn err\n\t\t\t\t}\n\t\t\t}\n\n\t\t\treturn nil\n\t\t})\n\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n\t}\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "b45e866b7882ae9196a6a475",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "cmd/bolt/bench.go",
+        "start_byte": 3863,
+        "text": "func benchReadSequential(db *bolt.DB, options *BenchOptions, results *BenchResults) error {\n\treturn db.View(func(tx *bolt.Tx) error {\n\t\tvar t = time.Now()\n\n\t\tfor {\n\t\t\tc := tx.Bucket(benchBucketName).Cursor()\n\t\t\tvar count int\n\t\t\tfor k, v := c.First(); k != nil; k, v = c.Next() {\n\t\t\t\tif v == nil {\n\t\t\t\t\treturn errors.New(\"invalid value\")\n\t\t\t\t}\n\t\t\t\tcount++\n\t\t\t}\n\n\t\t\tif options.WriteMode == \"seq\" && count != options.Iterations {\n\t\t\t\treturn fmt.Errorf(\"read seq: iter mismatch: expected %d, got %d\", options.Iterations, count)\n\t\t\t}\n\n\t\t\tresults.ReadOps += count\n\n\t\t\t// Make sure we do this for at least a second.\n\t\t\tif time.Since(t) >= time.Second {\n\t\t\t\tbreak\n\t\t\t}\n\t\t}\n\n\t\treturn nil\n\t})\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "9b6cb36897fdfdb80f031660",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "cmd/bolt/bench.go",
+        "start_byte": 4074,
+        "text": "var count int",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "6f39427292addcf8ec5d1f92",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "cmd/bolt/bench.go",
+        "start_byte": 6452,
+        "text": "type BenchOptions struct {\n\tProfileMode   string\n\tWriteMode     string\n\tReadMode      string\n\tIterations    int\n\tBatchSize     int\n\tKeySize       int\n\tValueSize     int\n\tCPUProfile    string\n\tMemProfile    string\n\tBlockProfile  string\n\tStatsInterval time.Duration\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "152d19ab9c9dd2e75b0fe9d6",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "cmd/bolt/bench.go",
+        "start_byte": 6788,
+        "text": "type BenchResults struct {\n\tWriteOps      int\n\tWriteDuration time.Duration\n\tReadOps       int\n\tReadDuration  time.Duration\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "49e20d1ea3c7103785dfe8f0",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "cmd/bolt/bench.go",
+        "start_byte": 7196,
+        "text": "func (r *BenchResults) WriteOpsPerSecond() int {\n\tvar op = r.WriteOpDuration()\n\tif op == 0 {\n\t\treturn 0\n\t}\n\treturn int(time.Second) / int(op)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "a4dd4274c13f0820befd8c21",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "cmd/bolt/bench.go",
+        "start_byte": 7617,
+        "text": "func (r *BenchResults) ReadOpsPerSecond() int {\n\tvar op = r.ReadOpDuration()\n\tif op == 0 {\n\t\treturn 0\n\t}\n\treturn int(time.Second) / int(op)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "6d40f3dcd1da27862aaa8cec",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "cmd/bolt/buckets.go",
+        "start_byte": 100,
+        "text": "func Buckets(path string) {\n\tif _, err := os.Stat(path); os.IsNotExist(err) {\n\t\tfatal(err)\n\t\treturn\n\t}\n\n\tdb, err := bolt.Open(path, 0600)\n\tif err != nil {\n\t\tfatal(err)\n\t\treturn\n\t}\n\tdefer db.Close()\n\n\terr = db.View(func(tx *bolt.Tx) error {\n\t\treturn tx.ForEach(func(name []byte, _ *bolt.Bucket) error {\n\t\t\tprintln(string(name))\n\t\t\treturn nil\n\t\t})\n\t})\n\tif err != nil {\n\t\tfatal(err)\n\t\treturn\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "9f418a0c7a7fdd9cce273fa2",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "cmd/bolt/export.go",
+        "start_byte": 141,
+        "text": "func Export(path string) {\n\tif _, err := os.Stat(path); os.IsNotExist(err) {\n\t\tfatal(err)\n\t\treturn\n\t}\n\n\t// Open the database.\n\tdb, err := bolt.Open(path, 0600)\n\tif err != nil {\n\t\tfatal(err)\n\t\treturn\n\t}\n\tdefer db.Close()\n\n\terr = db.View(func(tx *bolt.Tx) error {\n\t\t// Loop over every bucket and export it as a raw message.\n\t\tvar root []*rawMessage\n\t\terr := tx.ForEach(func(name []byte, b *bolt.Bucket) error {\n\t\t\tmessage, err := exportBucket(b)\n\t\t\tif err != nil {\n\t\t\t\tfatal(err)\n\t\t\t}\n\t\t\tmessage.Key = name\n\t\t\troot = append(root, message)\n\t\t\treturn nil\n\t\t})\n\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n\n\t\t// Encode all buckets into JSON.\n\t\toutput, err := json.Marshal(root)\n\t\tif err != nil {\n\t\t\treturn fmt.Errorf(\"encode: \", err)\n\t\t}\n\t\tprint(string(output))\n\t\treturn nil\n\t})\n\tif err != nil {\n\t\tfatal(err)\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "4ba8c9bb5e02492354613fa5",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "cmd/bolt/export.go",
+        "start_byte": 942,
+        "text": "func exportBucket(b *bolt.Bucket) (*rawMessage, error) {\n\t// Encode individual key/value pairs into raw messages.\n\tvar children = make([]*rawMessage, 0)\n\terr := b.ForEach(func(k, v []byte) error {\n\t\tvar err error\n\n\t\t// If there is no value then it is a bucket.\n\t\tif v == nil {\n\t\t\tchild, err := exportBucket(b.Bucket(k))\n\t\t\tif err != nil {\n\t\t\t\treturn fmt.Errorf(\"bucket: %s\", err)\n\t\t\t}\n\t\t\tchild.Key = k\n\t\t\tchildren = append(children, child)\n\t\t\treturn nil\n\t\t}\n\n\t\t// Otherwise it's a regular key.\n\t\tvar child = &rawMessage{Key: k}\n\t\tif child.Value, err = json.Marshal(v); err != nil {\n\t\t\treturn fmt.Errorf(\"value: %s\", err)\n\t\t}\n\t\tchildren = append(children, child)\n\t\treturn nil\n\t})\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\n\t// Encode bucket into a raw message.\n\tvar root = rawMessage{Type: \"bucket\"}\n\tif root.Value, err = json.Marshal(children); err != nil {\n\t\treturn nil, fmt.Errorf(\"children: %s\", err)\n\t}\n\n\treturn &root, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "0e61fc4c8351561ac88e92e9",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "cmd/bolt/get.go",
+        "start_byte": 110,
+        "text": "func Get(path, name, key string) {\n\tif _, err := os.Stat(path); os.IsNotExist(err) {\n\t\tfatal(err)\n\t\treturn\n\t}\n\n\tdb, err := bolt.Open(path, 0600)\n\tif err != nil {\n\t\tfatal(err)\n\t\treturn\n\t}\n\tdefer db.Close()\n\n\terr = db.View(func(tx *bolt.Tx) error {\n\t\t// Find bucket.\n\t\tb := tx.Bucket([]byte(name))\n\t\tif b == nil {\n\t\t\tfatalf(\"bucket not found: %s\", name)\n\t\t\treturn nil\n\t\t}\n\n\t\t// Find value for a given key.\n\t\tvalue := b.Get([]byte(key))\n\t\tif value == nil {\n\t\t\tfatalf(\"key not found: %s\", key)\n\t\t\treturn nil\n\t\t}\n\n\t\tprintln(string(value))\n\t\treturn nil\n\t})\n\tif err != nil {\n\t\tfatal(err)\n\t\treturn\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "5598a0fd9088bbc629be8b5b",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "cmd/bolt/import.go",
+        "start_byte": 1518,
+        "text": "func importBucket(b *bolt.Bucket, children []*rawMessage) error {\n\t// Decode each message into a key/value pair.\n\tfor _, child := range children {\n\t\t// Bucket messages are handled recursively.\n\t\tif child.Type == \"bucket\" {\n\t\t\t// Create the bucket if it doesn't exist.\n\t\t\tsubbucket, err := b.CreateBucketIfNotExists(child.Key)\n\t\t\tif err != nil {\n\t\t\t\treturn fmt.Errorf(\"create bucket: %s\", err)\n\t\t\t}\n\n\t\t\t// Decode child messages.\n\t\t\tvar subchildren []*rawMessage\n\t\t\tif err := json.Unmarshal(child.Value, &subchildren); err != nil {\n\t\t\t\treturn fmt.Errorf(\"decode children: %s\", err)\n\t\t\t}\n\n\t\t\t// Import subbucket.\n\t\t\tif err := importBucket(subbucket, subchildren); err != nil {\n\t\t\t\treturn fmt.Errorf(\"import bucket: %s\", err)\n\t\t\t}\n\t\t\tcontinue\n\t\t}\n\n\t\t// Non-bucket values are decoded from base64.\n\t\tvar value []byte\n\t\tif err := json.Unmarshal(child.Value, &value); err != nil {\n\t\t\treturn fmt.Errorf(\"decode value: %s\", err)\n\t\t}\n\n\t\t// Insert key/value into bucket.\n\t\tif err := b.Put(child.Key, value); err != nil {\n\t\t\treturn fmt.Errorf(\"put: %s\", err)\n\t\t}\n\t}\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "ec62344c274dcb85bb934e9e",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "cmd/bolt/keys.go",
+        "start_byte": 112,
+        "text": "func Keys(path, name string) {\n\tif _, err := os.Stat(path); os.IsNotExist(err) {\n\t\tfatal(err)\n\t\treturn\n\t}\n\n\tdb, err := bolt.Open(path, 0600)\n\tif err != nil {\n\t\tfatal(err)\n\t\treturn\n\t}\n\tdefer db.Close()\n\n\terr = db.View(func(tx *bolt.Tx) error {\n\t\t// Find bucket.\n\t\tb := tx.Bucket([]byte(name))\n\t\tif b == nil {\n\t\t\tfatalf(\"bucket not found: %s\", name)\n\t\t\treturn nil\n\t\t}\n\n\t\t// Iterate over each key.\n\t\treturn b.ForEach(func(key, _ []byte) error {\n\t\t\tprintln(string(key))\n\t\t\treturn nil\n\t\t})\n\t})\n\tif err != nil {\n\t\tfatal(err)\n\t\treturn\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "60fdd18651a5706621d776c3",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "cmd/bolt/main.go",
+        "start_byte": 238,
+        "text": "func NewApp() *cli.App {\n\tapp := cli.NewApp()\n\tapp.Name = \"bolt\"\n\tapp.Usage = \"BoltDB toolkit\"\n\tapp.Version = fmt.Sprintf(\"0.1.0 (%s %s)\", branch, commit)\n\tapp.Commands = []cli.Command{\n\t\t{\n\t\t\tName:  \"get\",\n\t\t\tUsage: \"Retrieve a value for given key in a bucket\",\n\t\t\tAction: func(c *cli.Context) {\n\t\t\t\tpath, name, key := c.Args().Get(0), c.Args().Get(1), c.Args().Get(2)\n\t\t\t\tGet(path, name, key)\n\t\t\t},\n\t\t},\n\t\t{\n\t\t\tName:  \"keys\",\n\t\t\tUsage: \"Retrieve a list of all keys in a bucket\",\n\t\t\tAction: func(c *cli.Context) {\n\t\t\t\tpath, name := c.Args().Get(0), c.Args().Get(1)\n\t\t\t\tKeys(path, name)\n\t\t\t},\n\t\t},\n\t\t{\n\t\t\tName:  \"buckets\",\n\t\t\tUsage: \"Retrieves a list of all buckets\",\n\t\t\tAction: func(c *cli.Context) {\n\t\t\t\tpath := c.Args().Get(0)\n\t\t\t\tBuckets(path)\n\t\t\t},\n\t\t},\n\t\t{\n\t\t\tName:  \"import\",\n\t\t\tUsage: \"Imports from a JSON dump into a database\",\n\t\t\tFlags: []cli.Flag{\n\t\t\t\t&cli.StringFlag{Name: \"input\"},\n\t\t\t},\n\t\t\tAction: func(c *cli.Context) {\n\t\t\t\tImport(c.Args().Get(0), c.String(\"input\"))\n\t\t\t},\n\t\t},\n\t\t{\n\t\t\tName:  \"export\",\n\t\t\tUsage: \"Exports a database to JSON\",\n\t\t\tAction: func(c *cli.Context) {\n\t\t\t\tpath := c.Args().Get(0)\n\t\t\t\tExport(path)\n\t\t\t},\n\t\t},\n\t\t{\n\t\t\tName:  \"pages\",\n\t\t\tUsage: \"Dumps page information for a database\",\n\t\t\tAction: func(c *cli.Context) {\n\t\t\t\tpath := c.Args().Get(0)\n\t\t\t\tPages(path)\n\t\t\t},\n\t\t},\n\t\t{\n\t\t\tName:  \"check\",\n\t\t\tUsage: \"Performs a consistency check on the database\",\n\t\t\tAction: func(c *cli.Context) {\n\t\t\t\tpath := c.Args().Get(0)\n\t\t\t\tCheck(path)\n\t\t\t},\n\t\t},\n\t\t{\n\t\t\tName:  \"bench\",\n\t\t\tUsage: \"Performs a synthetic benchmark\",\n\t\t\tFlags: []cli.Flag{\n\t\t\t\t&cli.StringFlag{Name: \"profile-mode\", Value: \"rw\", Usage: \"Profile mode\"},\n\t\t\t\t&cli.StringFlag{Name: \"write-mode\", Value: \"seq\", Usage: \"Write mode\"},\n\t\t\t\t&cli.StringFlag{Name: \"read-mode\", Value: \"seq\", Usage: \"Read mode\"},\n\t\t\t\t&cli.IntFlag{Name: \"count\", Value: 1000, Usage: \"Item count\"},\n\t\t\t\t&cli.IntFlag{Name: \"batch-size\", Usage: \"Write batch size\"},\n\t\t\t\t&cli.IntFlag{Name: \"key-size\", Value: 8, Usage: \"Key size\"},\n\t\t\t\t&cli.IntFlag{Name: \"value-size\", Value: 32, Usage: \"Value size\"},\n\t\t\t\t&cli.StringFlag{Name: \"cpuprofile\", Usage: \"CPU profile output path\"},\n\t\t\t\t&cli.StringFlag{Name: \"memprofile\", Usage: \"Memory profile output path\"},\n\t\t\t\t&cli.StringFlag{Name: \"blockprofile\", Usage: \"Block profile output path\"},\n\t\t\t\t&cli.StringFlag{Name: \"stats-interval\", Value: \"0s\", Usage: \"Continuous stats interval\"},\n\t\t\t},\n\t\t\tAction: func(c *cli.Context) {\n\t\t\t\tstatsInterval, err := time.ParseDuration(c.String(\"stats-interval\"))\n\t\t\t\tif err != nil {\n\t\t\t\t\tfatal(err)\n\t\t\t\t}\n\n\t\t\t\tBench(&BenchOptions{\n\t\t\t\t\tProfileMode:   c.String(\"profile-mode\"),\n\t\t\t\t\tWriteMode:     c.String(\"write-mode\"),\n\t\t\t\t\tReadMode:      c.String(\"read-mode\"),\n\t\t\t\t\tIterations:    c.Int(\"count\"),\n\t\t\t\t\tBatchSize:     c.Int(\"batch-size\"),\n\t\t\t\t\tKeySize:       c.Int(\"key-size\"),\n\t\t\t\t\tValueSize:     c.Int(\"value-size\"),\n\t\t\t\t\tCPUProfile:    c.String(\"cpuprofile\"),\n\t\t\t\t\tMemProfile:    c.String(\"memprofile\"),\n\t\t\t\t\tBlockProfile:  c.String(\"blockprofile\"),\n\t\t\t\t\tStatsInterval: statsInterval,\n\t\t\t\t})\n\t\t\t},\n\t\t}}\n\treturn app\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "d176ef7dc261965c94de2887",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "cmd/bolt/main.go",
+        "start_byte": 3341,
+        "text": "var logBuffer *bytes.Buffer",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "8c4d0c42287ea53933045182",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "cmd/bolt/main.go",
+        "start_byte": 4190,
+        "text": "var testMode bool",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "43bcdb0f8ddf108034714237",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "cmd/bolt/main.go",
+        "start_byte": 4292,
+        "text": "func SetTestMode(value bool) {\n\ttestMode = value\n\tif testMode {\n\t\tlogBuffer = bytes.NewBuffer(nil)\n\t\tlogger = log.New(logBuffer, \"\", 0)\n\t} else {\n\t\tlogger = log.New(os.Stderr, \"\", 0)\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "b24d7129b0bb7ebb04148407",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "cmd/bolt/main.go",
+        "start_byte": 4552,
+        "text": "type rawMessage struct {\n\tType  string          `json:\"type,omitempty\"`\n\tKey   []byte          `json:\"key\"`\n\tValue json.RawMessage `json:\"value\"`\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "0da028da105093d403fbe9b4",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "cmd/bolt/pages.go",
+        "start_byte": 121,
+        "text": "func Pages(path string) {\n\tif _, err := os.Stat(path); os.IsNotExist(err) {\n\t\tfatal(err)\n\t\treturn\n\t}\n\n\tdb, err := bolt.Open(path, 0600)\n\tif err != nil {\n\t\tfatal(err)\n\t\treturn\n\t}\n\tdefer db.Close()\n\n\tprintln(\"ID       TYPE       ITEMS  OVRFLW\")\n\tprintln(\"======== ========== ====== ======\")\n\n\tdb.Update(func(tx *bolt.Tx) error {\n\t\tvar id int\n\t\tfor {\n\t\t\tp, err := tx.Page(id)\n\t\t\tif err != nil {\n\t\t\t\tfatalf(\"page error: %d: %s\", id, err)\n\t\t\t} else if p == nil {\n\t\t\t\tbreak\n\t\t\t}\n\n\t\t\t// Only display count and overflow if this is a non-free page.\n\t\t\tvar count, overflow string\n\t\t\tif p.Type != \"free\" {\n\t\t\t\tcount = strconv.Itoa(p.Count)\n\t\t\t\tif p.OverflowCount > 0 {\n\t\t\t\t\toverflow = strconv.Itoa(p.OverflowCount)\n\t\t\t\t}\n\t\t\t}\n\n\t\t\t// Print table row.\n\t\t\tprintf(\"%-8d %-10s %-6s %-6s\\n\", p.ID, p.Type, count, overflow)\n\n\t\t\t// Move to the next non-overflow page.\n\t\t\tid += 1\n\t\t\tif p.Type != \"free\" {\n\t\t\t\tid += p.OverflowCount\n\t\t\t}\n\t\t}\n\t\treturn nil\n\t})\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "b7cf884d8148df9469586a72",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "cmd/bolt/pages.go",
+        "start_byte": 450,
+        "text": "var id int",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "e4788b7149455c2eac6480a0",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "cursor.go",
+        "start_byte": 625,
+        "text": "func (c *Cursor) First() (key []byte, value []byte) {\n\t_assert(c.bucket.tx.db != nil, \"tx closed\")\n\tc.stack = c.stack[:0]\n\tp, n := c.bucket.pageNode(c.bucket.root)\n\tc.stack = append(c.stack, elemRef{page: p, node: n, index: 0})\n\tc.first()\n\tk, v, flags := c.keyValue()\n\tif (flags & uint32(bucketLeafFlag)) != 0 {\n\t\treturn k, nil\n\t}\n\treturn k, v\n\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "3804fc0d7a4d63c3ddbfa525",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "cursor.go",
+        "start_byte": 1125,
+        "text": "func (c *Cursor) Last() (key []byte, value []byte) {\n\t_assert(c.bucket.tx.db != nil, \"tx closed\")\n\tc.stack = c.stack[:0]\n\tp, n := c.bucket.pageNode(c.bucket.root)\n\tref := elemRef{page: p, node: n}\n\tref.index = ref.count() - 1\n\tc.stack = append(c.stack, ref)\n\tc.last()\n\tk, v, flags := c.keyValue()\n\tif (flags & uint32(bucketLeafFlag)) != 0 {\n\t\treturn k, nil\n\t}\n\treturn k, v\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "5d7303a5cb310b9ab6ba91b4",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "cursor.go",
+        "start_byte": 1672,
+        "text": "func (c *Cursor) Next() (key []byte, value []byte) {\n\t_assert(c.bucket.tx.db != nil, \"tx closed\")\n\n\t// Attempt to move over one element until we're successful.\n\t// Move up the stack as we hit the end of each page in our stack.\n\tfor i := len(c.stack) - 1; i >= 0; i-- {\n\t\telem := &c.stack[i]\n\t\tif elem.index < elem.count()-1 {\n\t\t\telem.index++\n\t\t\tbreak\n\t\t}\n\t\tc.stack = c.stack[:i]\n\t}\n\n\t// If we've hit the end then return nil.\n\tif len(c.stack) == 0 {\n\t\treturn nil, nil\n\t}\n\n\t// Move down the stack to find the first element of the first leaf under this branch.\n\tc.first()\n\tk, v, flags := c.keyValue()\n\tif (flags & uint32(bucketLeafFlag)) != 0 {\n\t\treturn k, nil\n\t}\n\treturn k, v\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "68c9d3c0e7fb774654a8d781",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "cursor.go",
+        "start_byte": 2530,
+        "text": "func (c *Cursor) Prev() (key []byte, value []byte) {\n\t_assert(c.bucket.tx.db != nil, \"tx closed\")\n\n\t// Attempt to move back one element until we're successful.\n\t// Move up the stack as we hit the beginning of each page in our stack.\n\tfor i := len(c.stack) - 1; i >= 0; i-- {\n\t\telem := &c.stack[i]\n\t\tif elem.index > 0 {\n\t\t\telem.index--\n\t\t\tbreak\n\t\t}\n\t\tc.stack = c.stack[:i]\n\t}\n\n\t// If we've hit the end then return nil.\n\tif len(c.stack) == 0 {\n\t\treturn nil, nil\n\t}\n\n\t// Move down the stack to find the last element of the last leaf under this branch.\n\tc.last()\n\tk, v, flags := c.keyValue()\n\tif (flags & uint32(bucketLeafFlag)) != 0 {\n\t\treturn k, nil\n\t}\n\treturn k, v\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "438388289ff0f4ec88715e14",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "cursor.go",
+        "start_byte": 3354,
+        "text": "func (c *Cursor) Seek(seek []byte) (key []byte, value []byte) {\n\tk, v, flags := c.seek(seek)\n\tif k == nil {\n\t\treturn nil, nil\n\t} else if (flags & uint32(bucketLeafFlag)) != 0 {\n\t\treturn k, nil\n\t}\n\treturn k, v\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "96930293e36ae98cd156b944",
+        "revision": "a5cb717fc7741a98adbc31d082638835e81a97b5",
+        "path": "cursor.go",
+        "start_byte": 3725,
+        "text": "func (c *Cursor) seek(seek []byte) (key []byte, v",
+        "rank": 2,
+        "truncated": true
+      }
+    ]
+  },
+  "retrieval": {
+    "unresolved": [
+      {
+        "side": "ours",
+        "identifier": "n",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "bucket.go",
+            "start": 13540
+          },
+          {
+            "path": "bucket.go",
+            "start": 14328
+          },
+          {
+            "path": "cursor.go",
+            "start": 8568
+          }
+        ]
+      },
+      {
+        "side": "ours",
+        "identifier": "node",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "bucket.go",
+            "start": 14926
+          },
+          {
+            "path": "cursor.go",
+            "start": 8245
+          },
+          {
+            "path": "node.go",
+            "start": 105
+          }
+        ]
+      },
+      {
+        "side": "ours",
+        "identifier": "put",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "oldKey",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "newKey",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "value",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "bucket.go",
+            "start": 4914
+          },
+          {
+            "path": "bucket.go",
+            "start": 12290
+          },
+          {
+            "path": "bucket.go",
+            "start": 14348
+          },
+          {
+            "path": "cmd/bolt/bench.go",
+            "start": 3256
+          },
+          {
+            "path": "cmd/bolt/import.go",
+            "start": 2312
+          },
+          {
+            "path": "page.go",
+            "start": 2978
+          }
+        ]
+      },
+      {
+        "side": "ours",
+        "identifier": "byte",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "pgid",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "cursor.go",
+            "start": 4492
+          },
+          {
+            "path": "cursor.go",
+            "start": 5040
+          },
+          {
+            "path": "page.go",
+            "start": 483
+          }
+        ]
+      },
+      {
+        "side": "ours",
+        "identifier": "flags",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "uint32",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "len",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "index",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "sort",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Search",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "int",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "bool",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "bytes",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Compare",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "key",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "cmd/bolt/bench.go",
+            "start": 3212
+          },
+          {
+            "path": "node.go",
+            "start": 7800
+          },
+          {
+            "path": "page.go",
+            "start": 2484
+          },
+          {
+            "path": "page.go",
+            "start": 2801
+          }
+        ]
+      },
+      {
+        "side": "ours",
+        "identifier": "exact",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "cursor.go",
+            "start": 5953
+          },
+          {
+            "path": "cursor.go",
+            "start": 6585
+          }
+        ]
+      },
+      {
+        "side": "ours",
+        "identifier": "Equal",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "append",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "n",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "bucket.go",
+            "start": 13656
+          },
+          {
+            "path": "bucket.go",
+            "start": 14444
+          },
+          {
+            "path": "cursor.go",
+            "start": 8568
+          }
+        ]
+      },
+      {
+        "side": "theirs",
+        "identifier": "node",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "bucket.go",
+            "start": 15042
+          },
+          {
+            "path": "cursor.go",
+            "start": 8245
+          },
+          {
+            "path": "node.go",
+            "start": 118
+          }
+        ]
+      },
+      {
+        "side": "theirs",
+        "identifier": "put",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "oldKey",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "newKey",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "value",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "bucket.go",
+            "start": 4914
+          },
+          {
+            "path": "bucket.go",
+            "start": 12290
+          },
+          {
+            "path": "bucket.go",
+            "start": 14464
+          },
+          {
+            "path": "cmd/bolt/bench.go",
+            "start": 3256
+          },
+          {
+            "path": "cmd/bolt/import.go",
+            "start": 2312
+          },
+          {
+            "path": "page.go",
+            "start": 2978
+          }
+        ]
+      },
+      {
+        "side": "theirs",
+        "identifier": "byte",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "pgid",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "cursor.go",
+            "start": 4492
+          },
+          {
+            "path": "cursor.go",
+            "start": 5040
+          },
+          {
+            "path": "page.go",
+            "start": 483
+          }
+        ]
+      },
+      {
+        "side": "theirs",
+        "identifier": "flags",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "uint32",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "bucket",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "bucket.go",
+            "start": 2292
+          },
+          {
+            "path": "bucket.go",
+            "start": 4843
+          },
+          {
+            "path": "bucket.go",
+            "start": 12552
+          },
+          {
+            "path": "bucket.go",
+            "start": 14560
+          }
+        ]
+      },
+      {
+        "side": "theirs",
+        "identifier": "tx",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "bucket.go",
+            "start": 15778
+          },
+          {
+            "path": "node.go",
+            "start": 6939
+          }
+        ]
+      },
+      {
+        "side": "theirs",
+        "identifier": "meta",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "db.go",
+            "start": 15899
+          },
+          {
+            "path": "db.go",
+            "start": 17351
+          },
+          {
+            "path": "page.go",
+            "start": 1062
+          }
+        ]
+      },
+      {
+        "side": "theirs",
+        "identifier": "index",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "sort",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Search",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "len",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "int",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "bool",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "bytes",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Compare",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "key",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "cmd/bolt/bench.go",
+            "start": 3212
+          },
+          {
+            "path": "node.go",
+            "start": 7675
+          },
+          {
+            "path": "page.go",
+            "start": 2484
+          },
+          {
+            "path": "page.go",
+            "start": 2801
+          }
+        ]
+      },
+      {
+        "side": "theirs",
+        "identifier": "exact",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "cursor.go",
+            "start": 5953
+          },
+          {
+            "path": "cursor.go",
+            "start": 6585
+          }
+        ]
+      },
+      {
+        "side": "theirs",
+        "identifier": "Equal",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "append",
+        "reason": "no-unique-declaration-established"
+      }
+    ],
+    "method": "syntax-ranges-and-identifier-candidates/3",
+    "budget_bytes": 32768,
+    "libraries": {
+      "C": "cbbd4827ee02cd5c018ab41f10d8404ff8741159054b352d9a6d763c506ba3c7",
+      "Go": "1612f8fd958ba1ec981bf4b91e2ff399f1e54d26a9da68e5b60b0d7cd00616fc"
+    }
+  }
+}

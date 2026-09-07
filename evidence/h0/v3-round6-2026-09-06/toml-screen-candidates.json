@@ -1,0 +1,167 @@
+[
+  {
+    "repo": "pelletier/go-toml",
+    "event": "1fe62f3000bea76f82b2ace5624e22712d1aca16",
+    "group_id": "pelletier/go-toml:1fe62f3000bea76f82b2ace5624e22712d1aca16",
+    "language": "Go",
+    "path": "queryparser.go",
+    "base": "\tstart, end, step := 0, math.MaxInt64, 1\n",
+    "ours": "\tstart, end, step := 0, math.MaxInt32, 1\n",
+    "theirs": "\tstart, end, step := 0, MaxInt, 1\n",
+    "reference": "\tstart, end, step := 0, MaxInt, 1\n",
+    "git": {
+      "directory": "/home/svnbjrn/rsrch/mrgr/.do-not-commit/h0-v3-round6/toml.git",
+      "base": "21af3aacfe03b3a1471b571aa7b7012432065117",
+      "ours": "709382e9c1ea35d82f074793d5db89dd8536c283",
+      "theirs": "db15f8a481e7dc5bc3423754ce6e351964f4b8d3"
+    },
+    "evaluator": {
+      "scaffold": "/home/svnbjrn/rsrch/mrgr/.do-not-commit/h0-v3-round6/toml-screen/1fe62f3000bea76f82b2ace5624e22712d1aca16/scaffold",
+      "oracle": "/home/svnbjrn/rsrch/mrgr/.do-not-commit/h0-v3-round6/toml-screen/1fe62f3000bea76f82b2ace5624e22712d1aca16/oracle",
+      "target": "queryparser.go",
+      "start_byte": 4425,
+      "end_byte": 4590,
+      "preimage_sha256": "42f8f257220e7806390e9ccbe9b24f4c11cd183fdcbfc98fac1326e4e8000857",
+      "scaffold_sha256": "64b945276d6a4f841405c569e05af068bcb293bd0ba7e7ad3a0a92db81280554",
+      "oracle_sha256": "6c2c89265002f56922e7063b76c08672f02f56b3984c73f6dc47235cebff567d",
+      "build": [
+        "/bin/sh",
+        "/oracle/build.sh"
+      ],
+      "test": [
+        "/bin/sh",
+        "/oracle/test.sh"
+      ],
+      "test_completion": [
+        {
+          "pattern": "^PASS$",
+          "count": 1
+        },
+        {
+          "pattern": "^--- PASS: Test",
+          "count": 113
+        }
+      ]
+    },
+    "mutations": [
+      {
+        "name": "token-21-1",
+        "resolution": "\tstart, end, step := 1, MaxInt, 1\n"
+      },
+      {
+        "name": "token-32-0",
+        "resolution": "\tstart, end, step := 0, MaxInt, 0\n"
+      }
+    ]
+  },
+  {
+    "repo": "pelletier/go-toml",
+    "event": "288db0c1dbd69fa679fe375272ccd73020bf21a6",
+    "group_id": "pelletier/go-toml:288db0c1dbd69fa679fe375272ccd73020bf21a6",
+    "language": "Go",
+    "path": "unmarshaler.go",
+    "base": "",
+    "ours": "\n\t// Small memo of struct plan lookups: the key-values of a table hit the\n\t// same few struct types over and over, and the global cache lookup costs\n\t// an interface hash every time. Hits swap the entry one slot toward the\n\t// front (transpose heuristic); misses overwrite a rotating slot, so a\n\t// document with more hot types than slots degrades to a handful of\n\t// pointer comparisons instead of shifting the whole array per lookup.\n\tplanMemo [8]struct {\n\t\tt reflect.Type\n\t\tp *structPlan\n\t}\n\tplanClock uint8\n}\n\n// planFor returns the struct plan of t, memoizing recent lookups.\nfunc (d *decoder) planFor(t reflect.Type) *structPlan {\n\tif d.planMemo[0].t == t {\n\t\treturn d.planMemo[0].p\n\t}\n\tfor i := 1; i < len(d.planMemo); i++ {\n\t\tif d.planMemo[i].t == t {\n\t\t\td.planMemo[i-1], d.planMemo[i] = d.planMemo[i], d.planMemo[i-1]\n\t\t\treturn d.planMemo[i-1].p\n\t\t}\n\t}\n\tp := planForType(t)\n\ti := int(d.planClock) % len(d.planMemo)\n\td.planClock++\n\td.planMemo[i].t, d.planMemo[i].p = t, p\n\treturn p\n",
+    "theirs": "\n\t// Scratch buffers of the fused generic decode path for container values:\n\t// anyStack accumulates array elements (and kvStack inline-table pairs)\n\t// before the exact-size copy-out; fusedParts and fusedOps record the keys\n\t// seen inside a container value so they can be validated by the\n\t// seen-tracker after the whole expression has parsed (preserving error\n\t// precedence); idStack is the scope stack used during that replay.\n\tanyStack   []interface{}\n\tkvStack    []fusedKV\n\tfusedParts [][]byte\n\tfusedOps   []fusedOp\n\tidStack    []int32\n\n\t// fusedNesting is the current depth of nested containers being decoded\n\t// natively, bounded by maxFusedNesting (see fusedContainerValue).\n\tfusedNesting int\n\n\t// Fused struct-path state: keyRaws is the reusable buffer of raw key-part\n\t// spans matching keyParts; fusedKVParts/fusedKVKeyRange describe the key\n\t// of the key-value being decoded (for strict-mode reporting) and\n\t// fusedValueSpan the exact raw span of its value (for error highlights).\n\tkeyRaws         [][]byte\n\tfusedKVParts    [][]byte\n\tfusedKVKeyRange unstable.Range\n\tfusedValueSpan  []byte\n\n\t// valSeen validates the keys declared inside a single container value,\n\t// which no later expression can reach: keeping them out of d.seen means\n\t// the main tracker only ever holds reachable keys. Reset (cheaply) for\n\t// every container value.\n\tvalSeen tracker.SeenTracker\n}\n\n// fusedKV is a deferred key-value of an inline table being decoded natively:\n// the parts d.fusedParts[lo:hi] of its key, and its decoded value.\ntype fusedKV struct {\n\tv      interface{}\n\tlo, hi int32\n",
+    "reference": "\n\t// Scratch buffers of the fused generic decode path for container values:\n\t// anyStack accumulates array elements (and kvStack inline-table pairs)\n\t// before the exact-size copy-out; fusedParts and fusedOps record the keys\n\t// seen inside a container value so they can be validated by the\n\t// seen-tracker after the whole expression has parsed (preserving error\n\t// precedence); idStack is the scope stack used during that replay.\n\tanyStack   []interface{}\n\tkvStack    []fusedKV\n\tfusedParts [][]byte\n\tfusedOps   []fusedOp\n\tidStack    []int32\n\n\t// fusedNesting is the current depth of nested containers being decoded\n\t// natively, bounded by maxFusedNesting (see fusedContainerValue).\n\tfusedNesting int\n\n\t// Fused struct-path state: keyRaws is the reusable buffer of raw key-part\n\t// spans matching keyParts; fusedKVParts/fusedKVKeyRange describe the key\n\t// of the key-value being decoded (for strict-mode reporting) and\n\t// fusedValueSpan the exact raw span of its value (for error highlights).\n\tkeyRaws         [][]byte\n\tfusedKVParts    [][]byte\n\tfusedKVKeyRange unstable.Range\n\tfusedValueSpan  []byte\n\n\t// valSeen validates the keys declared inside a single container value,\n\t// which no later expression can reach: keeping them out of d.seen means\n\t// the main tracker only ever holds reachable keys. Reset (cheaply) for\n\t// every container value.\n\tvalSeen tracker.SeenTracker\n\t// Small memo of struct plan lookups: the key-values of a table hit the\n\t// same few struct types over and over, and the global cache lookup costs\n\t// an interface hash every time. Hits swap the entry one slot toward the\n\t// front (transpose heuristic); misses overwrite a rotating slot, so a\n\t// document with more hot types than slots degrades to a handful of\n\t// pointer comparisons instead of shifting the whole array per lookup.\n\tplanMemo [8]struct {\n\t\tt reflect.Type\n\t\tp *structPlan\n\t}\n\tplanClock uint8\n}\n\n// planFor returns the struct plan of t, memoizing recent lookups.\nfunc (d *decoder) planFor(t reflect.Type) *structPlan {\n\tif d.planMemo[0].t == t {\n\t\treturn d.planMemo[0].p\n\t}\n\tfor i := 1; i < len(d.planMemo); i++ {\n\t\tif d.planMemo[i].t == t {\n\t\t\td.planMemo[i-1], d.planMemo[i] = d.planMemo[i], d.planMemo[i-1]\n\t\t\treturn d.planMemo[i-1].p\n\t\t}\n\t}\n\tp := planForType(t)\n\ti := int(d.planClock) % len(d.planMemo)\n\td.planClock++\n\td.planMemo[i].t, d.planMemo[i].p = t, p\n\treturn p\n}\n\n// fusedKV is a deferred key-value of an inline table being decoded natively:\n// the parts d.fusedParts[lo:hi] of its key, and its decoded value.\ntype fusedKV struct {\n\tv      interface{}\n\tlo, hi int32\n",
+    "git": {
+      "directory": "/home/svnbjrn/rsrch/mrgr/.do-not-commit/h0-v3-round6/toml.git",
+      "base": "cbe6f88bcc087b548fce48a9f3ba4e828e169382",
+      "ours": "22b407e2d0bdfb445206e088556a75c49480c786",
+      "theirs": "e286c0bc0eb3e24ec8dd4828d552c050fe657cb9"
+    },
+    "evaluator": {
+      "scaffold": "/home/svnbjrn/rsrch/mrgr/.do-not-commit/h0-v3-round6/toml-screen/288db0c1dbd69fa679fe375272ccd73020bf21a6/scaffold",
+      "oracle": "/home/svnbjrn/rsrch/mrgr/.do-not-commit/h0-v3-round6/toml-screen/288db0c1dbd69fa679fe375272ccd73020bf21a6/oracle",
+      "target": "unmarshaler.go",
+      "start_byte": 10799,
+      "end_byte": 13426,
+      "preimage_sha256": "cd20dd44e270895ed703c7cccf311775ed774ed4e3e71b55d6dcf5a205a16daf",
+      "scaffold_sha256": "14b118a322c1f3f5017ed9bc7867c3a37e1e38bd85a06bb03db32bd5fd15ef64",
+      "oracle_sha256": "e7f9fd8665fb1d9e8b74196d053f569c5da174087bf24ececa009411647234d4",
+      "build": [
+        "/bin/sh",
+        "/oracle/build.sh"
+      ],
+      "test": [
+        "/bin/sh",
+        "/oracle/test.sh"
+      ],
+      "test_completion": [
+        {
+          "pattern": "^PASS$",
+          "count": 1
+        },
+        {
+          "pattern": "^--- PASS: Test",
+          "count": 979
+        }
+      ]
+    },
+    "mutations": [
+      {
+        "name": "token-2023-true",
+        "resolution": "\n\t// Scratch buffers of the fused generic decode path for container values:\n\t// anyStack accumulates array elements (and kvStack inline-table pairs)\n\t// before the exact-size copy-out; fusedParts and fusedOps record the keys\n\t// seen inside a container value so they can be validated by the\n\t// seen-tracker after the whole expression has parsed (preserving error\n\t// precedence); idStack is the scope stack used during that replay.\n\tanyStack   []interface{}\n\tkvStack    []fusedKV\n\tfusedParts [][]byte\n\tfusedOps   []fusedOp\n\tidStack    []int32\n\n\t// fusedNesting is the current depth of nested containers being decoded\n\t// natively, bounded by maxFusedNesting (see fusedContainerValue).\n\tfusedNesting int\n\n\t// Fused struct-path state: keyRaws is the reusable buffer of raw key-part\n\t// spans matching keyParts; fusedKVParts/fusedKVKeyRange describe the key\n\t// of the key-value being decoded (for strict-mode reporting) and\n\t// fusedValueSpan the exact raw span of its value (for error highlights).\n\tkeyRaws         [][]byte\n\tfusedKVParts    [][]byte\n\tfusedKVKeyRange unstable.Range\n\tfusedValueSpan  []byte\n\n\t// valSeen validates the keys declared inside a single container value,\n\t// which no later expression can reach: keeping them out of d.seen means\n\t// the main tracker only ever holds reachable keys. Reset (cheaply) for\n\t// every container value.\n\tvalSeen tracker.SeenTracker\n\t// Small memo of struct plan lookups: the key-values of a table hit the\n\t// same few struct types over and over, and the global cache lookup costs\n\t// an interface hash every time. Hits swap the entry one slot toward the\n\t// front (transpose heuristic); misses overwrite a rotating slot, so a\n\t// document with more hot types than slots degrades to a handful of\n\t// pointer comparisons instead of shifting the whole array per lookup.\n\tplanMemo [8]struct {\n\t\tt reflect.Type\n\t\tp *structPlan\n\t}\n\tplanClock uint8\n}\n\n// planFor returns the struct plan of t, memoizing recent lookups.\nfunc (d *decoder) planFor(t reflect.Type) *structPlan {\n\tif true {\n\t\treturn d.planMemo[0].p\n\t}\n\tfor i := 1; i < len(d.planMemo); i++ {\n\t\tif d.planMemo[i].t == t {\n\t\t\td.planMemo[i-1], d.planMemo[i] = d.planMemo[i], d.planMemo[i-1]\n\t\t\treturn d.planMemo[i-1].p\n\t\t}\n\t}\n\tp := planForType(t)\n\ti := int(d.planClock) % len(d.planMemo)\n\td.planClock++\n\td.planMemo[i].t, d.planMemo[i].p = t, p\n\treturn p\n}\n\n// fusedKV is a deferred key-value of an inline table being decoded natively:\n// the parts d.fusedParts[lo:hi] of its key, and its decoded value.\ntype fusedKV struct {\n\tv      interface{}\n\tlo, hi int32\n"
+      },
+      {
+        "name": "token-2023-!(d.planMemo[0].t == t)",
+        "resolution": "\n\t// Scratch buffers of the fused generic decode path for container values:\n\t// anyStack accumulates array elements (and kvStack inline-table pairs)\n\t// before the exact-size copy-out; fusedParts and fusedOps record the keys\n\t// seen inside a container value so they can be validated by the\n\t// seen-tracker after the whole expression has parsed (preserving error\n\t// precedence); idStack is the scope stack used during that replay.\n\tanyStack   []interface{}\n\tkvStack    []fusedKV\n\tfusedParts [][]byte\n\tfusedOps   []fusedOp\n\tidStack    []int32\n\n\t// fusedNesting is the current depth of nested containers being decoded\n\t// natively, bounded by maxFusedNesting (see fusedContainerValue).\n\tfusedNesting int\n\n\t// Fused struct-path state: keyRaws is the reusable buffer of raw key-part\n\t// spans matching keyParts; fusedKVParts/fusedKVKeyRange describe the key\n\t// of the key-value being decoded (for strict-mode reporting) and\n\t// fusedValueSpan the exact raw span of its value (for error highlights).\n\tkeyRaws         [][]byte\n\tfusedKVParts    [][]byte\n\tfusedKVKeyRange unstable.Range\n\tfusedValueSpan  []byte\n\n\t// valSeen validates the keys declared inside a single container value,\n\t// which no later expression can reach: keeping them out of d.seen means\n\t// the main tracker only ever holds reachable keys. Reset (cheaply) for\n\t// every container value.\n\tvalSeen tracker.SeenTracker\n\t// Small memo of struct plan lookups: the key-values of a table hit the\n\t// same few struct types over and over, and the global cache lookup costs\n\t// an interface hash every time. Hits swap the entry one slot toward the\n\t// front (transpose heuristic); misses overwrite a rotating slot, so a\n\t// document with more hot types than slots degrades to a handful of\n\t// pointer comparisons instead of shifting the whole array per lookup.\n\tplanMemo [8]struct {\n\t\tt reflect.Type\n\t\tp *structPlan\n\t}\n\tplanClock uint8\n}\n\n// planFor returns the struct plan of t, memoizing recent lookups.\nfunc (d *decoder) planFor(t reflect.Type) *structPlan {\n\tif !(d.planMemo[0].t == t) {\n\t\treturn d.planMemo[0].p\n\t}\n\tfor i := 1; i < len(d.planMemo); i++ {\n\t\tif d.planMemo[i].t == t {\n\t\t\td.planMemo[i-1], d.planMemo[i] = d.planMemo[i], d.planMemo[i-1]\n\t\t\treturn d.planMemo[i-1].p\n\t\t}\n\t}\n\tp := planForType(t)\n\ti := int(d.planClock) % len(d.planMemo)\n\td.planClock++\n\td.planMemo[i].t, d.planMemo[i].p = t, p\n\treturn p\n}\n\n// fusedKV is a deferred key-value of an inline table being decoded natively:\n// the parts d.fusedParts[lo:hi] of its key, and its decoded value.\ntype fusedKV struct {\n\tv      interface{}\n\tlo, hi int32\n"
+      }
+    ]
+  },
+  {
+    "repo": "pelletier/go-toml",
+    "event": "daad45893b61648c9081cf294d58f77c9684382b",
+    "group_id": "pelletier/go-toml:daad45893b61648c9081cf294d58f77c9684382b",
+    "language": "Go",
+    "path": "marshaler.go",
+    "base": "",
+    "ours": "\n\t// mapIter is a reusable map iterator (one would otherwise be allocated\n\t// for every table). Safe to share: a map is fully iterated (entries are\n\t// buffered) before any nested table starts its own iteration.\n\tmapIter reflect.MapIter\n\n\t// propsMemo is a small MRU memo of encPropsForType lookups: the values\n\t// of a document hit the same few named types over and over, and the\n\t// global cache lookup costs an interface hash every time.\n\tpropsMemo [16]struct {\n\t\tt reflect.Type\n\t\tp typeEncProps\n\t}\n}\n\n// propsFor returns the encoding properties of t, memoizing recent lookups of\n// the types the builtin fast path of encPropsForType does not cover.\nfunc (e *encoderState) propsFor(t reflect.Type) typeEncProps {\n\tif p, ok := builtinEncProps(t); ok {\n\t\treturn p\n\t}\n\tif e.propsMemo[0].t == t {\n\t\treturn e.propsMemo[0].p\n\t}\n\tfor i := 1; i < len(e.propsMemo); i++ {\n\t\tif e.propsMemo[i].t == t {\n\t\t\tm := e.propsMemo[i]\n\t\t\tcopy(e.propsMemo[1:i+1], e.propsMemo[:i])\n\t\t\te.propsMemo[0] = m\n\t\t\treturn m.p\n\t\t}\n\t}\n\tp := encPropsForType(t)\n\tcopy(e.propsMemo[1:], e.propsMemo[:len(e.propsMemo)-1])\n\te.propsMemo[0].t, e.propsMemo[0].p = t, p\n\treturn p\n",
+    "theirs": "\n\t// parser classifies the bytes returned by unstable.Marshaler values as a\n\t// single value or a table body. Only used when marshalerOn is set.\n\tparser unstable.Parser\n\n\t// marshalerOn mirrors Encoder.marshalerInterface, copied onto the state so\n\t// the per-value hot path checks a direct field instead of dereferencing the\n\t// embedded *Encoder on every value.\n\tmarshalerOn bool\n",
+    "reference": "\n\t// parser classifies the bytes returned by unstable.Marshaler values as a\n\t// single value or a table body. Only used when marshalerOn is set.\n\tparser unstable.Parser\n\n\t// marshalerOn mirrors Encoder.marshalerInterface, copied onto the state so\n\t// the per-value hot path checks a direct field instead of dereferencing the\n\t// embedded *Encoder on every value.\n\tmarshalerOn bool\n\n\t// mapIter is a reusable map iterator (one would otherwise be allocated\n\t// for every table). Safe to share: a map is fully iterated (entries are\n\t// buffered) before any nested table starts its own iteration.\n\tmapIter reflect.MapIter\n\n\t// propsMemo is a small MRU memo of encPropsForType lookups: the values\n\t// of a document hit the same few named types over and over, and the\n\t// global cache lookup costs an interface hash every time.\n\tpropsMemo [16]struct {\n\t\tt reflect.Type\n\t\tp typeEncProps\n\t}\n}\n\n// propsFor returns the encoding properties of t, memoizing recent lookups of\n// the types the builtin fast path of encPropsForType does not cover.\nfunc (e *encoderState) propsFor(t reflect.Type) typeEncProps {\n\tif p, ok := builtinEncProps(t); ok {\n\t\treturn p\n\t}\n\tif e.propsMemo[0].t == t {\n\t\treturn e.propsMemo[0].p\n\t}\n\tfor i := 1; i < len(e.propsMemo); i++ {\n\t\tif e.propsMemo[i].t == t {\n\t\t\tm := e.propsMemo[i]\n\t\t\tcopy(e.propsMemo[1:i+1], e.propsMemo[:i])\n\t\t\te.propsMemo[0] = m\n\t\t\treturn m.p\n\t\t}\n\t}\n\tp := encPropsForType(t)\n\tcopy(e.propsMemo[1:], e.propsMemo[:len(e.propsMemo)-1])\n\te.propsMemo[0].t, e.propsMemo[0].p = t, p\n\treturn p\n",
+    "git": {
+      "directory": "/home/svnbjrn/rsrch/mrgr/.do-not-commit/h0-v3-round6/toml.git",
+      "base": "21f82865ddb1a26d0e5b66e12487fddbeb676de2",
+      "ours": "1b9a6eede474cbe0a4b363d7adcdfee652006de2",
+      "theirs": "57fec25025704dd4862b857a60fe012b9efa0af1"
+    },
+    "evaluator": {
+      "scaffold": "/home/svnbjrn/rsrch/mrgr/.do-not-commit/h0-v3-round6/toml-screen/daad45893b61648c9081cf294d58f77c9684382b/scaffold",
+      "oracle": "/home/svnbjrn/rsrch/mrgr/.do-not-commit/h0-v3-round6/toml-screen/daad45893b61648c9081cf294d58f77c9684382b/oracle",
+      "target": "marshaler.go",
+      "start_byte": 8423,
+      "end_byte": 9994,
+      "preimage_sha256": "c66180fbe2e470c3c2137d160042e9d6b48183073f4a428c050c9ac5f31bc7ca",
+      "scaffold_sha256": "90651161e9856b46feb35f95e6f7d38a9e3714b3032e8e9aac015dd3629b120c",
+      "oracle_sha256": "e7f9fd8665fb1d9e8b74196d053f569c5da174087bf24ececa009411647234d4",
+      "build": [
+        "/bin/sh",
+        "/oracle/build.sh"
+      ],
+      "test": [
+        "/bin/sh",
+        "/oracle/test.sh"
+      ],
+      "test_completion": [
+        {
+          "pattern": "^PASS$",
+          "count": 1
+        },
+        {
+          "pattern": "^--- PASS: Test",
+          "count": 959
+        }
+      ]
+    },
+    "mutations": [
+      {
+        "name": "token-1130-!(ok)",
+        "resolution": "\n\t// parser classifies the bytes returned by unstable.Marshaler values as a\n\t// single value or a table body. Only used when marshalerOn is set.\n\tparser unstable.Parser\n\n\t// marshalerOn mirrors Encoder.marshalerInterface, copied onto the state so\n\t// the per-value hot path checks a direct field instead of dereferencing the\n\t// embedded *Encoder on every value.\n\tmarshalerOn bool\n\n\t// mapIter is a reusable map iterator (one would otherwise be allocated\n\t// for every table). Safe to share: a map is fully iterated (entries are\n\t// buffered) before any nested table starts its own iteration.\n\tmapIter reflect.MapIter\n\n\t// propsMemo is a small MRU memo of encPropsForType lookups: the values\n\t// of a document hit the same few named types over and over, and the\n\t// global cache lookup costs an interface hash every time.\n\tpropsMemo [16]struct {\n\t\tt reflect.Type\n\t\tp typeEncProps\n\t}\n}\n\n// propsFor returns the encoding properties of t, memoizing recent lookups of\n// the types the builtin fast path of encPropsForType does not cover.\nfunc (e *encoderState) propsFor(t reflect.Type) typeEncProps {\n\tif p, ok := builtinEncProps(t); !(ok) {\n\t\treturn p\n\t}\n\tif e.propsMemo[0].t == t {\n\t\treturn e.propsMemo[0].p\n\t}\n\tfor i := 1; i < len(e.propsMemo); i++ {\n\t\tif e.propsMemo[i].t == t {\n\t\t\tm := e.propsMemo[i]\n\t\t\tcopy(e.propsMemo[1:i+1], e.propsMemo[:i])\n\t\t\te.propsMemo[0] = m\n\t\t\treturn m.p\n\t\t}\n\t}\n\tp := encPropsForType(t)\n\tcopy(e.propsMemo[1:], e.propsMemo[:len(e.propsMemo)-1])\n\te.propsMemo[0].t, e.propsMemo[0].p = t, p\n\treturn p\n"
+      },
+      {
+        "name": "token-1153-true",
+        "resolution": "\n\t// parser classifies the bytes returned by unstable.Marshaler values as a\n\t// single value or a table body. Only used when marshalerOn is set.\n\tparser unstable.Parser\n\n\t// marshalerOn mirrors Encoder.marshalerInterface, copied onto the state so\n\t// the per-value hot path checks a direct field instead of dereferencing the\n\t// embedded *Encoder on every value.\n\tmarshalerOn bool\n\n\t// mapIter is a reusable map iterator (one would otherwise be allocated\n\t// for every table). Safe to share: a map is fully iterated (entries are\n\t// buffered) before any nested table starts its own iteration.\n\tmapIter reflect.MapIter\n\n\t// propsMemo is a small MRU memo of encPropsForType lookups: the values\n\t// of a document hit the same few named types over and over, and the\n\t// global cache lookup costs an interface hash every time.\n\tpropsMemo [16]struct {\n\t\tt reflect.Type\n\t\tp typeEncProps\n\t}\n}\n\n// propsFor returns the encoding properties of t, memoizing recent lookups of\n// the types the builtin fast path of encPropsForType does not cover.\nfunc (e *encoderState) propsFor(t reflect.Type) typeEncProps {\n\tif p, ok := builtinEncProps(t); ok {\n\t\treturn p\n\t}\n\tif true {\n\t\treturn e.propsMemo[0].p\n\t}\n\tfor i := 1; i < len(e.propsMemo); i++ {\n\t\tif e.propsMemo[i].t == t {\n\t\t\tm := e.propsMemo[i]\n\t\t\tcopy(e.propsMemo[1:i+1], e.propsMemo[:i])\n\t\t\te.propsMemo[0] = m\n\t\t\treturn m.p\n\t\t}\n\t}\n\tp := encPropsForType(t)\n\tcopy(e.propsMemo[1:], e.propsMemo[:len(e.propsMemo)-1])\n\te.propsMemo[0].t, e.propsMemo[0].p = t, p\n\treturn p\n"
+      }
+    ]
+  }
+]

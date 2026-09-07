@@ -1,5 +1,11 @@
 *Part of the [canonical planning document](../canonical-final-planning-document.md).*
 
+## Current sequencing amendment — 2026-09-06
+
+The user requested Phase 3 → Phase 4 → Phase 5 in that order. A valid, preserved result from the [new Phase 3 protocol](../phase-3-h0-evidence-utility/execution-and-handoff-2026-09-06.md) closes the first step whether positive or inconclusive. M2a remains technically independent of H0 positivity, as the original graph below states. Phase 4 real Git integration and residue freeze are now complete; execute Phase 5 fresh reconstruction and the applicable resurrection gates. The old thirty-case normalization-only reopen rule is superseded; WP8 remains outside this sequence.
+
+The graph and critical-path status below are the historical 2026-08-30 snapshot; use each phase's current state for completion evidence.
+
 ## 5. Dependency graph and critical path
 
 ```

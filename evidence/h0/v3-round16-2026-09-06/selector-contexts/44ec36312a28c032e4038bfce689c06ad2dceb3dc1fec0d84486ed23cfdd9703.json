@@ -1,0 +1,906 @@
+{
+  "id": "44ec36312a28c032e4038bfce689c06ad2dceb3dc1fec0d84486ed23cfdd9703",
+  "source_protocol_sha256": "86ffe38086e217acf6e1a4aa4162e226862463d1bde3160478f9a6f4d2b968ce",
+  "repair_module_sha256": "b6a7cf123b0ac50001e1498cdf64964b8ac56e8e6a68cbbc6dcc01c8517b4a20",
+  "contexts": {
+    "local-context": [
+      {
+        "id": "0cb3b03204c1ee8613ed7943",
+        "revision": "852f730065a850a452dbca142a46fa076e3c883b",
+        "path": "internal/rsync/multir_singlew.go",
+        "start_byte": 0,
+        "text": "package rsync\n\nimport (\n\t\"fmt\"\n\t\"sync\"\n)\n\n// ErrMRSWConflict is returned when a MultiRSW operation fails.\ntype ErrMRSWConflict struct {\n\tmsg string\n}\n\n// Error implements the error interface for ErrMRSWConflict.\nfunc (e *ErrMRSWConflict) Error() string {\n\treturn e.msg\n}\n\n// NewErrMRSWConflict creates a new ErrMRSWConflict with the given message.\nfunc NewErrMRSWConflict(m string) error {\n\treturn &ErrMRSWConflict{msg: m}\n}\n\n// MultiRSW is a simple concurrency control mechanism that allows\n// multiple readers or a single writer to execute a critical section at a time.\ntype MultiRSW struct {\n\towner      string\n\tnumReaders int\n\tmu         sync.Mutex\n\tcond       *sync.Cond\n}\n\n// NewMultiRSW creates a new MultiRSW instance.\nfunc NewMultiRSW() *MultiRSW {\n\tr := &MultiRSW{}\n\tr.cond = sync.NewCond(&r.mu)\n\treturn r\n}\n\n// BeginRead attempts to enter the critical section as a reader.\nfunc (r *MultiRSW) BeginRead() error {\n\tr.mu.Lock()\n\tdefer r.mu.Unlock()\n\tif r.owner != \"\" {\n\t\treturn NewErrMRSWConflict(\"MSRW conflict owner: \" + r.owner)\n\t}\n\tr.numReaders++\n\treturn nil\n}\n\n// EndRead exits the critical section as a reader.\nfunc (r *MultiRSW) EndRead() {\n\tr.mu.Lock()\n\tdefer r.mu.Unlock()\n\tr.numReaders--\n\tif r.numReaders < 0 {\n\t\tpanic(\"reader count went negative\")\n\t}\n\tif r.numReaders == 0 {\n\t\tr.cond.Broadcast()\n\t}\n}\n\n// BeginWrite attempts to enter the critical section as a writer.\nfunc (r *MultiRSW) BeginWrite(owner string) error {\n\tr.mu.Lock()\n\tdefer r.mu.Unlock()\n\tif owner == \"\" {\n\t\tpanic(\"owner cannot be empty\")\n\t}\n\tif r.owner != \"\" {\n\t\treturn NewErrMRSWConflict(\"MSRW conflict owner: \" + r.owner)\n\t}\n\tif r.numReaders > 0 {\n\t\treturn NewErrMRSWConflict(fmt.Sprintf(\"MSRW conflict %d readers active\", r.numReaders))\n\t}\n\tr.owner = owner\n\treturn nil\n}\n\n// BeginWriteBlocking enters the critical section as a writer, blocking until\n// neither a writer nor any readers are active. The done channel can be used\n// to cancel the wait; if done is closed before the lock is acquired, an\n// ErrMRSWConflict is returned.\nfunc (r *MultiRSW) BeginWriteBlocking(owner string, done <-chan struct{}) error {\n\tif owner == \"\" {\n\t\tpanic(\"owner cannot be empty\")\n\t}\n\n\t// Goroutine to wake us via Broadcast if done is closed while\n\t// we are blocked in cond.Wait().\n\tstop := make(chan struct{})\n\tdefer close(stop)\n\tgo func() {\n\t\tselect {\n\t\tcase <-done:\n\t\t\tr.cond.Broadcast()\n\t\tcase <-stop:\n\t\t}\n\t}()\n\n\tr.mu.Lock()\n\tdefer r.mu.Unlock()\n\tfor r.owner != \"\" || r.numReaders > 0 {\n\t\tselect {\n\t\tcase <-done:\n\t\t\treturn NewErrMRSWConflict(\"MSRW write wait cancelled\")\n\t\tdefault:\n\t\t}\n\t\tr.cond.Wait()\n\t}\n\tselect {\n\tcase <-done:\n\t\treturn NewErrMRSWConflict(\"MSRW write wait cancelled\")\n\tdefault:\n\t}\n\tr.owner = owner\n\treturn nil\n}\n\n// EndWrite exits the critical section as a writer.\nfunc (r *MultiRSW) EndWrite() {\n\tr.mu.Lock()\n\tdefer r.mu.Unlock()\n\tif r.owner == \"\" {\n\t\tpanic(\"write done received but no write is active\")\n\t}\n\tr.owner = \"\"\n\tr.cond.Broadcast()\n}\n\n// UpgradeToWriter attempts to upgrade a read lock to a write lock. The\n// client must be the only reader in order to upgrade, and must already\n// be in a read lock.\nfunc (r *MultiRSW) UpgradeToWriter(owner string) error {\n\tr.mu.Lock()\n\tdefer r.mu.Unlock()\n\tif r.owner != \"\" {\n\t\treturn NewErrMRSWConflict(\"MSRW conflict owner: \" + r.owner)\n\t}\n\tif r.numReaders > 1 {\n\t\treturn NewErrMRSWConflict(fmt.Sprintf(\"MSRW conflict %d readers active\", r.numReaders))\n\t}\n\tif r.numReaders == 0 {\n\t\tpanic(\"upgrade attempted with no readers\")\n\t}\n\tr.owner = owner\n\tr.numReaders = 0\n\treturn nil\n}\n",
+        "rank": 0,
+        "truncated": false
+      },
+      {
+        "id": "869e8a72f1103cbe498a2e01",
+        "revision": "555242ea9d80aaa2ad7a504334a66a2453d63956",
+        "path": "internal/rsync/multir_singlew.go",
+        "start_byte": 0,
+        "text": "package rsync\n\nimport (\n\t\"fmt\"\n\t\"sync\"\n)\n\n// ErrMRSWConflict is returned when a MultiRSW operation fails.\ntype ErrMRSWConflict struct {\n\tmsg string\n}\n\n// Error implements the error interface for ErrMRSWConflict.\nfunc (e *ErrMRSWConflict) Error() string {\n\treturn e.msg\n}\n\n// NewErrMRSWConflict creates a new ErrMRSWConflict with the given message.\nfunc NewErrMRSWConflict(m string) error {\n\treturn &ErrMRSWConflict{msg: m}\n}\n\n// MultiRSW is a simple concurrency control mechanism that allows\n// multiple readers or a single writer to execute a critical section at a time.\ntype MultiRSW struct {\n\towner      string\n\tnumReaders int\n\tmu         sync.Mutex\n\tcond       *sync.Cond\n}\n\n// NewMultiRSW creates a new MultiRSW instance.\nfunc NewMultiRSW() *MultiRSW {\n\tr := &MultiRSW{}\n\tr.cond = sync.NewCond(&r.mu)\n\treturn r\n}\n\n// BeginRead attempts to enter the critical section as a reader.\nfunc (r *MultiRSW) BeginRead() error {\n\tr.mu.Lock()\n\tdefer r.mu.Unlock()\n\tif r.owner != \"\" {\n\t\treturn NewErrMRSWConflict(\"MSRW conflict owner: \" + r.owner)\n\t}\n\tr.numReaders++\n\treturn nil\n}\n\n// EndRead exits the critical section as a reader.\nfunc (r *MultiRSW) EndRead() {\n\tr.mu.Lock()\n\tdefer r.mu.Unlock()\n\tr.numReaders--\n\tif r.numReaders < 0 {\n\t\tpanic(\"reader count went negative\")\n\t}\n\tif r.numReaders == 0 {\n\t\tr.cond.Broadcast()\n\t}\n}\n\n// BeginWrite attempts to enter the critical section as a writer.\nfunc (r *MultiRSW) BeginWrite(owner string) error {\n\tr.mu.Lock()\n\tdefer r.mu.Unlock()\n\tif owner == \"\" {\n\t\tpanic(\"owner cannot be empty\")\n\t}\n\tif r.owner != \"\" {\n\t\treturn NewErrMRSWConflict(\"MSRW conflict owner: \" + r.owner)\n\t}\n\tif r.numReaders > 0 {\n\t\treturn NewErrMRSWConflict(fmt.Sprintf(\"MSRW conflict %d readers active\", r.numReaders))\n\t}\n\tr.owner = owner\n\treturn nil\n}\n\n// BeginWriteBlocking enters the critical section as a writer, blocking until\n// neither a writer nor any readers are active.\nfunc (r *MultiRSW) BeginWriteBlocking(owner string) {\n\tif owner == \"\" {\n\t\tpanic(\"owner cannot be empty\")\n\t}\n\n\tr.mu.Lock()\n\tdefer r.mu.Unlock()\n\tfor r.owner != \"\" || r.numReaders > 0 {\n\t\tr.cond.Wait()\n\t}\n\tr.owner = owner\n}\n\n// EndWrite exits the critical section as a writer.\nfunc (r *MultiRSW) EndWrite() {\n\tr.mu.Lock()\n\tdefer r.mu.Unlock()\n\tif r.owner == \"\" {\n\t\tpanic(\"write done received but no write is active\")\n\t}\n\tr.owner = \"\"\n\tr.cond.Broadcast()\n}\n\n// UpgradeToWriter attempts to upgrade a read lock to a write lock. The\n// client must be the only reader in order to upgrade, and must already\n// be in a read lock.\nfunc (r *MultiRSW) UpgradeToWriter(owner string) error {\n\tr.mu.Lock()\n\tdefer r.mu.Unlock()\n\tif r.owner != \"\" {\n\t\treturn NewErrMRSWConflict(\"MSRW conflict owner: \" + r.owner)\n\t}\n\tif r.numReaders > 1 {\n\t\treturn NewErrMRSWConflict(fmt.Sprintf(\"MSRW conflict %d readers active\", r.numReaders))\n\t}\n\tif r.numReaders == 0 {\n\t\tpanic(\"upgrade attempted with no readers\")\n\t}\n\tr.owner = owner\n\tr.numReaders = 0\n\treturn nil\n}\n",
+        "rank": 0,
+        "truncated": false
+      }
+    ],
+    "selected": [
+      {
+        "id": "ad0bdc574c3814841d2791c5",
+        "revision": "555242ea9d80aaa2ad7a504334a66a2453d63956",
+        "path": "http/query_params.go",
+        "start_byte": 2363,
+        "text": "func (qp QueryParams) Wait() bool {\n\treturn qp.HasKey(\"wait\")\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "354ca26c432cabedb21b1458",
+        "revision": "555242ea9d80aaa2ad7a504334a66a2453d63956",
+        "path": "internal/rsync/multir_singlew.go",
+        "start_byte": 572,
+        "text": "type MultiRSW struct {\n\towner      string\n\tnumReaders int\n\tmu         sync.Mutex\n\tcond       *sync.Cond\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "80b7667d18b856f2cb91c8d0",
+        "revision": "555242ea9d80aaa2ad7a504334a66a2453d63956",
+        "path": "internal/rsync/multir_singlew.go",
+        "start_byte": 1887,
+        "text": "func (r *MultiRSW) BeginWriteBlocking(owner string) {\n\tif owner == \"\" {\n\t\tpanic(\"owner cannot be empty\")\n\t}\n\n\tr.mu.Lock()\n\tdefer r.mu.Unlock()\n\tfor r.owner != \"\" || r.numReaders > 0 {\n\t\tr.cond.Wait()\n\t}\n\tr.owner = owner\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "e47363d790a3fa240a3387c8",
+        "revision": "852f730065a850a452dbca142a46fa076e3c883b",
+        "path": "http/query_params.go",
+        "start_byte": 2363,
+        "text": "func (qp QueryParams) Wait() bool {\n\treturn qp.HasKey(\"wait\")\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "0d8b5f64aed8c1e47d9278bd",
+        "revision": "852f730065a850a452dbca142a46fa076e3c883b",
+        "path": "internal/rsync/multir_singlew.go",
+        "start_byte": 348,
+        "text": "func NewErrMRSWConflict(m string) error {\n\treturn &ErrMRSWConflict{msg: m}\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "9245c299978c6f00d0766172",
+        "revision": "852f730065a850a452dbca142a46fa076e3c883b",
+        "path": "internal/rsync/multir_singlew.go",
+        "start_byte": 572,
+        "text": "type MultiRSW struct {\n\towner      string\n\tnumReaders int\n\tmu         sync.Mutex\n\tcond       *sync.Cond\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "057b2ab42eb4f3e8cd626f67",
+        "revision": "852f730065a850a452dbca142a46fa076e3c883b",
+        "path": "internal/rsync/multir_singlew.go",
+        "start_byte": 2021,
+        "text": "func (r *MultiRSW) BeginWriteBlocking(owner string, done <-chan struct{}) error {\n\tif owner == \"\" {\n\t\tpanic(\"owner cannot be empty\")\n\t}\n\n\t// Goroutine to wake us via Broadcast if done is closed while\n\t// we are blocked in cond.Wait().\n\tstop := make(chan struct{})\n\tdefer close(stop)\n\tgo func() {\n\t\tselect {\n\t\tcase <-done:\n\t\t\tr.cond.Broadcast()\n\t\tcase <-stop:\n\t\t}\n\t}()\n\n\tr.mu.Lock()\n\tdefer r.mu.Unlock()\n\tfor r.owner != \"\" || r.numReaders > 0 {\n\t\tselect {\n\t\tcase <-done:\n\t\t\treturn NewErrMRSWConflict(\"MSRW write wait cancelled\")\n\t\tdefault:\n\t\t}\n\t\tr.cond.Wait()\n\t}\n\tselect {\n\tcase <-done:\n\t\treturn NewErrMRSWConflict(\"MSRW write wait cancelled\")\n\tdefault:\n\t}\n\tr.owner = owner\n\treturn nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "30ce5ebb6fc8bec8c36ae398",
+        "revision": "555242ea9d80aaa2ad7a504334a66a2453d63956",
+        "path": "auth/credential_store.go",
+        "start_byte": 1454,
+        "text": "type BasicAuther interface {\n\tBasicAuth() (string, string, bool)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "7fb6dd454df1fabdb9d58489",
+        "revision": "555242ea9d80aaa2ad7a504334a66a2453d63956",
+        "path": "auth/credential_store.go",
+        "start_byte": 1613,
+        "text": "type Credential struct {\n\tUsername string   `json:\"username,omitempty\"`\n\tPassword string   `json:\"password,omitempty\"`\n\tPerms    []string `json:\"perms,omitempty\"`\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "65c6fb89fe8a066bbf5641cb",
+        "revision": "555242ea9d80aaa2ad7a504334a66a2453d63956",
+        "path": "auth/credential_store.go",
+        "start_byte": 1866,
+        "text": "type CredentialsStore struct {\n\tstore map[string]string\n\tperms map[string]map[string]bool\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "1dc3d3a196b859d9e366ba42",
+        "revision": "555242ea9d80aaa2ad7a504334a66a2453d63956",
+        "path": "auth/credential_store.go",
+        "start_byte": 2027,
+        "text": "func NewCredentialsStore() *CredentialsStore {\n\treturn &CredentialsStore{\n\t\tstore: make(map[string]string),\n\t\tperms: make(map[string]map[string]bool),\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "5d74eef53ef62edeefe42169",
+        "revision": "555242ea9d80aaa2ad7a504334a66a2453d63956",
+        "path": "auth/credential_store.go",
+        "start_byte": 2279,
+        "text": "func NewCredentialsStoreFromFile(path string) (*CredentialsStore, error) {\n\tf, err := os.Open(path)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\tdefer f.Close()\n\n\tc := NewCredentialsStore()\n\treturn c, c.Load(f)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "c6f9e6d8c70030b271e45a17",
+        "revision": "555242ea9d80aaa2ad7a504334a66a2453d63956",
+        "path": "auth/credential_store.go",
+        "start_byte": 2539,
+        "text": "func (c *CredentialsStore) Load(r io.Reader) error {\n\tdec := json.NewDecoder(r)\n\t// Read open bracket\n\t_, err := dec.Token()\n\tif err != nil {\n\t\treturn err\n\t}\n\n\tvar cred Credential\n\tfor dec.More() {\n\t\terr := dec.Decode(&cred)\n\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n\t\tc.store[cred.Username] = cred.Password\n\t\tc.perms[cred.Username] = make(map[string]bool, len(cred.Perms))\n\t\tfor _, p := range cred.Perms {\n\t\t\tc.perms[cred.Username][p] = true\n\t\t}\n\t}\n\n\t// Read closing bracket.\n\t_, err = dec.Token()\n\tif err != nil {\n\t\treturn err\n\t}\n\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "e747e80d20c74a27e2786c09",
+        "revision": "555242ea9d80aaa2ad7a504334a66a2453d63956",
+        "path": "auth/credential_store.go",
+        "start_byte": 3154,
+        "text": "func (c *CredentialsStore) Check(username, password string) bool {\n\tpw, ok := c.store[username]\n\treturn ok && pw == password\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "6bf43adf8d4f50409695caaf",
+        "revision": "555242ea9d80aaa2ad7a504334a66a2453d63956",
+        "path": "auth/credential_store.go",
+        "start_byte": 3335,
+        "text": "func (c *CredentialsStore) Password(username string) (string, bool) {\n\tpw, ok := c.store[username]\n\treturn pw, ok\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "18b6aa14e1ed4f6dc729ffd0",
+        "revision": "555242ea9d80aaa2ad7a504334a66a2453d63956",
+        "path": "auth/credential_store.go",
+        "start_byte": 3840,
+        "text": "func (c *CredentialsStore) HasPerm(username string, perm string) bool {\n\tif m, ok := c.perms[username]; ok {\n\t\tif _, ok := m[perm]; ok {\n\t\t\treturn true\n\t\t}\n\t}\n\n\tif m, ok := c.perms[AllUsers]; ok {\n\t\tif _, ok := m[perm]; ok {\n\t\t\treturn true\n\t\t}\n\t}\n\n\treturn false\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "8a7c8e8479599576ed69ed09",
+        "revision": "555242ea9d80aaa2ad7a504334a66a2453d63956",
+        "path": "auth/credential_store.go",
+        "start_byte": 4261,
+        "text": "func (c *CredentialsStore) HasAnyPerm(username string, perm ...string) bool {\n\treturn func(p []string) bool {\n\t\tfor i := range p {\n\t\t\tif c.HasPerm(username, p[i]) {\n\t\t\t\treturn true\n\t\t\t}\n\t\t}\n\t\treturn false\n\t}(perm)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "e57f0ad5e465fcce906dc905",
+        "revision": "555242ea9d80aaa2ad7a504334a66a2453d63956",
+        "path": "auth/credential_store.go",
+        "start_byte": 4787,
+        "text": "func (c *CredentialsStore) AA(username, password, perm string) bool {\n\t// No credential store? Auth is not even enabled.\n\tif c == nil {\n\t\treturn true\n\t}\n\n\t// Is the required perm granted to all users, including anonymous users?\n\tif c.HasAnyPerm(AllUsers, perm, PermAll) {\n\t\treturn true\n\t}\n\n\t// At this point a username needs to have been supplied.\n\tif username == \"\" {\n\t\treturn false\n\t}\n\n\t// Authenticate the user.\n\tif !c.Check(username, password) {\n\t\treturn false\n\t}\n\n\t// Is the specified user authorized?\n\treturn c.HasAnyPerm(username, perm, PermAll)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "6fabb4221af2ac2054765de5",
+        "revision": "555242ea9d80aaa2ad7a504334a66a2453d63956",
+        "path": "auth/credential_store.go",
+        "start_byte": 5535,
+        "text": "func (c *CredentialsStore) HasPermRequest(b BasicAuther, perm string) bool {\n\tusername, _, ok := b.BasicAuth()\n\treturn ok && c.HasPerm(username, perm)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "2291d3d9d8ef70e5203e7764",
+        "revision": "555242ea9d80aaa2ad7a504334a66a2453d63956",
+        "path": "auto/aws/s3.go",
+        "start_byte": 384,
+        "text": "type S3Config struct {\n\tEndpoint        string `json:\"endpoint,omitempty\"`\n\tRegion          string `json:\"region\"`\n\tAccessKeyID     string `json:\"access_key_id\"`\n\tSecretAccessKey string `json:\"secret_access_key\"`\n\tBucket          string `json:\"bucket\"`\n\tPath            string `json:\"path\"`\n\tForcePathStyle  bool   `json:\"force_path_style\"`\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "fd96e84d1f4c75efc225ca51",
+        "revision": "555242ea9d80aaa2ad7a504334a66a2453d63956",
+        "path": "auto/aws/s3.go",
+        "start_byte": 778,
+        "text": "type S3Client struct {\n\tendpoint  string\n\tregion    string\n\taccessKey string\n\tsecretKey string\n\tbucket    string\n\tkey       string\n\ttimestamp bool\n\n\ts3 *s3.Client\n\n\t// These fields are used for testing via dependency injection.\n\tuploader   uploader\n\tdownloader downloader\n\tnow        func() time.Time\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "9d2e9b4e35b70766e5f5fb96",
+        "revision": "555242ea9d80aaa2ad7a504334a66a2453d63956",
+        "path": "auto/aws/s3.go",
+        "start_byte": 1276,
+        "text": "func NewS3Client(endpoint, region, accessKey, secretKey, bucket, key string, opts *S3ClientOpts) (*S3Client, error) {\n\t// Load the default config\n\tcfg, err := config.LoadDefaultConfig(context.Background(),\n\t\tconfig.WithRegion(region),\n\t)\n\tif err != nil {\n\t\treturn nil, fmt.Errorf(\"unable to load SDK config, %v\", err)\n\t}\n\n\t// If credentials are provided, set them\n\tif accessKey != \"\" && secretKey != \"\" {\n\t\tcfg.Credentials = aws.NewCredentialsCache(credentials.NewStaticCredentialsProvider(accessKey, secretKey, \"\"))\n\t}\n\n\t// If an endpoint is provided, set it and the path style\n\ts3 := s3.NewFromConfig(cfg, func(o *s3.Options) {\n\t\tif opts != nil {\n\t\t\tif endpoint != \"\" {\n\t\t\t\tif !hasProtocol(endpoint) {\n\t\t\t\t\tendpoint = fmt.Sprintf(\"https://%s\", endpoint)\n\t\t\t\t}\n\t\t\t\to.BaseEndpoint = aws.String(endpoint)\n\t\t\t}\n\t\t\to.UsePathStyle = opts.ForcePathStyle\n\t\t}\n\t})\n\n\tclient := &S3Client{\n\t\tendpoint:  endpoint,\n\t\tregion:    region,\n\t\taccessKey: accessKey,\n\t\tsecretKey: secretKey,\n\t\tbucket:    bucket,\n\t\tkey:       key,\n\n\t\ts3:         s3,\n\t\tuploader:   manager.NewUploader(s3),\n\t\tdownloader: manager.NewDownloader(s3),\n\t}\n\tif opts != nil {\n\t\tclient.timestamp = opts.Timestamp\n\t}\n\treturn client, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "aff5249225fc5006f24198fc",
+        "revision": "555242ea9d80aaa2ad7a504334a66a2453d63956",
+        "path": "auto/aws/s3.go",
+        "start_byte": 2528,
+        "text": "func (s *S3Client) String() string {\n\tif s.endpoint == \"\" || isAWSEndpoint(s.endpoint) {\n\t\t// Native Amazon S3, use AWS's S3 URL format\n\t\treturn fmt.Sprintf(\"s3://%s/%s\", s.bucket, s.key)\n\t}\n\treturn fmt.Sprintf(\"%s/%s/%s\", s.endpoint, s.bucket, s.key)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "35a007cc07a6f1f6f67bd8ac",
+        "revision": "555242ea9d80aaa2ad7a504334a66a2453d63956",
+        "path": "auto/aws/s3.go",
+        "start_byte": 3129,
+        "text": "func (s *S3Client) Upload(ctx context.Context, reader io.Reader, id string) error {\n\tkey := s.key\n\tif s.timestamp {\n\t\tif s.now == nil {\n\t\t\ts.now = func() time.Time {\n\t\t\t\treturn time.Now().UTC()\n\t\t\t}\n\t\t}\n\t\tkey = TimestampedPath(key, s.now())\n\t}\n\tinput := &s3.PutObjectInput{\n\t\tBucket: aws.String(s.bucket),\n\t\tKey:    aws.String(key),\n\t\tBody:   reader,\n\t}\n\n\tif id != \"\" {\n\t\tinput.Metadata = map[string]string{\n\t\t\tAWSS3IDKey: id,\n\t\t}\n\t}\n\t_, err := s.uploader.Upload(ctx, input)\n\tif err != nil {\n\t\treturn fmt.Errorf(\"failed to upload to %v: %w\", s, err)\n\t}\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "09eae9cedfb9e16bfe47c03b",
+        "revision": "555242ea9d80aaa2ad7a504334a66a2453d63956",
+        "path": "auto/aws/s3.go",
+        "start_byte": 3746,
+        "text": "func (s *S3Client) CurrentID(ctx context.Context) (string, error) {\n\tinput := &s3.HeadObjectInput{\n\t\tBucket: aws.String(s.bucket),\n\t\tKey:    aws.String(s.key),\n\t}\n\n\tresult, err := s.s3.HeadObject(ctx, input)\n\tif err != nil {\n\t\treturn \"\", fmt.Errorf(\"failed to get object head for %v: %w\", s, err)\n\t}\n\n\tid, ok := result.Metadata[AWSS3IDKey]\n\tif !ok {\n\t\treturn \"\", fmt.Errorf(\"sum metadata not found for %v\", s)\n\t}\n\treturn id, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "f4ec79e5a7db1130be5c0e7f",
+        "revision": "555242ea9d80aaa2ad7a504334a66a2453d63956",
+        "path": "auto/aws/s3.go",
+        "start_byte": 4965,
+        "text": "func TimestampedPath(path string, t time.Time) string {\n\tparts := strings.Split(path, \"/\")\n\tparts[len(parts)-1] = fmt.Sprintf(\"%s_%s\", t.Format(\"20060102150405\"), parts[len(parts)-1])\n\treturn strings.Join(parts, \"/\")\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "eea0cd47df4bc1f589aa6551",
+        "revision": "555242ea9d80aaa2ad7a504334a66a2453d63956",
+        "path": "auto/aws/s3.go",
+        "start_byte": 5185,
+        "text": "func isAWSEndpoint(s string) bool {\n\treturn strings.HasSuffix(s, \"amazonaws.com\")\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "cdefc947868765124c128e78",
+        "revision": "555242ea9d80aaa2ad7a504334a66a2453d63956",
+        "path": "auto/aws/s3.go",
+        "start_byte": 5270,
+        "text": "func hasProtocol(s string) bool {\n\treturn strings.Contains(s, \"://\")\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "f2a0427b61ab0553b94ec64b",
+        "revision": "555242ea9d80aaa2ad7a504334a66a2453d63956",
+        "path": "auto/backup/config.go",
+        "start_byte": 2122,
+        "text": "func ReadConfigFile(filename string) ([]byte, error) {\n\tf, err := os.Open(filename)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\tdefer f.Close()\n\n\tdata, err := io.ReadAll(f)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\n\tdata = []byte(os.ExpandEnv(string(data)))\n\treturn data, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "263236c81ad3d488d695a149",
+        "revision": "555242ea9d80aaa2ad7a504334a66a2453d63956",
+        "path": "auto/backup/uploader.go",
+        "start_byte": 263,
+        "text": "type StorageClient interface {\n\t// Upload uploads the data from the given reader to the storage service.\n\t// id is a identifier for the data, and will be stored along with\n\t// the data in the storage service.\n\tUpload(ctx context.Context, reader io.Reader, id string) error\n\n\t// CurrentID returns the ID of the data in the Storage service.\n\t// It is always read from the Storage service, and a cached\n\t// value is never returned.\n\tCurrentID(ctx context.Context) (string, error)\n\n\tfmt.Stringer\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "05a3c10ba85b7b8478f09478",
+        "revision": "555242ea9d80aaa2ad7a504334a66a2453d63956",
+        "path": "auto/backup/uploader.go",
+        "start_byte": 3489,
+        "text": "func (u *Uploader) Stats() (map[string]any, error) {\n\tstatus := map[string]any{\n\t\t\"upload_destination\":   u.storageClient.String(),\n\t\t\"upload_interval\":      u.interval.String(),\n\t\t\"last_upload_time\":     u.lastUploadTime.Format(time.RFC3339),\n\t\t\"last_upload_duration\": u.lastUploadDuration.String(),\n\t\t\"last_index\":           strconv.FormatUint(u.lastIndex, 10),\n\t}\n\treturn status, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "ee51c5acbfd20d7b6a4dc220",
+        "revision": "555242ea9d80aaa2ad7a504334a66a2453d63956",
+        "path": "auto/file/file.go",
+        "start_byte": 173,
+        "text": "type Config struct {\n\tDir  string `json:\"dir\"`\n\tName string `json:\"name\"`\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "48cf39b2711d57e2a5fe67a3",
+        "revision": "555242ea9d80aaa2ad7a504334a66a2453d63956",
+        "path": "auto/file/file.go",
+        "start_byte": 294,
+        "text": "type Client struct {\n\tdir       string\n\tname      string\n\tmetaPath  string\n\ttimestamp bool\n\n\tnow func() time.Time\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "0093c1a6f5ecff5b74107f29",
+        "revision": "555242ea9d80aaa2ad7a504334a66a2453d63956",
+        "path": "auto/file/file.go",
+        "start_byte": 572,
+        "text": "type Metadata struct {\n\tID        string `json:\"id\"`\n\tTimestamp int64  `json:\"timestamp,omitempty\"`\n\tName      string `json:\"name,omitempty\"`\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "ef0f2e57f421176f1cde6d0a",
+        "revision": "555242ea9d80aaa2ad7a504334a66a2453d63956",
+        "path": "auto/file/file.go",
+        "start_byte": 765,
+        "text": "func NewClient(dir, name string, opt *Options) (*Client, error) {\n\t// Validate and clean paths\n\tdir = filepath.Clean(dir)\n\tif !filepath.IsAbs(dir) {\n\t\treturn nil, fmt.Errorf(\"directory path must be absolute: %s\", dir)\n\t}\n\n\t// Validate file parameter for path traversal attacks and directory separators\n\tcleanFile := filepath.Clean(name)\n\tif strings.Contains(name, string(filepath.Separator)) ||\n\t\tstrings.Contains(cleanFile, \"..\") ||\n\t\tfilepath.IsAbs(cleanFile) ||\n\t\tcleanFile != name {\n\t\treturn nil, fmt.Errorf(\"invalid file parameter: %s (must be a simple filename without path separators)\", name)\n\t}\n\n\t// Ensure the destination directory exists and is writable\n\tif err := os.MkdirAll(dir, 0755); err != nil {\n\t\treturn nil, fmt.Errorf(\"failed to create directory %s: %w\", dir, err)\n\t}\n\ttouchPath := filepath.Join(dir, \".touch\")\n\tf, err := os.OpenFile(touchPath, os.O_CREATE|os.O_WRONLY, 0644)\n\tif err != nil {\n\t\treturn nil, fmt.Errorf(\"failed to test writing to directory %s: %w\", dir, err)\n\t}\n\tf.Close()\n\tos.Remove(touchPath)\n\n\tc := &Client{\n\t\tdir:      dir,\n\t\tname:     name,\n\t\tmetaPath: filepath.Join(dir, \"METADATA.json\"),\n\t}\n\n\tif opt != nil {\n\t\tc.timestamp = opt.Timestamp\n\t}\n\treturn c, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "b84ef8e5df700c3268ef5b90",
+        "revision": "555242ea9d80aaa2ad7a504334a66a2453d63956",
+        "path": "auto/file/file.go",
+        "start_byte": 2524,
+        "text": "func (c *Client) LatestFilePath(ctx context.Context) string {\n\tmd, err := c.CurrentMetadata(ctx)\n\tif err != nil {\n\t\treturn \"\"\n\t}\n\tif md == nil {\n\t\treturn \"\"\n\t}\n\treturn md.Name\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "7a7be4f827bc525adc20fc7e",
+        "revision": "555242ea9d80aaa2ad7a504334a66a2453d63956",
+        "path": "auto/file/file.go",
+        "start_byte": 2760,
+        "text": "func (c *Client) String() string {\n\treturn fmt.Sprintf(\"dir:%s, file:%s\", c.dir, c.name)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "6144af2f64fc18059baafc84",
+        "revision": "555242ea9d80aaa2ad7a504334a66a2453d63956",
+        "path": "auto/file/file.go",
+        "start_byte": 2912,
+        "text": "func (c *Client) Upload(ctx context.Context, reader io.Reader, id string) (retErr error) {\n\tfilename := c.name\n\tif c.timestamp {\n\t\tif c.now == nil {\n\t\t\tc.now = func() time.Time {\n\t\t\t\treturn time.Now().UTC()\n\t\t\t}\n\t\t}\n\t\tfilename = timestampedPath(filename, c.now())\n\t}\n\n\tfinalPath := filepath.Join(c.dir, filename)\n\n\ttmpFile, err := os.CreateTemp(c.dir, \".upload-*\")\n\tif err != nil {\n\t\treturn fmt.Errorf(\"failed to create temporary file in %s: %w\", c.dir, err)\n\t}\n\ttmpPath := tmpFile.Name()\n\ttmpMetaPath := c.metaPath + \".tmp\"\n\n\t// Cleanup on error\n\tdefer func() {\n\t\ttmpFile.Close()\n\t\tif retErr != nil {\n\t\t\tos.Remove(tmpMetaPath)\n\t\t\tos.Remove(tmpPath)\n\t\t}\n\t}()\n\n\t// Write data to temporary file\n\t_, err = io.Copy(tmpFile, reader)\n\tif err != nil {\n\t\treturn fmt.Errorf(\"failed to write to temporary file %s: %w\", tmpPath, err)\n\t}\n\tif err := tmpFile.Sync(); err != nil {\n\t\treturn fmt.Errorf(\"failed to sync temporary file %s: %w\", tmpPath, err)\n\t}\n\tif err := tmpFile.Close(); err != nil {\n\t\treturn fmt.Errorf(\"failed to close temporary file %s: %w\", tmpPath, err)\n\t}\n\n\t// Write metadata to temporary metadata file\n\tmetadata := Metadata{\n\t\tID:        id,\n\t\tTimestamp: time.Now().UnixMilli(),\n\t\tName:      finalPath,\n\t}\n\n\tmetadataBytes, err := json.Marshal(metadata)\n\tif err != nil {\n\t\treturn fmt.Errorf(\"failed to marshal metadata: %w\", err)\n\t}\n\n\tif err := os.WriteFile(tmpMetaPath, metadataBytes, 0644); err != nil {\n\t\treturn fmt.Errorf(\"failed to write temporary metadata file %s: %w\", tmpMetaPath, err)\n\t}\n\n\tif err := os.Rename(tmpPath, finalPath); err != nil {\n\t\treturn fmt.Errorf(\"failed to rename temporary file %s to %s: %w\", tmpPath, finalPath, err)\n\t}\n\n\tif err := os.Rename(tmpMetaPath, c.metaPath); err != nil {\n\t\tos.Remove(finalPath)\n\t\treturn fmt.Errorf(\"failed to rename temporary metadata file %s to %s: %w\", tmpMetaPath, c.metaPath, err)\n\t}\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "1d4feba154c9f603256908b2",
+        "revision": "555242ea9d80aaa2ad7a504334a66a2453d63956",
+        "path": "auto/file/file.go",
+        "start_byte": 4836,
+        "text": "func (c *Client) CurrentID(ctx context.Context) (string, error) {\n\tmd, err := c.CurrentMetadata(ctx)\n\tif err != nil {\n\t\treturn \"\", err\n\t}\n\tif md == nil {\n\t\treturn \"\", nil\n\t}\n\treturn md.ID, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "eb785f20ecd1b507755b595f",
+        "revision": "555242ea9d80aaa2ad7a504334a66a2453d63956",
+        "path": "auto/file/file.go",
+        "start_byte": 5177,
+        "text": "func timestampedPath(path string, t time.Time) string {\n\tparts := strings.Split(path, \"/\")\n\tparts[len(parts)-1] = fmt.Sprintf(\"%s_%s\", t.Format(\"20060102150405\"), parts[len(parts)-1])\n\treturn strings.Join(parts, \"/\")\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "462652c37e7af36788888789",
+        "revision": "555242ea9d80aaa2ad7a504334a66a2453d63956",
+        "path": "auto/file/file.go",
+        "start_byte": 5397,
+        "text": "func fileExists(path string) bool {\n\t_, err := os.Stat(path)\n\treturn err == nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "a5fda31618868fb14fd7faad",
+        "revision": "555242ea9d80aaa2ad7a504334a66a2453d63956",
+        "path": "auto/gcp/example/main.go",
+        "start_byte": 112,
+        "text": "func main() {\n\tctx := context.Background()\n\n\tcfg := gcp.GCSConfig{\n\t\tBucket:          \"my-demo-bucket\",\n\t\tProjectID:       \"my-gcp-project\",\n\t\tName:            \"sample.txt\",\n\t\tCredentialsPath: os.Getenv(\"GOOGLE_APPLICATION_CREDENTIALS\"),\n\t}\n\n\tclient, err := gcp.NewGCSClient(&cfg, nil)\n\tif err != nil {\n\t\tpanic(err)\n\t}\n\n\tif err := client.EnsureBucket(ctx); err != nil {\n\t\tpanic(err)\n\t}\n\tfmt.Println(\"bucket ready\")\n\n\t// ---- upload ------------------------------------------------------------\n\tpayload := strings.NewReader(\"hello, world\\n\")\n\tif err := client.Upload(ctx, payload, \"v1\"); err != nil {\n\t\tpanic(err)\n\t}\n\tfmt.Println(\"upload complete\")\n\n\t// ---- current ID --------------------------------------------------------\n\tid, err := client.CurrentID(ctx)\n\tif err != nil {\n\t\tpanic(err)\n\t}\n\tfmt.Printf(\"current ID: %s\\n\", id)\n\n\t// ---- download ----------------------------------------------------------\n\ttmp, err := os.CreateTemp(\"\", \"gcs-download-*\")\n\tif err != nil {\n\t\tpanic(err)\n\t}\n\tdefer os.Remove(tmp.Name())\n\n\tif err := client.Download(ctx, tmp); err != nil {\n\t\tpanic(err)\n\t}\n\ttmp.Seek(0, 0)\n\tdata, _ := io.ReadAll(tmp)\n\tfmt.Printf(\"downloaded data: %s\", data)\n\n\t// ---- delete ------------------------------------------------------------\n\tif err := client.Delete(ctx); err != nil {\n\t\tpanic(err)\n\t}\n\tfmt.Println(\"\\nobject deleted\")\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "0659e88192b7926697a0d273",
+        "revision": "555242ea9d80aaa2ad7a504334a66a2453d63956",
+        "path": "auto/gcp/gcs.go",
+        "start_byte": 706,
+        "text": "func TimestampedPath(path string, t time.Time) string {\n\tparts := strings.Split(path, \"/\")\n\tparts[len(parts)-1] = fmt.Sprintf(\"%s_%s\", t.Format(\"20060102150405\"), parts[len(parts)-1])\n\treturn strings.Join(parts, \"/\")\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "185dc72e933ffe7f921c51a6",
+        "revision": "555242ea9d80aaa2ad7a504334a66a2453d63956",
+        "path": "auto/gcp/gcs.go",
+        "start_byte": 982,
+        "text": "type GCSConfig struct {\n\tEndpoint        string `json:\"endpoint,omitempty\"`\n\tProjectID       string `json:\"project_id\"`\n\tBucket          string `json:\"bucket\"`\n\tName            string `json:\"name\"`\n\tCredentialsPath string `json:\"credentials_path\"`\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "817a80424ceeca177cec0bbe",
+        "revision": "555242ea9d80aaa2ad7a504334a66a2453d63956",
+        "path": "auto/gcp/gcs.go",
+        "start_byte": 1308,
+        "text": "type GCSClient struct {\n\tcfg *GCSConfig\n\n\tsa          serviceAccount\n\taccessToken string\n\texpiry      time.Time\n\ttokenMu     sync.Mutex\n\n\thttp      *http.Client\n\tuploadURL string\n\tobjectURL string\n\tbucketURL string\n\n\ttimestamp bool\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "39af26b226a1aba0c6c20b34",
+        "revision": "555242ea9d80aaa2ad7a504334a66a2453d63956",
+        "path": "auto/gcp/gcs.go",
+        "start_byte": 2461,
+        "text": "func (g *GCSClient) String() string {\n\treturn fmt.Sprintf(\"gs://%s/%s\", g.cfg.Bucket, g.cfg.Name)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "8d8a725dce65af4bd4efec85",
+        "revision": "555242ea9d80aaa2ad7a504334a66a2453d63956",
+        "path": "auto/gcp/gcs.go",
+        "start_byte": 3721,
+        "text": "func (g *GCSClient) Upload(ctx context.Context, r io.Reader, id string) error {\n\tvar buf bytes.Buffer\n\tw := multipart.NewWriter(&buf)\n\n\tname := g.cfg.Name\n\tif g.timestamp {\n\t\tname = TimestampedPath(name, time.Now().UTC())\n\t}\n\tmetaData := struct {\n\t\tName     string `json:\"name\"`\n\t\tMetadata struct {\n\t\t\tID string `json:\"rqlite-auto-backup-id\"`\n\t\t} `json:\"metadata\"`\n\t}{\n\t\tName: name,\n\t}\n\tmetaData.Metadata.ID = id\n\n\tmeta, err := json.Marshal(metaData)\n\tif err != nil {\n\t\treturn fmt.Errorf(\"failed to marshal metadata: %w\", err)\n\t}\n\n\thdr := textproto.MIMEHeader{\"Content-Type\": {\"application/json\"}}\n\tpart, err := w.CreatePart(hdr)\n\tif err != nil {\n\t\treturn fmt.Errorf(\"failed to create metadata part: %w\", err)\n\t}\n\tif _, err := part.Write(meta); err != nil {\n\t\treturn fmt.Errorf(\"failed to write metadata part: %w\", err)\n\t}\n\n\thdr = textproto.MIMEHeader{\"Content-Type\": {\"application/octet-stream\"}}\n\tpart, err = w.CreatePart(hdr)\n\tif err != nil {\n\t\treturn fmt.Errorf(\"failed to create data part: %w\", err)\n\t}\n\tif _, err := io.Copy(part, r); err != nil {\n\t\treturn err\n\t}\n\tif err := w.Close(); err != nil {\n\t\treturn fmt.Errorf(\"failed to close multipart writer: %w\", err)\n\t}\n\n\tu := g.uploadURL + \"?uploadType=multipart\"\n\treq, _ := http.NewRequestWithContext(ctx, http.MethodPost, u, &buf)\n\treq.Header.Set(\"Content-Type\", \"multipart/related; boundary=\"+w.Boundary())\n\tif err := g.addAuth(req); err != nil {\n\t\treturn err\n\t}\n\n\tres, err := g.http.Do(req)\n\tif err != nil {\n\t\treturn err\n\t}\n\tdefer res.Body.Close()\n\tif res.StatusCode != http.StatusOK {\n\t\tb, _ := io.ReadAll(res.Body)\n\t\treturn fmt.Errorf(\"upload failed: %s\", b)\n\t}\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "b5dda5a46afe2629a02429c9",
+        "revision": "555242ea9d80aaa2ad7a504334a66a2453d63956",
+        "path": "auto/gcp/gcs.go",
+        "start_byte": 6676,
+        "text": "func (g *GCSClient) CurrentID(ctx context.Context) (string, error) {\n\treq, _ := http.NewRequestWithContext(ctx, http.MethodGet, g.objectURL, nil)\n\tif err := g.addAuth(req); err != nil {\n\t\treturn \"\", err\n\t}\n\tres, err := g.http.Do(req)\n\tif err != nil {\n\t\treturn \"\", err\n\t}\n\tdefer res.Body.Close()\n\tif res.StatusCode != http.StatusOK {\n\t\tb, _ := io.ReadAll(res.Body)\n\t\treturn \"\", fmt.Errorf(\"metadata fetch failed: %s\", b)\n\t}\n\tvar obj struct {\n\t\tMetadata map[string]string `json:\"metadata\"`\n\t}\n\tif err := json.NewDecoder(res.Body).Decode(&obj); err != nil {\n\t\treturn \"\", err\n\t}\n\n\tid, ok := obj.Metadata[GCPGCSIDKey]\n\tif !ok {\n\t\treturn \"\", fmt.Errorf(\"ID key (%s) not found in metadata %v\", GCPGCSIDKey, g)\n\t}\n\treturn id, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "5e9278838e02c2c1edc463e7",
+        "revision": "555242ea9d80aaa2ad7a504334a66a2453d63956",
+        "path": "auto/gcp/gcs.go",
+        "start_byte": 7100,
+        "text": "var obj struct {\n\t\tMetadata map[string]string `json:\"metadata\"`\n\t}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "2b7cd45de4967c475a5a0aa6",
+        "revision": "555242ea9d80aaa2ad7a504334a66a2453d63956",
+        "path": "auto/gcp/gcs.go",
+        "start_byte": 7591,
+        "text": "func (g *GCSClient) getToken(ctx context.Context) (string, error) {\n\tg.tokenMu.Lock()\n\tdefer g.tokenMu.Unlock()\n\n\tif time.Until(g.expiry) > 2*time.Minute {\n\t\treturn g.accessToken, nil\n\t}\n\n\tjwt, err := makeJWT(&g.sa)\n\tif err != nil {\n\t\treturn \"\", err\n\t}\n\ttok, exp, err := fetchToken(ctx, jwt, g.http)\n\tif err != nil {\n\t\treturn \"\", err\n\t}\n\tg.accessToken, g.expiry = tok, exp\n\treturn tok, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "b93013ea37825a461a744f78",
+        "revision": "555242ea9d80aaa2ad7a504334a66a2453d63956",
+        "path": "auto/gcp/gcs.go",
+        "start_byte": 7984,
+        "text": "func makeJWT(sa *serviceAccount) (string, error) {\n\tpriv, err := parseKey(sa.PrivateKey)\n\tif err != nil {\n\t\treturn \"\", err\n\t}\n\tnow := time.Now().Unix()\n\tcs := &jws.ClaimSet{\n\t\tIss:   sa.ClientEmail,\n\t\tScope: jwtScope,\n\t\tAud:   jwtAudTarget,\n\t\tIat:   now,\n\t\tExp:   now + 3600,\n\t}\n\thdr := &jws.Header{Algorithm: \"RS256\", Typ: \"JWT\"}\n\treturn jws.Encode(hdr, cs, priv)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "b91984c40ade9f5669497a78",
+        "revision": "555242ea9d80aaa2ad7a504334a66a2453d63956",
+        "path": "auto/gcp/gcs.go",
+        "start_byte": 8352,
+        "text": "type serviceAccount struct {\n\tClientEmail string `json:\"client_email\"`\n\tPrivateKey  string `json:\"private_key\"`\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "b289702fc56f0eafc3b82e64",
+        "revision": "555242ea9d80aaa2ad7a504334a66a2453d63956",
+        "path": "auto/gcp/gcs.go",
+        "start_byte": 8467,
+        "text": "func loadServiceAccount(p string) (*serviceAccount, error) {\n\tf, err := os.Open(p)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\tdefer f.Close()\n\tvar sa serviceAccount\n\tif err := json.NewDecoder(f).Decode(&sa); err != nil {\n\t\treturn nil, err\n\t}\n\treturn &sa, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "e105849b6f4e5cb4012e394e",
+        "revision": "555242ea9d80aaa2ad7a504334a66a2453d63956",
+        "path": "auto/gcp/gcs.go",
+        "start_byte": 8725,
+        "text": "func parseKey(pemKey string) (*rsa.PrivateKey, error) {\n\tblock, _ := pem.Decode([]byte(pemKey))\n\tif block == nil {\n\t\treturn nil, fmt.Errorf(\"invalid PEM\")\n\t}\n\tkey, err := x509.ParsePKCS8PrivateKey(block.Bytes)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\trsaKey, ok := key.(*rsa.PrivateKey)\n\tif !ok {\n\t\treturn nil, fmt.Errorf(\"not RSA\")\n\t}\n\treturn rsaKey, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "554eaf4e7c22ca75c8e9e2cd",
+        "revision": "555242ea9d80aaa2ad7a504334a66a2453d63956",
+        "path": "auto/gcp/gcs.go",
+        "start_byte": 9082,
+        "text": "type tokenResp struct {\n\tAccessToken string `json:\"access_token\"`\n\tExpiresIn   int64  `json:\"expires_in\"`\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "e4415cb8d6065a04da47657c",
+        "revision": "555242ea9d80aaa2ad7a504334a66a2453d63956",
+        "path": "auto/gcp/gcs.go",
+        "start_byte": 9191,
+        "text": "func fetchToken(ctx context.Context, jwt string, hc *http.Client) (string, time.Time, error) {\n\tdata := url.Values{\n\t\t\"grant_type\": {\"urn:ietf:params:oauth:grant-type:jwt-bearer\"},\n\t\t\"assertion\":  {jwt},\n\t}\n\treq, _ := http.NewRequestWithContext(ctx, http.MethodPost,\n\t\tjwtAudTarget, strings.NewReader(data.Encode()))\n\treq.Header.Set(\"Content-Type\", \"application/x-www-form-urlencoded\")\n\n\tres, err := hc.Do(req)\n\tif err != nil {\n\t\treturn \"\", time.Time{}, err\n\t}\n\tdefer res.Body.Close()\n\tif res.StatusCode != http.StatusOK {\n\t\tb, _ := io.ReadAll(res.Body)\n\t\treturn \"\", time.Time{}, fmt.Errorf(\"token exchange failed: %s\", b)\n\t}\n\tvar tr tokenResp\n\tif err := json.NewDecoder(res.Body).Decode(&tr); err != nil {\n\t\treturn \"\", time.Time{}, err\n\t}\n\texp := time.Now().Add(time.Duration(tr.ExpiresIn) * time.Second)\n\treturn tr.AccessToken, exp, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "cd6ae91fb8e92cf04bc4731d",
+        "revision": "555242ea9d80aaa2ad7a504334a66a2453d63956",
+        "path": "auto/gcp/jws/jws.go",
+        "start_byte": 712,
+        "text": "type ClaimSet struct {\n\tIss   string `json:\"iss\"`             // email address of the client_id of the application making the access token request\n\tScope string `json:\"scope,omitempty\"` // space-delimited list of the permissions the application requests\n\tAud   string `json:\"aud\"`             // descriptor of the intended target of the assertion (Optional).\n\tExp   int64  `json:\"exp\"`             // the expiration time of the assertion (seconds since Unix epoch)\n\tIat   int64  `json:\"iat\"`             // the time the assertion was issued (seconds since Unix epoch)\n\tTyp   string `json:\"typ,omitempty\"`   // token type (Optional).\n\n\t// Email for which the application is requesting delegated access (Optional).\n\tSub string `json:\"sub,omitempty\"`\n\n\t// The old name of Sub. Client keeps setting Prn to be\n\t// complaint with legacy OAuth 2.0 providers. (Optional)\n\tPrn string `json:\"prn,omitempty\"`\n\n\t// See http://tools.ietf.org/html/draft-jones-json-web-token-10#section-4.3\n\t// This array is marshalled using custom code (see (c *ClaimSet) encode()).\n\tPrivateClaims map[string]any `json:\"-\"`\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "54d1486a6997026b7bba0674",
+        "revision": "555242ea9d80aaa2ad7a504334a66a2453d63956",
+        "path": "auto/gcp/jws/jws.go",
+        "start_byte": 1809,
+        "text": "func (c *ClaimSet) encode() (string, error) {\n\t// Reverting time back for machines whose time is not perfectly in sync.\n\t// If client machine's time is in the future according\n\t// to Google servers, an access token will not be issued.\n\tnow := time.Now().Add(-10 * time.Second)\n\tif c.Iat == 0 {\n\t\tc.Iat = now.Unix()\n\t}\n\tif c.Exp == 0 {\n\t\tc.Exp = now.Add(time.Hour).Unix()\n\t}\n\tif c.Exp < c.Iat {\n\t\treturn \"\", fmt.Errorf(\"jws: invalid Exp = %v; must be later than Iat = %v\", c.Exp, c.Iat)\n\t}\n\n\tb, err := json.Marshal(c)\n\tif err != nil {\n\t\treturn \"\", err\n\t}\n\n\tif len(c.PrivateClaims) == 0 {\n\t\treturn base64.RawURLEncoding.EncodeToString(b), nil\n\t}\n\n\t// Marshal private claim set and then append it to b.\n\tprv, err := json.Marshal(c.PrivateClaims)\n\tif err != nil {\n\t\treturn \"\", fmt.Errorf(\"jws: invalid map of private claims %v\", c.PrivateClaims)\n\t}\n\n\t// Concatenate public and private claim JSON objects.\n\tif !bytes.HasSuffix(b, []byte{'}'}) {\n\t\treturn \"\", fmt.Errorf(\"jws: invalid JSON %s\", b)\n\t}\n\tif !bytes.HasPrefix(prv, []byte{'{'}) {\n\t\treturn \"\", fmt.Errorf(\"jws: invalid JSON %s\", prv)\n\t}\n\tb[len(b)-1] = ','         // Replace closing curly brace with a comma.\n\tb = append(b, prv[1:]...) // Append private claims.\n\treturn base64.RawURLEncoding.EncodeToString(b), nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "cfaec97bb83b9e1d5c69a095",
+        "revision": "555242ea9d80aaa2ad7a504334a66a2453d63956",
+        "path": "auto/gcp/jws/jws.go",
+        "start_byte": 3142,
+        "text": "type Header struct {\n\t// The algorithm used for signature.\n\tAlgorithm string `json:\"alg\"`\n\n\t// Represents the token type.\n\tTyp string `json:\"typ\"`\n\n\t// The optional hint of which key is being used.\n\tKeyID string `json:\"kid,omitempty\"`\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "86010c15afd1ff6628cf0253",
+        "revision": "555242ea9d80aaa2ad7a504334a66a2453d63956",
+        "path": "auto/gcp/jws/jws.go",
+        "start_byte": 3380,
+        "text": "func (h *Header) encode() (string, error) {\n\tb, err := json.Marshal(h)\n\tif err != nil {\n\t\treturn \"\", err\n\t}\n\treturn base64.RawURLEncoding.EncodeToString(b), nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "db1bec3da97ee3e7493b8956",
+        "revision": "555242ea9d80aaa2ad7a504334a66a2453d63956",
+        "path": "auto/gcp/jws/jws.go",
+        "start_byte": 3594,
+        "text": "func Decode(payload string) (*ClaimSet, error) {\n\t// decode returned id token to get expiry\n\t_, claims, _, ok := parseToken(payload)\n\tif !ok {\n\t\t// TODO(jbd): Provide more context about the error.\n\t\treturn nil, errors.New(\"jws: invalid token received\")\n\t}\n\tdecoded, err := base64.RawURLEncoding.DecodeString(claims)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\tc := &ClaimSet{}\n\terr = json.NewDecoder(bytes.NewBuffer(decoded)).Decode(c)\n\treturn c, err\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "e4fcb8fa38cda76296444488",
+        "revision": "555242ea9d80aaa2ad7a504334a66a2453d63956",
+        "path": "auto/gcp/jws/jws.go",
+        "start_byte": 4225,
+        "text": "func EncodeWithSigner(header *Header, c *ClaimSet, sg Signer) (string, error) {\n\thead, err := header.encode()\n\tif err != nil {\n\t\treturn \"\", err\n\t}\n\tcs, err := c.encode()\n\tif err != nil {\n\t\treturn \"\", err\n\t}\n\tss := fmt.Sprintf(\"%s.%s\", head, cs)\n\tsig, err := sg([]byte(ss))\n\tif err != nil {\n\t\treturn \"\", err\n\t}\n\treturn fmt.Sprintf(\"%s.%s\", ss, base64.RawURLEncoding.EncodeToString(sig)), nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "08e8c538e52089ca6c9d9676",
+        "revision": "555242ea9d80aaa2ad7a504334a66a2453d63956",
+        "path": "auto/gcp/jws/jws.go",
+        "start_byte": 4785,
+        "text": "func Encode(header *Header, c *ClaimSet, key *rsa.PrivateKey) (string, error) {\n\tsg := func(data []byte) (sig []byte, err error) {\n\t\th := sha256.New()\n\t\th.Write(data)\n\t\treturn rsa.SignPKCS1v15(rand.Reader, key, crypto.SHA256, h.Sum(nil))\n\t}\n\treturn EncodeWithSigner(header, c, sg)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "d32dc16c3c8a140947ab48d8",
+        "revision": "555242ea9d80aaa2ad7a504334a66a2453d63956",
+        "path": "auto/gcp/jws/jws.go",
+        "start_byte": 5204,
+        "text": "func Verify(token string, key *rsa.PublicKey) error {\n\theader, claims, sig, ok := parseToken(token)\n\tif !ok {\n\t\treturn errors.New(\"jws: invalid token received, token must have 3 parts\")\n\t}\n\tsignatureString, err := base64.RawURLEncoding.DecodeString(sig)\n\tif err != nil {\n\t\treturn err\n\t}\n\n\th := sha256.New()\n\th.Write([]byte(header + tokenDelim + claims))\n\treturn rsa.VerifyPKCS1v15(key, crypto.SHA256, h.Sum(nil), signatureString)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "b5129439522681d1ffa2baca",
+        "revision": "555242ea9d80aaa2ad7a504334a66a2453d63956",
+        "path": "auto/gcp/jws/jws.go",
+        "start_byte": 5637,
+        "text": "func parseToken(s string) (header, claims, sig string, ok bool) {\n\theader, s, ok = strings.Cut(s, tokenDelim)\n\tif !ok { // no period found\n\t\treturn \"\", \"\", \"\", false\n\t}\n\tclaims, s, ok = strings.Cut(s, tokenDelim)\n\tif !ok { // only one period found\n\t\treturn \"\", \"\", \"\", false\n\t}\n\tsig, _, ok = strings.Cut(s, tokenDelim)\n\tif ok { // three periods found\n\t\treturn \"\", \"\", \"\", false\n\t}\n\treturn header, claims, sig, true\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "3c96d2018669285bf0d16adc",
+        "revision": "555242ea9d80aaa2ad7a504334a66a2453d63956",
+        "path": "auto/restore/config.go",
+        "start_byte": 686,
+        "text": "func ReadConfigFile(filename string) ([]byte, error) {\n\tf, err := os.Open(filename)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\tdefer f.Close()\n\n\tdata, err := io.ReadAll(f)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\n\tdata = []byte(os.ExpandEnv(string(data)))\n\treturn data, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "5faec4beecde1149e2d98f81",
+        "revision": "555242ea9d80aaa2ad7a504334a66a2453d63956",
+        "path": "auto/restore/downloader.go",
+        "start_byte": 1015,
+        "text": "func DownloadFile(ctx context.Context, cfgPath string) (path string, errOK bool, err error) {\n\tvar f *os.File\n\tdefer func() {\n\t\tif err != nil {\n\t\t\tif f != nil {\n\t\t\t\tf.Close()\n\t\t\t\tos.Remove(f.Name())\n\t\t\t}\n\t\t}\n\t}()\n\n\tb, err := ReadConfigFile(cfgPath)\n\tif err != nil {\n\t\treturn \"\", false, fmt.Errorf(\"failed to read auto-restore file: %s\", err.Error())\n\t}\n\n\tvar sc StorageClient\n\tvar dCfg *Config\n\tdCfg, sc, err = NewStorageClient(b)\n\tif err != nil {\n\t\treturn \"\", false, fmt.Errorf(\"failed to create storage client: %s\", err.Error())\n\t}\n\td := NewDownloader(sc)\n\n\t// Create a temporary file to download to.\n\tf, err = os.CreateTemp(\"\", \"rqlite-auto-restore\")\n\tif err != nil {\n\t\treturn \"\", false, fmt.Errorf(\"failed to create temporary file: %s\", err.Error())\n\t}\n\tdefer f.Close()\n\n\tif err := d.Do(ctx, f, time.Duration(dCfg.Timeout)); err != nil {\n\t\treturn \"\", dCfg.ContinueOnFailure, fmt.Errorf(\"failed to download auto-restore file: %s\", err.Error())\n\t}\n\treturn f.Name(), false, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "647990911a460ba0559e81c9",
+        "revision": "555242ea9d80aaa2ad7a504334a66a2453d63956",
+        "path": "auto/types.go",
+        "start_byte": 884,
+        "text": "func (d *Duration) UnmarshalJSON(b []byte) error {\n\tvar v any\n\tif err := json.Unmarshal(b, &v); err != nil {\n\t\treturn err\n\t}\n\tswitch value := v.(type) {\n\tcase float64:\n\t\t*d = Duration(time.Duration(value))\n\tcase string:\n\t\ttmp, err := time.ParseDuration(value)\n\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n\t\t*d = Duration(tmp)\n\tdefault:\n\t\treturn errors.New(\"invalid duration\")\n\t}\n\tif *d <= 0 {\n\t\treturn ErrInvalidInterval\n\t}\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "9380467db77f6aadd961c309",
+        "revision": "555242ea9d80aaa2ad7a504334a66a2453d63956",
+        "path": "auto/types.go",
+        "start_byte": 1386,
+        "text": "type StorageType string",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "f4c1f57b545aa81a6f7040a3",
+        "revision": "555242ea9d80aaa2ad7a504334a66a2453d63956",
+        "path": "auto/types.go",
+        "start_byte": 1787,
+        "text": "func (s *StorageType) UnmarshalJSON(b []byte) error {\n\tvar v any\n\tif err := json.Unmarshal(b, &v); err != nil {\n\t\treturn err\n\t}\n\tswitch value := v.(type) {\n\tcase string:\n\t\t*s = StorageType(value)\n\t\tif *s != StorageTypeS3 && *s != StorageTypeGCS && *s != StorageTypeFile {\n\t\t\treturn ErrUnsupportedStorageType\n\t\t}\n\t\treturn nil\n\tdefault:\n\t\treturn ErrUnsupportedStorageType\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "61f1f02942d65b4a4e4ce794",
+        "revision": "555242ea9d80aaa2ad7a504334a66a2453d63956",
+        "path": "cdc/cdctest/server.go",
+        "start_byte": 354,
+        "text": "type HTTPTestServer struct {\n\t*httptest.Server\n\n\trequests [][]byte\n\tmessages map[uint64]*cdcjson.CDCMessage\n\tmu       sync.Mutex\n\n\tfailRate int // Percentage of requests to fail (0-100)\n\tnumFail  atomic.Int64\n\n\tDumpRequest bool\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "c2b92303aa3c3fde5b48b30a",
+        "revision": "555242ea9d80aaa2ad7a504334a66a2453d63956",
+        "path": "cdc/cdctest/server.go",
+        "start_byte": 648,
+        "text": "func NewHTTPTestServer() *HTTPTestServer {\n\thts := &HTTPTestServer{\n\t\tmessages: make(map[uint64]*cdcjson.CDCMessage),\n\t}\n\thts.Server = httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {\n\t\thts.mu.Lock()\n\t\tdefer hts.mu.Unlock()\n\n\t\tif hts.failRate > 0 && (rand.Intn(100) < hts.failRate) {\n\t\t\thts.numFail.Add(1)\n\t\t\tw.WriteHeader(http.StatusServiceUnavailable)\n\t\t\treturn\n\t\t}\n\n\t\tdefer r.Body.Close()\n\t\tbody, err := io.ReadAll(r.Body)\n\t\tif err != nil || len(body) == 0 {\n\t\t\tw.WriteHeader(http.StatusBadRequest)\n\t\t\treturn\n\t\t}\n\n\t\thts.requests = append(hts.requests, body)\n\t\tvar envelope cdcjson.CDCMessagesEnvelope\n\t\tif err := cdcjson.UnmarshalFromEnvelopeJSON(body, &envelope); err != nil {\n\t\t\tw.WriteHeader(http.StatusServiceUnavailable)\n\t\t\treturn\n\t\t}\n\t\tfor _, msg := range envelope.Payload {\n\t\t\thts.messages[msg.Index] = msg\n\t\t}\n\n\t\tif hts.DumpRequest {\n\t\t\tfmt.Println(string(body))\n\t\t}\n\n\t\tw.WriteHeader(http.StatusOK)\n\t}))\n\n\thts.Listener = mustLocalListen()\n\treturn hts\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "f3eba14ccf588d2ce5d742eb",
+        "revision": "555242ea9d80aaa2ad7a504334a66a2453d63956",
+        "path": "cdc/cdctest/server.go",
+        "start_byte": 1699,
+        "text": "func (h *HTTPTestServer) URL() string {\n\treturn fmt.Sprintf(\"http://%s\", h.Server.Listener.Addr().String())\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "d756007173d56d61a34cbaa6",
+        "revision": "555242ea9d80aaa2ad7a504334a66a2453d63956",
+        "path": "cdc/cdctest/server.go",
+        "start_byte": 2071,
+        "text": "func (h *HTTPTestServer) SetFailRate(rate int) {\n\th.mu.Lock()\n\tdefer h.mu.Unlock()\n\tif rate < 0 {\n\t\trate = 0\n\t} else if rate > 100 {\n\t\trate = 100\n\t}\n\th.failRate = rate\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "3919c06288380a8db12d948b",
+        "revision": "555242ea9d80aaa2ad7a504334a66a2453d63956",
+        "path": "cdc/cdctest/server.go",
+        "start_byte": 2312,
+        "text": "func (h *HTTPTestServer) GetRequests() [][]byte {\n\th.mu.Lock()\n\tdefer h.mu.Unlock()\n\treturn slices.Clone(h.requests)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "13438dd9cc5dfbdf6fdf297d",
+        "revision": "555242ea9d80aaa2ad7a504334a66a2453d63956",
+        "path": "cdc/cdctest/server.go",
+        "start_byte": 2506,
+        "text": "func (h *HTTPTestServer) GetRequestCount() int {\n\th.mu.Lock()\n\tdefer h.mu.Unlock()\n\treturn len(h.requests)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "d6cd28c99b72b3050fb10194",
+        "revision": "555242ea9d80aaa2ad7a504334a66a2453d63956",
+        "path": "cdc/cdctest/server.go",
+        "start_byte": 2880,
+        "text": "func (h *HTTPTestServer) GetHighestMessageIndex() uint64 {\n\th.mu.Lock()\n\tdefer h.mu.Unlock()\n\tvar highest uint64\n\tfor index := range h.messages {\n\t\tif index > highest {\n\t\t\thighest = index\n\t\t}\n\t}\n\treturn highest\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "dc9d4e79c701990fae1292b4",
+        "revision": "555242ea9d80aaa2ad7a504334a66a2453d63956",
+        "path": "cdc/cdctest/server.go",
+        "start_byte": 3129,
+        "text": "func (h *HTTPTestServer) Reset() {\n\th.mu.Lock()\n\tdefer h.mu.Unlock()\n\th.requests = nil\n\th.messages = make(map[uint64]*cdcjson.CDCMessage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "772592ebc3470ac839196a55",
+        "revision": "555242ea9d80aaa2ad7a504334a66a2453d63956",
+        "path": "cdc/cdctest/server.go",
+        "start_byte": 3351,
+        "text": "func (h *HTTPTestServer) GetMessageCount() int {\n\th.mu.Lock()\n\tdefer h.mu.Unlock()\n\treturn len(h.messages)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "b301e0179fcbfde22582de51",
+        "revision": "555242ea9d80aaa2ad7a504334a66a2453d63956",
+        "path": "cdc/cdctest/server.go",
+        "start_byte": 3625,
+        "text": "func (h *HTTPTestServer) CheckMessagesExist(n int) bool {\n\th.mu.Lock()\n\tdefer h.mu.Unlock()\n\tfor i := 1; i <= n; i++ {\n\t\tif _, ok := h.messages[uint64(i)]; !ok {\n\t\t\treturn false\n\t\t}\n\t}\n\treturn true\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "1480fd98fa230d27fadcf402",
+        "revision": "555242ea9d80aaa2ad7a504334a66a2453d63956",
+        "path": "cdc/cdctest/server.go",
+        "start_byte": 3826,
+        "text": "func mustLocalListen() net.Listener {\n\tln, err := net.ListenTCP(\"tcp\", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})\n\tif err != nil {\n\t\tpanic(err)\n\t}\n\treturn ln\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "365d7440af1a2cde0cc5cc5c",
+        "revision": "555242ea9d80aaa2ad7a504334a66a2453d63956",
+        "path": "cdc/config.go",
+        "start_byte": 926,
+        "text": "type TLSConfiguration struct {\n\t// CACertFile is the path to the CA certificate file for TLS verification.\n\tCACertFile string `json:\"ca_cert_file,omitempty\"`\n\n\t// CertFile is the path to the client certificate file for mutual TLS.\n\tCertFile string `json:\"cert_file,omitempty\"`\n\n\t// KeyFile is the path to the client private key file for mutual TLS.\n\tKeyFile string `json:\"key_file,omitempty\"`\n\n\t// InsecureSkipVerify controls whether the client verifies the server's certificate.\n\t// If true, TLS accepts any certificate presented by the server.\n\tInsecureSkipVerify bool `json:\"insecure_skip_verify,omitempty\"`\n\n\t// ServerName is used to verify the hostname on the returned certificates.\n\t// If empty, the hostname used for the connection is used.\n\tServerName string `json:\"server_name,omitempty\"`\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "e9091b0d86594160d574e40d",
+        "revision": "555242ea9d80aaa2ad7a504334a66a2453d63956",
+        "path": "cdc/config.go",
+        "start_byte": 1782,
+        "text": "type Config struct {\n\t// Endpoint is the HTTP endpoint to which the CDC events are sent. It must be specified.\n\tEndpoint string `json:\"endpoint\"`\n\n\t// ServiceID is an optional field. If set, it will be part of the event sent to the downstream\n\t// CDC consumer. This allows CDC consumers to receive events from multiple rqlite systems\n\t// and differentiate between events sent by those systems.\n\tServiceID string `json:\"service_id,omitempty\"`\n\n\t// RowIDsOnly indicates whether only the row IDs should be sent in the CDC events.\n\tRowIDsOnly bool `json:\"row_ids_only,omitempty\"`\n\n\t// TableFilter is an optional regular expression that filters which tables changes are\n\t// captured for. If unspecified or empty, changes to all tables are captured. If specified,\n\t// only changes to tables whose names match the regular expression are captured.\n\tTableFilter *regexp.Regexp `json:\"table_filter,omitempty\"`\n\n\t// TLS configuration\n\tTLS *TLSConfiguration `json:\"tls,omitempty\"`\n\n\t// MaxBatchSz is the maximum number of events to send in a single request to the endpoint.\n\t// If it is unspecified or is zero, the default DefaultMaxBatchSz is used.\n\tMaxBatchSz int `json:\"max_batch_size\"`\n\n\t// MaxBatchDelay is the maximum delay before sending a rquest to the endpoint, regardless\n\t// of the number of events ready for sending. This is used to ensure that we don't wait\n\t// too long for a batch to fill up. If it is unspecified or is zero, the default of\n\t// DefaultMaxBatchDelay is used.\n\tMaxBatchDelay time.Duration `json:\"max_batch_delay\"`\n\n\t// HighWatermarkInterval is the interval at which the high watermark is broadcast by the\n\t// Leader. If it is zero or unspecified, the default of DefaultHighWatermarkInterval is used.\n\tHighWatermarkInterval time.Duration `json:\"high_watermark_interval\"`\n\n\t// TransmitTimeout is the timeout for transmitting events to the endpoint. If the transmission\n\t// takes longer than this, it will be retried. If zero os not specified, the default of\n\t// DefaultTransmitTimeout is used.\n\tTransmitTimeout time.Duration `json:\"transmit_timeout\"`\n\n\t// TransmitMaxRetries is the maximum number of retries for sending events to the endpoint.\n\t// If the transmission fails after this many retries, it will be dropped. If not specified,\n\t// events will be retried forever.\n\tTransmitMaxRetries *int `json:\"transmit_max_retries\"`\n\n\t// TransmitRetryPolicy defines the retry policy to use when sending events to the endpoint.\n\t// If unspecified, LinearRetryPolicy is used.\n\tTransmitRetryPolicy RetryPolicy `json:\"transmit_retry_policy\"`\n\n\t// TransmitMinBackoff is the initial backoff time. If it is zero or unspecified,\n\t// a default of 100 milliseconds is used.\n\tTransmitMinBackoff time.Duration `json:\"transmit_min_backoff\"`\n\n\t// TransmitMaxBackoff is the maximum backoff time for retries when using ExponentialRetryPolicy.\n\t// If unspecified or if zero, there is no m",
+        "rank": 2,
+        "truncated": true
+      }
+    ]
+  },
+  "retrieval": {
+    "unresolved": [
+      {
+        "side": "ours",
+        "identifier": "r",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "owner",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "string",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "done",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "error",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "panic",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "stop",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "make",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "close",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "cond",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Broadcast",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "mu",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Lock",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Unlock",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "numReaders",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "r",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "owner",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "string",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "panic",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "mu",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Lock",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Unlock",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "numReaders",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "cond",
+        "reason": "no-unique-declaration-established"
+      }
+    ],
+    "method": "syntax-ranges-and-identifier-candidates/3",
+    "budget_bytes": 32768,
+    "libraries": {
+      "C": "cbbd4827ee02cd5c018ab41f10d8404ff8741159054b352d9a6d763c506ba3c7",
+      "Go": "1612f8fd958ba1ec981bf4b91e2ff399f1e54d26a9da68e5b60b0d7cd00616fc"
+    }
+  }
+}

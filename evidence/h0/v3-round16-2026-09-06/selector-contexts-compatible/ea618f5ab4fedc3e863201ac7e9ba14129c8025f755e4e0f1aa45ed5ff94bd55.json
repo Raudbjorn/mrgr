@@ -1,0 +1,1320 @@
+{
+  "id": "ea618f5ab4fedc3e863201ac7e9ba14129c8025f755e4e0f1aa45ed5ff94bd55",
+  "source_protocol_sha256": "86ffe38086e217acf6e1a4aa4162e226862463d1bde3160478f9a6f4d2b968ce",
+  "repair_module_sha256": "475070c72aaadf08fe1cbd1ec90cde5210664924e6b0589d61d2226e86f3da7f",
+  "contexts": {
+    "local-context": [
+      {
+        "id": "2a406ed8d7efb34975419ce2",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/home/authhttp.go",
+        "start_byte": 0,
+        "text": "package home\n\nimport (\n\t\"context\"\n\t\"encoding/hex\"\n\t\"encoding/json\"\n\t\"fmt\"\n\t\"log/slog\"\n\t\"net/http\"\n\t\"net/netip\"\n\t\"path\"\n\t\"slices\"\n\t\"strconv\"\n\t\"strings\"\n\t\"time\"\n\n\t\"github.com/AdguardTeam/AdGuardHome/internal/aghhttp\"\n\t\"github.com/AdguardTeam/AdGuardHome/internal/aghuser\"\n\t\"github.com/AdguardTeam/golibs/errors\"\n\t\"github.com/AdguardTeam/golibs/httphdr\"\n\t\"github.com/AdguardTeam/golibs/log\"\n\t\"github.com/AdguardTeam/golibs/logutil/slogutil\"\n\t\"github.com/AdguardTeam/golibs/netutil\"\n\t\"github.com/AdguardTeam/golibs/netutil/httputil\"\n\t\"github.com/AdguardTeam/golibs/timeutil\"\n\t\"github.com/AdguardTeam/golibs/validate\"\n)\n\n// cookieTTL is the time-to-live of the session cookie.\nconst cookieTTL = 365 * timeutil.Day\n\n// sessionCookieName is the name of the session cookie.\nconst sessionCookieName = \"agh_session\"\n\n// loginJSON is the JSON structure for authentication.\ntype loginJSON struct {\n\tName     string `json:\"name\"`\n\tPassword string `json:\"password\"`\n}\n\n// realIP extracts the real IP address of the client from an HTTP request using\n// the known HTTP headers.\n//\n// TODO(a.garipov): Currently, this is basically a copy of a similar function in\n// module dnsproxy.  This should really become a part of module golibs and be\n// replaced both here and there.  Or be replaced in both places by\n// a well-maintained third-party module.\n//\n// TODO(a.garipov): Support header Forwarded from RFC 7329.\nfunc realIP(r *http.Request) (ip netip.Addr, err error) {\n\tproxyHeaders := []string{\n\t\thttphdr.CFConnectingIP,\n\t\thttphdr.TrueClientIP,\n\t\thttphdr.XRealIP,\n\t}\n\n\tfor _, h := range proxyHeaders {\n\t\tv := r.Header.Get(h)\n\t\tip, err = netip.ParseAddr(v)\n\t\tif err == nil {\n\t\t\treturn ip, nil\n\t\t}\n\t}\n\n\t// If none of the above yielded any results, get the leftmost IP address\n\t// from the X-Forwarded-For header.\n\ts := r.Header.Get(httphdr.XForwardedFor)\n\tipStr, _, _ := strings.Cut(s, \",\")\n\tip, err = netip.ParseAddr(ipStr)\n\tif err == nil {\n\t\treturn ip, nil\n\t}\n\n\t// When everything else fails, just return the remote address as understood\n\t// by the stdlib.\n\tipStr, err = netutil.SplitHost(r.RemoteAddr)\n\tif err != nil {\n\t\treturn netip.Addr{}, fmt.Errorf(\"getting ip from client addr: %w\", err)\n\t}\n\n\treturn netip.ParseAddr(ipStr)\n}\n\n// writeErrorWithIP is like [aghhttp.Error], but includes the remote IP address\n// when it writes to the log.\nfunc writeErrorWithIP(\n\tr *http.Request,\n\tw http.ResponseWriter,\n\tcode int,\n\tremoteIP string,\n\tformat string,\n\targs ...any,\n) {\n\ttext := fmt.Sprintf(format, args...)\n\tlog.Error(\"%s %s %s: from ip %s: %s\", r.Method, r.Host, r.URL, remoteIP, text)\n\thttp.Error(w, text, code)\n}\n\n// handleLogin is the handler for the POST /control/login HTTP API.\nfunc (web *webAPI) handleLogin(w http.ResponseWriter, r *http.Request) {\n\tctx := r.Context()\n\n\treq := loginJSON{}\n\terr := json.NewDecoder(r.Body).Decode(&req)\n\tif err != nil {\n\t\taghhttp.ErrorAndLog(ctx, web.logger, r, w, http.StatusBadRequest, \"json decode: %s\", err)\n\n\t\treturn\n\t}\n\n\tvar remoteIPStr string\n\t// The real IP address of the client [realIP] cannot be used here without\n\t// taking trusted proxies into account due to security issues:\n\t//\n\t// See https://github.com/AdguardTeam/AdGuardHome/issues/2799.\n\tif remoteIPStr, err = netutil.SplitHost(r.RemoteAddr); err != nil {\n\t\twriteErrorWithIP(\n\t\t\tr,\n\t\t\tw,\n\t\t\thttp.StatusBadRequest,\n\t\t\tr.RemoteAddr,\n\t\t\t\"auth: getting remote address: %s\",\n\t\t\terr,\n\t\t)\n\n\t\treturn\n\t}\n\n\tif rateLimiter := web.auth.rateLimiter; rateLimiter != nil {\n\t\tif left := rateLimiter.check(remoteIPStr); left > 0 {\n\t\t\tw.Header().Set(httphdr.RetryAfter, strconv.Itoa(int(left.Seconds())))\n\t\t\twriteErrorWithIP(\n\t\t\t\tr,\n\t\t\t\tw,\n\t\t\t\thttp.StatusTooManyRequests,\n\t\t\t\tremoteIPStr,\n\t\t\t\t\"auth: blocked for %s\",\n\t\t\t\tleft,\n\t\t\t)\n\n\t\t\treturn\n\t\t}\n\t}\n\n\tip, err := realIP(r)\n\tif err != nil {\n\t\tweb.logger.ErrorContext(\n\t\t\tctx,\n\t\t\t\"getting real ip\",\n\t\t\t\"remote_ip\", remoteIPStr,\n\t\t\tslogutil.KeyError, err,\n\t\t)\n\t}\n\n\tremoteIP, err := netip.ParseAddr(remoteIPStr)\n\tif err != nil {\n\t\twriteErrorWithIP(\n\t\t\tr,\n\t\t\tw,\n\t\t\thttp.StatusInternalServerError,\n\t\t\tr.RemoteAddr,\n\t\t\t\"auth: parsing remote address: %s\",\n\t\t\terr,\n\t\t)\n\n\t\treturn\n\t}\n\n\tlogIP := remoteIPStr\n\tif web.auth.trustedProxies.Contains(remoteIP.Unmap()) {\n\t\tlogIP = ip.String()\n\t}\n\n\tcookie, err := newCookie(ctx, web.auth, req, remoteIPStr)\n\tif err != nil {\n\t\twriteErrorWithIP(r, w, http.StatusForbidden, logIP, \"%s\", err)\n\n\t\treturn\n\t}\n\n\tweb.logger.InfoContext(ctx, \"successful login\", \"user\", req.Name, \"ip\", logIP)\n\n\thttp.SetCookie(w, cookie)\n\n\th := w.Header()\n\th.Set(httphdr.CacheControl, \"no-store, no-cache, must-revalidate, proxy-revalidate\")\n\th.Set(httphdr.Pragma, \"no-cache\")\n\th.Set(httphdr.Expires, \"0\")\n\n\taghhttp.OK(ctx, web.logger, w)\n}\n\n// newCookie creates a new authentication cookie.  rateLimiter must not be nil.\nfunc newCookie(\n\tctx context.Context,\n\tauth *auth,\n\treq loginJSON,\n\taddr string,\n) (c *http.Cookie, err error) {\n\tuser, err := auth.users.ByLogin(ctx, aghuser.Login(req.Name))\n\tif err != nil {\n\t\t// Should not happen.\n\t\tpanic(err)\n\t}\n\n\trateLimiter := auth.rateLimiter\n\tif user == nil {\n\t\trateLimiter.inc(addr)\n\n\t\treturn nil, errInvalidLogin\n\t}\n\n\tok := user.Password.Authenticate(ctx, req.Password)\n\tif !ok {\n\t\trateLimiter.inc(addr)\n\n\t\treturn nil, errInvalidLogin\n\t}\n\n\trateLimiter.remove(addr)\n\n\tsess, err := auth.sessions.New(ctx, user)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\n\treturn &http.Cookie{\n\t\tName:     sessionCookieName,\n\t\tValue:    hex.EncodeToString(sess.Token[:]),\n\t\tPath:     \"/\",\n\t\tExpires:  time.Now().Add(cookieTTL),\n\t\tHttpOnly: true,\n\t\tSameSite: http.SameSiteLaxMode,\n\t}, nil\n}\n\n// handleLogout is the handler for the GET /control/logout HTTP API.\nfunc (web *webAPI) handleLogout(w http.ResponseWriter, r *http.Request) {\n\tctx := r.Context()\n\n\trespHdr := w.Header()\n\tc, err := r.Cookie(sessionCookieName)\n\tif err != nil {\n\t\t// The only error that is returned from r.Cookie is [http.ErrNoCookie].\n\t\t// The user is already logged out.\n\t\trespHdr.Set(httphdr.Location, \"/login.html\")\n\t\tw.WriteHeader(http.StatusFound)\n\n\t\treturn\n\t}\n\n\tt, err := sessionTokenFromHex(c.Value)\n\tif err != nil {\n\t\tweb.logger.ErrorContext(ctx, \"getting token\", slogutil.KeyError, err)\n\n\t\tw.WriteHeader(http.StatusUnauthorized)\n\n\t\treturn\n\t}\n\n\terr = web.auth.sessions.DeleteByToken(ctx, t)\n\tif err != nil {\n\t\tweb.logger.ErrorContext(ctx, \"removing session by token\", slogutil.KeyError, err)\n\t}\n\n\tc = &http.Cookie{\n\t\tName:    sessionCookieName,\n\t\tValue:   \"\",\n\t\tPath:    \"/\",\n\t\tExpires: time.Unix(0, 0),\n\n\t\tHttpOnly: true,\n\t\tSameSite: http.SameSiteLaxMode,\n\t}\n\n\trespHdr.Set(httphdr.Location, \"/login.html\")\n\trespHdr.Set(httphdr.SetCookie, c.String())\n\tw.WriteHeader(http.StatusFound)\n}\n\n// registerAuthHandlers registers authentication handlers.\nfunc (web *webAPI) registerAuthHandlers() {\n\tweb.conf.mux.Handle(\n\t\thttp.MethodPost+\" \"+\"/control/login\",\n\t\tweb.postInstallHandler(http.HandlerFunc(web.handleLogin)),\n\t)\n\tweb.httpReg.Register(http.MethodGet, \"/control/logout\", web.handleLogout)\n}\n\n// isPublicResource returns true if p is a path to a public resource.\nfunc isPublicResource(p string) (ok bool) {\n\tisAsset, err := path.Match(\"/assets/*\", p)\n\tif err != nil {\n\t\t// The only error that is returned from path.Match is\n\t\t// [path.ErrBadPattern].  This is a programmer error.\n\t\tpanic(fmt.Errorf(\"bad asset pattern: %w\", err))\n\t}\n\n\tisLogin, err := path.Match(\"/login.*\", p)\n\tif err != nil {\n\t\t// Same as above.\n\t\tpanic(fmt.Errorf(\"bad login pattern: %w\", err))\n\t}\n\n\tisForgotPassword, err := path.Match(\"/forgot_password.*\", p)\n\tif err != nil {\n\t\t// Same as above.\n\t\tpanic(fmt.Errorf(\"bad forgot password pattern: %w\", err))\n\t}\n\n\t// TODO(s.chzhen):  Implement a more strict version.\n\tif strings.HasPrefix(p, \"/dns-query/\") {\n\t\treturn true\n\t}\n\n\tpaths := []string{\n\t\t\"/dns-query\",\n\t\t\"/control/login\",\n\t\t\"/apple/doh.mobileconfig\",\n\t\t\"/apple/dot.mobileconfig\",\n\t\t\"/control/install/get_addresses\",\n\t\t\"/control/install/check_config\",\n\t\t\"/control/install/configure\",\n\t\t\"/install.html\",\n\t}\n\n\treturn isAsset || isLogin || isForgotPassword || slices.Contains(paths, p)\n}\n\nconst (\n\t// errInvalidLogin is returned when there is an invalid login attempt.\n\terrInvalidLogin errors.Error = \"invalid username or password\"\n)\n\n// authMiddlewareDefaultConfig is the configuration structure for the default\n// authentication middleware.\ntype authMiddlewareDefaultConfig struct {\n\t// logger is used for logging the operation of the middleware.  It must not\n\t// be nil.\n\t//\n\t// TODO(e.burkov):  Require a logger in request's context instead.\n\tlogger *slog.Logger\n\n\t// rateLimiter manages the rate limiting for login attempts.\n\trateLimiter loginRateLimiter\n\n\t// trustedProxies is a set of subnets considered as trusted.\n\t//\n\t// TODO(s.chzhen):  Use it not only to pass it to the middleware but also to\n\t// log the work of the rate limiter.\n\ttrustedProxies netutil.SubnetSet\n\n\t// sessions contains web user sessions.  It must not be nil.\n\tsessions aghuser.SessionStorage\n\n\t// users contains web user information.  It must not be nil.\n\tusers aghuser.DB\n}\n\n// authMiddlewareDefault is the default authentication middleware.  It searches\n// for a web client using an authentication cookie or basic auth credentials and\n// passes it with the context.\ntype authMiddlewareDefault struct {\n\tlogger         *slog.Logger\n\trateLimiter    loginRateLimiter\n\ttrustedProxies netutil.SubnetSet\n\tsessions       aghuser.SessionStorage\n\tusers          aghuser.DB\n}\n\n// newAuthMiddlewareDefault returns the new properly initialized\n// *authMiddlewareDefault.\nfunc newAuthMiddlewareDefault(c *authMiddlewareDefaultConfig) (mw *authMiddlewareDefault) {\n\treturn &authMiddlewareDefault{\n\t\tlogger:         c.logger,\n\t\trateLimiter:    c.rateLimiter,\n\t\ttrustedProxies: c.trustedProxies,\n\t\tsessions:       c.sessions,\n\t\tusers:          c.users,\n\t}\n}\n\n// type check\nvar _ httputil.Middleware = (*authMiddlewareDefault)(nil)\n\n// Wrap implements the [httputil.Middleware] interface for\n// *authMiddlewareDefault.\nfunc (mw *authMiddlewareDefault) Wrap(h http.Handler) (wrapped http.Handler) {\n\treturn http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {\n\t\tctx := r.Context()\n\n\t\tif !mw.needsAuthentication(ctx) {\n\t\t\th.ServeHTTP(w, r)\n\n\t\t\treturn\n\t\t}\n\n\t\tpath := r.URL.Path\n\t\tif mw.handleAuthenticatedUser(ctx, w, r, h, path) {\n\t\t\treturn\n\t\t}\n\n\t\tif mw.handlePublicAccess(w, r, h, path) {\n\t\t\treturn\n\t\t}\n\n\t\tw.WriteHeader(http.StatusUnauthorized)\n\t})\n}\n\n// handleAuthenticatedUser tries to get user from request and processes request\n// if user was successfully authenticated.  Returns true if request was handled.\nfunc (mw *authMiddlewareDefault) handleAuthenticatedUser(\n\tctx context.Context,\n\tw http.ResponseWriter,\n\tr *http.Request,\n\th http.Handler,\n\tpath string,\n) (ok bool) {\n\tu, err := mw.userFromRequest(ctx, r)\n\tif err != nil {\n\t\tmw.logger.ErrorContext(ctx, \"retrieving user from request\", slogutil.KeyError, err)\n\t}\n\n\tif u == nil {\n\t\tmw.logger.DebugContext(ctx, \"no user found in request\")\n\n\t\treturn false\n\t}\n\n\tif path == \"/login.html\" || path == \"/forgot_password.html\" {\n\t\thttp.Redirect(w, r, \"/\", http.StatusFound)\n\n\t\treturn true\n\t}\n\n\th.ServeHTTP(w, r.WithContext(withWebUser(ctx, u)))\n\n\treturn true\n}\n\n// handlePublicAccess handles request if user is trying to access public or root\n// pages.\nfunc (mw *authMiddlewareDefault) handlePublicAccess(\n\tw http.ResponseWriter,\n\tr *http.Request,\n\th http.Handler,\n\tpath string,\n) (ok bool) {\n\tif isPublicResource(path) {\n\t\th.ServeHTTP(w, r)\n\n\t\treturn true\n\t}\n\n\tif path == \"/\" || path == \"/index.html\" {\n\t\thttp.Redirect(w, r, \"login.html\", http.StatusFound)\n\n\t\treturn true\n\t}\n\n\treturn false\n}\n\n// needsAuthentication returns true if there are stored web users and requests\n// should be authenticated first.\nfunc (mw *authMiddlewareDefault) needsAuthentication(ctx context.Context) (ok bool) {\n\tusers, err := mw.users.All(ctx)\n\tif err != nil {\n\t\t// Should not happen.\n\t\tpanic(err)\n\t}\n\n\treturn len(users) != 0\n}\n\n// userFromRequest tries to retrieve a user based on the request.  r must not be\n// nil.\nfunc (mw *authMiddlewareDefault) userFromRequest(\n\tctx context.Context,\n\tr *http.Request,\n) (u *aghuser.User, err error) {\n\tdefer func() { err = errors.Annotate(err, \"getting user from request: %w\") }()\n\n\tcookie, err := r.Cookie(sessionCookieName)\n\tif err == nil {\n\t\treturn mw.userFromCookie(ctx, cookie.Value)\n\t}\n\n\treturn mw.userFromRequestBasicAuth(ctx, r)\n}\n\n// userFromCookie tries to retrieve a user based on the provided cookie value.\nfunc (mw *authMiddlewareDefault) userFromCookie(\n\tctx context.Context,\n\tval string,\n) (u *aghuser.User, err error) {\n\tt, err := sessionTokenFromHex(val)\n\tif err != nil {\n\t\t// Don't wrap the error because it's informative enough as is.\n\t\treturn nil, err\n\t}\n\n\ts, err := mw.sessions.FindByToken(ctx, t)\n\tif err != nil {\n\t\treturn nil, fmt.Errorf(\"searching session by token: %w\", err)\n\t}\n\n\tif s == nil {\n\t\treturn nil, nil\n\t}\n\n\tu, err = mw.users.ByLogin(ctx, s.UserLogin)\n\tif err != nil {\n\t\treturn nil, fmt.Errorf(\"searching user by login %q: %w\", s.UserLogin, err)\n\t}\n\n\treturn u, nil\n}\n\n// sessionTokenFromHex converts a hexadecimal string into a session token.\nfunc sessionTokenFromHex(val string) (token aghuser.SessionToken, err error) {\n\tsess, err := hex.DecodeString(val)\n\tif err != nil {\n\t\treturn token, fmt.Errorf(\"decoding value: %w\", err)\n\t}\n\n\tl := aghuser.SessionTokenLength\n\n\terr = validate.Equal(\"token length\", l, len(sess))\n\tif err != nil {\n\t\t// Don't wrap the error because it's informative enough as is.\n\t\treturn token, err\n\t}\n\n\treturn aghuser.SessionToken(sess), nil\n}\n\n// userFromRequestBasicAuth searches for a user using Basic Auth credentials.  r\n// must not be nil.\nfunc (mw *authMiddlewareDefault) userFromRequestBasicAuth(\n\tctx context.Context,\n\tr *http.Request,\n) (user *aghuser.User, err error) {\n\tlogin, pass, ok := r.BasicAuth()\n\tif !ok {\n\t\treturn nil, nil\n\t}\n\n\tvar remoteIP string\n\t// The real IP address of the client [realIP] cannot be used here without\n\t// taking trusted proxies into account due to security issues:\n\t//\n\t// See https://github.com/AdguardTeam/AdGuardHome/issues/2799.\n\tif remoteIP, err = netutil.SplitHost(r.RemoteAddr); err != nil {\n\t\treturn nil, fmt.Errorf(\"getting remote address: %w\", err)\n\t}\n\n\trateLimiter := mw.rateLimiter\n\tif left := rateLimiter.check(remoteIP); left > 0 {\n\t\treturn nil, fmt.Errorf(\"login attempt blocked for %s\", left)\n\t}\n\n\tdefer func() {\n\t\tif err != nil {\n\t\t\trateLimiter.inc(remoteIP)\n\n\t\t\treturn\n\t\t}\n\n\t\trateLimiter.remove(remoteIP)\n\t}()\n\n\tuser, _ = mw.users.ByLogin(ctx, aghuser.Login(login))\n\tif user == nil {\n\t\treturn nil, errInvalidLogin\n\t}\n\n\tok = user.Password.Authenticate(ctx, pass)\n\tif !ok {\n\t\treturn nil, errInvalidLogin\n\t}\n\n\treturn user, nil\n}\n",
+        "rank": 0,
+        "truncated": false
+      }
+    ],
+    "selected": [
+      {
+        "id": "35ceff3207d5fa72227cb725",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/home/authhttp.go",
+        "start_byte": 7003,
+        "text": "func isPublicResource(p string) (ok bool) {\n\tisAsset, err := path.Match(\"/assets/*\", p)\n\tif err != nil {\n\t\t// The only error that is returned from path.Match is\n\t\t// [path.ErrBadPattern].  This is a programmer error.\n\t\tpanic(fmt.Errorf(\"bad asset pattern: %w\", err))\n\t}\n\n\tisLogin, err := path.Match(\"/login.*\", p)\n\tif err != nil {\n\t\t// Same as above.\n\t\tpanic(fmt.Errorf(\"bad login pattern: %w\", err))\n\t}\n\n\tisForgotPassword, err := path.Match(\"/forgot_password.*\", p)\n\tif err != nil {\n\t\t// Same as above.\n\t\tpanic(fmt.Errorf(\"bad forgot password pattern: %w\", err))\n\t}\n\n\t// TODO(s.chzhen):  Implement a more strict version.\n\tif strings.HasPrefix(p, \"/dns-query/\") {\n\t\treturn true\n\t}\n\n\tpaths := []string{\n\t\t\"/dns-query\",\n\t\t\"/control/login\",\n\t\t\"/apple/doh.mobileconfig\",\n\t\t\"/apple/dot.mobileconfig\",\n\t\t\"/control/install/get_addresses\",\n\t\t\"/control/install/check_config\",\n\t\t\"/control/install/configure\",\n\t\t\"/install.html\",\n\t}\n\n\treturn isAsset || isLogin || isForgotPassword || slices.Contains(paths, p)\n}",
+        "rank": 0,
+        "truncated": false
+      },
+      {
+        "id": "3deca73d74bbe939c2e93eae",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/aghnet/net.go",
+        "start_byte": 8942,
+        "text": "var p netip.Prefix",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "52bbea0dbee05a48e93fa8d9",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/aghos/os_linux.go",
+        "start_byte": 563,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "6d2fef96f798c3f97f7430ef",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/client/index.go",
+        "start_byte": 4185,
+        "text": "var ok bool",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "61aa68124c360c000bd5bba1",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/configmigrate/v27.go",
+        "start_byte": 841,
+        "text": "var ok bool",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "c32ce0b6a4771b4e67687549",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/dhcpd/v4_unix.go",
+        "start_byte": 29322,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "924917c548423fa77d375fa4",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/dhcpsvc/server.go",
+        "start_byte": 10310,
+        "text": "var ok bool",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "d74fab9e6dd8d2677d703172",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/dhcpsvc/v4.go",
+        "start_byte": 10272,
+        "text": "var ok bool",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "4a27acda4a36d4ddae9053cd",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/dnsforward/process.go",
+        "start_byte": 11337,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "77948ffd4fd67bd9d53e352b",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/filtering/http.go",
+        "start_byte": 7093,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "7081e5041d1bf4e5ac6b5515",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/filtering/http.go",
+        "start_byte": 7317,
+        "text": "var ok bool",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "9188310b715bac7ff3f4222a",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/home/clients.go",
+        "start_byte": 3308,
+        "text": "var p *client.Persistent",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "a8119be8e2108db151862bd3",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/home/clientshttp.go",
+        "start_byte": 12491,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "bf08237491443a8b6eb1c9a5",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/home/controlinstall.go",
+        "start_byte": 12050,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "beb6b05b9286e463a7384828",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/home/controlupdate.go",
+        "start_byte": 1154,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "5f7a3728edd93d60273a6474",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/home/controlupdate.go",
+        "start_byte": 5991,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "b64dfebb234110b0254f45b8",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/home/mobileconfig.go",
+        "start_byte": 4637,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "3d762da0507e65ae42ff7f74",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/home/options.go",
+        "start_byte": 11637,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "c130900a2cfa2ff91f649bda",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/home/tls.go",
+        "start_byte": 24828,
+        "text": "var ok bool",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "8f9ad939f6b86d6ab9b4a3c6",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/home/web.go",
+        "start_byte": 6623,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "73b15ab06d017509a4d1617d",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/ossvc/service_openbsd.go",
+        "start_byte": 2598,
+        "text": "var ok bool",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "8541996f4ecb6b51981cad50",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/ossvc/service_openbsd.go",
+        "start_byte": 2941,
+        "text": "var ok bool",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "697a4d5e2a69cfb23f0d000e",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/ossvc/service_openbsd.go",
+        "start_byte": 3303,
+        "text": "var ok bool",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "d46ca970c7c5089e201e7aa5",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/ossvc/service_openbsd.go",
+        "start_byte": 11342,
+        "text": "func (sysLogger) Errorf(format string, a ...any) error {\n\tlog.Error(format, a...)\n\n\treturn nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "7b9242122dc4e7a6c6fee720",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/querylog/decode.go",
+        "start_byte": 1103,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "1a0e265c6cca0ede4d28bc74",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/querylog/decode.go",
+        "start_byte": 1686,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "38e402ce8927342808bf1c29",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/querylog/decode.go",
+        "start_byte": 1868,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "a4498f2f4307bf8fba69fb17",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/querylog/decode.go",
+        "start_byte": 2066,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "012ed6cb7b2f190f382a63ba",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/querylog/decode.go",
+        "start_byte": 8882,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "39cea3d7c3fac5ae55bf7259",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/querylog/entry.go",
+        "start_byte": 1385,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "c6db3a50d3d3b4610efb0287",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/querylog/http.go",
+        "start_byte": 11981,
+        "text": "var ok bool",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "236c59146710f04e3ed64241",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/querylog/search.go",
+        "start_byte": 641,
+        "text": "var ok bool",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "3d435d6f6a2b66949d755e0e",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/querylog/search.go",
+        "start_byte": 1808,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "9587c6467060a32ecfeaa01e",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/querylog/search.go",
+        "start_byte": 7939,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "c4d8c75fef911f80783b0e27",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/schedule/schedule.go",
+        "start_byte": 1648,
+        "text": "func (w *Weekly) Contains(t time.Time) (ok bool) {\n\tt = t.In(w.location)\n\twd := t.Weekday()\n\tdr := w.days[wd]\n\n\t// Calculate the offset of the day range.\n\t//\n\t// NOTE: Do not use [time.Truncate] since it requires UTC time zone.\n\ty, m, d := t.Date()\n\tday := time.Date(y, m, d, 0, 0, 0, 0, w.location)\n\toffset := t.Sub(day)\n\n\treturn dr.contains(offset)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "95e76a24d511310fdfbc7cd6",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/stats/stats.go",
+        "start_byte": 5972,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "8d65fa60dc2fc7959fc2f31a",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/agh/agh.go",
+        "start_byte": 1217,
+        "text": "func newExitErr(code osutil.ExitCode) (err exitErr) {\n\treturn exitErr{code: code}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "1005aadf1a3cdf856d75135a",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/agh/agh.go",
+        "start_byte": 1420,
+        "text": "func (e exitErr) Error() (s string) {\n\treturn fmt.Sprintf(\"exit code %d\", e.code)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "081bd7ee4a598a33adff4510",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/agh/agh.go",
+        "start_byte": 1719,
+        "text": "type ExternalCommand struct {\n\t// Err is the error returned, if non-nil.\n\tErr error\n\n\t// Cmd contains the command path and arguments.\n\tCmd string\n\n\t// Out is written to stdout if non-empty.\n\tOut string\n\n\t// Code is returned as the exit code if non-zero.\n\tCode osutil.ExitCode\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "e812811ff0e2437b1fe61a99",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/agh/agh.go",
+        "start_byte": 2047,
+        "text": "func keyCommand(path string, args []string) (k string) {\n\tif len(args) == 0 {\n\t\treturn path\n\t}\n\n\treturn path + \" \" + strings.Join(args, \" \")\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "b8f29050eaee3e3c622e2ac1",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/agh/agh.go",
+        "start_byte": 2266,
+        "text": "func parseCommand(s string) (path string, args []string) {\n\tf := strings.Fields(s)\n\tif len(f) == 0 {\n\t\treturn \"\", nil\n\t}\n\n\treturn f[0], f[1:]\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "426c835c307db3c3f1f500d1",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/agh/agh.go",
+        "start_byte": 2753,
+        "text": "func NewMultipleCommandConstructor(cmds ...ExternalCommand) (cs executil.CommandConstructor) {\n\ttable := make(map[string]ExternalCommand, len(cmds))\n\tfor _, ec := range cmds {\n\t\tp, a := parseCommand(ec.Cmd)\n\t\ttable[keyCommand(p, a)] = ec\n\t}\n\n\tonNew := func(_ context.Context, conf *executil.CommandConfig) (c executil.Command, err error) {\n\t\tec := table[keyCommand(conf.Path, conf.Args)]\n\n\t\tcmd := fakeexec.NewCommand()\n\t\tcmd.OnStart = func(_ context.Context) (err error) {\n\t\t\tif ec.Out != \"\" {\n\t\t\t\t_, _ = conf.Stdout.Write([]byte(ec.Out))\n\t\t\t}\n\n\t\t\treturn nil\n\t\t}\n\n\t\tcmd.OnWait = func(_ context.Context) (err error) {\n\t\t\tif ec.Err != nil {\n\t\t\t\treturn ec.Err\n\t\t\t}\n\n\t\t\tif ec.Code != 0 {\n\t\t\t\treturn newExitErr(ec.Code)\n\t\t\t}\n\n\t\t\treturn nil\n\t\t}\n\n\t\treturn cmd, nil\n\t}\n\n\treturn &fakeexec.CommandConstructor{OnNew: onNew}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "265d99acc59e971045b88cbd",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/agh/agh.go",
+        "start_byte": 3680,
+        "text": "func NewCommandConstructor(\n\t_ string,\n\tcode osutil.ExitCode,\n\tstdout string,\n\tcmdErr error,\n) (cs executil.CommandConstructor) {\n\tonNew := func(_ context.Context, conf *executil.CommandConfig) (c executil.Command, err error) {\n\t\tcmd := fakeexec.NewCommand()\n\t\tcmd.OnStart = func(_ context.Context) (err error) {\n\t\t\tif conf.Stdout != nil {\n\t\t\t\t_, _ = conf.Stdout.Write([]byte(stdout))\n\t\t\t}\n\n\t\t\treturn nil\n\t\t}\n\n\t\tcmd.OnWait = func(_ context.Context) (err error) {\n\t\t\tif cmdErr != nil {\n\t\t\t\treturn cmdErr\n\t\t\t}\n\n\t\t\tif code != 0 {\n\t\t\t\treturn newExitErr(code)\n\t\t\t}\n\n\t\t\treturn nil\n\t\t}\n\n\t\treturn cmd, nil\n\t}\n\n\treturn &fakeexec.CommandConstructor{OnNew: onNew}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "fbf4b6e8bb2aa0c79c2acee3",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/aghalg/aghalg.go",
+        "start_byte": 1310,
+        "text": "func (uc UniqChecker[T]) Validate() (err error) {\n\tvar dup []T\n\tfor elem, num := range uc {\n\t\tif num > 1 {\n\t\t\tdup = append(dup, elem)\n\t\t}\n\t}\n\n\tif len(dup) == 0 {\n\t\treturn nil\n\t}\n\n\tslices.Sort(dup)\n\n\treturn fmt.Errorf(\"duplicated values: %v\", dup)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "06aba6990f95e72c7abf9e04",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/aghalg/nullbool.go",
+        "start_byte": 367,
+        "text": "func (nb NullBool) String() (s string) {\n\tswitch nb {\n\tcase NBNull:\n\t\treturn \"null\"\n\tcase NBTrue:\n\t\treturn \"true\"\n\tcase NBFalse:\n\t\treturn \"false\"\n\t}\n\n\treturn fmt.Sprintf(\"!invalid NullBool %d\", uint8(nb))\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "5537d4740f9abe38885645c5",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/aghalg/nullbool.go",
+        "start_byte": 626,
+        "text": "func BoolToNullBool(cond bool) (nb NullBool) {\n\treturn NBFalse - mathutil.BoolToNumber[NullBool](cond)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "9350bd9503d08cb01518bdea",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/aghalg/nullbool.go",
+        "start_byte": 846,
+        "text": "func (nb NullBool) MarshalJSON() (b []byte, err error) {\n\treturn []byte(nb.String()), nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "a4a04e7a0737dbad8e256078",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/aghalg/nullbool.go",
+        "start_byte": 1070,
+        "text": "func (nb *NullBool) UnmarshalJSON(b []byte) (err error) {\n\tif len(b) == 0 || bytes.Equal(b, []byte(\"null\")) {\n\t\t*nb = NBNull\n\t} else if bytes.Equal(b, []byte(\"true\")) {\n\t\t*nb = NBTrue\n\t} else if bytes.Equal(b, []byte(\"false\")) {\n\t\t*nb = NBFalse\n\t} else {\n\t\treturn fmt.Errorf(\"unmarshalling json data into aghalg.NullBool: bad value %q\", b)\n\t}\n\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "895581ac54add6af14d80942",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/aghalg/sortedmap.go",
+        "start_byte": 862,
+        "text": "func (m *SortedMap[K, V]) Set(key K, val V) {\n\tm.vals[key] = val\n\n\ti, has := slices.BinarySearchFunc(m.keys, key, m.cmp)\n\tif has {\n\t\tm.keys[i] = key\n\t} else {\n\t\tm.keys = slices.Insert(m.keys, i, key)\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "02d74da8e8b44ce5acb01c4f",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/aghalg/sortedmap.go",
+        "start_byte": 1115,
+        "text": "func (m *SortedMap[K, V]) Get(key K) (val V, ok bool) {\n\tif m == nil {\n\t\tvar zero V\n\n\t\treturn zero, false\n\t}\n\n\tval, ok = m.vals[key]\n\n\treturn val, ok\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "90caa77a51b9ce13b6251842",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/aghalg/sortedmap.go",
+        "start_byte": 1321,
+        "text": "func (m *SortedMap[K, V]) Del(key K) {\n\tif m == nil {\n\t\treturn\n\t}\n\n\tif _, has := m.vals[key]; !has {\n\t\treturn\n\t}\n\n\tdelete(m.vals, key)\n\ti, _ := slices.BinarySearchFunc(m.keys, key, m.cmp)\n\tm.keys = slices.Delete(m.keys, i, i+1)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "1aaaa5c304b6d41ed4ec5cb0",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/aghalg/sortedmap.go",
+        "start_byte": 1804,
+        "text": "func (m *SortedMap[K, V]) Range(cb func(K, V) (cont bool)) {\n\tif m == nil {\n\t\treturn\n\t}\n\n\tfor _, k := range m.keys {\n\t\tif !cb(k, m.vals[k]) {\n\t\t\treturn\n\t\t}\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "0e799cda57d306bae105ac2f",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/aghhttp/aghhttp.go",
+        "start_byte": 431,
+        "text": "type RegisterFunc func(method, url string, handler http.HandlerFunc)",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "0e806523939455ac48d4b63e",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/aghhttp/aghhttp.go",
+        "start_byte": 564,
+        "text": "func OK(ctx context.Context, l *slog.Logger, w http.ResponseWriter) {\n\tif _, err := io.WriteString(w, \"OK\\n\"); err != nil {\n\t\tl.WarnContext(ctx, \"writing ok body\", slogutil.KeyError, err)\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "3c36e262bdeb3beb25246c0c",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/aghhttp/aghhttp.go",
+        "start_byte": 885,
+        "text": "func ErrorAndLog(\n\tctx context.Context,\n\tl *slog.Logger,\n\tr *http.Request,\n\tw http.ResponseWriter,\n\tcode int,\n\tformat string,\n\targs ...any,\n) {\n\ttext := fmt.Sprintf(format, args...)\n\tl.WarnContext(\n\t\tctx,\n\t\t\"http error\",\n\t\t\"host\", r.Host,\n\t\t\"method\", r.Method,\n\t\t\"raddr\", r.RemoteAddr,\n\t\t\"request_uri\", r.RequestURI,\n\t\t\"status\", code,\n\t\tslogutil.KeyError, text,\n\t)\n\n\thttp.Error(w, text, code)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "684c22c0def25b61de2990ec",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/aghhttp/aghhttp.go",
+        "start_byte": 1412,
+        "text": "func UserAgent() (ua string) {\n\treturn fmt.Sprintf(\"AdGuardHome/%s\", version.Version())\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "8d78bccb4caf3d6401c285ee",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/aghhttp/aghhttp.go",
+        "start_byte": 1977,
+        "text": "func WriteTextPlainDeprecated(\n\tctx context.Context,\n\tl *slog.Logger,\n\tw http.ResponseWriter,\n\tr *http.Request,\n) (isPlainText bool) {\n\tif r.Header.Get(httphdr.ContentType) != HdrValTextPlain {\n\t\treturn false\n\t}\n\n\tErrorAndLog(ctx, l, r, w, http.StatusUnsupportedMediaType, textPlainDeprMsg)\n\n\treturn true\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "e2e8f5a7cbab37667f48076f",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/aghhttp/json.go",
+        "start_byte": 652,
+        "text": "func (d JSONDuration) MarshalJSON() (b []byte, err error) {\n\tmsec := float64(time.Duration(d)) / nsecPerMsec\n\tb = strconv.AppendFloat(nil, msec, 'f', -1, 64)\n\n\treturn b, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "3ff4fe640ad2c9ad9cc73a65",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/aghhttp/json.go",
+        "start_byte": 966,
+        "text": "func (d *JSONDuration) UnmarshalJSON(b []byte) (err error) {\n\tif d == nil {\n\t\treturn fmt.Errorf(\"json duration is nil\")\n\t}\n\n\tmsec, err := strconv.ParseFloat(string(b), 64)\n\tif err != nil {\n\t\treturn fmt.Errorf(\"parsing json time: %w\", err)\n\t}\n\n\t*d = JSONDuration(int64(msec * nsecPerMsec))\n\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "1f45bf795d2724b8977b8e18",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/aghhttp/json.go",
+        "start_byte": 1553,
+        "text": "func (t JSONTime) MarshalJSON() (b []byte, err error) {\n\tmsec := float64(time.Time(t).UnixNano()) / nsecPerMsec\n\tb = strconv.AppendFloat(nil, msec, 'f', -1, 64)\n\n\treturn b, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "eb3b5da6b29bfea0ff8c3c63",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/aghhttp/json.go",
+        "start_byte": 1862,
+        "text": "func (t *JSONTime) UnmarshalJSON(b []byte) (err error) {\n\tif t == nil {\n\t\treturn fmt.Errorf(\"json time is nil\")\n\t}\n\n\tmsec, err := strconv.ParseFloat(string(b), 64)\n\tif err != nil {\n\t\treturn fmt.Errorf(\"parsing json time: %w\", err)\n\t}\n\n\t*t = JSONTime(time.Unix(0, int64(msec*nsecPerMsec)).UTC())\n\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "9746315925a48294e2101b1c",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/aghhttp/json.go",
+        "start_byte": 2375,
+        "text": "func WriteJSONResponse(\n\tctx context.Context,\n\tl *slog.Logger,\n\tw http.ResponseWriter,\n\tr *http.Request,\n\tcode int,\n\tresp any,\n) {\n\th := w.Header()\n\th.Set(httphdr.ContentType, HdrValApplicationJSON)\n\th.Set(httphdr.Server, UserAgent())\n\n\tw.WriteHeader(code)\n\n\terr := json.NewEncoder(w).Encode(resp)\n\tif err != nil {\n\t\tl.ErrorContext(\n\t\t\tctx,\n\t\t\t\"writing json response\",\n\t\t\t\"method\", r.Method,\n\t\t\t\"path\", r.URL.Path,\n\t\t\tslogutil.KeyError, err,\n\t\t)\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "fd88b36206fcb4aab8e9bc5b",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/aghhttp/json.go",
+        "start_byte": 3327,
+        "text": "type ErrorCode string",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "8035f6186bd376bf18a56122",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/aghhttp/json.go",
+        "start_byte": 3699,
+        "text": "type HTTPAPIErrorResp struct {\n\tCode ErrorCode `json:\"code\"`\n\tMsg  string    `json:\"msg\"`\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "3e98851533f17fbc0bf40cfa",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/aghhttp/json.go",
+        "start_byte": 3984,
+        "text": "func WriteJSONResponseError(\n\tctx context.Context,\n\tl *slog.Logger,\n\tw http.ResponseWriter,\n\tr *http.Request,\n\terr error,\n) {\n\tl.ErrorContext(\n\t\tctx,\n\t\t\"writing json error\",\n\t\t\"method\", r.Method,\n\t\t\"path\", r.URL.Path,\n\t\tslogutil.KeyError, err,\n\t)\n\n\tWriteJSONResponse(ctx, l, w, r, http.StatusUnprocessableEntity, &HTTPAPIErrorResp{\n\t\tCode: ErrorCodeTMP000,\n\t\tMsg:  err.Error(),\n\t})\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "807f81e4c085ec3bfce3ea78",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/aghhttp/registrar.go",
+        "start_byte": 155,
+        "text": "type Registrar interface {\n\tRegister(method, path string, h http.HandlerFunc)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "67675aa156dcf663b2476f00",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/aghhttp/registrar.go",
+        "start_byte": 439,
+        "text": "func (EmptyRegistrar) Register(_, _ string, _ http.HandlerFunc) {}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "1704826390d8f31530faa9eb",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/aghhttp/registrar.go",
+        "start_byte": 582,
+        "text": "type WrapFunc func(method string, h http.HandlerFunc) (wrapped http.Handler)",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "e547cfeca58b7f870c7f4384",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/aghhttp/registrar.go",
+        "start_byte": 1232,
+        "text": "func (r *DefaultRegistrar) Register(method, path string, h http.HandlerFunc) {\n\twrapped := r.wrapFn(method, h)\n\tr.mux.Handle(path, wrapped)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "11e739adcfc0f0721dfc2481",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/aghnet/addr.go",
+        "start_byte": 264,
+        "text": "func NormalizeDomain(host string) (norm string) {\n\tif host == \".\" {\n\t\treturn host\n\t}\n\n\treturn strings.ToLower(strings.TrimSuffix(host, \".\"))\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "f1d9e9e94bcdedb6d284ed7a",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/aghnet/dhcp_unix.go",
+        "start_byte": 582,
+        "text": "func checkOtherDHCP(\n\tctx context.Context,\n\tl *slog.Logger,\n\tifaceName string,\n) (ok4, ok6 bool, err4, err6 error) {\n\tiface, err := net.InterfaceByName(ifaceName)\n\tif err != nil {\n\t\terr = fmt.Errorf(\"couldn't find interface by name %s: %w\", ifaceName, err)\n\t\terr4, err6 = err, err\n\n\t\treturn false, false, err4, err6\n\t}\n\n\tok4, err4 = checkOtherDHCPv4(ctx, l, iface)\n\tok6, err6 = checkOtherDHCPv6(ctx, l, iface)\n\n\treturn ok4, ok6, err4, err6\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "a78a68d1206f014ecd490203",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/aghnet/dhcp_unix.go",
+        "start_byte": 1124,
+        "text": "func ifaceIPv4Subnet(iface *net.Interface) (subnet netip.Prefix, err error) {\n\tvar addrs []net.Addr\n\tif addrs, err = iface.Addrs(); err != nil {\n\t\treturn netip.Prefix{}, err\n\t}\n\n\tfor _, a := range addrs {\n\t\tvar ip net.IP\n\t\tvar maskLen int\n\t\tswitch a := a.(type) {\n\t\tcase *net.IPAddr:\n\t\t\tip = a.IP\n\t\t\tmaskLen, _ = ip.DefaultMask().Size()\n\t\tcase *net.IPNet:\n\t\t\tip = a.IP\n\t\t\tmaskLen, _ = a.Mask.Size()\n\t\tdefault:\n\t\t\tcontinue\n\t\t}\n\n\t\tif ip = ip.To4(); ip != nil {\n\t\t\treturn netip.PrefixFrom(netip.AddrFrom4([4]byte(ip)), maskLen), nil\n\t\t}\n\t}\n\n\treturn netip.Prefix{}, fmt.Errorf(\"interface %s has no ipv4 addresses\", iface.Name)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "b392caf61ef8adc68d5abc7e",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/aghnet/dhcp_unix.go",
+        "start_byte": 1923,
+        "text": "func checkOtherDHCPv4(\n\tctx context.Context,\n\tl *slog.Logger,\n\tiface *net.Interface,\n) (ok bool, err error) {\n\tvar subnet netip.Prefix\n\tif subnet, err = ifaceIPv4Subnet(iface); err != nil {\n\t\treturn false, err\n\t}\n\n\t// Resolve broadcast addr.\n\tdst := netip.AddrPortFrom(BroadcastFromPref(subnet), 67).String()\n\tvar dstAddr *net.UDPAddr\n\tif dstAddr, err = net.ResolveUDPAddr(\"udp4\", dst); err != nil {\n\t\treturn false, fmt.Errorf(\"couldn't resolve UDP address %s: %w\", dst, err)\n\t}\n\n\tvar hostname string\n\tif hostname, err = os.Hostname(); err != nil {\n\t\treturn false, fmt.Errorf(\"couldn't get hostname: %w\", err)\n\t}\n\n\treturn discover4(ctx, l, iface, dstAddr, hostname)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "2b24c35815bdd77130574fe5",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/aghnet/dhcp_unix.go",
+        "start_byte": 2404,
+        "text": "var hostname string",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "12e4c373d3e529f5d983702a",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/aghnet/dhcp_unix.go",
+        "start_byte": 2728,
+        "text": "func discover4(\n\tctx context.Context,\n\tl *slog.Logger,\n\tiface *net.Interface,\n\tdstAddr *net.UDPAddr,\n\thostname string,\n) (ok bool, err error) {\n\tvar req *dhcpv4.DHCPv4\n\tif req, err = dhcpv4.NewDiscovery(iface.HardwareAddr); err != nil {\n\t\treturn false, fmt.Errorf(\"dhcpv4.NewDiscovery: %w\", err)\n\t}\n\n\treq.Options.Update(dhcpv4.OptClientIdentifier(iface.HardwareAddr))\n\treq.Options.Update(dhcpv4.OptHostName(hostname))\n\treq.SetBroadcast()\n\n\t// Bind to 0.0.0.0:68.\n\t//\n\t// On OpenBSD binding to the port 68 competes with dhclient's binding,\n\t// so that all incoming packets are ignored and the discovering process\n\t// is spoiled.\n\t//\n\t// It's also known that listening on the specified interface's address\n\t// ignores broadcast packets when reading.\n\tvar c net.PacketConn\n\tif c, err = listenPacketReusable(iface.Name, \"udp4\", \":68\"); err != nil {\n\t\treturn false, fmt.Errorf(\"couldn't listen on :68: %w\", err)\n\t}\n\tdefer func() { err = errors.WithDeferred(err, c.Close()) }()\n\n\t// Send to broadcast.\n\tif _, err = c.WriteTo(req.ToBytes(), dstAddr); err != nil {\n\t\treturn false, fmt.Errorf(\"couldn't send a packet to %s: %w\", dstAddr, err)\n\t}\n\n\tfor {\n\t\tvar next bool\n\t\tok, next, err = tryConn4(ctx, l, req, c, iface)\n\t\tif next {\n\t\t\tcontinue\n\t\t}\n\n\t\tif err != nil {\n\t\t\treturn false, err\n\t\t}\n\n\t\treturn ok, nil\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "89af6f24dfb3d755f88763b7",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/aghnet/dhcp_unix.go",
+        "start_byte": 3875,
+        "text": "var next bool",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "ea507e856c6286c272e7198d",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/aghnet/dhcp_unix.go",
+        "start_byte": 4293,
+        "text": "func tryConn4(\n\tctx context.Context,\n\tl *slog.Logger,\n\treq *dhcpv4.DHCPv4,\n\tc net.PacketConn,\n\tiface *net.Interface,\n) (ok, next bool, err error) {\n\tif err = c.SetDeadline(time.Now().Add(defaultDiscoverTime)); err != nil {\n\t\treturn false, false, fmt.Errorf(\"dhcpv4: setting deadline: %w\", err)\n\t}\n\n\t// TODO: replicate dhclient's behavior of retrying several times with\n\t// progressively longer timeouts.\n\tl.Log(ctx, slogutil.LevelTrace, \"waiting for an answer\", \"timeout\", defaultDiscoverTime)\n\n\tb := make([]byte, 1500)\n\tn, _, err := c.ReadFrom(b)\n\tif err != nil {\n\t\tif errors.Is(err, os.ErrDeadlineExceeded) {\n\t\t\tl.DebugContext(ctx, \"did not receive response\")\n\n\t\t\treturn false, false, nil\n\t\t}\n\n\t\treturn false, false, fmt.Errorf(\"receiving packet: %w\", err)\n\t}\n\n\tl.Log(ctx, slogutil.LevelTrace, \"received packet\", \"size\", n)\n\n\tresponse, err := dhcpv4.FromBytes(b[:n])\n\tif err != nil {\n\t\tl.DebugContext(ctx, \"encoding\", slogutil.KeyError, err)\n\n\t\treturn false, true, err\n\t}\n\n\tl.DebugContext(ctx, \"received message from server\", \"summary\", response.Summary())\n\n\tswitch {\n\tcase\n\t\tresponse.OpCode != dhcpv4.OpcodeBootReply,\n\t\tresponse.HWType != iana.HWTypeEthernet,\n\t\t!bytes.Equal(response.ClientHWAddr, iface.HardwareAddr),\n\t\tresponse.TransactionID != req.TransactionID,\n\t\t!response.Options.Has(dhcpv4.OptionDHCPMessageType):\n\t\tl.DebugContext(ctx, \"dhcpv4: received response does not match the request\")\n\n\t\treturn false, true, nil\n\tdefault:\n\t\tl.Log(ctx, slogutil.LevelTrace, \"packet is from an active dhcp server\")\n\n\t\treturn true, false, nil\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "d67744ea30ed4d2f65f77325",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/aghnet/dhcp_unix.go",
+        "start_byte": 6012,
+        "text": "func checkOtherDHCPv6(\n\tctx context.Context,\n\tl *slog.Logger,\n\tiface *net.Interface,\n) (ok bool, err error) {\n\tifaceIPNet, err := IfaceIPAddrs(iface, IPVersion6)\n\tif err != nil {\n\t\treturn false, fmt.Errorf(\"getting ipv6 addrs for iface %s: %w\", iface.Name, err)\n\t}\n\tif len(ifaceIPNet) == 0 {\n\t\treturn false, fmt.Errorf(\"interface %s has no ipv6 addresses\", iface.Name)\n\t}\n\n\tsrcIP := ifaceIPNet[0]\n\tsrc := netutil.JoinHostPort(srcIP.String(), 546)\n\tdst := \"[ff02::1:2]:547\"\n\n\tudpAddr, err := net.ResolveUDPAddr(\"udp6\", src)\n\tif err != nil {\n\t\treturn false, fmt.Errorf(\"dhcpv6: Couldn't resolve UDP address %s: %w\", src, err)\n\t}\n\n\tif !udpAddr.IP.To16().Equal(srcIP) {\n\t\treturn false, fmt.Errorf(\"dhcpv6: Resolved UDP address is not %s: %w\", src, err)\n\t}\n\n\tdstAddr, err := net.ResolveUDPAddr(\"udp6\", dst)\n\tif err != nil {\n\t\treturn false, fmt.Errorf(\"dhcpv6: Couldn't resolve UDP address %s: %w\", dst, err)\n\t}\n\n\treturn discover6(ctx, l, iface, udpAddr, dstAddr)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "22a43cd920f8eab99f19c6ff",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/aghnet/dhcp_unix.go",
+        "start_byte": 7118,
+        "text": "func discover6(\n\tctx context.Context,\n\tl *slog.Logger,\n\tiface *net.Interface,\n\tudpAddr *net.UDPAddr,\n\tdstAddr *net.UDPAddr,\n) (ok bool, err error) {\n\treq, err := dhcpv6.NewSolicit(iface.HardwareAddr)\n\tif err != nil {\n\t\treturn false, fmt.Errorf(\"dhcpv6: dhcpv6.NewSolicit: %w\", err)\n\t}\n\n\tl.DebugContext(ctx, \"listening on udp6\", \"addr\", udpAddr)\n\tc, err := nclient6.NewIPv6UDPConn(iface.Name, dhcpv6.DefaultClientPort)\n\tif err != nil {\n\t\treturn false, fmt.Errorf(\"dhcpv6: Couldn't listen on :546: %w\", err)\n\t}\n\tdefer func() { err = errors.WithDeferred(err, c.Close()) }()\n\n\t_, err = c.WriteTo(req.ToBytes(), dstAddr)\n\tif err != nil {\n\t\treturn false, fmt.Errorf(\"dhcpv6: Couldn't send a packet to %s: %w\", dstAddr, err)\n\t}\n\n\tfor {\n\t\tvar next bool\n\t\tok, next, err = tryConn6(ctx, l, req, c)\n\t\tif next {\n\t\t\tcontinue\n\t\t}\n\n\t\tif err != nil {\n\t\t\treturn false, err\n\t\t}\n\n\t\treturn ok, nil\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "7e152c1897f689b3cd72920f",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/aghnet/dhcp_unix.go",
+        "start_byte": 7849,
+        "text": "var next bool",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "3ffc261e4bbb8d3b62819bf2",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/aghnet/dhcp_unix.go",
+        "start_byte": 8185,
+        "text": "func tryConn6(\n\tctx context.Context,\n\tl *slog.Logger,\n\treq *dhcpv6.Message,\n\tc net.PacketConn,\n) (ok, next bool, err error) {\n\t// TODO: replicate dhclient's behavior of retrying several times with\n\t// progressively longer timeouts.\n\tl.Log(ctx, slogutil.LevelTrace, \"waiting for an answer\", \"timeout\", defaultDiscoverTime)\n\n\tb := make([]byte, 4096)\n\terr = c.SetDeadline(time.Now().Add(defaultDiscoverTime))\n\tif err != nil {\n\t\treturn false, false, fmt.Errorf(\"setting deadline: %w\", err)\n\t}\n\n\tn, _, err := c.ReadFrom(b)\n\tif err != nil {\n\t\tif errors.Is(err, os.ErrDeadlineExceeded) {\n\t\t\tl.DebugContext(ctx, \"did not receive response\")\n\n\t\t\treturn false, false, nil\n\t\t}\n\n\t\treturn false, false, fmt.Errorf(\"receiving packet: %w\", err)\n\t}\n\n\tl.Log(ctx, slogutil.LevelTrace, \"dhcpv6: received packet\", \"size\", n)\n\n\tresponse, err := dhcpv6.FromBytes(b[:n])\n\tif err != nil {\n\t\tl.DebugContext(ctx, \"encoding\", slogutil.KeyError, err)\n\n\t\treturn false, true, err\n\t}\n\n\tl.DebugContext(ctx, \"received message from server\", \"summary\", response.Summary())\n\n\tcid := req.Options.ClientID()\n\tmsg, err := response.GetInnerMessage()\n\tif err != nil {\n\t\tl.DebugContext(ctx, \"getting inner message\", slogutil.KeyError, err)\n\n\t\treturn false, true, err\n\t}\n\n\trcid := msg.Options.ClientID()\n\tif !(response.Type() == dhcpv6.MessageTypeAdvertise &&\n\t\tmsg.TransactionID == req.TransactionID &&\n\t\trcid != nil &&\n\t\tcid.Equal(rcid)) {\n\n\t\tl.DebugContext(ctx, \"received message from server does not match our request\")\n\n\t\treturn false, true, nil\n\t}\n\n\tl.Log(ctx, slogutil.LevelTrace, \"dhcpv6: the packet is from an active dhcp server\")\n\n\treturn true, false, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "8b2c6619b34bd8c03b8ecb77",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/aghnet/dhcp_windows.go",
+        "start_byte": 125,
+        "text": "func checkOtherDHCP(\n\t_ context.Context,\n\t_ *slog.Logger,\n\tifaceName string,\n) (ok4, ok6 bool, err4, err6 error) {\n\treturn false,\n\t\tfalse,\n\t\taghos.Unsupported(\"CheckIfOtherDHCPServersPresentV4\"),\n\t\taghos.Unsupported(\"CheckIfOtherDHCPServersPresentV6\")\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "31b69a37a0d2b2e46fd5ca80",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/aghnet/dhcp.go",
+        "start_byte": 146,
+        "text": "func CheckOtherDHCP(\n\tctx context.Context,\n\tl *slog.Logger,\n\tifaceName string,\n) (ok4, ok6 bool, err4, err6 error) {\n\treturn checkOtherDHCP(ctx, l, ifaceName)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "44d99635f8b52764090ffa5f",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/aghnet/hostgen.go",
+        "start_byte": 315,
+        "text": "func GenerateHostname(ip netip.Addr) (hostname string) {\n\tif !ip.IsValid() {\n\t\t// TODO(s.chzhen):  Get rid of it.\n\t\tpanic(\"aghnet generate hostname: invalid ip\")\n\t}\n\n\tip = ip.Unmap()\n\thostname = ip.StringExpanded()\n\n\tif ip.Is4() {\n\t\treturn strings.ReplaceAll(hostname, \".\", \"-\")\n\t}\n\n\treturn strings.ReplaceAll(hostname, \":\", \"-\")\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "dd2dfe46b93d8b67cdcd2e9a",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/aghnet/hostscontainer.go",
+        "start_byte": 582,
+        "text": "type HostsContainer struct {\n\t// logger is used for logging the operation of the hosts container.  It must\n\t// not be nil.\n\tlogger *slog.Logger\n\n\t// done is the channel to signal closing the container.\n\tdone chan struct{}\n\n\t// updates is the channel for receiving updated hosts.\n\tupdates chan *hostsfile.DefaultStorage\n\n\t// current is the last set of hosts parsed.\n\tcurrent atomic.Pointer[hostsfile.DefaultStorage]\n\n\t// fsys is the working file system to read hosts files from.  It must not be\n\t// nil.\n\tfsys fs.FS\n\n\t// watcher tracks the changes in specified files and directories.  It must\n\t// not be nil.\n\twatcher aghos.FSWatcher\n\n\t// patterns stores specified paths in the fs.Glob-compatible form.\n\tpatterns []string\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "b9b501a0f0c1a033cdf427de",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/aghnet/hostscontainer.go",
+        "start_byte": 1864,
+        "text": "func NewHostsContainer(\n\tctx context.Context,\n\tl *slog.Logger,\n\tfsys fs.FS,\n\tw aghos.FSWatcher,\n\tpaths ...string,\n) (hc *HostsContainer, err error) {\n\tdefer func() { err = errors.Annotate(err, \"%s: %w\", hostsContainerPrefix) }()\n\n\tif len(paths) == 0 {\n\t\treturn nil, ErrNoHostsPaths\n\t}\n\n\tvar patterns []string\n\tpatterns, err = pathsToPatterns(fsys, paths)\n\tif err != nil {\n\t\treturn nil, err\n\t} else if len(patterns) == 0 {\n\t\treturn nil, ErrNoHostsPaths\n\t}\n\n\thc = &HostsContainer{\n\t\tlogger:   l,\n\t\tdone:     make(chan struct{}, 1),\n\t\tupdates:  make(chan *hostsfile.DefaultStorage, 1),\n\t\tfsys:     fsys,\n\t\twatcher:  w,\n\t\tpatterns: patterns,\n\t}\n\n\tl.DebugContext(ctx, \"starting\")\n\n\t// Load initially.\n\tif err = hc.refresh(ctx); err != nil {\n\t\treturn nil, err\n\t}\n\n\t// Don't use absolute paths for watching, since those are required to be\n\t// relative to the operating system root, not the current directory.  See\n\t// TODO at NewHostsContainer.\n\trootDir := aghos.RootDir()\n\n\tfor _, p := range paths {\n\t\tp = filepath.Join(rootDir, p)\n\n\t\terr = w.Add(p)\n\t\tif err != nil {\n\t\t\tif !errors.Is(err, fs.ErrNotExist) {\n\t\t\t\treturn nil, fmt.Errorf(\"adding path: %w\", err)\n\t\t\t}\n\n\t\t\tl.DebugContext(ctx, \"expected path does not exist\", \"path\", p, slogutil.KeyError, err)\n\t\t}\n\t}\n\n\tgo hc.handleEvents(ctx)\n\n\treturn hc, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "28a8e8e9917b0cf1ee6ba238",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/aghnet/hostscontainer.go",
+        "start_byte": 2151,
+        "text": "var patterns []string",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "04e6be3982e3ae8771df22dd",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/aghnet/hostscontainer.go",
+        "start_byte": 3373,
+        "text": "func (hc *HostsContainer) Close() (err error) {\n\t// TODO(s.chzhen):  Pass context.\n\tctx := context.TODO()\n\thc.logger.DebugContext(ctx, \"closing\")\n\n\terr = errors.Annotate(hc.watcher.Shutdown(ctx), \"closing fs watcher: %w\")\n\n\t// Go on and close the container either way.\n\tclose(hc.done)\n\n\treturn err\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "20c302f8028cedf96c44a77f",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/aghnet/hostscontainer.go",
+        "start_byte": 4022,
+        "text": "func (hc *HostsContainer) ByAddr(addr netip.Addr) (names []string) {\n\treturn hc.current.Load().ByAddr(addr)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "a90175923b5ee6a0c378a1a7",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/aghnet/hostscontainer.go",
+        "start_byte": 4209,
+        "text": "func (hc *HostsContainer) ByName(name string) (addrs []netip.Addr) {\n\treturn hc.current.Load().ByName(name)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "a2cf219cb3c0e4718a476c9c",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/aghnet/hostscontainer.go",
+        "start_byte": 4393,
+        "text": "func pathsToPatterns(fsys fs.FS, paths []string) (patterns []string, err error) {\n\tfor i, p := range paths {\n\t\tvar fi fs.FileInfo\n\t\tfi, err = fs.Stat(fsys, p)\n\t\tif err != nil {\n\t\t\tif errors.Is(err, fs.ErrNotExist) {\n\t\t\t\tcontinue\n\t\t\t}\n\n\t\t\t// Don't put a filename here since it's already added by [fs.Stat].\n\t\t\treturn nil, fmt.Errorf(\"path at index %d: %w\", i, err)\n\t\t}\n\n\t\tif fi.IsDir() {\n\t\t\tp = path.Join(p, \"*\")\n\t\t}\n\n\t\tpatterns = append(patterns, p)\n\t}\n\n\treturn patterns, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "66e5a0f208dad25f6e8ef19c",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/aghnet/hostscontainer.go",
+        "start_byte": 5045,
+        "text": "func (hc *HostsContainer) handleEvents(ctx context.Context) {\n\tdefer slogutil.RecoverAndLog(ctx, hc.logger)\n\n\tdefer close(hc.updates)\n\n\teventsCh := hc.watcher.Events()\n\tok := eventsCh != nil\n\tfor ok {\n\t\tselect {\n\t\tcase _, ok = <-eventsCh:\n\t\t\tif !ok {\n\t\t\t\thc.logger.DebugContext(ctx, \"watcher closed the events channel\")\n\n\t\t\t\tcontinue\n\t\t\t}\n\n\t\t\tif err := hc.refresh(ctx); err != nil {\n\t\t\t\thc.logger.ErrorContext(ctx, \"refreshing\", slogutil.KeyError, err)\n\t\t\t}\n\t\tcase _, ok = <-hc.done:\n\t\t\t// Go on.\n\t\t}\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "5ab107dd408056172663682f",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/aghnet/hostscontainer.go",
+        "start_byte": 6233,
+        "text": "func (hc *HostsContainer) refresh(ctx context.Context) (err error) {\n\thc.logger.DebugContext(ctx, \"refreshing\")\n\n\t// The error is always nil here since no readers passed.\n\tstrg, _ := hostsfile.NewDefaultStorage(ctx, &hostsfile.DefaultStorageConfig{\n\t\tLogger: hc.logger,\n\t})\n\t_, err = aghos.FileWalker(func(r io.Reader) (patterns []string, cont bool, err error) {\n\t\t// Don't wrap the error since it's already informative enough as is.\n\t\treturn nil, true, hostsfile.Parse(ctx, strg, r, nil)\n\t}).Walk(hc.fsys, hc.patterns...)\n\tif err != nil {\n\t\t// Don't wrap the error since it's informative enough as is.\n\t\treturn err\n\t}\n\n\t// TODO(e.burkov):  Serialize updates using [time.Time].\n\tif !hc.current.Load().Equal(strg) {\n\t\thc.current.Store(strg)\n\t\thc.sendUpd(ctx, strg)\n\t}\n\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "98b147528cb35de16f3cfd5b",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/aghnet/ignore.go",
+        "start_byte": 282,
+        "text": "type IgnoreEngine struct {\n\t// engine is the filtering engine that can match rules for ignoring\n\t// hostnames.\n\tengine *urlfilter.DNSEngine\n\n\t// ignored is the list of rules for ignoring hostnames.\n\tignored []string\n\n\t// enabled determines whether ignoring is enabled.\n\tenabled bool\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "0994cce0bc6228b02af875a1",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/aghnet/ignore.go",
+        "start_byte": 751,
+        "text": "func NewIgnoreEngine(ignored []string, enabled bool) (e *IgnoreEngine, err error) {\n\truleLists := []filterlist.Interface{\n\t\tfilterlist.NewString(&filterlist.StringConfig{\n\t\t\tRulesText:      strings.ToLower(strings.Join(ignored, \"\\n\")),\n\t\t\tIgnoreCosmetic: true,\n\t\t}),\n\t}\n\truleStorage, err := filterlist.NewRuleStorage(ruleLists)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\n\treturn &IgnoreEngine{\n\t\tengine:  urlfilter.NewDNSEngine(ruleStorage),\n\t\tignored: ignored,\n\t\tenabled: enabled,\n\t}, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "8741d70a8b574070f382f898",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/aghnet/ignore.go",
+        "start_byte": 1294,
+        "text": "func (e *IgnoreEngine) Has(host string) (ignore bool) {\n\tif e == nil || !e.enabled {\n\t\treturn false\n\t}\n\n\t_, ignore = e.engine.Match(host)\n\n\treturn ignore\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "7fd2cd3f49f84f78f57a320f",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/aghnet/ignore.go",
+        "start_byte": 1517,
+        "text": "func (e *IgnoreEngine) Values() (ignored []string) {\n\treturn slices.Clone(e.ignored)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "37edf6617f362edadd824d18",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/aghnet/ignore.go",
+        "start_byte": 1665,
+        "text": "func (e *IgnoreEngine) IsEnabled() (enabled bool) {\n\treturn e.enabled\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "6d9a297e838d29b75f4fda82",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/aghnet/interfaces_bsd.go",
+        "start_byte": 304,
+        "text": "func reuseAddrCtrl(_, _ string, c syscall.RawConn) (err error) {\n\tcerr := c.Control(func(fd uintptr) {\n\t\t// TODO(e.burkov):  Consider using SO_REUSEPORT.\n\t\terr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEADDR, 1)\n\t\tif err != nil {\n\t\t\terr = os.NewSyscallError(\"setsockopt\", err)\n\t\t}\n\t})\n\n\terr = errors.Join(err, cerr)\n\n\treturn errors.Annotate(err, \"setting control options: %w\")\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "218fa8043b68ad081375c071",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/aghnet/interfaces_bsd.go",
+        "start_byte": 831,
+        "text": "func listenPacketReusable(_, network, address string) (c net.PacketConn, err error) {\n\tvar lc net.ListenConfig\n\tlc.Control = reuseAddrCtrl\n\n\treturn lc.ListenPacket(context.Background(), network, address)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "e0f54dec0c076ffd0569bbe1",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/aghnet/interfaces_linux.go",
+        "start_byte": 273,
+        "text": "func listenPacketReusable(ifaceName, network, address string) (c net.PacketConn, err error) {\n\tvar port uint16\n\t_, port, err = netutil.SplitHostPort(address)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\n\t// TODO(e.burkov):  Inspect nclient4.NewRawUDPConn and implement here.\n\treturn nclient4.NewRawUDPConn(ifaceName, int(port))\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "9e9d9a5905e6ebb3a157ab78",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/aghnet/interfaces.go",
+        "start_byte": 485,
+        "text": "func IfaceIPAddrs(iface NetIface, ipv IPVersion) (ips []net.IP, err error) {\n\tswitch ipv {\n\tcase IPVersion4, IPVersion6:\n\t\t// Go on.\n\tdefault:\n\t\treturn nil, fmt.Errorf(\"invalid ip version %d\", ipv)\n\t}\n\n\taddrs, err := iface.Addrs()\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\n\tfor _, a := range addrs {\n\t\tif ip := ipFromAddr(a, ipv); ip != nil {\n\t\t\tips = append(ips, ip)\n\t\t}\n\t}\n\n\treturn ips, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "54af25b5169cb2db33d83303",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/aghnet/interfaces.go",
+        "start_byte": 1805,
+        "text": "func IfaceDNSIPAddrs(\n\tctx context.Context,\n\tl *slog.Logger,\n\tiface NetIface,\n\tipv IPVersion,\n\tmaxAttempts int,\n\tbackoff time.Duration,\n) (addrs []net.IP, err error) {\n\tvar n int\n\tfor n = 1; n <= maxAttempts; n++ {\n\t\taddrs, err = IfaceIPAddrs(iface, ipv)\n\t\tif err != nil {\n\t\t\treturn nil, fmt.Errorf(\"getting ip addrs: %w\", err)\n\t\t}\n\n\t\tif len(addrs) > 0 {\n\t\t\tbreak\n\t\t}\n\n\t\tl.DebugContext(ctx, \"no ip addresses\", \"attempt\", n, \"ipv\", ipv)\n\n\t\ttime.Sleep(backoff)\n\t}\n\n\tn--\n\n\tswitch len(addrs) {\n\tcase 0:\n\t\t// Don't return errors in case the users want to try and enable the DHCP\n\t\t// server later.\n\t\tt := time.Duration(n) * backoff\n\t\tl.ErrorContext(ctx, \"no ip addresses for iface\", \"attempts\", n, \"duration\", t, \"ipv\", ipv)\n\n\t\treturn nil, nil\n\tcase 1:\n\t\t// Some Android devices use 8.8.8.8 if there is not a secondary DNS\n\t\t// server.  Fix that by setting the secondary DNS address to the same\n\t\t// address.\n\t\t//\n\t\t// See https://github.com/AdguardTeam/AdGuardHome/issues/1708.\n\t\tl.DebugContext(ctx, \"setting secondary dns ip to itself\", \"ipv\", ipv)\n\t\taddrs = append(addrs, addrs[0])\n\tdefault:\n\t\t// Go on.\n\t}\n\n\tl.DebugContext(ctx, \"got addresses\", \"addrs\", addrs, \"attempts\", n, \"ipv\", ipv)\n\n\treturn addrs, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "952a9312e5f2d3644e7e513f",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/aghnet/interfaces.go",
+        "start_byte": 3127,
+        "text": "type interfaceName string",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "ae1871059d62a8ca01a7f9cf",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/aghnet/net_bsd.go",
+        "start_byte": 146,
+        "text": "func canBindPrivilegedPorts(_ context.Context, _ *slog.Logger) (can bool, err error) {\n\treturn aghos.HaveAdminRights()\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "2eb663003ce71201863d6468",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/aghnet/net_darwin.go",
+        "start_byte": 383,
+        "text": "type hardwarePortInfo struct {\n\tname      string\n\tip        string\n\tsubnet    string\n\tgatewayIP string\n\tstatic    bool\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "ca64e69f52945db6981c69e0",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/aghnet/net_darwin.go",
+        "start_byte": 611,
+        "text": "func ifaceHasStaticIP(\n\tctx context.Context,\n\tcmdCons executil.CommandConstructor,\n\tifaceName string,\n) (ok bool, err error) {\n\tportInfo, err := getCurrentHardwarePortInfo(ctx, cmdCons, ifaceName)\n\tif err != nil {\n\t\treturn false, err\n\t}\n\n\treturn portInfo.static, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "1b2a2a3cde8d8799cac9ef3c",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/aghnet/net_darwin.go",
+        "start_byte": 997,
+        "text": "func getCurrentHardwarePortInfo(\n\tctx context.Context,\n\tcmdCons executil.CommandConstructor,\n\tifaceName string,\n) (hardwarePortInfo, error) {\n\t// First, find the hardware port name.\n\tm := getNetworkSetupHardwareReports(ctx, cmdCons)\n\thardwarePort, ok := m[ifaceName]\n\tif !ok {\n\t\treturn hardwarePortInfo{}, fmt.Errorf(\"could not find hardware port for %s\", ifaceName)\n\t}\n\n\treturn getHardwarePortInfo(ctx, cmdCons, hardwarePort)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "0bbb6fea9f48d27a018ffb03",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/aghnet/net_darwin.go",
+        "start_byte": 1992,
+        "text": "func getNetworkSetupHardwareReports(\n\tctx context.Context,\n\tcmdCons executil.CommandConstructor,\n) (reports map[string]string) {\n\t_, out, err := aghos.RunCommand(ctx, cmdCons, \"networksetup\", \"-listallhardwareports\")\n\tif err != nil {\n\t\treturn nil\n\t}\n\n\treports = make(map[string]string)\n\n\tmatches := hardwareReportsReg.FindAllSubmatch(out, -1)\n\tfor _, m := range matches {\n\t\treports[string(m[2])] = string(m[1])\n\t}\n\n\treturn reports\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "6137f79c3c2d8d38eb1f954b",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/aghnet/net_darwin.go",
+        "start_byte": 2799,
+        "text": "func getHardwarePortInfo(\n\tctx context.Context,\n\tcmdCons executil.CommandConstructor,\n\thardwarePort string,\n) (h hardwarePortInfo, err error) {\n\t_, out, err := aghos.RunCommand(ctx, cmdCons, \"networksetup\", \"-getinfo\", hardwarePort)\n\tif err != nil {\n\t\treturn h, err\n\t}\n\n\tmatch := hardwarePortReg.FindSubmatch(out)\n\tif len(match) != 4 {\n\t\treturn h, errors.Error(\"could not find hardware port info\")\n\t}\n\n\treturn hardwarePortInfo{\n\t\tname:      hardwarePort,\n\t\tip:        string(match[1]),\n\t\tsubnet:    string(match[2]),\n\t\tgatewayIP: string(match[3]),\n\t\tstatic:    bytes.Index(out, []byte(\"Manual Configuration\")) == 0,\n\t}, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "4e303c6f0844a4c46b6b008c",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/aghnet/net_darwin.go",
+        "start_byte": 3503,
+        "text": "func ifaceSetStaticIP(\n\tctx context.Context,\n\t_ *slog.Logger,\n\tcmdCons executil.CommandConstructor,\n\tifaceName string,\n) (err error) {\n\tportInfo, err := getCurrentHardwarePortInfo(ctx, cmdCons, ifaceName)\n\tif err != nil {\n\t\treturn err\n\t}\n\n\tif portInfo.static {\n\t\treturn errors.Error(\"ip address is already static\")\n\t}\n\n\tdnsAddrs, err := getEtcResolvConfServers()\n\tif err != nil {\n\t\treturn err\n\t}\n\n\targs := append([]string{\"-setdnsservers\", portInfo.name}, dnsAddrs...)\n\n\t// Setting DNS servers is necessary when configuring a static IP\n\tcode, _, err := aghos.RunCommand(ctx, cmdCons, \"networksetup\", args...)\n\tif err != nil {\n\t\treturn err\n\t} else if code != 0 {\n\t\treturn fmt.Errorf(\"failed to set DNS servers, code=%d\", code)\n\t}\n\n\t// Actually configures hardware port to have static IP\n\tcode, _, err = aghos.RunCommand(\n\t\tctx,\n\t\tcmdCons,\n\t\t\"networksetup\",\n\t\t\"-setmanual\",\n\t\tportInfo.name,\n\t\tportInfo.ip,\n\t\tportInfo.subnet,\n\t\tportInfo.gatewayIP,\n\t)\n\tif err != nil {\n\t\treturn err\n\t} else if code != 0 {\n\t\treturn fmt.Errorf(\"failed to set DNS servers, code=%d\", code)\n\t}\n\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "58e1e4d5265c0b1ad922f47e",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/aghnet/net_darwin.go",
+        "start_byte": 4879,
+        "text": "func getEtcResolvConfServers() (addrs []string, err error) {\n\tconst filename = \"etc/resolv.conf\"\n\n\t_, err = aghos.FileWalker(func(r io.Reader) (_ []string, _ bool, err error) {\n\t\tsc := bufio.NewScanner(r)\n\t\tfor sc.Scan() {\n\t\t\tmatches := etcResolvConfReg.FindAllStringSubmatch(sc.Text(), -1)\n\t\t\tif len(matches) == 0 {\n\t\t\t\tcontinue\n\t\t\t}\n\n\t\t\tfor _, m := range matches {\n\t\t\t\taddrs = append(addrs, m[1])\n\t\t\t}\n\t\t}\n\n\t\treturn nil, false, sc.Err()\n\t}).Walk(rootDirFS, filename)\n\tif err != nil {\n\t\treturn nil, fmt.Errorf(\"parsing etc/resolv.conf file: %w\", err)\n\t} else if len(addrs) == 0 {\n\t\treturn nil, fmt.Errorf(\"found no dns servers in %s\", filename)\n\t}\n\n\treturn addrs, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "b0666511369d55aaee0e711f",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/aghnet/net_freebsd.go",
+        "start_byte": 248,
+        "text": "func ifaceHasStaticIP(\n\t_ context.Context,\n\t_ executil.CommandConstructor,\n\tifaceName string,\n) (ok bool, err error) {\n\tconst rcConfFilename = \"etc/rc.conf\"\n\n\twalker := aghos.FileWalker(interfaceName(ifaceName).rcConfStaticConfig)\n\n\treturn walker.Walk(rootDirFS, rcConfFilename)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "097aa25ee12b1237ea62472e",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/aghnet/net_freebsd.go",
+        "start_byte": 630,
+        "text": "func (n interfaceName) rcConfStaticConfig(r io.Reader) (_ []string, cont bool, err error) {\n\ts := bufio.NewScanner(r)\n\tfor pref := fmt.Sprintf(\"ifconfig_%s=\", n); s.Scan(); {\n\t\tline := strings.TrimSpace(s.Text())\n\t\tif !strings.HasPrefix(line, pref) {\n\t\t\tcontinue\n\t\t}\n\n\t\tcfgLeft, cfgRight := len(pref)+1, len(line)-1\n\t\tif cfgLeft >= cfgRight {\n\t\t\tcontinue\n\t\t}\n\n\t\t// TODO(e.burkov):  Expand the check to cover possible\n\t\t// configurations from man rc.conf(5).\n\t\tfields := strings.Fields(line[cfgLeft:cfgRight])\n\t\tswitch {\n\t\tcase\n\t\t\tlen(fields) < 2,\n\t\t\t!strings.EqualFold(fields[0], \"inet\"),\n\t\t\t!netutil.IsValidIPString(fields[1]):\n\t\t\tcontinue\n\t\tdefault:\n\t\t\treturn nil, false, s.Err()\n\t\t}\n\t}\n\n\treturn nil, true, s.Err()\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "a46c86a462eea4a2e1cd436e",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/aghnet/net_freebsd.go",
+        "start_byte": 1350,
+        "text": "func ifaceSetStaticIP(\n\t_ context.Context,\n\t_ *slog.Logger,\n\t_ executil.CommandConstructor,\n\t_ string,\n) (err error) {\n\treturn aghos.Unsupported(\"setting static ip\")\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "81c1e44c3746552077c839f8",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/aghnet/net_linux.go",
+        "start_byte": 536,
+        "text": "func canBindPrivilegedPorts(ctx context.Context, l *slog.Logger) (can bool, err error) {\n\tres, err := unix.PrctlRetInt(\n\t\tunix.PR_CAP_AMBIENT,\n\t\tunix.PR_CAP_AMBIENT_IS_SET,\n\t\tunix.CAP_NET_BIND_SERVICE,\n\t\t0,\n\t\t0,\n\t)\n\tif err != nil {\n\t\tif errors.Is(err, unix.EINVAL) {\n\t\t\t// Older versions of Linux kernel do not support this.  Print a\n\t\t\t// warning and check admin rights.\n\t\t\tl.WarnContext(\n\t\t\t\tctx,\n\t\t\t\t\"checking capability cap_net_bind_service\",\n\t\t\t\tslogutil.KeyError, err,\n\t\t\t)\n\t\t} else {\n\t\t\treturn false, err\n\t\t}\n\t}\n\n\t// Don't check the error because it's always nil on Linux.\n\tadm, _ := aghos.HaveAdminRights()\n\n\treturn res == 1 || adm, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "b42ca8392ca1ec2c39b52ee3",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/aghnet/net_linux.go",
+        "start_byte": 1284,
+        "text": "func (n interfaceName) dhcpcdStaticConfig(r io.Reader) (subsources []string, cont bool, err error) {\n\ts := bufio.NewScanner(r)\n\tif !findIfaceLine(s, string(n)) {\n\t\treturn nil, true, s.Err()\n\t}\n\n\tfor s.Scan() {\n\t\tline := strings.TrimSpace(s.Text())\n\t\tfields := strings.Fields(line)\n\t\tif len(fields) >= 2 &&\n\t\t\tfields[0] == \"static\" &&\n\t\t\tstrings.HasPrefix(fields[1], \"ip_address=\") {\n\t\t\treturn nil, false, s.Err()\n\t\t}\n\n\t\tif len(fields) > 0 && fields[0] == \"interface\" {\n\t\t\t// Another interface found.\n\t\t\tbreak\n\t\t}\n\t}\n\n\treturn nil, true, s.Err()\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "26c8d7226321e361489e417f",
+        "revision": "dbc1d4044b830eb78ce78cd26e59966fc0eb8daa",
+        "path": "internal/aghnet/net_linux.go",
+        "start_byte": 1961,
+        "text": "func (n interfaceName) ifacesStaticConfig(r io.Reader) (sub []string, cont bool, err error) {\n\ts := bufio.NewScanner(r)\n\tfor s.Scan() {\n\t\tline := strings.TrimSpace(s.Text())\n\t\tif len(line) == 0 || line[0] == '#' {\n\t\t\tcontinue\n\t\t}\n\n\t\t// TODO(e.burkov): As man page interfaces(5) says, a line may be\n\t\t// extended across multiple lines by making the last character a\n\t\t// backslash.  Provide extended lines support.\n\n\t\tfields := strings.Fields(line)\n\t\tfieldsNum := len(fields)\n\n\t\t// Man page interfaces(5) declares that interface definition should\n\t\t// consist of the key word \"iface\" followed by inter",
+        "rank": 2,
+        "truncated": true
+      }
+    ]
+  },
+  "retrieval": {
+    "unresolved": [
+      {
+        "side": "ours",
+        "identifier": "isPublicResource",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "p",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "internal/aghnet/net.go",
+            "start": 8942
+          },
+          {
+            "path": "internal/home/clients.go",
+            "start": 3308
+          }
+        ]
+      },
+      {
+        "side": "ours",
+        "identifier": "string",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "ok",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "internal/client/index.go",
+            "start": 4185
+          },
+          {
+            "path": "internal/configmigrate/v27.go",
+            "start": 841
+          },
+          {
+            "path": "internal/dhcpsvc/server.go",
+            "start": 10310
+          },
+          {
+            "path": "internal/dhcpsvc/v4.go",
+            "start": 10272
+          },
+          {
+            "path": "internal/filtering/http.go",
+            "start": 7317
+          },
+          {
+            "path": "internal/home/tls.go",
+            "start": 24828
+          },
+          {
+            "path": "internal/ossvc/service_openbsd.go",
+            "start": 2598
+          },
+          {
+            "path": "internal/ossvc/service_openbsd.go",
+            "start": 2941
+          },
+          {
+            "path": "internal/ossvc/service_openbsd.go",
+            "start": 3303
+          },
+          {
+            "path": "internal/querylog/http.go",
+            "start": 11981
+          },
+          {
+            "path": "internal/querylog/search.go",
+            "start": 641
+          }
+        ]
+      },
+      {
+        "side": "ours",
+        "identifier": "bool",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "isAsset",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "err",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "internal/aghos/os_linux.go",
+            "start": 563
+          },
+          {
+            "path": "internal/dhcpd/v4_unix.go",
+            "start": 29322
+          },
+          {
+            "path": "internal/dnsforward/process.go",
+            "start": 11337
+          },
+          {
+            "path": "internal/filtering/http.go",
+            "start": 7093
+          },
+          {
+            "path": "internal/home/clientshttp.go",
+            "start": 12491
+          },
+          {
+            "path": "internal/home/controlinstall.go",
+            "start": 12050
+          },
+          {
+            "path": "internal/home/controlupdate.go",
+            "start": 1154
+          },
+          {
+            "path": "internal/home/controlupdate.go",
+            "start": 5991
+          },
+          {
+            "path": "internal/home/mobileconfig.go",
+            "start": 4637
+          },
+          {
+            "path": "internal/home/options.go",
+            "start": 11637
+          },
+          {
+            "path": "internal/home/web.go",
+            "start": 6623
+          },
+          {
+            "path": "internal/querylog/decode.go",
+            "start": 1103
+          },
+          {
+            "path": "internal/querylog/decode.go",
+            "start": 1686
+          },
+          {
+            "path": "internal/querylog/decode.go",
+            "start": 1868
+          },
+          {
+            "path": "internal/querylog/decode.go",
+            "start": 2066
+          },
+          {
+            "path": "internal/querylog/decode.go",
+            "start": 8882
+          },
+          {
+            "path": "internal/querylog/entry.go",
+            "start": 1385
+          },
+          {
+            "path": "internal/querylog/search.go",
+            "start": 1808
+          },
+          {
+            "path": "internal/querylog/search.go",
+            "start": 7939
+          },
+          {
+            "path": "internal/stats/stats.go",
+            "start": 5972
+          }
+        ]
+      },
+      {
+        "side": "ours",
+        "identifier": "path",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Match",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "panic",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "fmt",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "isLogin",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "isForgotPassword",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "strings",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "HasPrefix",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "paths",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "slices",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "path": "internal/home/authhttp.go",
+        "reason": "empty-parent-hunk-no-context"
+      }
+    ],
+    "method": "syntax-ranges-and-identifier-candidates/3",
+    "budget_bytes": 32768,
+    "libraries": {
+      "C": "cbbd4827ee02cd5c018ab41f10d8404ff8741159054b352d9a6d763c506ba3c7",
+      "Go": "1612f8fd958ba1ec981bf4b91e2ff399f1e54d26a9da68e5b60b0d7cd00616fc"
+    }
+  }
+}

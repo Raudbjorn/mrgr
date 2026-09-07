@@ -1,0 +1,1465 @@
+{
+  "id": "f0ea0ed0fdb5c88ca4255a6dc1f6b3f0cab4f29dcc741164439fbc56cf023183",
+  "source_protocol_sha256": "86ffe38086e217acf6e1a4aa4162e226862463d1bde3160478f9a6f4d2b968ce",
+  "repair_module_sha256": "475070c72aaadf08fe1cbd1ec90cde5210664924e6b0589d61d2226e86f3da7f",
+  "contexts": {
+    "local-context": [
+      {
+        "id": "8d771c6032b454dcea57345c",
+        "revision": "f830fe0e523bbd4d7675d3c191c9d5827c9020e1",
+        "path": "go/sql/builder.go",
+        "start_byte": 7988,
+        "text": "geComparison\", len(columns), len(args))\n\t}\n\tincludeEquals := false\n\tif comparisonSign == LessThanOrEqualsComparisonSign {\n\t\tcomparisonSign = LessThanComparisonSign\n\t\tincludeEquals = true\n\t}\n\tif comparisonSign == GreaterThanOrEqualsComparisonSign {\n\t\tcomparisonSign = GreaterThanComparisonSign\n\t\tincludeEquals = true\n\t}\n\tcomparisons := []string{}\n\n\tfor i, column := range columns {\n\t\tvalue := values[i]\n\t\trangeComparison, err := BuildValueComparison(column, value, comparisonSign)\n\t\tif err != nil {\n\t\t\treturn \"\", explodedArgs, err\n\t\t}\n\t\tif i > 0 {\n\t\t\tequalitiesComparison, err := BuildEqualsComparison(columns[0:i], values[0:i])\n\t\t\tif err != nil {\n\t\t\t\treturn \"\", explodedArgs, err\n\t\t\t}\n\t\t\tcomparison := fmt.Sprintf(\"(%s AND %s)\", equalitiesComparison, rangeComparison)\n\t\t\tcomparisons = append(comparisons, comparison)\n\t\t\texplodedArgs = append(explodedArgs, args[0:i]...)\n\t\t\texplodedArgs = append(explodedArgs, args[i])\n\t\t} else {\n\t\t\tcomparisons = append(comparisons, rangeComparison)\n\t\t\texplodedArgs = append(explodedArgs, args[i])\n\t\t}\n\t}\n\n\tif includeEquals {\n\t\tcomparison, err := BuildEqualsComparison(columns, values)\n\t\tif err != nil {\n\t\t\treturn \"\", explodedArgs, err\n\t\t}\n\t\tcomparisons = append(comparisons, comparison)\n\t\texplodedArgs = append(explodedArgs, args...)\n\t}\n\tresult = strings.Join(comparisons, \" or \")\n\tresult = fmt.Sprintf(\"(%s)\", result)\n\treturn result, explodedArgs, nil\n}\n\nfunc BuildRangePreparedComparison(columns *ColumnList, args []interface{}, comparisonSign ValueComparisonSign) (result string, explodedArgs []interface{}, err error) {\n\tvalues := buildColumnsPreparedValues(columns)\n\treturn BuildRangeComparison(columns.Names(), values, args, comparisonSign)\n}\n\nfunc BuildRangeInsertQuery(databaseName, originalTableName, ghostTableName string, sharedColumns []string, mappedSharedColumns []string, uniqueKey string, uniqueKeyColumns *ColumnList, rangeStartValues, rangeEndValues []string, rangeStartArgs, rangeEndArgs []interface{}, includeRangeStartValues bool, transactionalTable bool, noWait bool) (result string, explodedArgs []interface{}, err error) {\n\tif len(sharedColumns) == 0 {\n\t\treturn \"\", explodedArgs, fmt.Errorf(\"got 0 shared columns in BuildRangeInsertQuery\")\n\t}\n\tdatabaseName = EscapeName(databaseName)\n\toriginalTableName = EscapeName(originalTableName)\n\tghostTableName = EscapeName(ghostTableName)\n\n\tmappedSharedColumns = duplicateNames(mappedSharedColumns)\n\tfor i := range mappedSharedColumns {\n\t\tmappedSharedColumns[i] = EscapeName(mappedSharedColumns[i])\n\t}\n\tmappedSharedColumnsListing := strings.Join(mappedSharedColumns, \", \")\n\n\tsharedColumns = duplicateNames(sharedColumns)\n\tfor i := range sharedColumns {\n\t\tsharedColumns[i] = EscapeName(sharedColumns[i])\n\t}\n\tsharedColumnsListing := strings.Join(sharedColumns, \", \")\n\n\tuniqueKey = EscapeName(uniqueKey)\n\ttransactionalClause := \"\"\n\tif transactionalTable {\n\t\tif noWait {\n\t\t\ttransactionalClause = \"for share nowait\"\n\t\t} else {\n\t\t\ttransactionalClause = \"lock in share mode\"\n\t\t}\n\t}\n\tvar minRangeComparisonSign = GreaterThanComparisonSign\n\tif includeRangeStartValues {\n\t\tminRangeComparisonSign = GreaterThanOrEqualsComparisonSign\n\t}\n\n\tif uniqueKeyColumns.Len() == 2 {\n\t\treturn buildRangeInsertQueryTwoColumn(\n\t\t\tdatabaseName, originalTableName, ghostTableName,\n\t\t\tsharedColumnsListing, mappedSharedColumnsListing,\n\t\t\tuniqueKey, uniqueKeyColumns,\n\t\t\trangeStartValues, rangeEndValues,\n\t\t\trangeStartArgs, rangeEndArgs,\n\t\t\tminRangeComparisonSign, transactionalClause,\n\t\t)\n\t}\n\trangeStartComparison, rangeExplodedArgs, err := BuildRangeComparison(uniqueKeyColumns.Names(), rangeStartValues, rangeStartArgs, minRangeComparisonSign)\n\tif err != nil {\n\t\treturn \"\", explodedArgs, err\n\t}\n\texplodedArgs = append(explodedArgs, rangeExplodedArgs...)\n\trangeEndComparison, rangeExplodedArgs, err := BuildRangeComparison(uniqueKeyColumns.Names(), rangeEndValues, rangeEndArgs, LessThanOrEqualsComparisonSign)\n\tif err != nil {\n\t\treturn \"\", explodedArgs, err\n\t}\n\texplodedArgs = append(explodedArgs, rangeExplodedArgs...)\n\tresult = fmt.Sprintf(`\n\t\tinsert /* gh-ost %s.%s */ ignore\n\t\tinto\n\t\t\t%s.%s\n\t\t\t(%s)\n\t\t(\n\t\t\tselect %s\n\t\t\tfrom\n\t\t\t\t%s.%s\n\t\t\tforce index (%s)\n\t\t\twhere\n\t\t\t\t(%s and %s)\n\t\t\t\t%s\n\t\t)`,\n\t\tdatabaseName, originalTableName, databaseName, ghostTableName, mappedSharedColumnsListing,\n\t\tsharedColumnsListing, databaseName, originalTableName, uniqueKey,\n\t\trangeStartComparison, rangeEndComparison, transactionalClause)\n\treturn result, explodedArgs, nil\n}\n\nfunc sameFirstColumnValue(rangeStartArgs, rangeEndArgs []interface{}) bool {\n\tif len(rangeStartArgs) == 0 || len(rangeEndArgs) == 0 {\n\t\treturn false\n\t}\n\treturn fmt.Sprintf(\"%v\", rangeStartArgs[0]) == fmt.Sprintf(\"%v\", rangeEndArgs[0])\n}\n\nfunc buildRangeInsertQueryTwoColumn(\n\tdatabaseName, originalTableName, ghostTableName string,\n\tsharedColumnsListing, mappedSharedColumnsListing string,\n\tuniqueKey string,\n\tuniqueKeyColumns *ColumnList,\n\trangeStartValues, rangeEndValues []string,\n\trangeStartArgs, rangeEndArgs []interface{},\n\tminRangeComparisonSign ValueComparisonSign,\n\ttransactionalClause string,\n) (result string, explodedArgs []interface{}, err error) {\n\tcols := uniqueKeyColumns.Columns()\n\n\tif len(cols) != len(rangeStartValues) {\n\t\treturn \"\", explodedArgs, fmt.Errorf(\"got %d columns but %d rangeStartValues in buildRangeInsertQueryTwoColumn\", len(cols), len(rangeStartValues))\n\t}\n\tif len(cols) != len(rangeEndValues) {\n\t\treturn \"\", explodedArgs, fmt.Errorf(\"got %d columns but %d rangeEndValues in buildRangeInsertQueryTwoColumn\", len(cols), len(rangeEndValues))\n\t}\n\tif len(cols) != len(rangeStartArgs) {\n\t\treturn \"\", explodedArgs, fmt.Errorf(\"got %d columns but %d rangeStartArgs in buildRangeInsertQueryTwoColumn\", len(cols), len(rangeStartArgs))\n\t}\n\tif len(cols) != len(rangeEndArgs) {\n\t\treturn \"\", explodedArgs, fmt.Errorf(\"got %d columns but %d rangeEndArgs in buildRangeInsertQueryTwoColumn\", len(cols), len(rangeEndArgs))\n\t}\n\n\tcol1Name := EscapeName(cols[0].Name)\n\tcol2Name := EscapeName(cols[1].Name)\n\tcol1StartVal := rangeStartValues[0]\n\tcol2StartVal := rangeStartValues[1]\n\tcol1EndVal := rangeEndValues[0]\n\tcol2EndVal := rangeEndValues[1]\n\tcol2StartOp := string(minRangeComparisonSign)\n\tfromClause := fmt.Sprintf(\"%s.%s force index (%s)\", databaseName, originalTableName, uniqueKey)\n\n\tif sameFirstColumnValue(rangeStartArgs, rangeEndArgs) {\n\t\tresult = fmt.Sprintf(`\n\t\t\tinsert /* gh-ost %s.%s */ ignore\n\t\t\tinto\n\t\t\t  %s.%s\n\t\t\t\t(%s)\n\t\t\t(\n\t\t\t\tselect %s\n\t\t\t\tfrom\n\t\t\t\t  %s.%s\n\t\t\t\tforce index (%s)\n\t\t\t\t\twhere (%s = %s and %s %s %s and %s <= %s)\n\t\t\t\t\t%s\n\t\t\t)`,\n\t\t\tdatabaseName, originalTableName,\n\t\t\tdatabaseName, ghostTableName, mappedSharedColumnsListing,\n\t\t\tsharedColumnsListing,\n\t\t\tdatabaseName, originalTableName, uniqueKey,\n\t\t\tcol1Name, col1StartVal, col2Name, col2StartOp, col2StartVal, col2Name, col2EndVal,\n\t\t\ttransactionalClause,\n\t\t)\n\t\texplodedArgs = append(explodedArgs, rangeStartArgs[0], rangeStartArgs[1], rangeEndArgs[1])\n\t\treturn result, explodedArgs, nil\n\t}\n\n\tpart1, part2, part3, explodedArgs := buildTwoColumnUnionParts(\n\t\tsharedColumnsListing, fromClause,\n\t\tcol1Name, col2Name,\n\t\tcol1StartVal, col2StartVal, col1EndVal, col2EndVal,\n\t\tcol2StartOp, transactionalClause,\n\t\trangeStartArgs, rangeEndArgs,\n\t)\n\n\tresult = fmt.Sprintf(`\n\t\tinsert /* gh-ost %s.%s */ ignore\n\t\tinto %s.%s (%s)\n\t\t%s union all %s union all %s`,\n\t\tdatabaseName, originalTableName,\n\t\tdatabaseName, ghostTableName, mappedSharedColumnsListing,\n\t\tpart1, part2, part3,\n\t)\n\treturn result, explodedArgs, nil\n}\n\nfunc BuildRangeInsertPreparedQuery(databaseName, originalTableName, ghostTableName string, sharedColumns []string, mappedSharedColumns []string, uniqueKey string, uniqueKeyColumns *ColumnList, rangeStartArgs, rangeEndArgs []interface{}, includeRangeStartValues bool, transactionalTable bool, noWait bool) (result string, explodedArgs []interface{}, err error) {\n\trangeStartValues := buildColumnsPreparedValues(uniqueKeyColumns)\n\trangeEndValues := buildColumnsPreparedValues(uniqueKeyColumns)\n\treturn BuildRangeInsertQuery(databaseName, originalTableName, ghostTableName, sharedColumns, mappedSharedColumns, uniqueKey, uniqueKeyColumns, rangeStartValues, rangeEndValues, rangeStartArgs, rangeEndArgs, includeRangeStartValues, transactionalTable, noWait)\n}\n\ntype MoveTableCopySelectQueryBuilder struct {\n\tpreparedStatement string\n\targsMapping       []int\n\targsCount         int\n}\n\nfunc NewMoveTableCopySelectQueryBuilder(sourceDatabaseName, sourceTableName string, columns *ColumnList, uniqueKey string, uniqueKeyColumns *ColumnList, includeRangeStartValues bool) (*MoveTableCopySelectQueryBuilder, error) {\n\tsourceDatabaseName = EscapeName(sourceDatabaseName)\n\tsourceTableName = EscapeName(sourceTableName)\n\tcolumnNames := columns.Names()\n\tfor i := range columnNames {\n\t\tcolumnNames[i] = EscapeName(columnNames[i])\n\t}\n\tsharedColumnsListing := strings.Join(columnNames, \", \")\n\tuniqueKey = EscapeName(uniqueKey)\n\tvar minRangeComparisonSign = GreaterThanComparisonSign\n\tif includeRangeStartValues {\n\t\tminRangeComparisonSign = GreaterThanOrEqualsComparisonSign\n\t}\n\trangeStartValues := buildColumnsPreparedValues(uniqueKeyColumns)\n\trangeEndValues := buildColumnsPreparedValues(uniqueKeyColumns)\n\tdummyArgs := make([]any, len(uniqueKeyColumns.Columns()))\n\tfor i := range dummyArgs {\n\t\tdummyArgs[i] = i\n\t}\n\tvar argsMapping []int\n\n\trangeStartComparison, rangeExplodedArgs, err := BuildRangeComparison(uniqueKeyColumns.Names(), rangeStartValues, dummyArgs, minRangeComparisonSign)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\tfor _, a := range rangeExplodedArgs {\n\t\tidx := slices.Index(dummyArgs, a)\n\t\tif idx == -1 {\n\t\t\treturn nil, fmt.Errorf(\"failed to build args mapping, missing argument pointer %v\", a)\n\t\t}\n\t\targsMapping = append(argsMapping, idx)\n\t}\n\n\trangeEndComparison, rangeExplodedArgs, err := BuildRangeComparison(uniqueKeyColumns.Names(), rangeEndValues, dummyArgs, LessThanOrEqualsComparisonSign)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\tfor _, a := range rangeExplodedArgs {\n\t\tidx := slices.Index(dummyArgs, a)\n\t\tif idx == -1 {\n\t\t\treturn nil, fmt.Errorf(\"failed to build args mapping, missing argument pointer %v\", a)\n\t\t}\n\t\targsMapping = append(argsMapping, idx+len(dummyArgs))\n\t}\n\n\tstmt := fmt.Sprintf(`\n\t\tselect /* gh-ost %s.%s */ %s\n\t\tfrom\n\t\t\t%s.%s\n\t\tforce index (%s)\n\t\twhere\n\t\t\t(%s and %s)\n\t\t`,\n\t\tsourceDatabaseName, sourceTableName, sharedColumnsListing,\n\t\tsourceDatabaseName, sourceTableName,\n\t\tuniqueKey,\n\t\trangeStartComparison, rangeEndComparison,\n\t)\n\treturn &MoveTableCopySelectQueryBuilder{\n\t\tpreparedStatement: stmt,\n\t\targsMapping:       argsMapping,\n\t\targsCount:         len(dummyArgs) * 2,\n\t}, nil\n}\n\nfunc (b *MoveTableCopySelectQueryBuilder) BuildQuery(rangeStartArgs, rangeEndArgs []any) (string, []any, error) {\n\tif len(rangeStartArgs)+len(rangeEndArgs) != b.argsCount {\n\t\treturn \"\", nil, fmt.Errorf(\"got %d args but expected %d\", len(rangeStartArgs)+len(rangeEndArgs), b.argsCount)\n\t}\n\tif len(rangeStartArgs) != len(rangeEndArgs) {\n\t\treturn \"\", nil, fmt.Errorf(\"mismatched number of start and end args: %d != %d\", len(rangeStartArgs), len(rangeEndArgs))\n\t}\n\texplodedArgs := make([]any, 0, len(b.argsMapping))\n\tfor _, idx := range b.argsMapping {\n\t\tif idx < len(rangeStartArgs) {\n\t\t\texplodedArgs = append(explodedArgs, rangeStartArgs[idx])\n\t\t} else {\n\t\t\texplodedArgs = append(explodedArgs, rangeEndArgs[idx-len(rangeStartArgs)])\n\t\t}\n\t}\n\treturn b.preparedStatement, explodedArgs, nil\n}\n\ntype MoveTableCopyInsertQueryBuilder struct {\n\tpreparedStatement    string\n\tvalueListPlaceholder string\n\tvalueListSize        int\n}\n\nfunc NewMoveTableCopyInsertQueryBuilder(targetDatabaseName, targetTableName string, columns *ColumnList) (*MoveTableCopyInsertQueryBuilder, error) {\n\ttargetDatabaseName = EscapeName(targetDatabaseName)\n\ttargetTableName = EscapeName(targetTableName)\n\tcolumnsNames := columns.Names()\n\tfor i := range columnsNames {\n\t\tcolumnsNames[i] = EscapeName(columnsNames[i])\n\t}\n\tsharedColumnsListing := strings.Join(columnsNames, \", \")\n\tvalueListPlaceholder := \"(\" + strings.Join(buildColumnsPreparedValues(columns), \", \") + \")\"\n\tvalueListSize := len(columnsNames)\n\tstmt := fmt.Sprintf(`\n\t\tinsert /* gh-ost %s.%s */ ignore\n\t\tinto\n\t\t\t%s.%s\n\t\t\t(%s)\n\t\tvalues\n\t\t`,\n\t\ttargetDatabaseName, targetTableName,\n\t\ttargetDatabaseName, targetTableName,\n\t\tsharedColumnsListing,\n\t)\n\treturn &MoveTableCopyInsertQueryBuilder{\n\t\tpreparedStatement:    stmt,\n\t\tvalueListPlaceholder: valueListPlaceholder,\n\t\tvalueListSize:        valueListSize,\n\t}, nil\n}\n\nfunc (b *MoveTableCopyInsertQueryBuilder) BuildQuery(values []*ColumnValues) (string, []any, error) {\n\tvar explodedArgs []any\n\tvar builder strings.Builder\n\tbuilder.WriteString(b.preparedStatement)\n\tfor i, value := range values {\n\t\tif len(value.AbstractValues()) != b.valueListSize {\n\t\t\treturn \"\", nil, fmt.Errorf(\"got %d column values but expected %d\", len(value.AbstractValues()), b.valueListSize)\n\t\t}\n\t\tif i > 0 {\n\t\t\tbuilder.WriteString(\",\\n\")\n\t\t}\n\t\tbuilder.WriteString(b.valueListPlaceholder)\n\t\texplodedArgs = append(explodedArgs, value.AbstractValues()...)\n\t}\n\treturn builder.String(), explodedArgs, nil\n}\n\nfunc BuildUniqueKeyRangeEndPreparedQueryViaOffset(databaseName, tableName string, uniqueKeyColumns *ColumnList, rangeStartArgs, rangeEndArgs []interface{}, chunkSize int64, includeRangeStartValues bool, hint string) (result string, explodedArgs []interface{}, err error) {\n\tif uniqueKeyColumns.Len() == 0 {\n\t\treturn \"\", explodedArgs, fmt.Errorf(\"got 0 columns in BuildUniqueKeyRangeEndPreparedQuery\")\n\t}\n\tdatabaseName = EscapeName(databaseName)\n\ttableName = EscapeName(tableName)\n\n\tvar startRangeComparisonSign = GreaterThanComparisonSign\n\tif includeRangeStartValues {\n\t\tstartRangeComparisonSign = GreaterThanOrEqualsComparisonSign\n\t}\n\n\tif uniqueKeyColumns.Len() == 2 {\n\t\treturn buildUniqueKeyRangeEndTwoColumnViaOffset(databaseName, tableName, uniqueKeyColumns, rangeStartArgs, rangeEndArgs, chunkSize, startRangeComparisonSign, hint)\n\t}\n\n\trangeStartComparison, rangeExplodedArgs, err := BuildRangePreparedComparison(uniqueKeyColumns, rangeStartArgs, startRangeComparisonSign)\n\tif err != nil {\n\t\treturn \"\", explodedArgs, err\n\t}\n\texplodedArgs = append(explodedArgs, rangeExplodedArgs...)\n\trangeEndComparison, rangeExplodedArgs, err := BuildRangePreparedComparison(uniqueKeyColumns, rangeEndArgs, LessThanOrEqualsComparisonSign)\n\tif err != nil {\n\t\treturn \"\", explodedArgs, err\n\t}\n\texplodedArgs = append(explodedArgs, rangeExplodedArgs...)\n\n\tuniqueKeyColumnNames := duplicateNames(uniqueKeyColumns.Names())\n\tuniqueKeyColumnAscending := make([]string, len(uniqueKeyColumnNames))\n\tfor i, column := range uniqueKeyColumns.Columns() {\n\t\tuniqueKeyColumnNames[i] = EscapeName(uniqueKeyColumnNames[i])\n\t\tif column.Type == EnumColumnType {\n\t\t\tuniqueKeyColumnAscending[i] = fmt.Sprintf(\"concat(%s) asc\", uniqueKeyColumnNames[i])\n\t\t} else {\n\t\t\tuniqueKeyColumnAscending[i] = fmt.Sprintf(\"%s asc\", uniqueKeyColumnNames[i])\n\t\t}\n\t}\n\tresult = fmt.Sprintf(`\n\t\tselect /* gh-ost %s.%s %s */\n\t\t\t%s\n\t\tfrom\n\t\t\t%s.%s\n\t\twhere\n\t\t\t%s and %s\n\t\torder by\n\t\t\t%s\n\t\tlimit 1\n\t\toffset %d`,\n\t\tdatabaseName, tableName, hint,\n\t\tstrings.Join(uniqueKeyColumnNames, \", \"),\n\t\tdatabaseName, tableName,\n\t\trangeStartComparison, rangeEndComparison,\n\t\tstrings.Join(uniqueKeyColumnAscending, \", \"),\n\t\t(chunkSize - 1),\n\t)\n\treturn result, explodedArgs, nil\n}\n\nfunc BuildUniqueKeyRangeEndPreparedQueryViaTemptable(databaseName, tableName string, uniqueKeyColumns *ColumnList, rangeStartArgs, rangeEndArgs []interface{}, chunkSize int64, includeRangeStartValues bool, hint string) (result string, explodedArgs []interface{}, err error) {\n\tif uniqueKeyColumns.Len() == 0 {\n\t\treturn \"\", explodedArgs, fmt.Errorf(\"got 0 columns in BuildUniqueKeyRangeEndPreparedQuery\")\n\t}\n\tdatabaseName = EscapeName(databaseName)\n\ttableName = EscapeName(tableName)\n\n\tvar startRangeComparisonSign = GreaterThanComparisonSign\n\tif includeRangeStartValues {\n\t\tstartRangeComparisonSign = GreaterThanOrEqualsComparisonSign\n\t}\n\n\tif uniqueKeyColumns.Len() == 2 {\n\t\treturn buildUniqueKeyRangeEndTwoColumnViaTemptable(databaseName, tableName, uniqueKeyColumns, rangeStartArgs, rangeEndArgs, chunkSize, startRangeComparisonSign, hint)\n\t}\n\n\trangeStartComparison, rangeExplodedArgs, err := BuildRangePreparedComparison(uniqueKeyColumns, rangeStartArgs, startRangeComparisonSign)\n\tif err != nil {\n\t\treturn \"\", explodedArgs, err\n\t}\n\texplodedArgs = append(explodedArgs, rangeExplodedArgs...)\n\trangeEndComparison, rangeExplodedArgs, err := BuildRangePreparedComparison(uniqueK",
+        "rank": 0,
+        "truncated": false
+      },
+      {
+        "id": "19b6410e79268387200a73e0",
+        "revision": "f7a42f6b8028e96d3c8abd47a4da38baedb1161d",
+        "path": "go/sql/builder.go",
+        "start_byte": 7141,
+        "text": "geComparison\", len(columns), len(args))\n\t}\n\tincludeEquals := false\n\tif comparisonSign == LessThanOrEqualsComparisonSign {\n\t\tcomparisonSign = LessThanComparisonSign\n\t\tincludeEquals = true\n\t}\n\tif comparisonSign == GreaterThanOrEqualsComparisonSign {\n\t\tcomparisonSign = GreaterThanComparisonSign\n\t\tincludeEquals = true\n\t}\n\tcomparisons := []string{}\n\n\tfor i, column := range columns {\n\t\tvalue := values[i]\n\t\trangeComparison, err := BuildValueComparison(column, value, comparisonSign)\n\t\tif err != nil {\n\t\t\treturn \"\", explodedArgs, err\n\t\t}\n\t\tif i > 0 {\n\t\t\tequalitiesComparison, err := BuildEqualsComparison(columns[0:i], values[0:i])\n\t\t\tif err != nil {\n\t\t\t\treturn \"\", explodedArgs, err\n\t\t\t}\n\t\t\tcomparison := fmt.Sprintf(\"(%s AND %s)\", equalitiesComparison, rangeComparison)\n\t\t\tcomparisons = append(comparisons, comparison)\n\t\t\texplodedArgs = append(explodedArgs, args[0:i]...)\n\t\t\texplodedArgs = append(explodedArgs, args[i])\n\t\t} else {\n\t\t\tcomparisons = append(comparisons, rangeComparison)\n\t\t\texplodedArgs = append(explodedArgs, args[i])\n\t\t}\n\t}\n\n\tif includeEquals {\n\t\tcomparison, err := BuildEqualsComparison(columns, values)\n\t\tif err != nil {\n\t\t\treturn \"\", explodedArgs, err\n\t\t}\n\t\tcomparisons = append(comparisons, comparison)\n\t\texplodedArgs = append(explodedArgs, args...)\n\t}\n\tresult = strings.Join(comparisons, \" or \")\n\tresult = fmt.Sprintf(\"(%s)\", result)\n\treturn result, explodedArgs, nil\n}\n\nfunc BuildRangePreparedComparison(columns *ColumnList, args []interface{}, comparisonSign ValueComparisonSign) (result string, explodedArgs []interface{}, err error) {\n\tvalues := buildColumnsPreparedValues(columns)\n\treturn BuildRangeComparison(columns.Names(), values, args, comparisonSign)\n}\n\nfunc BuildRangeInsertQuery(databaseName, originalTableName, ghostTableName string, sharedColumns []string, mappedSharedColumns []string, uniqueKey string, uniqueKeyColumns *ColumnList, rangeStartValues, rangeEndValues []string, rangeStartArgs, rangeEndArgs []interface{}, includeRangeStartValues bool, transactionalTable bool, noWait bool) (result string, explodedArgs []interface{}, err error) {\n\tif len(sharedColumns) == 0 {\n\t\treturn \"\", explodedArgs, fmt.Errorf(\"got 0 shared columns in BuildRangeInsertQuery\")\n\t}\n\tdatabaseName = EscapeName(databaseName)\n\toriginalTableName = EscapeName(originalTableName)\n\tghostTableName = EscapeName(ghostTableName)\n\n\tmappedSharedColumns = duplicateNames(mappedSharedColumns)\n\tfor i := range mappedSharedColumns {\n\t\tmappedSharedColumns[i] = EscapeName(mappedSharedColumns[i])\n\t}\n\tmappedSharedColumnsListing := strings.Join(mappedSharedColumns, \", \")\n\n\tsharedColumns = duplicateNames(sharedColumns)\n\tfor i := range sharedColumns {\n\t\tsharedColumns[i] = EscapeName(sharedColumns[i])\n\t}\n\tsharedColumnsListing := strings.Join(sharedColumns, \", \")\n\n\tuniqueKey = EscapeName(uniqueKey)\n\ttransactionalClause := \"\"\n\tif transactionalTable {\n\t\tif noWait {\n\t\t\ttransactionalClause = \"for share nowait\"\n\t\t} else {\n\t\t\ttransactionalClause = \"lock in share mode\"\n\t\t}\n\t}\n\tvar minRangeComparisonSign = GreaterThanComparisonSign\n\tif includeRangeStartValues {\n\t\tminRangeComparisonSign = GreaterThanOrEqualsComparisonSign\n\t}\n\n\tif uniqueKeyColumns.Len() == 2 {\n\t\treturn buildRangeInsertQueryTwoColumn(\n\t\t\tdatabaseName, originalTableName, ghostTableName,\n\t\t\tsharedColumnsListing, mappedSharedColumnsListing,\n\t\t\tuniqueKey, uniqueKeyColumns,\n\t\t\trangeStartValues, rangeEndValues,\n\t\t\trangeStartArgs, rangeEndArgs,\n\t\t\tminRangeComparisonSign, transactionalClause,\n\t\t)\n\t}\n\trangeStartComparison, rangeExplodedArgs, err := BuildRangeComparison(uniqueKeyColumns.Names(), rangeStartValues, rangeStartArgs, minRangeComparisonSign)\n\tif err != nil {\n\t\treturn \"\", explodedArgs, err\n\t}\n\texplodedArgs = append(explodedArgs, rangeExplodedArgs...)\n\trangeEndComparison, rangeExplodedArgs, err := BuildRangeComparison(uniqueKeyColumns.Names(), rangeEndValues, rangeEndArgs, LessThanOrEqualsComparisonSign)\n\tif err != nil {\n\t\treturn \"\", explodedArgs, err\n\t}\n\texplodedArgs = append(explodedArgs, rangeExplodedArgs...)\n\tresult = fmt.Sprintf(`\n\t\tinsert /* gh-ost %s.%s */ ignore\n\t\tinto\n\t\t\t%s.%s\n\t\t\t(%s)\n\t\t(\n\t\t\tselect %s\n\t\t\tfrom\n\t\t\t\t%s.%s\n\t\t\tforce index (%s)\n\t\t\twhere\n\t\t\t\t(%s and %s)\n\t\t\t\t%s\n\t\t)`,\n\t\tdatabaseName, originalTableName, databaseName, ghostTableName, mappedSharedColumnsListing,\n\t\tsharedColumnsListing, databaseName, originalTableName, uniqueKey,\n\t\trangeStartComparison, rangeEndComparison, transactionalClause)\n\treturn result, explodedArgs, nil\n}\n\nfunc sameFirstColumnValue(rangeStartArgs, rangeEndArgs []interface{}) bool {\n\tif len(rangeStartArgs) == 0 || len(rangeEndArgs) == 0 {\n\t\treturn false\n\t}\n\treturn fmt.Sprintf(\"%v\", rangeStartArgs[0]) == fmt.Sprintf(\"%v\", rangeEndArgs[0])\n}\n\nfunc buildRangeInsertQueryTwoColumn(\n\tdatabaseName, originalTableName, ghostTableName string,\n\tsharedColumnsListing, mappedSharedColumnsListing string,\n\tuniqueKey string,\n\tuniqueKeyColumns *ColumnList,\n\trangeStartValues, rangeEndValues []string,\n\trangeStartArgs, rangeEndArgs []interface{},\n\tminRangeComparisonSign ValueComparisonSign,\n\ttransactionalClause string,\n) (result string, explodedArgs []interface{}, err error) {\n\tcols := uniqueKeyColumns.Columns()\n\n\tif len(cols) != len(rangeStartValues) {\n\t\treturn \"\", explodedArgs, fmt.Errorf(\"got %d columns but %d rangeStartValues in buildRangeInsertQueryTwoColumn\", len(cols), len(rangeStartValues))\n\t}\n\tif len(cols) != len(rangeEndValues) {\n\t\treturn \"\", explodedArgs, fmt.Errorf(\"got %d columns but %d rangeEndValues in buildRangeInsertQueryTwoColumn\", len(cols), len(rangeEndValues))\n\t}\n\tif len(cols) != len(rangeStartArgs) {\n\t\treturn \"\", explodedArgs, fmt.Errorf(\"got %d columns but %d rangeStartArgs in buildRangeInsertQueryTwoColumn\", len(cols), len(rangeStartArgs))\n\t}\n\tif len(cols) != len(rangeEndArgs) {\n\t\treturn \"\", explodedArgs, fmt.Errorf(\"got %d columns but %d rangeEndArgs in buildRangeInsertQueryTwoColumn\", len(cols), len(rangeEndArgs))\n\t}\n\n\tcol1Name := EscapeName(cols[0].Name)\n\tcol2Name := EscapeName(cols[1].Name)\n\tcol1StartVal := rangeStartValues[0]\n\tcol2StartVal := rangeStartValues[1]\n\tcol1EndVal := rangeEndValues[0]\n\tcol2EndVal := rangeEndValues[1]\n\tcol2StartOp := string(minRangeComparisonSign)\n\tfromClause := fmt.Sprintf(\"%s.%s force index (%s)\", databaseName, originalTableName, uniqueKey)\n\n\tif sameFirstColumnValue(rangeStartArgs, rangeEndArgs) {\n\t\tresult = fmt.Sprintf(`\n\t\t\tinsert /* gh-ost %s.%s */ ignore\n\t\t\tinto\n\t\t\t  %s.%s\n\t\t\t\t(%s)\n\t\t\t(\n\t\t\t\tselect %s\n\t\t\t\tfrom\n\t\t\t\t  %s.%s\n\t\t\t\tforce index (%s)\n\t\t\t\t\twhere (%s = %s and %s %s %s and %s <= %s)\n\t\t\t\t\t%s\n\t\t\t)`,\n\t\t\tdatabaseName, originalTableName,\n\t\t\tdatabaseName, ghostTableName, mappedSharedColumnsListing,\n\t\t\tsharedColumnsListing,\n\t\t\tdatabaseName, originalTableName, uniqueKey,\n\t\t\tcol1Name, col1StartVal, col2Name, col2StartOp, col2StartVal, col2Name, col2EndVal,\n\t\t\ttransactionalClause,\n\t\t)\n\t\texplodedArgs = append(explodedArgs, rangeStartArgs[0], rangeStartArgs[1], rangeEndArgs[1])\n\t\treturn result, explodedArgs, nil\n\t}\n\n\tpart1, part2, part3, explodedArgs := buildTwoColumnUnionParts(\n\t\tsharedColumnsListing, fromClause,\n\t\tcol1Name, col2Name,\n\t\tcol1StartVal, col2StartVal, col1EndVal, col2EndVal,\n\t\tcol2StartOp, transactionalClause,\n\t\trangeStartArgs, rangeEndArgs,\n\t)\n\n\tresult = fmt.Sprintf(`\n\t\tinsert /* gh-ost %s.%s */ ignore\n\t\tinto %s.%s (%s)\n\t\t%s union all %s union all %s`,\n\t\tdatabaseName, originalTableName,\n\t\tdatabaseName, ghostTableName, mappedSharedColumnsListing,\n\t\tpart1, part2, part3,\n\t)\n\treturn result, explodedArgs, nil\n}\n\nfunc BuildRangeInsertPreparedQuery(databaseName, originalTableName, ghostTableName string, sharedColumns []string, mappedSharedColumns []string, uniqueKey string, uniqueKeyColumns *ColumnList, rangeStartArgs, rangeEndArgs []interface{}, includeRangeStartValues bool, transactionalTable bool, noWait bool) (result string, explodedArgs []interface{}, err error) {\n\trangeStartValues := buildColumnsPreparedValues(uniqueKeyColumns)\n\trangeEndValues := buildColumnsPreparedValues(uniqueKeyColumns)\n\treturn BuildRangeInsertQuery(databaseName, originalTableName, ghostTableName, sharedColumns, mappedSharedColumns, uniqueKey, uniqueKeyColumns, rangeStartValues, rangeEndValues, rangeStartArgs, rangeEndArgs, includeRangeStartValues, transactionalTable, noWait)\n}\n\nfunc BuildUniqueKeyRangeEndPreparedQueryViaOffset(databaseName, tableName, uniqueKey string, uniqueKeyColumns *ColumnList, rangeStartArgs, rangeEndArgs []interface{}, chunkSize int64, includeRangeStartValues bool, hint string) (result string, explodedArgs []interface{}, err error) {\n\tif uniqueKeyColumns.Len() == 0 {\n\t\treturn \"\", explodedArgs, fmt.Errorf(\"got 0 columns in BuildUniqueKeyRangeEndPreparedQuery\")\n\t}\n\tdatabaseName = EscapeName(databaseName)\n\ttableName = EscapeName(tableName)\n\n\tvar startRangeComparisonSign = GreaterThanComparisonSign\n\tif includeRangeStartValues {\n\t\tstartRangeComparisonSign = GreaterThanOrEqualsComparisonSign\n\t}\n\n\tif uniqueKeyColumns.Len() == 2 {\n\t\treturn buildUniqueKeyRangeEndTwoColumnViaOffset(databaseName, tableName, EscapeName(uniqueKey), uniqueKeyColumns, rangeStartArgs, rangeEndArgs, chunkSize, startRangeComparisonSign, hint)\n\t}\n\n\trangeStartComparison, rangeExplodedArgs, err := BuildRangePreparedComparison(uniqueKeyColumns, rangeStartArgs, startRangeComparisonSign)\n\tif err != nil {\n\t\treturn \"\", explodedArgs, err\n\t}\n\texplodedArgs = append(explodedArgs, rangeExplodedArgs...)\n\trangeEndComparison, rangeExplodedArgs, err := BuildRangePreparedComparison(uniqueKeyColumns, rangeEndArgs, LessThanOrEqualsComparisonSign)\n\tif err != nil {\n\t\treturn \"\", explodedArgs, err\n\t}\n\texplodedArgs = append(explodedArgs, rangeExplodedArgs...)\n\n\tuniqueKeyColumnNames := duplicateNames(uniqueKeyColumns.Names())\n\tuniqueKeyColumnAscending := make([]string, len(uniqueKeyColumnNames))\n\tfor i, column := range uniqueKeyColumns.Columns() {\n\t\tuniqueKeyColumnNames[i] = EscapeName(uniqueKeyColumnNames[i])\n\t\tif column.Type == EnumColumnType {\n\t\t\tuniqueKeyColumnAscending[i] = fmt.Sprintf(\"concat(%s) asc\", uniqueKeyColumnNames[i])\n\t\t} else {\n\t\t\tuniqueKeyColumnAscending[i] = fmt.Sprintf(\"%s asc\", uniqueKeyColumnNames[i])\n\t\t}\n\t}\n\tresult = fmt.Sprintf(`\n\t\tselect /* gh-ost %s.%s %s */\n\t\t\t%s\n\t\tfrom\n\t\t\t%s.%s\n\t\twhere\n\t\t\t%s and %s\n\t\torder by\n\t\t\t%s\n\t\tlimit 1\n\t\toffset %d`,\n\t\tdatabaseName, tableName, hint,\n\t\tstrings.Join(uniqueKeyColumnNames, \", \"),\n\t\tdatabaseName, tableName,\n\t\trangeStartComparison, rangeEndComparison,\n\t\tstrings.Join(uniqueKeyColumnAscending, \", \"),\n\t\t(chunkSize - 1),\n\t)\n\treturn result, explodedArgs, nil\n}\n\nfunc BuildUniqueKeyRangeEndPreparedQueryViaTemptable(databaseName, tableName, uniqueKey string, uniqueKeyColumns *ColumnList, rangeStartArgs, rangeEndArgs []interface{}, chunkSize int64, includeRangeStartValues bool, hint string) (result string, explodedArgs []interface{}, err error) {\n\tif uniqueKeyColumns.Len() == 0 {\n\t\treturn \"\", explodedArgs, fmt.Errorf(\"got 0 columns in BuildUniqueKeyRangeEndPreparedQuery\")\n\t}\n\tdatabaseName = EscapeName(databaseName)\n\ttableName = EscapeName(tableName)\n\n\tvar startRangeComparisonSign = GreaterThanComparisonSign\n\tif includeRangeStartValues {\n\t\tstartRangeComparisonSign = GreaterThanOrEqualsComparisonSign\n\t}\n\n\tif uniqueKeyColumns.Len() == 2 {\n\t\treturn buildUniqueKeyRangeEndTwoColumnViaTemptable(databaseName, tableName, EscapeName(uniqueKey), uniqueKeyColumns, rangeStartArgs, rangeEndArgs, chunkSize, startRangeComparisonSign, hint)\n\t}\n\n\trangeStartComparison, rangeExplodedArgs, err := BuildRangePreparedComparison(uniqueKeyColumns, rangeStartArgs, startRangeComparisonSign)\n\tif err != nil {\n\t\treturn \"\", explodedArgs, err\n\t}\n\texplodedArgs = append(explodedArgs, rangeExplodedArgs...)\n\trangeEndComparison, rangeExplodedArgs, err := BuildRangePreparedComparison(uniqueKeyColumns, rangeEndArgs, LessThanOrEqualsComparisonSign)\n\tif err != nil {\n\t\treturn \"\", explodedArgs, err\n\t}\n\texplodedArgs = append(explodedArgs, rangeExplodedArgs...)\n\n\tuniqueKeyColumnNames := duplicateNames(uniqueKeyColumns.Names())\n\tuniqueKeyColumnAscending := make([]string, len(uniqueKeyColumnNames))\n\tuniqueKeyColumnDescending := make([]string, len(uniqueKeyColumnNames))\n\tfor i, column := range uniqueKeyColumns.Columns() {\n\t\tuniqueKeyColumnNames[i] = EscapeName(uniqueKeyColumnNames[i])\n\t\tif column.Type == EnumColumnType {\n\t\t\tuniqueKeyColumnAscending[i] = fmt.Sprintf(\"concat(%s) asc\", uniqueKeyColumnNames[i])\n\t\t\tuniqueKeyColumnDescending[i] = fmt.Sprintf(\"concat(%s) desc\", uniqueKeyColumnNames[i])\n\t\t} else {\n\t\t\tuniqueKeyColumnAscending[i] = fmt.Sprintf(\"%s asc\", uniqueKeyColumnNames[i])\n\t\t\tuniqueKeyColumnDescending[i] = fmt.Sprintf(\"%s desc\", uniqueKeyColumnNames[i])\n\t\t}\n\t}\n\tresult = fmt.Sprintf(`\n\t\tselect /* gh-ost %s.%s %s */ %s\n\t\tfrom (\n\t\t\tselect\n\t\t\t\t%s\n\t\t\tfrom\n\t\t\t\t%s.%s\n\t\t\twhere\n\t\t\t\t%s and %s\n\t\t\torder by\n\t\t\t\t%s\n\t\t\tlimit %d\n\t\t) select_osc_chunk\n\t\torder by\n\t\t\t%s\n\t\tlimit 1`,\n\t\tdatabaseName, tableName, hint, strings.Join(uniqueKeyColumnNames, \", \"),\n\t\tstrings.Join(uniqueKeyColumnNames, \", \"), databaseName, tableName,\n\t\trangeStartComparison, rangeEndComparison,\n\t\tstrings.Join(uniqueKeyColumnAscending, \", \"), chunkSize,\n\t\tstrings.Join(uniqueKeyColumnDescending, \", \"),\n\t)\n\treturn result, explodedArgs, nil\n}\n\ntype twoColumnRangeMeta struct {\n\tcol1Name, col2Name string\n\tcol1Val, col2Val   string\n\torderByAsc         string\n\torderByDesc        string\n}\n\nfunc newTwoColumnRangeMeta(uniqueKeyColumns *ColumnList) twoColumnRangeMeta {\n\tcolVals := buildColumnsPreparedValues(uniqueKeyColumns)\n\tcols := uniqueKeyColumns.Columns()\n\tcol1Name := EscapeName(cols[0].Name)\n\tcol2Name := EscapeName(cols[1].Name)\n\tcol1Asc := fmt.Sprintf(\"%s asc\", col1Name)\n\tcol2Asc := fmt.Sprintf(\"%s asc\", col2Name)\n\tcol1Desc := fmt.Sprintf(\"%s desc\", col1Name)\n\tcol2Desc := fmt.Sprintf(\"%s desc\", col2Name)\n\tif cols[0].Type == EnumColumnType {\n\t\tcol1Asc = fmt.Sprintf(\"concat(%s) asc\", col1Name)\n\t\tcol1Desc = fmt.Sprintf(\"concat(%s) desc\", col1Name)\n\t}\n\tif cols[1].Type == EnumColumnType {\n\t\tcol2Asc = fmt.Sprintf(\"concat(%s) asc\", col2Name)\n\t\tcol2Desc = fmt.Sprintf(\"concat(%s) desc\", col2Name)\n\t}\n\treturn twoColumnRangeMeta{\n\t\tcol1Name:    col1Name,\n\t\tcol2Name:    col2Name,\n\t\tcol1Val:     colVals[0],\n\t\tcol2Val:     colVals[1],\n\t\torderByAsc:  col1Asc + \", \" + col2Asc,\n\t\torderByDesc: col1Desc + \", \" + col2Desc,\n\t}\n}\n\nfunc buildTwoColumnUnionParts(\n\tselectClause, fromClause string,\n\tcol1Name, col2Name string,\n\tcol1StartVal, col2StartVal, col1EndVal, col2EndVal string,\n\tcol2StartOp, partSuffix string,\n\trangeStartArgs, rangeEndArgs []interface{},\n) (part1, part2, part3 string, explodedArgs []interface{}) {\n\tpart1 = fmt.Sprintf(\n\t\t`(select %s from %s where %s = %s and %s %s %s %s)`,\n\t\tselectClause, fromClause,\n\t\tcol1Name, col1StartVal, col2Name, col2StartOp, col2StartVal,\n\t\tpartSuffix,\n\t)\n\texplodedArgs = append(explodedArgs, rangeStartArgs[0], rangeStartArgs[1])\n\n\tpart2 = fmt.Sprintf(\n\t\t`(select %s from %s where %s > %s and %s < %s %s)`,\n\t\tselectClause, fromClause,\n\t\tcol1Name, col1StartVal, col1Name, col1EndVal,\n\t\tpartSuffix,\n\t)\n\texplodedArgs = append(explodedArgs, rangeStartArgs[0], rangeEndArgs[0])\n\n\tpart3 = fmt.Sprintf(\n\t\t`(select %s from %s where %s = %s and %s <= %s %s)`,\n\t\tselectClause, fromClause,\n\t\tcol1Name, col1EndVal, col2Name, col2EndVal,\n\t\tpartSuffix,\n\t)\n\texplodedArgs = append(explodedArgs, rangeEndArgs[0], rangeEndArgs[1])\n\treturn\n}\n\nfunc buildUniqueKeyRangeEndTwoColumnViaOffset(\n\tdatabaseName, tableName, uniqueKey string,\n\tuniqueKeyColumns *ColumnList,\n\trangeStartArgs, rangeEndArgs []interface{},\n\tchunkSize int64,\n\tstartRangeComparisonSign ValueComparisonSign,\n\thint string,\n) (result string, explodedArgs []interface{}, err error) {\n\tm := newTwoColumnRangeMeta(uniqueKeyColumns)\n\tif len(rangeStartArgs) != 2 || len(rangeEndArgs) != 2 {\n\t\treturn \"\", nil, fmt.Errorf(\"expected 2 range args in buildUniqueKeyRangeEndTwoColumnViaOffset, got %d start and %d end\", len(rangeStartArgs), len(rangeEndArgs))\n\t}\n\tcol2StartOp := string(startRangeComparisonSign)\n\tselectClause := m.col1Name + \", \" + m.col2Name\n\tfromClause := fmt.Sprintf(\"%s.%s force index (%s)\", databaseName, tableName, uniqueKey)\n\tpartSuffix := fmt.Sprintf(\"order by %s limit %d\", m.orderByAsc, chunkSize)\n\n\tif sameFirstColumnValue(rangeStartArgs, rangeEndArgs) {\n\t\tresult = fmt.Sprintf(`\n\t\t\tselect /* gh-ost %s.%s %s */\n\t\t\t\t%s, %s\n\t\t\tfrom\n\t\t\t\t%s\n\t\t\twhere\n\t\t\t\t(%s = %s and %s %s %s and %s <= %s)\n\t\t\torder by\n\t\t\t\t%s\n\t\t\tlimit 1\n\t\t\toffset %d`,\n\t\t\tdatabaseName, tableName, hint,\n\t\t\tm.col1Name, m.col2Name,\n\t\t\tfromClause,\n\t\t\tm.col1Name, m.col1Val, m.",
+        "rank": 0,
+        "truncated": false
+      }
+    ],
+    "selected": [
+      {
+        "id": "f9de456ddce138ee268b2497",
+        "revision": "f7a42f6b8028e96d3c8abd47a4da38baedb1161d",
+        "path": "go/sql/builder.go",
+        "start_byte": 15333,
+        "text": "func BuildUniqueKeyRangeEndPreparedQueryViaOffset(databaseName, tableName, uniqueKey string, uniqueKeyColumns *ColumnList, rangeStartArgs, rangeEndArgs []interface{}, chunkSize int64, includeRangeStartValues bool, hint string) (result string, explodedArgs []interface{}, err error) {\n\tif uniqueKeyColumns.Len() == 0 {\n\t\treturn \"\", explodedArgs, fmt.Errorf(\"got 0 columns in BuildUniqueKeyRangeEndPreparedQuery\")\n\t}\n\tdatabaseName = EscapeName(databaseName)\n\ttableName = EscapeName(tableName)\n\n\tvar startRangeComparisonSign = GreaterThanComparisonSign\n\tif includeRangeStartValues {\n\t\tstartRangeComparisonSign = GreaterThanOrEqualsComparisonSign\n\t}\n\n\tif uniqueKeyColumns.Len() == 2 {\n\t\treturn buildUniqueKeyRangeEndTwoColumnViaOffset(databaseName, tableName, EscapeName(uniqueKey), uniqueKeyColumns, rangeStartArgs, rangeEndArgs, chunkSize, startRangeComparisonSign, hint)\n\t}\n\n\trangeStartComparison, rangeExplodedArgs, err := BuildRangePreparedComparison(uniqueKeyColumns, rangeStartArgs, startRangeComparisonSign)\n\tif err != nil {\n\t\treturn \"\", explodedArgs, err\n\t}\n\texplodedArgs = append(explodedArgs, rangeExplodedArgs...)\n\trangeEndComparison, rangeExplodedArgs, err := BuildRangePreparedComparison(uniqueKeyColumns, rangeEndArgs, LessThanOrEqualsComparisonSign)\n\tif err != nil {\n\t\treturn \"\", explodedArgs, err\n\t}\n\texplodedArgs = append(explodedArgs, rangeExplodedArgs...)\n\n\tuniqueKeyColumnNames := duplicateNames(uniqueKeyColumns.Names())\n\tuniqueKeyColumnAscending := make([]string, len(uniqueKeyColumnNames))\n\tfor i, column := range uniqueKeyColumns.Columns() {\n\t\tuniqueKeyColumnNames[i] = EscapeName(uniqueKeyColumnNames[i])\n\t\tif column.Type == EnumColumnType {\n\t\t\tuniqueKeyColumnAscending[i] = fmt.Sprintf(\"concat(%s) asc\", uniqueKeyColumnNames[i])\n\t\t} else {\n\t\t\tuniqueKeyColumnAscending[i] = fmt.Sprintf(\"%s asc\", uniqueKeyColumnNames[i])\n\t\t}\n\t}\n\tresult = fmt.Sprintf(`\n\t\tselect /* gh-ost %s.%s %s */\n\t\t\t%s\n\t\tfrom\n\t\t\t%s.%s\n\t\twhere\n\t\t\t%s and %s\n\t\torder by\n\t\t\t%s\n\t\tlimit 1\n\t\toffset %d`,\n\t\tdatabaseName, tableName, hint,\n\t\tstrings.Join(uniqueKeyColumnNames, \", \"),\n\t\tdatabaseName, tableName,\n\t\trangeStartComparison, rangeEndComparison,\n\t\tstrings.Join(uniqueKeyColumnAscending, \", \"),\n\t\t(chunkSize - 1),\n\t)\n\treturn result, explodedArgs, nil\n}",
+        "rank": 0,
+        "truncated": false
+      },
+      {
+        "id": "11850b4b00ae8a0f9b62d709",
+        "revision": "f7a42f6b8028e96d3c8abd47a4da38baedb1161d",
+        "path": "go/base/context.go",
+        "start_byte": 13590,
+        "text": "var tableName string",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "8d85b3e5c2f2c80bb67f9a97",
+        "revision": "f7a42f6b8028e96d3c8abd47a4da38baedb1161d",
+        "path": "go/base/default_logger.go",
+        "start_byte": 961,
+        "text": "func (*simpleLogger) Errorf(format string, args ...interface{}) error {\n\treturn log.Errorf(format, args...)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "d24d218296a0a9f518449ffa",
+        "revision": "f7a42f6b8028e96d3c8abd47a4da38baedb1161d",
+        "path": "go/cmd/gh-ost/main.go",
+        "start_byte": 28863,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "d17456c1ee95acf4b97f73e0",
+        "revision": "f7a42f6b8028e96d3c8abd47a4da38baedb1161d",
+        "path": "go/logic/applier.go",
+        "start_byte": 17332,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "ee2df576cb43439af4fc41ac",
+        "revision": "f7a42f6b8028e96d3c8abd47a4da38baedb1161d",
+        "path": "go/logic/applier.go",
+        "start_byte": 36805,
+        "text": "var result int64",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "eb7c3a74dcfb6948d1147e81",
+        "revision": "f7a42f6b8028e96d3c8abd47a4da38baedb1161d",
+        "path": "go/logic/applier.go",
+        "start_byte": 53770,
+        "text": "var result int64",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "65cddf01ea715da4a286bd8e",
+        "revision": "f7a42f6b8028e96d3c8abd47a4da38baedb1161d",
+        "path": "go/logic/migrator.go",
+        "start_byte": 25200,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "e5352272a9adc2a8174beba4",
+        "revision": "f7a42f6b8028e96d3c8abd47a4da38baedb1161d",
+        "path": "go/logic/server.go",
+        "start_byte": 1218,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "4d3c5cabe25cb9db9de903c8",
+        "revision": "f7a42f6b8028e96d3c8abd47a4da38baedb1161d",
+        "path": "go/mysql/connection.go",
+        "start_byte": 2189,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "850ece19cb28199998669321",
+        "revision": "f7a42f6b8028e96d3c8abd47a4da38baedb1161d",
+        "path": "go/mysql/instance_key_map.go",
+        "start_byte": 356,
+        "text": "func (ikm *InstanceKeyMap) Len() int {\n\treturn len(*ikm)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "1bbcf48fcec250e7b705d5f7",
+        "revision": "f7a42f6b8028e96d3c8abd47a4da38baedb1161d",
+        "path": "go/mysql/instance_key.go",
+        "start_byte": 1630,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "7ddb1755680bba3ce6c219cf",
+        "revision": "f7a42f6b8028e96d3c8abd47a4da38baedb1161d",
+        "path": "go/sql/builder.go",
+        "start_byte": 852,
+        "text": "func EscapeName(name string) string {\n\tif unquoted, err := strconv.Unquote(name); err == nil {\n\t\tname = unquoted\n\t}\n\treturn fmt.Sprintf(\"`%s`\", name)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "4310e5236fd09e927dd8be54",
+        "revision": "f7a42f6b8028e96d3c8abd47a4da38baedb1161d",
+        "path": "go/sql/builder.go",
+        "start_byte": 2066,
+        "text": "func duplicateNames(names []string) []string {\n\tduplicate := make([]string, len(names))\n\tcopy(duplicate, names)\n\treturn duplicate\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "00e22ace5650d7cbd1c2b5c2",
+        "revision": "f7a42f6b8028e96d3c8abd47a4da38baedb1161d",
+        "path": "go/sql/builder.go",
+        "start_byte": 8531,
+        "text": "func BuildRangePreparedComparison(columns *ColumnList, args []interface{}, comparisonSign ValueComparisonSign) (result string, explodedArgs []interface{}, err error) {\n\tvalues := buildColumnsPreparedValues(columns)\n\treturn BuildRangeComparison(columns.Names(), values, args, comparisonSign)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "40e17429a78ed48a9a45382d",
+        "revision": "f7a42f6b8028e96d3c8abd47a4da38baedb1161d",
+        "path": "go/sql/builder.go",
+        "start_byte": 15826,
+        "text": "var startRangeComparisonSign = GreaterThanComparisonSign",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "f28048211007632a4f1061a8",
+        "revision": "f7a42f6b8028e96d3c8abd47a4da38baedb1161d",
+        "path": "go/sql/builder.go",
+        "start_byte": 18073,
+        "text": "var startRangeComparisonSign = GreaterThanComparisonSign",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "49cb60b7d55387b9f80e2044",
+        "revision": "f7a42f6b8028e96d3c8abd47a4da38baedb1161d",
+        "path": "go/sql/builder.go",
+        "start_byte": 22350,
+        "text": "func buildUniqueKeyRangeEndTwoColumnViaOffset(\n\tdatabaseName, tableName, uniqueKey string,\n\tuniqueKeyColumns *ColumnList,\n\trangeStartArgs, rangeEndArgs []interface{},\n\tchunkSize int64,\n\tstartRangeComparisonSign ValueComparisonSign,\n\thint string,\n) (result string, explodedArgs []interface{}, err error) {\n\tm := newTwoColumnRangeMeta(uniqueKeyColumns)\n\tif len(rangeStartArgs) != 2 || len(rangeEndArgs) != 2 {\n\t\treturn \"\", nil, fmt.Errorf(\"expected 2 range args in buildUniqueKeyRangeEndTwoColumnViaOffset, got %d start and %d end\", len(rangeStartArgs), len(rangeEndArgs))\n\t}\n\tcol2StartOp := string(startRangeComparisonSign)\n\tselectClause := m.col1Name + \", \" + m.col2Name\n\tfromClause := fmt.Sprintf(\"%s.%s force index (%s)\", databaseName, tableName, uniqueKey)\n\tpartSuffix := fmt.Sprintf(\"order by %s limit %d\", m.orderByAsc, chunkSize)\n\n\tif sameFirstColumnValue(rangeStartArgs, rangeEndArgs) {\n\t\tresult = fmt.Sprintf(`\n\t\t\tselect /* gh-ost %s.%s %s */\n\t\t\t\t%s, %s\n\t\t\tfrom\n\t\t\t\t%s\n\t\t\twhere\n\t\t\t\t(%s = %s and %s %s %s and %s <= %s)\n\t\t\torder by\n\t\t\t\t%s\n\t\t\tlimit 1\n\t\t\toffset %d`,\n\t\t\tdatabaseName, tableName, hint,\n\t\t\tm.col1Name, m.col2Name,\n\t\t\tfromClause,\n\t\t\tm.col1Name, m.col1Val, m.col2Name, col2StartOp, m.col2Val, m.col2Name, m.col2Val,\n\t\t\tm.orderByAsc,\n\t\t\tchunkSize-1,\n\t\t)\n\t\texplodedArgs = append(explodedArgs, rangeStartArgs[0], rangeStartArgs[1], rangeEndArgs[1])\n\t\treturn result, explodedArgs, nil\n\t}\n\n\tpart1, part2, part3, explodedArgs := buildTwoColumnUnionParts(\n\t\tselectClause, fromClause,\n\t\tm.col1Name, m.col2Name,\n\t\tm.col1Val, m.col2Val, m.col1Val, m.col2Val,\n\t\tcol2StartOp, partSuffix,\n\t\trangeStartArgs, rangeEndArgs,\n\t)\n\n\tresult = fmt.Sprintf(`\n\t\tselect /* gh-ost %s.%s %s */\n\t\t\t%s, %s\n\t\tfrom\n\t\t\t(%s union all %s union all %s) t\n\t\torder by\n\t\t\t%s\n\t\tlimit 1\n\t\toffset %d`,\n\t\tdatabaseName, tableName, hint,\n\t\tm.col1Name, m.col2Name,\n\t\tpart1, part2, part3,\n\t\tm.orderByAsc,\n\t\tchunkSize-1,\n\t)\n\treturn result, explodedArgs, nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "826279aae5024e15b9f11fd7",
+        "revision": "f7a42f6b8028e96d3c8abd47a4da38baedb1161d",
+        "path": "go/sql/types.go",
+        "start_byte": 3830,
+        "text": "type ColumnList struct {\n\tcolumns  []Column\n\tOrdinals ColumnsMap\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "4fc0e11bf5070fd705ebe57d",
+        "revision": "f7a42f6b8028e96d3c8abd47a4da38baedb1161d",
+        "path": "go/sql/types.go",
+        "start_byte": 4381,
+        "text": "func (cl *ColumnList) Columns() []Column {\n\treturn cl.columns\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "f3cab15b7b7bc181e560f246",
+        "revision": "f7a42f6b8028e96d3c8abd47a4da38baedb1161d",
+        "path": "go/sql/types.go",
+        "start_byte": 4446,
+        "text": "func (cl *ColumnList) Names() []string {\n\tnames := make([]string, len(cl.columns))\n\tfor i := range cl.columns {\n\t\tnames[i] = cl.columns[i].Name\n\t}\n\treturn names\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "e63a9f9e0937c485ebfcaf2a",
+        "revision": "f7a42f6b8028e96d3c8abd47a4da38baedb1161d",
+        "path": "go/sql/types.go",
+        "start_byte": 7057,
+        "text": "func (cl *ColumnList) Len() int {\n\treturn len(cl.columns)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "b5a7290c331f0fba25fc285c",
+        "revision": "f7a42f6b8028e96d3c8abd47a4da38baedb1161d",
+        "path": "go/sql/types.go",
+        "start_byte": 7755,
+        "text": "func (uk *UniqueKey) Len() int {\n\treturn uk.Columns.Len()\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "7179cc6b953435feae0ce413",
+        "revision": "f830fe0e523bbd4d7675d3c191c9d5827c9020e1",
+        "path": "go/base/context.go",
+        "start_byte": 22470,
+        "text": "var tableName string",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "ed681dd5b0ffb5dbc18be1a5",
+        "revision": "f830fe0e523bbd4d7675d3c191c9d5827c9020e1",
+        "path": "go/base/default_logger.go",
+        "start_byte": 961,
+        "text": "func (*simpleLogger) Errorf(format string, args ...interface{}) error {\n\treturn log.Errorf(format, args...)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "cde096254ce5e70c4811f533",
+        "revision": "f830fe0e523bbd4d7675d3c191c9d5827c9020e1",
+        "path": "go/base/load_map.go",
+        "start_byte": 1513,
+        "text": "func (lm *LoadMap) String() string {\n\ttokens := []string{}\n\tfor key, val := range *lm {\n\t\ttoken := fmt.Sprintf(\"%s=%d\", key, val)\n\t\ttokens = append(tokens, token)\n\t}\n\tsort.Strings(tokens)\n\treturn strings.Join(tokens, \",\")\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "50406e390d6056352840f7a0",
+        "revision": "f830fe0e523bbd4d7675d3c191c9d5827c9020e1",
+        "path": "go/binlog/binlog_dml_event.go",
+        "start_byte": 1400,
+        "text": "func (bde *BinlogDMLEvent) String() string {\n\treturn fmt.Sprintf(\"[%+v on %s:%s]\", bde.DML, bde.DatabaseName, bde.TableName)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "a9f41dfbadd93f74edec4494",
+        "revision": "f830fe0e523bbd4d7675d3c191c9d5827c9020e1",
+        "path": "go/binlog/binlog_entry.go",
+        "start_byte": 846,
+        "text": "func (ble *BinlogEntry) String() string {\n\treturn fmt.Sprintf(\"[BinlogEntry at %+v; dml:%+v]\", ble.Coordinates, ble.DmlEvent)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "8251990d30a74c36be2a5342",
+        "revision": "f830fe0e523bbd4d7675d3c191c9d5827c9020e1",
+        "path": "go/cmd/gh-ost/main.go",
+        "start_byte": 555,
+        "text": "func (s *statsdTagList) String() string {\n\tif s == nil || len(*s) == 0 {\n\t\treturn \"\"\n\t}\n\treturn fmt.Sprint([]string(*s))\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "f0444a9b84b82577db0af3c3",
+        "revision": "f830fe0e523bbd4d7675d3c191c9d5827c9020e1",
+        "path": "go/cmd/gh-ost/main.go",
+        "start_byte": 34171,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "1724d0dabe5e5b038417182e",
+        "revision": "f830fe0e523bbd4d7675d3c191c9d5827c9020e1",
+        "path": "go/logic/applier.go",
+        "start_byte": 25853,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "aa890f2ee4078960c03e41cb",
+        "revision": "f830fe0e523bbd4d7675d3c191c9d5827c9020e1",
+        "path": "go/logic/applier.go",
+        "start_byte": 59801,
+        "text": "var result int64",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "9bb15fb3510000c444b6dcb6",
+        "revision": "f830fe0e523bbd4d7675d3c191c9d5827c9020e1",
+        "path": "go/logic/applier.go",
+        "start_byte": 67537,
+        "text": "var values *sql.ColumnValues",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "8aa7b45db337b66aff0ea8f4",
+        "revision": "f830fe0e523bbd4d7675d3c191c9d5827c9020e1",
+        "path": "go/logic/applier.go",
+        "start_byte": 84516,
+        "text": "var result int64",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "5ba8daf68a26011a458ba73d",
+        "revision": "f830fe0e523bbd4d7675d3c191c9d5827c9020e1",
+        "path": "go/logic/checkpoint.go",
+        "start_byte": 1927,
+        "text": "var b []byte",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "b90ef58033b95c52f3ef3031",
+        "revision": "f830fe0e523bbd4d7675d3c191c9d5827c9020e1",
+        "path": "go/logic/migrator.go",
+        "start_byte": 26041,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "1a6d613f011fc50bd99f3615",
+        "revision": "f830fe0e523bbd4d7675d3c191c9d5827c9020e1",
+        "path": "go/logic/migrator.go",
+        "start_byte": 107679,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "2025bdaa031bfdbb71d4e144",
+        "revision": "f830fe0e523bbd4d7675d3c191c9d5827c9020e1",
+        "path": "go/logic/server.go",
+        "start_byte": 1218,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "bb496e15d33b405f2c707a57",
+        "revision": "f830fe0e523bbd4d7675d3c191c9d5827c9020e1",
+        "path": "go/mysql/binlog_file.go",
+        "start_byte": 1639,
+        "text": "func (fbc FileBinlogCoordinates) String() string {\n\treturn fbc.DisplayString()\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "656b5ce45a302e4fe3aea0e8",
+        "revision": "f830fe0e523bbd4d7675d3c191c9d5827c9020e1",
+        "path": "go/mysql/binlog_gtid.go",
+        "start_byte": 1704,
+        "text": "func (coord GTIDBinlogCoordinates) String() string {\n\tif coord.GTIDSet == nil {\n\t\treturn \"\"\n\t}\n\treturn coord.GTIDSet.String()\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "23863dc3a4d8a22cca6567b0",
+        "revision": "f830fe0e523bbd4d7675d3c191c9d5827c9020e1",
+        "path": "go/mysql/connection.go",
+        "start_byte": 1702,
+        "text": "func (con *ConnectionConfig) String() string {\n\treturn fmt.Sprintf(\"%s, user=%s, usingTLS=%t\", con.Key.DisplayString(), con.User, con.tlsConfig != nil)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "6eacdf5736087a6b2482a4c3",
+        "revision": "f830fe0e523bbd4d7675d3c191c9d5827c9020e1",
+        "path": "go/mysql/connection.go",
+        "start_byte": 2189,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "d2ba405b7299ee65d2193eeb",
+        "revision": "f830fe0e523bbd4d7675d3c191c9d5827c9020e1",
+        "path": "go/mysql/instance_key.go",
+        "start_byte": 1630,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "329ad15b97dfab4f37a6f31c",
+        "revision": "f830fe0e523bbd4d7675d3c191c9d5827c9020e1",
+        "path": "go/mysql/instance_key.go",
+        "start_byte": 4002,
+        "text": "func (ik InstanceKey) String() string {\n\treturn ik.StringCode()\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "f9ca385292a398a21c656234",
+        "revision": "f830fe0e523bbd4d7675d3c191c9d5827c9020e1",
+        "path": "go/sql/builder.go",
+        "start_byte": 862,
+        "text": "func EscapeName(name string) string {\n\tif unquoted, err := strconv.Unquote(name); err == nil {\n\t\tname = unquoted\n\t}\n\treturn fmt.Sprintf(\"`%s`\", name)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "2d53727b15671f747a210765",
+        "revision": "f830fe0e523bbd4d7675d3c191c9d5827c9020e1",
+        "path": "go/sql/builder.go",
+        "start_byte": 1365,
+        "text": "func buildColumnsPreparedValues(columns *ColumnList) []string {\n\tvalues := make([]string, columns.Len())\n\tfor i, column := range columns.Columns() {\n\t\tvar token string\n\t\tif column.timezoneConversion != nil {\n\t\t\ttoken = fmt.Sprintf(\"convert_tz(?, '%s', '%s')\", column.timezoneConversion.ToTimezone, \"+00:00\")\n\t\t} else if column.enumToTextConversion {\n\t\t\ttoken = fmt.Sprintf(\"ELT(?, %s)\", column.EnumValues)\n\t\t} else if column.Type == JSONColumnType {\n\t\t\ttoken = \"convert(? using utf8mb4)\"\n\t\t} else {\n\t\t\ttoken = \"?\"\n\t\t}\n\t\tvalues[i] = token\n\t}\n\treturn values\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "5c4bf62a25525a5173f288fe",
+        "revision": "f830fe0e523bbd4d7675d3c191c9d5827c9020e1",
+        "path": "go/sql/builder.go",
+        "start_byte": 5879,
+        "text": "func (b *CheckpointInsertQueryBuilder) BuildQuery(uniqueKeyArgs []interface{}) (string, []interface{}, error) {\n\tif len(uniqueKeyArgs) != 2*b.uniqueKeyColumns.Len() {\n\t\treturn \"\", nil, fmt.Errorf(\"args count differs from 2 x unique key column count\")\n\t}\n\tconvertedArgs := make([]interface{}, 0, 2*b.uniqueKeyColumns.Len())\n\tfor i, column := range b.uniqueKeyColumns.Columns() {\n\t\tminArg := column.convertArg(uniqueKeyArgs[i])\n\t\tconvertedArgs = append(convertedArgs, minArg)\n\t}\n\tfor i, column := range b.uniqueKeyColumns.Columns() {\n\t\tminArg := column.convertArg(uniqueKeyArgs[i+b.uniqueKeyColumns.Len()])\n\t\tconvertedArgs = append(convertedArgs, minArg)\n\t}\n\treturn b.preparedStatement, convertedArgs, nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "c53461300464c109bc273b50",
+        "revision": "f830fe0e523bbd4d7675d3c191c9d5827c9020e1",
+        "path": "go/sql/builder.go",
+        "start_byte": 7441,
+        "text": "func BuildRangeComparison(columns []string, values []string, args []interface{}, comparisonSign ValueComparisonSign) (result string, explodedArgs []interface{}, err error) {\n\tif len(columns) == 0 {\n\t\treturn \"\", explodedArgs, fmt.Errorf(\"got 0 columns in BuildRangeComparison\")\n\t}\n\tif len(columns) != len(values) {\n\t\treturn \"\", explodedArgs, fmt.Errorf(\"got %d columns but %d values in BuildRangeComparison\", len(columns), len(values))\n\t}\n\tif len(columns) != len(args) {\n\t\treturn \"\", explodedArgs, fmt.Errorf(\"got %d columns but %d args in BuildRangeComparison\", len(columns), len(args))\n\t}\n\tincludeEquals := false\n\tif comparisonSign == LessThanOrEqualsComparisonSign {\n\t\tcomparisonSign = LessThanComparisonSign\n\t\tincludeEquals = true\n\t}\n\tif comparisonSign == GreaterThanOrEqualsComparisonSign {\n\t\tcomparisonSign = GreaterThanComparisonSign\n\t\tincludeEquals = true\n\t}\n\tcomparisons := []string{}\n\n\tfor i, column := range columns {\n\t\tvalue := values[i]\n\t\trangeComparison, err := BuildValueComparison(column, value, comparisonSign)\n\t\tif err != nil {\n\t\t\treturn \"\", explodedArgs, err\n\t\t}\n\t\tif i > 0 {\n\t\t\tequalitiesComparison, err := BuildEqualsComparison(columns[0:i], values[0:i])\n\t\t\tif err != nil {\n\t\t\t\treturn \"\", explodedArgs, err\n\t\t\t}\n\t\t\tcomparison := fmt.Sprintf(\"(%s AND %s)\", equalitiesComparison, rangeComparison)\n\t\t\tcomparisons = append(comparisons, comparison)\n\t\t\texplodedArgs = append(explodedArgs, args[0:i]...)\n\t\t\texplodedArgs = append(explodedArgs, args[i])\n\t\t} else {\n\t\t\tcomparisons = append(comparisons, rangeComparison)\n\t\t\texplodedArgs = append(explodedArgs, args[i])\n\t\t}\n\t}\n\n\tif includeEquals {\n\t\tcomparison, err := BuildEqualsComparison(columns, values)\n\t\tif err != nil {\n\t\t\treturn \"\", explodedArgs, err\n\t\t}\n\t\tcomparisons = append(comparisons, comparison)\n\t\texplodedArgs = append(explodedArgs, args...)\n\t}\n\tresult = strings.Join(comparisons, \" or \")\n\tresult = fmt.Sprintf(\"(%s)\", result)\n\treturn result, explodedArgs, nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "c476f3d25c6545b21740bde5",
+        "revision": "f830fe0e523bbd4d7675d3c191c9d5827c9020e1",
+        "path": "go/sql/builder.go",
+        "start_byte": 10963,
+        "text": "var minRangeComparisonSign = GreaterThanComparisonSign",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "b8af402214a9fbafd4c1691c",
+        "revision": "f830fe0e523bbd4d7675d3c191c9d5827c9020e1",
+        "path": "go/sql/builder.go",
+        "start_byte": 16180,
+        "text": "type MoveTableCopySelectQueryBuilder struct {\n\tpreparedStatement string\n\targsMapping       []int\n\targsCount         int\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "4c066a523d82a3e94f87ce37",
+        "revision": "f830fe0e523bbd4d7675d3c191c9d5827c9020e1",
+        "path": "go/sql/builder.go",
+        "start_byte": 16303,
+        "text": "func NewMoveTableCopySelectQueryBuilder(sourceDatabaseName, sourceTableName string, columns *ColumnList, uniqueKey string, uniqueKeyColumns *ColumnList, includeRangeStartValues bool) (*MoveTableCopySelectQueryBuilder, error) {\n\tsourceDatabaseName = EscapeName(sourceDatabaseName)\n\tsourceTableName = EscapeName(sourceTableName)\n\tcolumnNames := columns.Names()\n\tfor i := range columnNames {\n\t\tcolumnNames[i] = EscapeName(columnNames[i])\n\t}\n\tsharedColumnsListing := strings.Join(columnNames, \", \")\n\tuniqueKey = EscapeName(uniqueKey)\n\tvar minRangeComparisonSign = GreaterThanComparisonSign\n\tif includeRangeStartValues {\n\t\tminRangeComparisonSign = GreaterThanOrEqualsComparisonSign\n\t}\n\trangeStartValues := buildColumnsPreparedValues(uniqueKeyColumns)\n\trangeEndValues := buildColumnsPreparedValues(uniqueKeyColumns)\n\tdummyArgs := make([]any, len(uniqueKeyColumns.Columns()))\n\tfor i := range dummyArgs {\n\t\tdummyArgs[i] = i\n\t}\n\tvar argsMapping []int\n\n\trangeStartComparison, rangeExplodedArgs, err := BuildRangeComparison(uniqueKeyColumns.Names(), rangeStartValues, dummyArgs, minRangeComparisonSign)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\tfor _, a := range rangeExplodedArgs {\n\t\tidx := slices.Index(dummyArgs, a)\n\t\tif idx == -1 {\n\t\t\treturn nil, fmt.Errorf(\"failed to build args mapping, missing argument pointer %v\", a)\n\t\t}\n\t\targsMapping = append(argsMapping, idx)\n\t}\n\n\trangeEndComparison, rangeExplodedArgs, err := BuildRangeComparison(uniqueKeyColumns.Names(), rangeEndValues, dummyArgs, LessThanOrEqualsComparisonSign)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\tfor _, a := range rangeExplodedArgs {\n\t\tidx := slices.Index(dummyArgs, a)\n\t\tif idx == -1 {\n\t\t\treturn nil, fmt.Errorf(\"failed to build args mapping, missing argument pointer %v\", a)\n\t\t}\n\t\targsMapping = append(argsMapping, idx+len(dummyArgs))\n\t}\n\n\tstmt := fmt.Sprintf(`\n\t\tselect /* gh-ost %s.%s */ %s\n\t\tfrom\n\t\t\t%s.%s\n\t\tforce index (%s)\n\t\twhere\n\t\t\t(%s and %s)\n\t\t`,\n\t\tsourceDatabaseName, sourceTableName, sharedColumnsListing,\n\t\tsourceDatabaseName, sourceTableName,\n\t\tuniqueKey,\n\t\trangeStartComparison, rangeEndComparison,\n\t)\n\treturn &MoveTableCopySelectQueryBuilder{\n\t\tpreparedStatement: stmt,\n\t\targsMapping:       argsMapping,\n\t\targsCount:         len(dummyArgs) * 2,\n\t}, nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "4acdb7a00d5e5201f0ece7a7",
+        "revision": "f830fe0e523bbd4d7675d3c191c9d5827c9020e1",
+        "path": "go/sql/builder.go",
+        "start_byte": 16834,
+        "text": "var minRangeComparisonSign = GreaterThanComparisonSign",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "9627a76efea5dce50d22c873",
+        "revision": "f830fe0e523bbd4d7675d3c191c9d5827c9020e1",
+        "path": "go/sql/builder.go",
+        "start_byte": 17223,
+        "text": "var argsMapping []int",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "eea82268b1c34e7ee639c6b8",
+        "revision": "f830fe0e523bbd4d7675d3c191c9d5827c9020e1",
+        "path": "go/sql/builder.go",
+        "start_byte": 18533,
+        "text": "func (b *MoveTableCopySelectQueryBuilder) BuildQuery(rangeStartArgs, rangeEndArgs []any) (string, []any, error) {\n\tif len(rangeStartArgs)+len(rangeEndArgs) != b.argsCount {\n\t\treturn \"\", nil, fmt.Errorf(\"got %d args but expected %d\", len(rangeStartArgs)+len(rangeEndArgs), b.argsCount)\n\t}\n\tif len(rangeStartArgs) != len(rangeEndArgs) {\n\t\treturn \"\", nil, fmt.Errorf(\"mismatched number of start and end args: %d != %d\", len(rangeStartArgs), len(rangeEndArgs))\n\t}\n\texplodedArgs := make([]any, 0, len(b.argsMapping))\n\tfor _, idx := range b.argsMapping {\n\t\tif idx < len(rangeStartArgs) {\n\t\t\texplodedArgs = append(explodedArgs, rangeStartArgs[idx])\n\t\t} else {\n\t\t\texplodedArgs = append(explodedArgs, rangeEndArgs[idx-len(rangeStartArgs)])\n\t\t}\n\t}\n\treturn b.preparedStatement, explodedArgs, nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "1742efecbba8dcaebbc21438",
+        "revision": "f830fe0e523bbd4d7675d3c191c9d5827c9020e1",
+        "path": "go/sql/builder.go",
+        "start_byte": 19321,
+        "text": "type MoveTableCopyInsertQueryBuilder struct {\n\tpreparedStatement    string\n\tvalueListPlaceholder string\n\tvalueListSize        int\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "4ffe5c3bd092fa62ad863ea6",
+        "revision": "f830fe0e523bbd4d7675d3c191c9d5827c9020e1",
+        "path": "go/sql/builder.go",
+        "start_byte": 19454,
+        "text": "func NewMoveTableCopyInsertQueryBuilder(targetDatabaseName, targetTableName string, columns *ColumnList) (*MoveTableCopyInsertQueryBuilder, error) {\n\ttargetDatabaseName = EscapeName(targetDatabaseName)\n\ttargetTableName = EscapeName(targetTableName)\n\tcolumnsNames := columns.Names()\n\tfor i := range columnsNames {\n\t\tcolumnsNames[i] = EscapeName(columnsNames[i])\n\t}\n\tsharedColumnsListing := strings.Join(columnsNames, \", \")\n\tvalueListPlaceholder := \"(\" + strings.Join(buildColumnsPreparedValues(columns), \", \") + \")\"\n\tvalueListSize := len(columnsNames)\n\tstmt := fmt.Sprintf(`\n\t\tinsert /* gh-ost %s.%s */ ignore\n\t\tinto\n\t\t\t%s.%s\n\t\t\t(%s)\n\t\tvalues\n\t\t`,\n\t\ttargetDatabaseName, targetTableName,\n\t\ttargetDatabaseName, targetTableName,\n\t\tsharedColumnsListing,\n\t)\n\treturn &MoveTableCopyInsertQueryBuilder{\n\t\tpreparedStatement:    stmt,\n\t\tvalueListPlaceholder: valueListPlaceholder,\n\t\tvalueListSize:        valueListSize,\n\t}, nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "2c5083720b3a4aa8e6514802",
+        "revision": "f830fe0e523bbd4d7675d3c191c9d5827c9020e1",
+        "path": "go/sql/builder.go",
+        "start_byte": 20374,
+        "text": "func (b *MoveTableCopyInsertQueryBuilder) BuildQuery(values []*ColumnValues) (string, []any, error) {\n\tvar explodedArgs []any\n\tvar builder strings.Builder\n\tbuilder.WriteString(b.preparedStatement)\n\tfor i, value := range values {\n\t\tif len(value.AbstractValues()) != b.valueListSize {\n\t\t\treturn \"\", nil, fmt.Errorf(\"got %d column values but expected %d\", len(value.AbstractValues()), b.valueListSize)\n\t\t}\n\t\tif i > 0 {\n\t\t\tbuilder.WriteString(\",\\n\")\n\t\t}\n\t\tbuilder.WriteString(b.valueListPlaceholder)\n\t\texplodedArgs = append(explodedArgs, value.AbstractValues()...)\n\t}\n\treturn builder.String(), explodedArgs, nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "11e9cbedd7a5d4ecd8ae8561",
+        "revision": "f830fe0e523bbd4d7675d3c191c9d5827c9020e1",
+        "path": "go/sql/builder.go",
+        "start_byte": 20477,
+        "text": "var explodedArgs []any",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "06e9f44df2678d2d87ec918e",
+        "revision": "f830fe0e523bbd4d7675d3c191c9d5827c9020e1",
+        "path": "go/sql/builder.go",
+        "start_byte": 20501,
+        "text": "var builder strings.Builder",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "d31346275313371034d7c345",
+        "revision": "f830fe0e523bbd4d7675d3c191c9d5827c9020e1",
+        "path": "go/sql/builder.go",
+        "start_byte": 20985,
+        "text": "func BuildUniqueKeyRangeEndPreparedQueryViaOffset(databaseName, tableName string, uniqueKeyColumns *ColumnList, rangeStartArgs, rangeEndArgs []interface{}, chunkSize int64, includeRangeStartValues bool, hint string) (result string, explodedArgs []interface{}, err error) {\n\tif uniqueKeyColumns.Len() == 0 {\n\t\treturn \"\", explodedArgs, fmt.Errorf(\"got 0 columns in BuildUniqueKeyRangeEndPreparedQuery\")\n\t}\n\tdatabaseName = EscapeName(databaseName)\n\ttableName = EscapeName(tableName)\n\n\tvar startRangeComparisonSign = GreaterThanComparisonSign\n\tif includeRangeStartValues {\n\t\tstartRangeComparisonSign = GreaterThanOrEqualsComparisonSign\n\t}\n\n\tif uniqueKeyColumns.Len() == 2 {\n\t\treturn buildUniqueKeyRangeEndTwoColumnViaOffset(databaseName, tableName, uniqueKeyColumns, rangeStartArgs, rangeEndArgs, chunkSize, startRangeComparisonSign, hint)\n\t}\n\n\trangeStartComparison, rangeExplodedArgs, err := BuildRangePreparedComparison(uniqueKeyColumns, rangeStartArgs, startRangeComparisonSign)\n\tif err != nil {\n\t\treturn \"\", explodedArgs, err\n\t}\n\texplodedArgs = append(explodedArgs, rangeExplodedArgs...)\n\trangeEndComparison, rangeExplodedArgs, err := BuildRangePreparedComparison(uniqueKeyColumns, rangeEndArgs, LessThanOrEqualsComparisonSign)\n\tif err != nil {\n\t\treturn \"\", explodedArgs, err\n\t}\n\texplodedArgs = append(explodedArgs, rangeExplodedArgs...)\n\n\tuniqueKeyColumnNames := duplicateNames(uniqueKeyColumns.Names())\n\tuniqueKeyColumnAscending := make([]string, len(uniqueKeyColumnNames))\n\tfor i, column := range uniqueKeyColumns.Columns() {\n\t\tuniqueKeyColumnNames[i] = EscapeName(uniqueKeyColumnNames[i])\n\t\tif column.Type == EnumColumnType {\n\t\t\tuniqueKeyColumnAscending[i] = fmt.Sprintf(\"concat(%s) asc\", uniqueKeyColumnNames[i])\n\t\t} else {\n\t\t\tuniqueKeyColumnAscending[i] = fmt.Sprintf(\"%s asc\", uniqueKeyColumnNames[i])\n\t\t}\n\t}\n\tresult = fmt.Sprintf(`\n\t\tselect /* gh-ost %s.%s %s */\n\t\t\t%s\n\t\tfrom\n\t\t\t%s.%s\n\t\twhere\n\t\t\t%s and %s\n\t\torder by\n\t\t\t%s\n\t\tlimit 1\n\t\toffset %d`,\n\t\tdatabaseName, tableName, hint,\n\t\tstrings.Join(uniqueKeyColumnNames, \", \"),\n\t\tdatabaseName, tableName,\n\t\trangeStartComparison, rangeEndComparison,\n\t\tstrings.Join(uniqueKeyColumnAscending, \", \"),\n\t\t(chunkSize - 1),\n\t)\n\treturn result, explodedArgs, nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "f6d3446e3d3a336d6d47b985",
+        "revision": "f830fe0e523bbd4d7675d3c191c9d5827c9020e1",
+        "path": "go/sql/builder.go",
+        "start_byte": 34916,
+        "text": "func (b *DMLDeleteQueryBuilder) BuildQuery(args []interface{}) (string, []interface{}, error) {\n\tif len(args) != b.tableColumns.Len() {\n\t\treturn \"\", nil, fmt.Errorf(\"args count differs from table column count in BuildDMLDeleteQuery\")\n\t}\n\tuniqueKeyArgs := make([]interface{}, 0, b.uniqueKeyColumns.Len())\n\tfor _, column := range b.uniqueKeyColumns.Columns() {\n\t\ttableOrdinal := b.tableColumns.Ordinals[column.Name]\n\t\targ := column.convertArg(args[tableOrdinal])\n\t\tuniqueKeyArgs = append(uniqueKeyArgs, arg)\n\t}\n\treturn b.preparedStatement, uniqueKeyArgs, nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "703a889eacdd628fe9bdde80",
+        "revision": "f830fe0e523bbd4d7675d3c191c9d5827c9020e1",
+        "path": "go/sql/builder.go",
+        "start_byte": 37374,
+        "text": "func (b *DMLInsertQueryBuilder) BuildQuery(args []interface{}) (string, []interface{}, error) {\n\tif len(args) != b.tableColumns.Len() {\n\t\treturn \"\", nil, fmt.Errorf(\"args count differs from table column count in BuildDMLInsertQuery\")\n\t}\n\tsharedArgs := make([]interface{}, 0, b.sharedColumns.Len())\n\tfor _, column := range b.sharedColumns.Columns() {\n\t\ttableOrdinal := b.tableColumns.Ordinals[column.Name]\n\t\targ := column.convertArg(args[tableOrdinal])\n\t\tsharedArgs = append(sharedArgs, arg)\n\t}\n\treturn b.preparedStatement, sharedArgs, nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "56967bd44203060d34280322",
+        "revision": "f830fe0e523bbd4d7675d3c191c9d5827c9020e1",
+        "path": "go/sql/builder.go",
+        "start_byte": 40316,
+        "text": "func (b *DMLUpdateQueryBuilder) BuildQuery(valueArgs, whereArgs []interface{}) (string, []interface{}, error) {\n\targs := make([]interface{}, 0, b.sharedColumns.Len()+b.uniqueKeyColumns.Len())\n\tfor _, column := range b.sharedColumns.Columns() {\n\t\ttableOrdinal := b.tableColumns.Ordinals[column.Name]\n\t\targ := column.convertArg(valueArgs[tableOrdinal])\n\t\targs = append(args, arg)\n\t}\n\tfor _, column := range b.uniqueKeyColumns.Columns() {\n\t\ttableOrdinal := b.tableColumns.Ordinals[column.Name]\n\t\targ := column.convertArg(whereArgs[tableOrdinal])\n\t\targs = append(args, arg)\n\t}\n\n\treturn b.preparedStatement, args, nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "e9faf64291be7df9b6785cc9",
+        "revision": "f830fe0e523bbd4d7675d3c191c9d5827c9020e1",
+        "path": "go/sql/types.go",
+        "start_byte": 3830,
+        "text": "type ColumnList struct {\n\tcolumns  []Column\n\tOrdinals ColumnsMap\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "e818f3d29ceeeb2175085173",
+        "revision": "f830fe0e523bbd4d7675d3c191c9d5827c9020e1",
+        "path": "go/sql/types.go",
+        "start_byte": 4381,
+        "text": "func (cl *ColumnList) Columns() []Column {\n\treturn cl.columns\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "d66188a3f8e2ad313af5b315",
+        "revision": "f830fe0e523bbd4d7675d3c191c9d5827c9020e1",
+        "path": "go/sql/types.go",
+        "start_byte": 4446,
+        "text": "func (cl *ColumnList) Names() []string {\n\tnames := make([]string, len(cl.columns))\n\tfor i := range cl.columns {\n\t\tnames[i] = cl.columns[i].Name\n\t}\n\treturn names\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "488d73cbc1f8644444b35781",
+        "revision": "f830fe0e523bbd4d7675d3c191c9d5827c9020e1",
+        "path": "go/sql/types.go",
+        "start_byte": 6133,
+        "text": "func (cl *ColumnList) String() string {\n\treturn strings.Join(cl.Names(), \",\")\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "b66e823279a2efe8d9d870a1",
+        "revision": "f830fe0e523bbd4d7675d3c191c9d5827c9020e1",
+        "path": "go/sql/types.go",
+        "start_byte": 7816,
+        "text": "func (uk *UniqueKey) String() string {\n\tdescription := uk.Name\n\tif uk.IsAutoIncrement {\n\t\tdescription = fmt.Sprintf(\"%s (auto_increment)\", description)\n\t}\n\treturn fmt.Sprintf(\"%s: %s; has nullable: %+v\", description, uk.Columns.Names(), uk.HasNullable)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "5d4712d676da1c5b9bb6c9e8",
+        "revision": "f830fe0e523bbd4d7675d3c191c9d5827c9020e1",
+        "path": "go/sql/types.go",
+        "start_byte": 8072,
+        "text": "type ColumnValues struct {\n\tabstractValues []interface{}\n\tValuesPointers []interface{}\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "80aacfc5e5e95ce17b363b2a",
+        "revision": "f830fe0e523bbd4d7675d3c191c9d5827c9020e1",
+        "path": "go/sql/types.go",
+        "start_byte": 8752,
+        "text": "func (cv *ColumnValues) AbstractValues() []interface{} {\n\treturn cv.abstractValues\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "52b88e761beda00b269b993a",
+        "revision": "f830fe0e523bbd4d7675d3c191c9d5827c9020e1",
+        "path": "go/sql/types.go",
+        "start_byte": 9037,
+        "text": "func (cv *ColumnValues) String() string {\n\tstringValues := []string{}\n\tfor i := range cv.AbstractValues() {\n\t\tstringValues = append(stringValues, cv.StringColumn(i))\n\t}\n\treturn strings.Join(stringValues, \",\")\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "f7a65e3f8977249064efabcf",
+        "revision": "f7a42f6b8028e96d3c8abd47a4da38baedb1161d",
+        "path": "go/base/context.go",
+        "start_byte": 483,
+        "text": "type RowsEstimateMethod string",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "fd4bc6a69785417af692077f",
+        "revision": "f7a42f6b8028e96d3c8abd47a4da38baedb1161d",
+        "path": "go/base/context.go",
+        "start_byte": 807,
+        "text": "type ThrottleReasonHint string",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "4af7785d886a2c2293964fb9",
+        "revision": "f7a42f6b8028e96d3c8abd47a4da38baedb1161d",
+        "path": "go/base/context.go",
+        "start_byte": 1287,
+        "text": "type ThrottleCheckResult struct {\n\tShouldThrottle bool\n\tReason         string\n\tReasonHint     ThrottleReasonHint\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "ec3d72d85cff164daecc33bd",
+        "revision": "f7a42f6b8028e96d3c8abd47a4da38baedb1161d",
+        "path": "go/base/context.go",
+        "start_byte": 1403,
+        "text": "func NewThrottleCheckResult(throttle bool, reason string, reasonHint ThrottleReasonHint) *ThrottleCheckResult {\n\treturn &ThrottleCheckResult{\n\t\tShouldThrottle: throttle,\n\t\tReason:         reason,\n\t\tReasonHint:     reasonHint,\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "8ad87c2f2ea330b98678ca8c",
+        "revision": "f7a42f6b8028e96d3c8abd47a4da38baedb1161d",
+        "path": "go/base/context.go",
+        "start_byte": 1765,
+        "text": "type MigrationContext struct {\n\tUuid string\n\n\tDatabaseName          string\n\tOriginalTableName     string\n\tAlterStatement        string\n\tAlterStatementOptions string // anything following the 'ALTER TABLE [schema.]table' from AlterStatement\n\n\tcountMutex               sync.Mutex\n\tcountTableRowsCancelFunc func()\n\tCountTableRows           bool\n\tConcurrentCountTableRows bool\n\tAllowedRunningOnMaster   bool\n\tAllowedMasterMaster      bool\n\tSwitchToRowBinlogFormat  bool\n\tAssumeRBR                bool\n\tSkipForeignKeyChecks     bool\n\tSkipStrictMode           bool\n\tAllowZeroInDate          bool\n\tNullableUniqueKeyAllowed bool\n\tApproveRenamedColumns    bool\n\tSkipRenamedColumns       bool\n\tIsTungsten               bool\n\tDiscardForeignKeys       bool\n\tAliyunRDS                bool\n\tGoogleCloudPlatform      bool\n\tAzureMySQL               bool\n\tAttemptInstantDDL        bool\n\tResume                   bool\n\tRevert                   bool\n\tOldTableName             string\n\n\t// SkipPortValidation allows skipping the port validation in `ValidateConnection`\n\t// This is useful when connecting to a MySQL instance where the external port\n\t// may not match the internal port.\n\tSkipPortValidation bool\n\tUseGTIDs           bool\n\n\tconfig            ContextConfig\n\tconfigMutex       *sync.Mutex\n\tConfigFile        string\n\tCliUser           string\n\tCliPassword       string\n\tUseTLS            bool\n\tTLSAllowInsecure  bool\n\tTLSCACertificate  string\n\tTLSCertificate    string\n\tTLSKey            string\n\tCliMasterUser     string\n\tCliMasterPassword string\n\n\tHeartbeatIntervalMilliseconds       int64\n\tdefaultNumRetries                   int64\n\tChunkSize                           int64\n\tniceRatio                           float64\n\tMaxLagMillisecondsThrottleThreshold int64\n\tthrottleControlReplicaKeys          *mysql.InstanceKeyMap\n\tThrottleFlagFile                    string\n\tThrottleAdditionalFlagFile          string\n\tthrottleQuery                       string\n\tthrottleHTTP                        string\n\tIgnoreHTTPErrors                    bool\n\tThrottleCommandedByUser             int64\n\tHibernateUntil                      int64\n\tmaxLoad                             LoadMap\n\tcriticalLoad                        LoadMap\n\tCriticalLoadIntervalMilliseconds    int64\n\tCriticalLoadHibernateSeconds        int64\n\tPostponeCutOverFlagFile             string\n\tCutOverLockTimeoutSeconds           int64\n\tCutOverExponentialBackoff           bool\n\tExponentialBackoffMaxInterval       int64\n\tForceNamedCutOverCommand            bool\n\tForceNamedPanicCommand              bool\n\tPanicFlagFile                       string\n\tHooksPath                           string\n\tHooksHintMessage                    string\n\tHooksHintOwner                      string\n\tHooksHintToken                      string\n\tHooksStatusIntervalSec              int64\n\tHooks                               Hooks\n\tPanicOnWarnings                     bool\n\tCheckpoint                          bool\n\tCheckpointIntervalSeconds           int64\n\n\tDropServeSocket bool\n\tServeSocketFile string\n\tServeTCPPort    int64\n\n\tNoop                         bool\n\tTestOnReplica                bool\n\tMigrateOnReplica             bool\n\tTestOnReplicaSkipReplicaStop bool\n\tOkToDropTable                bool\n\tInitiallyDropOldTable        bool\n\tInitiallyDropGhostTable      bool\n\tTimestampOldTable            bool // Should old table name include a timestamp\n\tCutOverType                  CutOver\n\tReplicaServerId              uint\n\n\tHostname                               string\n\tAssumeMasterHostname                   string\n\tApplierTimeZone                        string\n\tApplierWaitTimeout                     int64\n\tTableEngine                            string\n\tRowsEstimate                           int64\n\tRowsDeltaEstimate                      int64\n\tUsedRowsEstimateMethod                 RowsEstimateMethod\n\tHasSuperPrivilege                      bool\n\tOriginalBinlogFormat                   string\n\tOriginalBinlogRowImage                 string\n\tInspectorConnectionConfig              *mysql.ConnectionConfig\n\tInspectorMySQLVersion                  string\n\tApplierConnectionConfig                *mysql.ConnectionConfig\n\tApplierMySQLVersion                    string\n\tStartTime                              time.Time\n\tRowCopyStartTime                       time.Time\n\tRowCopyEndTime                         time.Time\n\tLockTablesStartTime                    time.Time\n\tRenameTablesStartTime                  time.Time\n\tRenameTablesEndTime                    time.Time\n\tpointOfInterestTime                    time.Time\n\tpointOfInterestTimeMutex               *sync.Mutex\n\tlastHeartbeatOnChangelogTime           time.Time\n\tlastHeartbeatOnChangelogMutex          *sync.Mutex\n\tCurrentLag                             int64\n\tcurrentProgress                        uint64\n\tetaNanoseonds                          int64\n\tEtaRowsPerSecond                       int64\n\tThrottleHTTPIntervalMillis             int64\n\tThrottleHTTPStatusCode                 int64\n\tThrottleHTTPTimeoutMillis              int64\n\tcontrolReplicasLagResult               mysql.ReplicationLagResult\n\tTotalRowsCopied                        int64\n\tTotalDMLEventsApplied                  int64\n\tDMLBatchSize                           int64\n\tisThrottled                            bool\n\tthrottleReason                         string\n\tthrottleReasonHint                     ThrottleReasonHint\n\tthrottleGeneralCheckResult             ThrottleCheckResult\n\tthrottleMutex                          *sync.Mutex\n\tthrottleHTTPMutex                      *sync.Mutex\n\tIsPostponingCutOver                    int64\n\tCountingRowsFlag                       int64\n\tAllEventsUpToLockProcessedInjectedFlag int64\n\tCleanupImminentFlag                    int64\n\tUserCommandedUnpostponeFlag            int64\n\tCutOverCompleteFlag                    int64\n\tInCutOverCriticalSectionFlag           int64\n\tPanicAbort                             chan error\n\n\t// Context for cancellation signaling across all goroutines\n\t// Stored in struct as it spans the entire migration lifecycle, not per-function.\n\t// context.Context is safe for concurrent use by multiple goroutines.\n\tctx        context.Context //nolint:containedctx\n\tcancelFunc context.CancelFunc\n\n\t// Stores the fatal error that triggered abort\n\tAbortError error\n\tabortMutex *sync.Mutex\n\n\tMetrics metrics.Emitter\n\n\tOriginalTableColumnsOnApplier    *sql.ColumnList\n\tOriginalTableColumns             *sql.ColumnList\n\tOriginalTableVirtualColumns      *sql.ColumnList\n\tOriginalTableUniqueKeys          [](*sql.UniqueKey)\n\tOriginalTableAutoIncrement       uint64\n\tGhostTableColumns                *sql.ColumnList\n\tGhostTableVirtualColumns         *sql.ColumnList\n\tGhostTableUniqueKeys             [](*sql.UniqueKey)\n\tUniqueKey                        *sql.UniqueKey\n\tSharedColumns                    *sql.ColumnList\n\tColumnRenameMap                  map[string]string\n\tDroppedColumnsMap                map[string]bool\n\tMappedSharedColumns              *sql.ColumnList\n\tMigrationLastInsertSQLWarnings   []string\n\tMigrationRangeMinValues          *sql.ColumnValues\n\tMigrationRangeMaxValues          *sql.ColumnValues\n\tIteration                        int64\n\tMigrationIterationRangeMinValues *sql.ColumnValues\n\tMigrationIterationRangeMaxValues *sql.ColumnValues\n\tInitialStreamerCoords            mysql.BinlogCoordinates\n\tForceTmpTableName                string\n\n\tIncludeTriggers     bool\n\tRemoveTriggerSuffix bool\n\tTriggerSuffix       string\n\tTriggers            []mysql.Trigger\n\n\t// AnalyzeGhostTableBeforeCutOver makes cutOver() run ANALYZE TABLE on the ghost table\n\t// immediately before the atomic swap, and abort the migration if the ANALYZE errors,\n\t// rather than swap in a table with stale statistics. Opt-in: the operator enables it\n\t// only for eligible tables — small, non-partitioned, non-empty at copy.\n\tAnalyzeGhostTableBeforeCutOver bool\n\n\trecentBinlogCoordinates mysql.BinlogCoordinates\n\n\tBinlogSyncerMaxReconnectAttempts  int\n\tAllowSetupMetadataLockInstruments bool\n\tSkipMetadataLockCheck             bool\n\tIsOpenMetadataLockInstruments     bool\n\n\tLog Logger\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "ce18498c82464b1f78935231",
+        "revision": "f7a42f6b8028e96d3c8abd47a4da38baedb1161d",
+        "path": "go/base/context.go",
+        "start_byte": 9855,
+        "text": "type Logger interface {\n\tDebug(args ...interface{})\n\tDebugf(format string, args ...interface{})\n\tInfo(args ...interface{})\n\tInfof(format string, args ...interface{})\n\tWarning(args ...interface{}) error\n\tWarningf(format string, args ...interface{}) error\n\tError(args ...interface{}) error\n\tErrorf(format string, args ...interface{}) error\n\tErrore(err error) error\n\tFatal(args ...interface{}) error\n\tFatalf(format string, args ...interface{}) error\n\tFatale(err error) error\n\tSetLevel(level log.LogLevel)\n\tSetPrintStackTrace(printStackTraceFlag bool)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "b4ca34aea367847ecad9465c",
+        "revision": "f7a42f6b8028e96d3c8abd47a4da38baedb1161d",
+        "path": "go/base/context.go",
+        "start_byte": 10406,
+        "text": "type ContextConfig struct {\n\tClient struct {\n\t\tUser     string\n\t\tPassword string\n\t}\n\tOsc struct {\n\t\tChunk_Size            int64\n\t\tMax_Lag_Millis        int64\n\t\tReplication_Lag_Query string\n\t\tMax_Load              string\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "411c8ba4a0b4231a9cfe06f4",
+        "revision": "f7a42f6b8028e96d3c8abd47a4da38baedb1161d",
+        "path": "go/base/context.go",
+        "start_byte": 10632,
+        "text": "func NewMigrationContext() *MigrationContext {\n\tctx, cancelFunc := context.WithCancel(context.Background())\n\treturn &MigrationContext{\n\t\tUuid:                                uuid.NewString(),\n\t\tdefaultNumRetries:                   60,\n\t\tChunkSize:                           1000,\n\t\tInspectorConnectionConfig:           mysql.NewConnectionConfig(),\n\t\tApplierConnectionConfig:             mysql.NewConnectionConfig(),\n\t\tMaxLagMillisecondsThrottleThreshold: 1500,\n\t\tCutOverLockTimeoutSeconds:           3,\n\t\tDMLBatchSize:                        10,\n\t\tetaNanoseonds:                       ETAUnknown,\n\t\tmaxLoad:                             NewLoadMap(),\n\t\tcriticalLoad:                        NewLoadMap(),\n\t\tthrottleMutex:                       &sync.Mutex{},\n\t\tthrottleHTTPMutex:                   &sync.Mutex{},\n\t\tthrottleControlReplicaKeys:          mysql.NewInstanceKeyMap(),\n\t\tconfigMutex:                         &sync.Mutex{},\n\t\tpointOfInterestTimeMutex:            &sync.Mutex{},\n\t\tlastHeartbeatOnChangelogMutex:       &sync.Mutex{},\n\t\tColumnRenameMap:                     make(map[string]string),\n\t\tPanicAbort:                          make(chan error),\n\t\tctx:                                 ctx,\n\t\tcancelFunc:                          cancelFunc,\n\t\tabortMutex:                          &sync.Mutex{},\n\t\tLog:                                 NewDefaultLogger(),\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "d623382cf795ae706d626cdc",
+        "revision": "f7a42f6b8028e96d3c8abd47a4da38baedb1161d",
+        "path": "go/base/context.go",
+        "start_byte": 12006,
+        "text": "func (mctx *MigrationContext) SetConnectionConfig(storageEngine string) error {\n\tvar transactionIsolation string\n\tswitch storageEngine {\n\tcase \"rocksdb\":\n\t\ttransactionIsolation = \"READ-COMMITTED\"\n\tdefault:\n\t\ttransactionIsolation = \"REPEATABLE-READ\"\n\t}\n\tmctx.InspectorConnectionConfig.TransactionIsolation = transactionIsolation\n\tmctx.ApplierConnectionConfig.TransactionIsolation = transactionIsolation\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "408fed564796fb772bda1c29",
+        "revision": "f7a42f6b8028e96d3c8abd47a4da38baedb1161d",
+        "path": "go/base/context.go",
+        "start_byte": 12087,
+        "text": "var transactionIsolation string",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "f6040189708d3340754a1ec8",
+        "revision": "f7a42f6b8028e96d3c8abd47a4da38baedb1161d",
+        "path": "go/base/context.go",
+        "start_byte": 12423,
+        "text": "func (mctx *MigrationContext) SetConnectionCharset(charset string) {\n\tif charset == \"\" {\n\t\tcharset = \"utf8mb4,utf8,latin1\"\n\t}\n\n\tmctx.InspectorConnectionConfig.Charset = charset\n\tmctx.ApplierConnectionConfig.Charset = charset\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "88bd8fa1393e16b9eccad671",
+        "revision": "f7a42f6b8028e96d3c8abd47a4da38baedb1161d",
+        "path": "go/base/context.go",
+        "start_byte": 12651,
+        "text": "func getSafeTableName(baseName string, suffix string) string {\n\tname := fmt.Sprintf(\"_%s_%s\", baseName, suffix)\n\tif len(name) <= mysql.MaxTableNameLength {\n\t\treturn name\n\t}\n\textraCharacters := len(name) - mysql.MaxTableNameLength\n\treturn fmt.Sprintf(\"_%s_%s\", baseName[0:len(baseName)-extraCharacters], suffix)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "36528fd37078adc68658c413",
+        "revision": "f7a42f6b8028e96d3c8abd47a4da38baedb1161d",
+        "path": "go/base/context.go",
+        "start_byte": 13075,
+        "text": "func (mctx *MigrationContext) GetGhostTableName() string {\n\tif mctx.Revert {\n\t\t// When reverting the \"ghost\" table is the _del table from the original migration.\n\t\treturn mctx.OldTableName\n\t}\n\tif mctx.ForceTmpTableName != \"\" {\n\t\treturn getSafeTableName(mctx.ForceTmpTableName, \"gho\")\n\t} else {\n\t\treturn getSafeTableName(mctx.OriginalTableName, \"gho\")\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "1d4e2f759307ac85fc15a64f",
+        "revision": "f7a42f6b8028e96d3c8abd47a4da38baedb1161d",
+        "path": "go/base/context.go",
+        "start_byte": 13532,
+        "text": "func (mctx *MigrationContext) GetOldTableName() string {\n\tvar tableName string\n\tif mctx.ForceTmpTableName != \"\" {\n\t\ttableName = mctx.ForceTmpTableName\n\t} else {\n\t\ttableName = mctx.OriginalTableName\n\t}\n\n\tsuffix := \"del\"\n\tif mctx.Revert {\n\t\tsuffix = \"rev_del\"\n\t}\n\tif mctx.TimestampOldTable {\n\t\tt := mctx.StartTime\n\t\ttimestamp := fmt.Sprintf(\"%d%02d%02d%02d%02d%02d\",\n\t\t\tt.Year(), t.Month(), t.Day(),\n\t\t\tt.Hour(), t.Minute(), t.Second())\n\t\treturn getSafeTableName(tableName, fmt.Sprintf(\"%s_%s\", timestamp, suffix))\n\t}\n\treturn getSafeTableName(tableName, suffix)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "64d53c3485084ce3edc0f6cb",
+        "revision": "f7a42f6b8028e96d3c8abd47a4da38baedb1161d",
+        "path": "go/base/context.go",
+        "start_byte": 14214,
+        "text": "func (mctx *MigrationContext) GetChangelogTableName() string {\n\tif mctx.ForceTmpTableName != \"\" {\n\t\treturn ge",
+        "rank": 2,
+        "truncated": true
+      }
+    ]
+  },
+  "retrieval": {
+    "unresolved": [
+      {
+        "side": "ours",
+        "identifier": "preparedStatement",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "string",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "int",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "argsCount",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "sourceDatabaseName",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "sourceTableName",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "columns",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "uniqueKey",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "uniqueKeyColumns",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "includeRangeStartValues",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "bool",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "error",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "columnNames",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "i",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "sharedColumnsListing",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "strings",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Join",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "minRangeComparisonSign",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "go/sql/builder.go",
+            "start": 10963
+          },
+          {
+            "path": "go/sql/builder.go",
+            "start": 16834
+          }
+        ]
+      },
+      {
+        "side": "ours",
+        "identifier": "GreaterThanComparisonSign",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "GreaterThanOrEqualsComparisonSign",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "rangeStartValues",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "rangeEndValues",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "dummyArgs",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "make",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "any",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "len",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "rangeStartComparison",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "rangeExplodedArgs",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "err",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "go/cmd/gh-ost/main.go",
+            "start": 34171
+          },
+          {
+            "path": "go/logic/applier.go",
+            "start": 25853
+          },
+          {
+            "path": "go/logic/migrator.go",
+            "start": 26041
+          },
+          {
+            "path": "go/logic/migrator.go",
+            "start": 107679
+          },
+          {
+            "path": "go/logic/server.go",
+            "start": 1218
+          },
+          {
+            "path": "go/mysql/connection.go",
+            "start": 2189
+          },
+          {
+            "path": "go/mysql/instance_key.go",
+            "start": 1630
+          }
+        ]
+      },
+      {
+        "side": "ours",
+        "identifier": "_",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "a",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "idx",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "slices",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Index",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "fmt",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "append",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "rangeEndComparison",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "LessThanOrEqualsComparisonSign",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "stmt",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Sprintf",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "BuildQuery",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "go/sql/builder.go",
+            "start": 5879
+          },
+          {
+            "path": "go/sql/builder.go",
+            "start": 18533
+          },
+          {
+            "path": "go/sql/builder.go",
+            "start": 20374
+          },
+          {
+            "path": "go/sql/builder.go",
+            "start": 34916
+          },
+          {
+            "path": "go/sql/builder.go",
+            "start": 37374
+          },
+          {
+            "path": "go/sql/builder.go",
+            "start": 40316
+          }
+        ]
+      },
+      {
+        "side": "ours",
+        "identifier": "rangeStartArgs",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "rangeEndArgs",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "valueListPlaceholder",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "valueListSize",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "targetDatabaseName",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "targetTableName",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "columnsNames",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Builder",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "WriteString",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "value",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "String",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "go/base/load_map.go",
+            "start": 1513
+          },
+          {
+            "path": "go/binlog/binlog_dml_event.go",
+            "start": 1400
+          },
+          {
+            "path": "go/binlog/binlog_entry.go",
+            "start": 846
+          },
+          {
+            "path": "go/cmd/gh-ost/main.go",
+            "start": 555
+          },
+          {
+            "path": "go/mysql/binlog_file.go",
+            "start": 1639
+          },
+          {
+            "path": "go/mysql/binlog_gtid.go",
+            "start": 1704
+          },
+          {
+            "path": "go/mysql/connection.go",
+            "start": 1702
+          },
+          {
+            "path": "go/mysql/instance_key.go",
+            "start": 4002
+          },
+          {
+            "path": "go/sql/types.go",
+            "start": 6133
+          },
+          {
+            "path": "go/sql/types.go",
+            "start": 7816
+          },
+          {
+            "path": "go/sql/types.go",
+            "start": 9037
+          }
+        ]
+      },
+      {
+        "side": "ours",
+        "identifier": "databaseName",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "chunkSize",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "int64",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "hint",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "result",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "go/logic/applier.go",
+            "start": 59801
+          },
+          {
+            "path": "go/logic/applier.go",
+            "start": 84516
+          }
+        ]
+      },
+      {
+        "side": "theirs",
+        "identifier": "BuildUniqueKeyRangeEndPreparedQueryViaOffset",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "databaseName",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "uniqueKey",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "string",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "uniqueKeyColumns",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "rangeStartArgs",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "rangeEndArgs",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "chunkSize",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "int64",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "includeRangeStartValues",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "bool",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "hint",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "result",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "go/logic/applier.go",
+            "start": 36805
+          },
+          {
+            "path": "go/logic/applier.go",
+            "start": 53770
+          }
+        ]
+      },
+      {
+        "side": "theirs",
+        "identifier": "explodedArgs",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "err",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "go/cmd/gh-ost/main.go",
+            "start": 28863
+          },
+          {
+            "path": "go/logic/applier.go",
+            "start": 17332
+          },
+          {
+            "path": "go/logic/migrator.go",
+            "start": 25200
+          },
+          {
+            "path": "go/logic/server.go",
+            "start": 1218
+          },
+          {
+            "path": "go/mysql/connection.go",
+            "start": 2189
+          },
+          {
+            "path": "go/mysql/instance_key.go",
+            "start": 1630
+          }
+        ]
+      },
+      {
+        "side": "theirs",
+        "identifier": "error",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Len",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "go/mysql/instance_key_map.go",
+            "start": 356
+          },
+          {
+            "path": "go/sql/types.go",
+            "start": 7057
+          },
+          {
+            "path": "go/sql/types.go",
+            "start": 7755
+          }
+        ]
+      },
+      {
+        "side": "theirs",
+        "identifier": "fmt",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "startRangeComparisonSign",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "go/sql/builder.go",
+            "start": 15826
+          },
+          {
+            "path": "go/sql/builder.go",
+            "start": 18073
+          }
+        ]
+      },
+      {
+        "side": "theirs",
+        "identifier": "GreaterThanComparisonSign",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "GreaterThanOrEqualsComparisonSign",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "rangeStartComparison",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "rangeExplodedArgs",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "append",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "rangeEndComparison",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "LessThanOrEqualsComparisonSign",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "uniqueKeyColumnNames",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "uniqueKeyColumnAscending",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "make",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "len",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "i",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "column",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Type",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "EnumColumnType",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Sprintf",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "strings",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Join",
+        "reason": "no-unique-declaration-established"
+      }
+    ],
+    "method": "syntax-ranges-and-identifier-candidates/3",
+    "budget_bytes": 32768,
+    "libraries": {
+      "C": "cbbd4827ee02cd5c018ab41f10d8404ff8741159054b352d9a6d763c506ba3c7",
+      "Go": "1612f8fd958ba1ec981bf4b91e2ff399f1e54d26a9da68e5b60b0d7cd00616fc"
+    }
+  }
+}

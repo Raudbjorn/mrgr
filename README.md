@@ -30,98 +30,26 @@ mrgr records each of those mechanically: counts come from parsed, deduplicated s
 
 ## Status
 
-Pre-alpha and honest about it. One package exists; part of it is unfinished.
-The current valid experiment — the 2026-08-30 H0 run — returned a null and
-retired the component it gated. Two earlier runs were retracted and invalidated;
-see *Earlier H0 runs*. Everything else is gated on evidence, not scheduled.
+Pre-alpha. The corrected historical-agreement study completed without demonstrated evidence utility. The new [behavioral instrument and two-model feasibility pilots](evidence/h0/v3-research-2026-09-06/README.md) are implemented; a sufficiently large validated corpus is still required. MEASURABLE remains NO. Phase 4 integration is complete; Phase 5 retains its separate proof requirements.
 
 | Component | State |
 |---|---|
 | `@mrgr/core` — replay, localization, classification, corpus, materialize | **works**: 12 modules carried verbatim from the WP0 instrument, 120 tests, dependency-free |
 | `@mrgr/core` — M1a evidence bundles (`src/m1a/`) | **P0 complete**: one bundle per conflict region keyed `path` + `ordinal`, uncapped preimages with byte-accurate sizes, null for an absent side, append-only sidecar with fail-closed reads and per-region resume. 24 tests. P1/P2 open — see below. |
 | survey / merge-base census (M1a) | next |
-| `@mrgr/mechanisms` — `git_text` \| `gnu_diff3` \| `mergiraf` | gated |
+| `@mrgr/mechanisms` — `git_text` \| `gnu_diff3` \| `mergiraf` | [port complete; real Git gates verified](evidence/m2a/2026-09-06/README.md) |
 | `@mrgr/ledger` — decision \| halt \| debt \| resurrection | gated |
 | `@mrgr/oracle` — per-gate vector, baseline, multi-axis reporting | gated |
 | entity extraction | gated on its own boundary-quality study |
 | agent adapter (MCP and friends) | **retired** — H0's acceptance gate was not met; see *H0 result* below |
 
-## H0 result (frozen 2026-08-30)
+## H0 result — preserved v2 study, 2026-09-06
 
-H0 asked whether evidence selected from outside the conflict hunk helps an
-adjudicator decide a merge conflict. **The answer on this corpus is no, and the
-experiment cannot currently answer it any other way.** Full detail:
-[`evidence/h0/SIGNIFICANCE-2026-08-30T02-54-42-056Z.md`](evidence/h0/SIGNIFICANCE-2026-08-30T02-54-42-056Z.md).
+The completed v2 Phase 3 study grades concrete replacement strings and uses real conflict-local parent context. Its frozen design has 24 development cases and 92 confirmation cases, one per merge, across cli, Redis and newly acquired libgit2 history. The selected primary must improve exact historical agreement by at least five percentage points and pass an exact paired test against hunk-only and every deterministic baseline.
 
-**Corpus.** 30 conflict triples, stratified 10 `jqlang/jq` + 10 `cli/cli` + 10
-`redis/redis` — three repositories, two languages (C and Go) — drawn from a
-frozen 1,050-triple corpus. 3 repeats per triple at temperatures 0.0 / 0.5 /
-0.9, six arms, 540 records. Adjudicator: `qwen2.5-coder-7b-instruct-q6_k` on
-local `llama-server`, pinned by GGUF SHA-256 and verified before execution.
+**Phases 3 and 4 complete; Phase 5 ready. MEASURABLE=NO.** The frozen confirmation contains 92 distinct merge cases and 276 model requests. Selected context matched 5/92 historical replacements (5.4%), compared with 7/92 for hunk-only and 21/92 for the strongest deterministic baseline (keep-ours). The selected-versus-hunk-only difference is -2.2pp, exact paired p=0.7266. The result is inconclusive; no demonstrated selected-evidence superiority. Selected also underperformed keep-ours by 17.4pp (paired p=0.002494) on this endpoint. See the [result table](evidence/h0/v2-2026-09-06b/RESULT.md). See the [active evidence and reproduction instructions](evidence/h0/README.md) and [execution contract / Phase 4 handoff](docs/planning/final/phase-3-h0-evidence-utility/execution-and-handoff-2026-09-06.md). Historical agreement is not behavioral correctness; invalid outputs stay in the scheduled denominator. A valid completed result closes Phase 3 independently of whether the effect is positive.
 
-| arm | correct | wrong | halt | token cost | historical match (triples) | gate outcome |
-| --- | ---: | ---: | ---: | ---: | ---: | --- |
-| hunk-only | 20 | 56 | 10 | 52,154 | 7 / 30 | not met (Δ −2, p = 0.50) |
-| selected | 22 | 53 | 12 | 64,033 | 8 / 30 | not met (Δ −1, p = 1.00) |
-| full-bundle | 13 | 49 | 27 | 127,645 | 4 / 30 | not met (Δ −5, p = 0.06) |
-| baseline-keep_ours | 21 | 69 | 0 | 0 | 7 / 30 | trivial |
-| baseline-keep_theirs | 9 | 81 | 0 | 0 | 3 / 30 | trivial |
-| baseline-compose | 27 | 63 | 0 | 0 | **9 / 30** | trivial (best) |
-
-*correct/wrong/halt count only **graded** records, so the model-arm rows sum to
-86, 87 and 89 rather than 90: schema-invalid records (4, 3 and 1 respectively)
-are excluded from every tally per the WP3 invalid-record policy and reported in
-their own column. Baselines are never schema-invalid and sum to 90. Historical
-match and the gate outcome are per triple (n = 30, majority of 3 repeats). Δ is the arm's
-triple-correct count minus the best trivial baseline's; p is McNemar's exact
-two-sided test at α = 0.05.*
-
-**Verdict: null.** No arm is correct on more triples than constant `compose`.
-Stronger than that: on every triple and every record, **every conflict an arm
-got right, the constant also got right.** The only significant result is
-full-bundle being *worse* than a constant (p = 0.0001).
-
-**Derived break-even.** Halts are not free wins, but they are not wrong merges
-either. On records valid in both arms, an arm is cheaper than `baseline-compose`
-when one halt costs less than 0.600 (hunk-only), 0.583 (selected) or 0.481
-(full-bundle) of one wrong merge. Those are plausible ratios. They are also
-beaten by a policy that halts on everything, which makes zero wrong decisions
-and scores **0.700** on the same measure — so these numbers rank every arm below
-deciding nothing at all. That is the measure rewarding refusal, which is why it
-is reported as characterization and not used to claim a pass.
-
-**The instrument's ceiling, stated plainly.** The grader normalizes with
-`replace(/\s+/g, "")`, which strips newlines, so its "shared line" test for a
-composed resolution degenerates to string equality. `compose` is then correct
-exactly when `keep_ours` or `keep_theirs` is — the union of both — making the
-constant a mathematical upper bound on every arm, for any corpus. On this
-corpus the developer's resolution matches a side verbatim on 9 of 30 triples;
-**the remaining 21 are unwinnable by any decision the protocol allows.** So the
-null is not evidence that evidence-conditioned adjudication fails. It is
-evidence that this experiment, as instrumented, could not have shown that it
-works.
-
-**Consequence.** The agent adapter and a separate `@mrgr/evidence-bundle`
-package are **retired** under the preregistered STOP rule ("a null H0 retires
-the agent adapter and `@mrgr/evidence-bundle`; the forensic core ships alone").
-They reopen on one named condition and no other: the grader's normalization is
-fixed so a blended resolution can score as correct, the frozen corpus is re-run,
-and an arm clears the gate on that data.
-
-**What survives:** the corpus (1,050 unique triples across three repositories
-and two languages), the run records, the pinned-model provenance, and the
-resumable runner. **What does not:** any claim that selected evidence improves
-adjudication. Every raw input, arm output and script is under
-[`evidence/h0/`](evidence/h0/) so this is checkable rather than asserted.
-
-### Earlier H0 runs
-
-The 2026-08-27 first run was retracted outright — the developer's resolution,
-the exact string the grader scores against, was interpolated into every arm's
-prompt. The 2026-08-29 run was invalidated by a broken PRNG that collapsed the
-sample to a single repository. Both are preserved, not deleted: see
-[`evidence/h0/RETRACTION.json`](evidence/h0/RETRACTION.json) and
-[`evidence/h0/REVIEW-2026-08-29.md`](evidence/h0/REVIEW-2026-08-29.md).
+The older enum-only grader made constant compose an upper bound, even after newline repair. Those runs cannot establish evidence utility. Their original records remain preserved in [the historical significance review](evidence/h0/SIGNIFICANCE-2026-08-30T02-54-42-056Z.md); earlier leakage and PRNG failures remain documented in [RETRACTION.json](evidence/h0/RETRACTION.json) and [the 2026-08-29 review](evidence/h0/REVIEW-2026-08-29.md). The first interrupted v2 development pilot is also retained with its supersession note. The agent adapter remains retired; a valid positive would justify reconsideration, not a semantic-safety or deployment claim.
 
 ## M1a: what P0 fixed, and what is still open
 
@@ -192,7 +120,7 @@ Two approaches were tried and refuted, and are deliberately not built here: faca
 
 Carried here rather than answered by assertion:
 
-1. Does selected outside-hunk evidence improve adjudication at matched model and cost? Does an unfiltered bundle make it worse? **Measured once (H0, 2026-08-30) and returned null** — no arm beat a constant. That measurement is bounded by its grader, which cannot score a blended resolution as correct; see *H0 result* above. The question stands, the instrument does not yet answer it.
+1. Does selected outside-hunk evidence improve adjudication at matched model and cost? Does an unfiltered bundle make it worse? The corrected 2026-09-06 H0 study measures a specific local-context policy with a fixed model and reports its token cost; it does not isolate relevance from context length or prove broad evidence utility. See *H0 result* above.
 2. What are halt precision, recall, coverage, and expected utility — and at what wrong-vs-review cost ratio does halt pay for itself?
 3. Can any tool-only boundary actually be enforced? Today: no.
 4. Entity-boundary extraction quality, in any language.
@@ -209,4 +137,4 @@ Two figures motivate work in this area and are routinely quoted without their de
 
 Apache-2.0. See [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE).
 
-`git` is required. `mergiraf` (**GPL-3.0-only**) and `diff3` are planned mechanisms and will be invoked as **external processes** over a file-and-exit-code contract — not linked, not vendored, not distributed with this project.
+`git` is required. `mergiraf` (**GPL-3.0-only**) and `diff3` are implemented mechanisms and are invoked as **external processes** over a file-and-exit-code contract — not linked, not vendored, not distributed with this project.

@@ -1,5 +1,34 @@
 *Part of the [canonical planning document](../canonical-final-planning-document.md).*
 
+## Arm-contrast review — 2026-09-07
+
+**VALID instrument; NO DEMONSTRATED BENEFIT / CONFIRMATION STOPPED.** See the [completed finding](../../../../evidence/h0/v3-repaired-development-2026-09-07/FINDING.md): all 1,080 scheduled requests completed on 2026-09-07 at 11:21:14 UTC. Both models failed the first-run context-benefit floors; no confirmation or additional acquisition follows. The binary gate is retired; see the [gate retirement and decision register](gate-retirement-2026-09-07.md#what-replaces-it--part-b-the-decision-register). No confirmation cohort is authorized. The user-supplied review exposed missing splice-boundary information, an uncontrolled side-verbatim/blend mixture, overly broad context selection, and a power scenario that cannot justify proceeding against wrong-signed effects. See the [verified review and repair requirements](../../../../evidence/h0/v3-contrast-review-2026-09-07/README.md). The waiting round-16 screen was stopped before producing outputs. The prior revised matrix finished on 2026-09-07 and remains diagnostic evidence; neither historical v3 run authorizes confirmation. All 60 development cases are Go. The version-3 parent-only boundary contract matches 60/60 immediate fixed edges. Broader automatic surroundings remain 59/60 matches and are explicitly labeled as nonfixed parent context; Go-TOML retains its known nonfocal historical difference. Sparse retrieval, fixed-weight uncertainty, the three-run dispatcher/aggregator and full 1,080-slot synthetic integration pass their checks. The completed 378-entry recovery ledger records era before evaluation; 345 scheduled retained cases yielded two full oracle admissions, with nine unsupported-wrapper exclusions accounted for explicitly. The repaired 1,080-request study was frozen afterward and completed all requests and evaluations. The four-cell weights and 60-case cohort are unchanged. This notice supersedes earlier statements that the recorded selector-name and timeout corrections suffice for readiness.
+
+## Earlier behavioral-extension requirements — 2026-09-06 (superseded by completed finding above)
+
+**Historical planning notice; the repaired study is now complete as reported above.** The user authorized a new behavioral endpoint and replication in Mercury-2 and MiniMax-M3. Read the [implementation report and evidence contract](research-report-v3-2026-09-06.md), [runnable instrument and limits](../../../../evidence/h0/v3-research-2026-09-06/README.md), and preserved pilot receipts. Two Git-verified C/Go cases support feasibility only. The acquired 11,051 ConGra event mappings are candidates, not validated trials.
+
+The 60-case development cohort completed the recorded selector and evaluator revision and all three scheduled runs. The inherited, unexecuted confirmation envelope is a separately frozen, powered cohort of 400–2,000 fresh cases across at least 50 repository-lineage clusters, with counts differing by at most one. This follows the [calibrated round-eight inference contract](../../../../evidence/h0/v3-round8-2026-09-06/README.md). Both models must meet every comparison. Pilot exposures are excluded from later cohorts. No confirmation may proceed by treating archive rows, repeated calls, or unvalidated tests as independent evidence. This is a data-quality stop, not a request for user approval.
+
+The completed v2 historical-agreement result below remains unchanged. Phase 4 integration is already complete and retains its independent handoff; the new behavioral extension does not claim an agent adapter is ready or replace Phase 5's resurrection proof.
+
+The current development cohort contains 60 validated cases across 34 lineages. The original two-provider matrix is complete but invalid because of the diagnosed test-timeout classification defect. The explicitly amended development protocol is running both providers with the repaired selector and evaluator; the original result remains preserved. See [current state](current-state.md) for the active execution and correction sequence. No confirmation evidence or positive verdict is established by this preparation.
+
+## Preserved v2 WP3/WP4 amendment — 2026-09-06
+
+*Terminology note, added 2026-09-07: `MEASURABLE=NO`/`MEASURABLE=YES` below name
+the historical binary gate, since retired — see
+[gate retirement](gate-retirement-2026-09-07.md). Preserved verbatim as the
+record of what was declared on 2026-09-06; not current terminology. The
+current terminal-state vocabulary is in the arm-contrast review notice above
+and in [`phase-3-closure-certificate.md`](phase-3-closure-certificate.md).*
+
+**WP3 and WP4 complete — valid confirmation, MEASURABLE=NO; Phase 4 ready.** The [execution contract](execution-and-handoff-2026-09-06.md) replaces the historical specification below: concrete outputs and actual Git union; five deterministic baselines; all scheduled cases retained in denominators; 24 development and 92 untouched confirmation merge cases; selected-context primary compared with hunk-only and every baseline using an exact paired test and a 5pp magnitude threshold. The new test checks both reachable decision branches and artifact integrity, and runs in repository CI.
+
+Completion and positivity are separate: a valid completed run closes this work package, while only the frozen positive conjunction earns MEASURABLE=YES. Neither an inconclusive result nor a stronger model triggers another confirmation run. The [current state](current-state.md) and machine-generated evidence are authoritative for the new result.
+
+## Historical WP3/WP4 specification and execution
+
 ### WP3 — H0 redesign
 - **Deliverable:** an H0 plan that satisfies all five independent-review defects simultaneously, plus a pinned corpus and adjudicator.
   1. **Remove developer-resolution leakage.** The `triple.resolution` string never appears in any arm's prompt; the system prompt never references it; if the system prompt must mention "developer's merge" it does so abstractly and the developer-resolution is sourced exclusively through evidence-id retrieval.

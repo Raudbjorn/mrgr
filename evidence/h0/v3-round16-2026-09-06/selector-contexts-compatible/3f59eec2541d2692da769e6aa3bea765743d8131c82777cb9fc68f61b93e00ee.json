@@ -1,0 +1,1723 @@
+{
+  "id": "3f59eec2541d2692da769e6aa3bea765743d8131c82777cb9fc68f61b93e00ee",
+  "source_protocol_sha256": "86ffe38086e217acf6e1a4aa4162e226862463d1bde3160478f9a6f4d2b968ce",
+  "repair_module_sha256": "475070c72aaadf08fe1cbd1ec90cde5210664924e6b0589d61d2226e86f3da7f",
+  "contexts": {
+    "local-context": [
+      {
+        "id": "40e9249b0046e98b4eaa4240",
+        "revision": "c74e39f43257060f277fb1fd31f543e79536e6ec",
+        "path": "json_formatter.go",
+        "start_byte": 0,
+        "text": "package logrus\n\nimport (\n\t\"encoding/json\"\n\t\"fmt\"\n)\n\ntype fieldKey string\n\n// FieldMap allows customization of the key names for default fields.\ntype FieldMap map[fieldKey]string\n\n// Default key names for the default fields\nconst (\n\tFieldKeyMsg   = \"msg\"\n\tFieldKeyLevel = \"level\"\n\tFieldKeyTime  = \"time\"\n\tFieldKeyFunc  = \"func\"\n)\n\nfunc (f FieldMap) resolve(key fieldKey) string {\n\tif k, ok := f[key]; ok {\n\t\treturn k\n\t}\n\n\treturn string(key)\n}\n\n// JSONFormatter formats logs into parsable json\ntype JSONFormatter struct {\n\t// TimestampFormat sets the format used for marshaling timestamps.\n\tTimestampFormat string\n\n\t// DisableTimestamp allows disabling automatic timestamps in output\n\tDisableTimestamp bool\n\n\t// FieldMap allows users to customize the names of keys for default fields.\n\t// As an example:\n\t// formatter := &JSONFormatter{\n\t//   \tFieldMap: FieldMap{\n\t// \t\t FieldKeyTime:  \"@timestamp\",\n\t// \t\t FieldKeyLevel: \"@level\",\n\t// \t\t FieldKeyMsg:   \"@message\",\n\t// \t\t FieldKeyFunc:  \"@caller\",\n\t// \t\t FieldKeyMsg:   \"@message\",\n\t// \t\t FieldKeyFunc:  \"@caller\",\n\t//    },\n\t// }\n\tFieldMap FieldMap\n}\n\n// Format renders a single log entry\nfunc (f *JSONFormatter) Format(entry *Entry) ([]byte, error) {\n\tdata := make(Fields, len(entry.Data)+4)\n\tfor k, v := range entry.Data {\n\t\tswitch v := v.(type) {\n\t\tcase error:\n\t\t\t// Otherwise errors are ignored by `encoding/json`\n\t\t\t// https://github.com/sirupsen/logrus/issues/137\n\t\t\tdata[k] = v.Error()\n\t\tdefault:\n\t\t\tdata[k] = v\n\t\t}\n\t}\n\n\tprefixFieldClashes(data, entry.HasCaller())\n\n\ttimestampFormat := f.TimestampFormat\n\tif timestampFormat == \"\" {\n\t\ttimestampFormat = defaultTimestampFormat\n\t}\n\n\tif !f.DisableTimestamp {\n\t\tdata[f.FieldMap.resolve(FieldKeyTime)] = entry.Time.Format(timestampFormat)\n\t}\n\tdata[f.FieldMap.resolve(FieldKeyMsg)] = entry.Message\n\tdata[f.FieldMap.resolve(FieldKeyLevel)] = entry.Level.String()\n\tif entry.HasCaller() {\n\t\tdata[f.FieldMap.resolve(FieldKeyFunc)] = entry.Caller\n\t}\n\tserialized, err := json.Marshal(data)\n\tif err != nil {\n\t\treturn nil, fmt.Errorf(\"Failed to marshal fields to JSON, %v\", err)\n\t}\n\treturn append(serialized, '\\n'), nil\n}\n",
+        "rank": 0,
+        "truncated": false
+      },
+      {
+        "id": "1b17068ac9fc0e81f2b68a5b",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "json_formatter.go",
+        "start_byte": 0,
+        "text": "package logrus\n\nimport (\n\t\"bytes\"\n\t\"encoding/json\"\n\t\"fmt\"\n)\n\ntype fieldKey string\n\n// FieldMap allows customization of the key names for default fields.\ntype FieldMap map[fieldKey]string\n\nfunc (f FieldMap) resolve(key fieldKey) string {\n\tif k, ok := f[key]; ok {\n\t\treturn k\n\t}\n\n\treturn string(key)\n}\n\n// JSONFormatter formats logs into parsable json\ntype JSONFormatter struct {\n\t// TimestampFormat sets the format used for marshaling timestamps.\n\tTimestampFormat string\n\n\t// DisableTimestamp allows disabling automatic timestamps in output\n\tDisableTimestamp bool\n\n\t// DataKey allows users to put all the log entry parameters into a nested dictionary at a given key.\n\tDataKey string\n\n\t// FieldMap allows users to customize the names of keys for default fields.\n\t// As an example:\n\t// formatter := &JSONFormatter{\n\t//   \tFieldMap: FieldMap{\n\t// \t\t FieldKeyTime: \"@timestamp\",\n\t// \t\t FieldKeyLevel: \"@level\",\n\t// \t\t FieldKeyMsg: \"@message\",\n\t//    },\n\t// }\n\tFieldMap FieldMap\n\n\t// PrettyPrint will indent all json logs\n\tPrettyPrint bool\n}\n\n// Format renders a single log entry\nfunc (f *JSONFormatter) Format(entry *Entry) ([]byte, error) {\n\tdata := make(Fields, len(entry.Data)+3)\n\tfor k, v := range entry.Data {\n\t\tswitch v := v.(type) {\n\t\tcase error:\n\t\t\t// Otherwise errors are ignored by `encoding/json`\n\t\t\t// https://github.com/sirupsen/logrus/issues/137\n\t\t\tdata[k] = v.Error()\n\t\tdefault:\n\t\t\tdata[k] = v\n\t\t}\n\t}\n\n\tif f.DataKey != \"\" {\n\t\tnewData := make(Fields, 4)\n\t\tnewData[f.DataKey] = data\n\t\tdata = newData\n\t}\n\n\tprefixFieldClashes(data, f.FieldMap)\n\n\ttimestampFormat := f.TimestampFormat\n\tif timestampFormat == \"\" {\n\t\ttimestampFormat = defaultTimestampFormat\n\t}\n\n\tif entry.err != \"\" {\n\t\tdata[f.FieldMap.resolve(FieldKeyLogrusError)] = entry.err\n\t}\n\tif !f.DisableTimestamp {\n\t\tdata[f.FieldMap.resolve(FieldKeyTime)] = entry.Time.Format(timestampFormat)\n\t}\n\tdata[f.FieldMap.resolve(FieldKeyMsg)] = entry.Message\n\tdata[f.FieldMap.resolve(FieldKeyLevel)] = entry.Level.String()\n\n\tvar b *bytes.Buffer\n\tif entry.Buffer != nil {\n\t\tb = entry.Buffer\n\t} else {\n\t\tb = &bytes.Buffer{}\n\t}\n\n\tencoder := json.NewEncoder(b)\n\tif f.PrettyPrint {\n\t\tencoder.SetIndent(\"\", \"  \")\n\t}\n\tif err := encoder.Encode(data); err != nil {\n\t\treturn nil, fmt.Errorf(\"Failed to marshal fields to JSON, %v\", err)\n\t}\n\n\treturn b.Bytes(), nil\n}\n",
+        "rank": 0,
+        "truncated": false
+      }
+    ],
+    "selected": [
+      {
+        "id": "62fccb6fc61db072e5ccdb90",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "json_formatter.go",
+        "start_byte": 1074,
+        "text": "func (f *JSONFormatter) Format(entry *Entry) ([]byte, error) {\n\tdata := make(Fields, len(entry.Data)+3)\n\tfor k, v := range entry.Data {\n\t\tswitch v := v.(type) {\n\t\tcase error:\n\t\t\t// Otherwise errors are ignored by `encoding/json`\n\t\t\t// https://github.com/sirupsen/logrus/issues/137\n\t\t\tdata[k] = v.Error()\n\t\tdefault:\n\t\t\tdata[k] = v\n\t\t}\n\t}\n\n\tif f.DataKey != \"\" {\n\t\tnewData := make(Fields, 4)\n\t\tnewData[f.DataKey] = data\n\t\tdata = newData\n\t}\n\n\tprefixFieldClashes(data, f.FieldMap)\n\n\ttimestampFormat := f.TimestampFormat\n\tif timestampFormat == \"\" {\n\t\ttimestampFormat = defaultTimestampFormat\n\t}\n\n\tif entry.err != \"\" {\n\t\tdata[f.FieldMap.resolve(FieldKeyLogrusError)] = entry.err\n\t}\n\tif !f.DisableTimestamp {\n\t\tdata[f.FieldMap.resolve(FieldKeyTime)] = entry.Time.Format(timestampFormat)\n\t}\n\tdata[f.FieldMap.resolve(FieldKeyMsg)] = entry.Message\n\tdata[f.FieldMap.resolve(FieldKeyLevel)] = entry.Level.String()\n\n\tvar b *bytes.Buffer\n\tif entry.Buffer != nil {\n\t\tb = entry.Buffer\n\t} else {\n\t\tb = &bytes.Buffer{}\n\t}\n\n\tencoder := json.NewEncoder(b)\n\tif f.PrettyPrint {\n\t\tencoder.SetIndent(\"\", \"  \")\n\t}\n\tif err := encoder.Encode(data); err != nil {\n\t\treturn nil, fmt.Errorf(\"Failed to marshal fields to JSON, %v\", err)\n\t}\n\n\treturn b.Bytes(), nil\n}",
+        "rank": 0,
+        "truncated": false
+      },
+      {
+        "id": "d41e56f72c3f9b70ca00d0cb",
+        "revision": "c74e39f43257060f277fb1fd31f543e79536e6ec",
+        "path": "json_formatter.go",
+        "start_byte": 1139,
+        "text": "func (f *JSONFormatter) Format(entry *Entry) ([]byte, error) {\n\tdata := make(Fields, len(entry.Data)+4)\n\tfor k, v := range entry.Data {\n\t\tswitch v := v.(type) {\n\t\tcase error:\n\t\t\t// Otherwise errors are ignored by `encoding/json`\n\t\t\t// https://github.com/sirupsen/logrus/issues/137\n\t\t\tdata[k] = v.Error()\n\t\tdefault:\n\t\t\tdata[k] = v\n\t\t}\n\t}\n\n\tprefixFieldClashes(data, entry.HasCaller())\n\n\ttimestampFormat := f.TimestampFormat\n\tif timestampFormat == \"\" {\n\t\ttimestampFormat = defaultTimestampFormat\n\t}\n\n\tif !f.DisableTimestamp {\n\t\tdata[f.FieldMap.resolve(FieldKeyTime)] = entry.Time.Format(timestampFormat)\n\t}\n\tdata[f.FieldMap.resolve(FieldKeyMsg)] = entry.Message\n\tdata[f.FieldMap.resolve(FieldKeyLevel)] = entry.Level.String()\n\tif entry.HasCaller() {\n\t\tdata[f.FieldMap.resolve(FieldKeyFunc)] = entry.Caller\n\t}\n\tserialized, err := json.Marshal(data)\n\tif err != nil {\n\t\treturn nil, fmt.Errorf(\"Failed to marshal fields to JSON, %v\", err)\n\t}\n\treturn append(serialized, '\\n'), nil\n}",
+        "rank": 0,
+        "truncated": false
+      },
+      {
+        "id": "e4ea955ca5695516b4f83c29",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "entry.go",
+        "start_byte": 600,
+        "text": "type Entry struct {\n\tLogger *Logger\n\n\t// Contains all the fields set by the user.\n\tData Fields\n\n\t// Time at which the log entry was created\n\tTime time.Time\n\n\t// Level the log entry was logged at: Trace, Debug, Info, Warn, Error, Fatal or Panic\n\t// This field will be set on entry firing and the value will be equal to the one in Logger struct field.\n\tLevel Level\n\n\t// Message passed to Trace, Debug, Info, Warn, Error, Fatal or Panic\n\tMessage string\n\n\t// When formatter is called in entry.log(), a Buffer may be set to entry\n\tBuffer *bytes.Buffer\n\n\t// err may contain a field formatting error\n\terr string\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "372a0fc8d3b5b389828ab6de",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "entry.go",
+        "start_byte": 1452,
+        "text": "func (entry *Entry) String() (string, error) {\n\tserialized, err := entry.Logger.Formatter.Format(entry)\n\tif err != nil {\n\t\treturn \"\", err\n\t}\n\tstr := string(serialized)\n\treturn str, nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "587f5b79c5acf487d0196771",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "entry.go",
+        "start_byte": 4921,
+        "text": "func (entry *Entry) Error(args ...interface{}) {\n\tif entry.Logger.IsLevelEnabled(ErrorLevel) {\n\t\tentry.log(ErrorLevel, fmt.Sprint(args...))\n\t}\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "d4bf7a3565bcce9283884a56",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "entry.go",
+        "start_byte": 6279,
+        "text": "func (entry *Entry) Errorf(format string, args ...interface{}) {\n\tif entry.Logger.IsLevelEnabled(ErrorLevel) {\n\t\tentry.Error(fmt.Sprintf(format, args...))\n\t}\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "b93b4a742edb4e679e22af96",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "exported.go",
+        "start_byte": 2820,
+        "text": "func Error(args ...interface{}) {\n\tstd.Error(args...)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "825d5b77928907f742e4adf7",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "exported.go",
+        "start_byte": 4101,
+        "text": "func Errorf(format string, args ...interface{}) {\n\tstd.Errorf(format, args...)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "ac2810ebc57eed5527b83116",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "formatter.go",
+        "start_byte": 75,
+        "text": "const (\n\tdefaultTimestampFormat = time.RFC3339\n\tFieldKeyMsg            = \"msg\"\n\tFieldKeyLevel          = \"level\"\n\tFieldKeyTime           = \"time\"\n\tFieldKeyLogrusError    = \"logrus_error\"\n)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "601d630597ef5490e9284873",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "formatter.go",
+        "start_byte": 1331,
+        "text": "func prefixFieldClashes(data Fields, fieldMap FieldMap) {\n\ttimeKey := fieldMap.resolve(FieldKeyTime)\n\tif t, ok := data[timeKey]; ok {\n\t\tdata[\"fields.\"+timeKey] = t\n\t\tdelete(data, timeKey)\n\t}\n\n\tmsgKey := fieldMap.resolve(FieldKeyMsg)\n\tif m, ok := data[msgKey]; ok {\n\t\tdata[\"fields.\"+msgKey] = m\n\t\tdelete(data, msgKey)\n\t}\n\n\tlevelKey := fieldMap.resolve(FieldKeyLevel)\n\tif l, ok := data[levelKey]; ok {\n\t\tdata[\"fields.\"+levelKey] = l\n\t\tdelete(data, levelKey)\n\t}\n\n\tlogrusErrKey := fieldMap.resolve(FieldKeyLogrusError)\n\tif l, ok := data[logrusErrKey]; ok {\n\t\tdata[\"fields.\"+logrusErrKey] = l\n\t\tdelete(data, logrusErrKey)\n\t}\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "2d930bf70c484e6be0a0c761",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "json_formatter.go",
+        "start_byte": 153,
+        "text": "type FieldMap map[fieldKey]string",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "bc105394bd9a6d2b1b5b3c42",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "json_formatter.go",
+        "start_byte": 188,
+        "text": "func (f FieldMap) resolve(key fieldKey) string {\n\tif k, ok := f[key]; ok {\n\t\treturn k\n\t}\n\n\treturn string(key)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "b18d16fbc818ff5b9217578a",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "json_formatter.go",
+        "start_byte": 350,
+        "text": "type JSONFormatter struct {\n\t// TimestampFormat sets the format used for marshaling timestamps.\n\tTimestampFormat string\n\n\t// DisableTimestamp allows disabling automatic timestamps in output\n\tDisableTimestamp bool\n\n\t// DataKey allows users to put all the log entry parameters into a nested dictionary at a given key.\n\tDataKey string\n\n\t// FieldMap allows users to customize the names of keys for default fields.\n\t// As an example:\n\t// formatter := &JSONFormatter{\n\t//   \tFieldMap: FieldMap{\n\t// \t\t FieldKeyTime: \"@timestamp\",\n\t// \t\t FieldKeyLevel: \"@level\",\n\t// \t\t FieldKeyMsg: \"@message\",\n\t//    },\n\t// }\n\tFieldMap FieldMap\n\n\t// PrettyPrint will indent all json logs\n\tPrettyPrint bool\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "7b98b39afd169b2f98531b32",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "json_formatter.go",
+        "start_byte": 1977,
+        "text": "var b *bytes.Buffer",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "854fdd30ca737a0bc39168c8",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "logger.go",
+        "start_byte": 4769,
+        "text": "func (logger *Logger) Errorf(format string, args ...interface{}) {\n\tif logger.IsLevelEnabled(ErrorLevel) {\n\t\tentry := logger.newEntry()\n\t\tentry.Errorf(format, args...)\n\t\tlogger.releaseEntry(entry)\n\t}\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "527a91a98d6eac8deedf4b0d",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "logger.go",
+        "start_byte": 6409,
+        "text": "func (logger *Logger) Error(args ...interface{}) {\n\tif logger.IsLevelEnabled(ErrorLevel) {\n\t\tentry := logger.newEntry()\n\t\tentry.Error(args...)\n\t\tlogger.releaseEntry(entry)\n\t}\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "20dcfe7f1e188512782865f1",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "logrus.go",
+        "start_byte": 99,
+        "text": "type Fields map[string]interface{}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "38f8f8ce52934ad1c6e181f5",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "logrus.go",
+        "start_byte": 149,
+        "text": "type Level uint32",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "6950968fd05e82bc45c0f522",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "logrus.go",
+        "start_byte": 235,
+        "text": "func (level Level) String() string {\n\tswitch level {\n\tcase TraceLevel:\n\t\treturn \"trace\"\n\tcase DebugLevel:\n\t\treturn \"debug\"\n\tcase InfoLevel:\n\t\treturn \"info\"\n\tcase WarnLevel:\n\t\treturn \"warning\"\n\tcase ErrorLevel:\n\t\treturn \"error\"\n\tcase FatalLevel:\n\t\treturn \"fatal\"\n\tcase PanicLevel:\n\t\treturn \"panic\"\n\t}\n\n\treturn \"unknown\"\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "ee61713fb32b0baf1ff8ae16",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "text_formatter.go",
+        "start_byte": 2471,
+        "text": "func (f *TextFormatter) Format(entry *Entry) ([]byte, error) {\n\tprefixFieldClashes(entry.Data, f.FieldMap)\n\n\tkeys := make([]string, 0, len(entry.Data))\n\tfor k := range entry.Data {\n\t\tkeys = append(keys, k)\n\t}\n\n\tfixedKeys := make([]string, 0, 4+len(entry.Data))\n\tif !f.DisableTimestamp {\n\t\tfixedKeys = append(fixedKeys, f.FieldMap.resolve(FieldKeyTime))\n\t}\n\tfixedKeys = append(fixedKeys, f.FieldMap.resolve(FieldKeyLevel))\n\tif entry.Message != \"\" {\n\t\tfixedKeys = append(fixedKeys, f.FieldMap.resolve(FieldKeyMsg))\n\t}\n\tif entry.err != \"\" {\n\t\tfixedKeys = append(fixedKeys, f.FieldMap.resolve(FieldKeyLogrusError))\n\t}\n\n\tif !f.DisableSorting {\n\t\tif f.SortingFunc == nil {\n\t\t\tsort.Strings(keys)\n\t\t\tfixedKeys = append(fixedKeys, keys...)\n\t\t} else {\n\t\t\tif !f.isColored() {\n\t\t\t\tfixedKeys = append(fixedKeys, keys...)\n\t\t\t\tf.SortingFunc(fixedKeys)\n\t\t\t} else {\n\t\t\t\tf.SortingFunc(keys)\n\t\t\t}\n\t\t}\n\t} else {\n\t\tfixedKeys = append(fixedKeys, keys...)\n\t}\n\n\tvar b *bytes.Buffer\n\tif entry.Buffer != nil {\n\t\tb = entry.Buffer\n\t} else {\n\t\tb = &bytes.Buffer{}\n\t}\n\n\tf.terminalInitOnce.Do(func() { f.init(entry) })\n\n\ttimestampFormat := f.TimestampFormat\n\tif timestampFormat == \"\" {\n\t\ttimestampFormat = defaultTimestampFormat\n\t}\n\tif f.isColored() {\n\t\tf.printColored(b, entry, keys, timestampFormat)\n\t} else {\n\t\tfor _, key := range fixedKeys {\n\t\t\tvar value interface{}\n\t\t\tswitch key {\n\t\t\tcase f.FieldMap.resolve(FieldKeyTime):\n\t\t\t\tvalue = entry.Time.Format(timestampFormat)\n\t\t\tcase f.FieldMap.resolve(FieldKeyLevel):\n\t\t\t\tvalue = entry.Level.String()\n\t\t\tcase f.FieldMap.resolve(FieldKeyMsg):\n\t\t\t\tvalue = entry.Message\n\t\t\tcase f.FieldMap.resolve(FieldKeyLogrusError):\n\t\t\t\tvalue = entry.err\n\t\t\tdefault:\n\t\t\t\tvalue = entry.Data[key]\n\t\t\t}\n\t\t\tf.appendKeyValue(b, key, value)\n\t\t}\n\t}\n\n\tb.WriteByte('\\n')\n\treturn b.Bytes(), nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "155c9bb1a5a681bd1ff2b723",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "text_formatter.go",
+        "start_byte": 3409,
+        "text": "var b *bytes.Buffer",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "175f3ec76a4daebc4943e982",
+        "revision": "c74e39f43257060f277fb1fd31f543e79536e6ec",
+        "path": "entry.go",
+        "start_byte": 947,
+        "text": "type Entry struct {\n\tLogger *Logger\n\n\t// Contains all the fields set by the user.\n\tData Fields\n\n\t// Time at which the log entry was created\n\tTime time.Time\n\n\t// Level the log entry was logged at: Debug, Info, Warn, Error, Fatal or Panic\n\t// This field will be set on entry firing and the value will be equal to the one in Logger struct field.\n\tLevel Level\n\n\t// Calling method, with package name\n\tCaller string\n\n\t// Message passed to Debug, Info, Warn, Error, Fatal or Panic\n\tMessage string\n\n\t// When formatter is called in entry.log(), an Buffer may be set to entry\n\tBuffer *bytes.Buffer\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "deae408f78c2fb1db9905626",
+        "revision": "c74e39f43257060f277fb1fd31f543e79536e6ec",
+        "path": "entry.go",
+        "start_byte": 1804,
+        "text": "func (entry *Entry) String() (string, error) {\n\tserialized, err := entry.Logger.Formatter.Format(entry)\n\tif err != nil {\n\t\treturn \"\", err\n\t}\n\tstr := string(serialized)\n\treturn str, nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "f20304658eb30d16ee8a98cc",
+        "revision": "c74e39f43257060f277fb1fd31f543e79536e6ec",
+        "path": "entry.go",
+        "start_byte": 3803,
+        "text": "func (entry Entry) HasCaller() (has bool) {\n\treturn entry.Logger != nil &&\n\t\tentry.Logger.ReportCaller &&\n\t\tentry.Caller != \"\"\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "adc9cc5686d3d590b421cad5",
+        "revision": "c74e39f43257060f277fb1fd31f543e79536e6ec",
+        "path": "entry.go",
+        "start_byte": 5950,
+        "text": "func (entry *Entry) Error(args ...interface{}) {\n\tif entry.Logger.level() >= ErrorLevel {\n\t\tentry.log(ErrorLevel, fmt.Sprint(args...))\n\t}\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "af40c358b090d45af372bf71",
+        "revision": "c74e39f43257060f277fb1fd31f543e79536e6ec",
+        "path": "entry.go",
+        "start_byte": 7104,
+        "text": "func (entry *Entry) Errorf(format string, args ...interface{}) {\n\tif entry.Logger.level() >= ErrorLevel {\n\t\tentry.Error(fmt.Sprintf(format, args...))\n\t}\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "20e96769c08c8dc8933f7411",
+        "revision": "c74e39f43257060f277fb1fd31f543e79536e6ec",
+        "path": "exported.go",
+        "start_byte": 2621,
+        "text": "func Error(args ...interface{}) {\n\tstd.Error(args...)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "449feadd9c0b90340cc0114c",
+        "revision": "c74e39f43257060f277fb1fd31f543e79536e6ec",
+        "path": "exported.go",
+        "start_byte": 3708,
+        "text": "func Errorf(format string, args ...interface{}) {\n\tstd.Errorf(format, args...)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "0e031163b985ca68c4a8c9b9",
+        "revision": "c74e39f43257060f277fb1fd31f543e79536e6ec",
+        "path": "formatter.go",
+        "start_byte": 83,
+        "text": "const defaultTimestampFormat = time.RFC3339",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "6f7b6dbaf0f7c80756442022",
+        "revision": "c74e39f43257060f277fb1fd31f543e79536e6ec",
+        "path": "formatter.go",
+        "start_byte": 1202,
+        "text": "func prefixFieldClashes(data Fields, reportCaller bool) {\n\tif t, ok := data[\"time\"]; ok {\n\t\tdata[\"fields.time\"] = t\n\t}\n\n\tif m, ok := data[\"msg\"]; ok {\n\t\tdata[\"fields.msg\"] = m\n\t}\n\n\tif l, ok := data[\"level\"]; ok {\n\t\tdata[\"fields.level\"] = l\n\t}\n\n\t// If reportCaller is not set, 'func' will not conflict.\n\tif reportCaller {\n\t\tif l, ok := data[\"func\"]; ok {\n\t\t\tdata[\"fields.func\"] = l\n\t\t}\n\t}\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "11b3b3b8b9f0116a91b6bf44",
+        "revision": "c74e39f43257060f277fb1fd31f543e79536e6ec",
+        "path": "json_formatter.go",
+        "start_byte": 144,
+        "text": "type FieldMap map[fieldKey]string",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "a26906281b31d32db775c63a",
+        "revision": "c74e39f43257060f277fb1fd31f543e79536e6ec",
+        "path": "json_formatter.go",
+        "start_byte": 223,
+        "text": "const (\n\tFieldKeyMsg   = \"msg\"\n\tFieldKeyLevel = \"level\"\n\tFieldKeyTime  = \"time\"\n\tFieldKeyFunc  = \"func\"\n)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "72a22a6c85d7b94301844f20",
+        "revision": "c74e39f43257060f277fb1fd31f543e79536e6ec",
+        "path": "json_formatter.go",
+        "start_byte": 330,
+        "text": "func (f FieldMap) resolve(key fieldKey) string {\n\tif k, ok := f[key]; ok {\n\t\treturn k\n\t}\n\n\treturn string(key)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "d29d922287b20d51d570e6b2",
+        "revision": "c74e39f43257060f277fb1fd31f543e79536e6ec",
+        "path": "json_formatter.go",
+        "start_byte": 492,
+        "text": "type JSONFormatter struct {\n\t// TimestampFormat sets the format used for marshaling timestamps.\n\tTimestampFormat string\n\n\t// DisableTimestamp allows disabling automatic timestamps in output\n\tDisableTimestamp bool\n\n\t// FieldMap allows users to customize the names of keys for default fields.\n\t// As an example:\n\t// formatter := &JSONFormatter{\n\t//   \tFieldMap: FieldMap{\n\t// \t\t FieldKeyTime:  \"@timestamp\",\n\t// \t\t FieldKeyLevel: \"@level\",\n\t// \t\t FieldKeyMsg:   \"@message\",\n\t// \t\t FieldKeyFunc:  \"@caller\",\n\t// \t\t FieldKeyMsg:   \"@message\",\n\t// \t\t FieldKeyFunc:  \"@caller\",\n\t//    },\n\t// }\n\tFieldMap FieldMap\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "f220915e58eadd708960d34b",
+        "revision": "c74e39f43257060f277fb1fd31f543e79536e6ec",
+        "path": "logger.go",
+        "start_byte": 4292,
+        "text": "func (logger *Logger) Errorf(format string, args ...interface{}) {\n\tif logger.level() >= ErrorLevel {\n\t\tentry := logger.newEntry()\n\t\tentry.Errorf(format, args...)\n\t\tlogger.releaseEntry(entry)\n\t}\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "404ba5539e7db0fc8a1f0135",
+        "revision": "c74e39f43257060f277fb1fd31f543e79536e6ec",
+        "path": "logger.go",
+        "start_byte": 5712,
+        "text": "func (logger *Logger) Error(args ...interface{}) {\n\tif logger.level() >= ErrorLevel {\n\t\tentry := logger.newEntry()\n\t\tentry.Error(args...)\n\t\tlogger.releaseEntry(entry)\n\t}\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "2943db1f2c8305933f690e14",
+        "revision": "c74e39f43257060f277fb1fd31f543e79536e6ec",
+        "path": "logrus.go",
+        "start_byte": 99,
+        "text": "type Fields map[string]interface{}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "577406b49374adeef8df27b0",
+        "revision": "c74e39f43257060f277fb1fd31f543e79536e6ec",
+        "path": "logrus.go",
+        "start_byte": 149,
+        "text": "type Level uint32",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "5b75411f2e8d61f8f6d76f36",
+        "revision": "c74e39f43257060f277fb1fd31f543e79536e6ec",
+        "path": "logrus.go",
+        "start_byte": 235,
+        "text": "func (level Level) String() string {\n\tswitch level {\n\tcase DebugLevel:\n\t\treturn \"debug\"\n\tcase InfoLevel:\n\t\treturn \"info\"\n\tcase WarnLevel:\n\t\treturn \"warning\"\n\tcase ErrorLevel:\n\t\treturn \"error\"\n\tcase FatalLevel:\n\t\treturn \"fatal\"\n\tcase PanicLevel:\n\t\treturn \"panic\"\n\t}\n\n\treturn \"unknown\"\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "64097f41c0d2b5813655dcd0",
+        "revision": "c74e39f43257060f277fb1fd31f543e79536e6ec",
+        "path": "text_formatter.go",
+        "start_byte": 1370,
+        "text": "func (f *TextFormatter) Format(entry *Entry) ([]byte, error) {\n\tvar b *bytes.Buffer\n\tkeys := make([]string, 0, len(entry.Data))\n\tfor k := range entry.Data {\n\t\tkeys = append(keys, k)\n\t}\n\n\tif !f.DisableSorting {\n\t\tsort.Strings(keys)\n\t}\n\tif entry.Buffer != nil {\n\t\tb = entry.Buffer\n\t} else {\n\t\tb = &bytes.Buffer{}\n\t}\n\n\tprefixFieldClashes(entry.Data, entry.HasCaller())\n\n\tf.Do(func() { f.init(entry) })\n\n\tisColored := (f.ForceColors || f.isTerminal) && !f.DisableColors\n\n\ttimestampFormat := f.TimestampFormat\n\tif timestampFormat == \"\" {\n\t\ttimestampFormat = defaultTimestampFormat\n\t}\n\tif isColored {\n\t\tf.printColored(b, entry, keys, timestampFormat)\n\t} else {\n\t\tif !f.DisableTimestamp {\n\t\t\tf.appendKeyValue(b, \"time\", entry.Time.Format(timestampFormat))\n\t\t}\n\t\tf.appendKeyValue(b, \"level\", entry.Level.String())\n\t\tif entry.HasCaller() {\n\t\t\tf.appendKeyValue(b, \"func\", entry.Caller)\n\t\t}\n\t\tif entry.Message != \"\" {\n\t\t\tf.appendKeyValue(b, \"msg\", entry.Message)\n\t\t}\n\t\tfor _, key := range keys {\n\t\t\tf.appendKeyValue(b, key, entry.Data[key])\n\t\t}\n\t}\n\n\tb.WriteByte('\\n')\n\treturn b.Bytes(), nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "b74ed53f33cef1ca14495666",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "alt_exit.go",
+        "start_byte": 1338,
+        "text": "func runHandler(handler func()) {\n\tdefer func() {\n\t\tif err := recover(); err != nil {\n\t\t\tfmt.Fprintln(os.Stderr, \"Error: Logrus exit handler error:\", err)\n\t\t}\n\t}()\n\n\thandler()\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "14fb66c837eba3804bbab3ce",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "entry.go",
+        "start_byte": 104,
+        "text": "func init() {\n\tbufferPool = &sync.Pool{\n\t\tNew: func() interface{} {\n\t\t\treturn new(bytes.Buffer)\n\t\t},\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "4324576ab577dee483a67fcf",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "entry.go",
+        "start_byte": 1208,
+        "text": "func NewEntry(logger *Logger) *Entry {\n\treturn &Entry{\n\t\tLogger: logger,\n\t\t// Default is five fields, give a little extra room\n\t\tData: make(Fields, 5),\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "f898eebd13da728a779ff89c",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "entry.go",
+        "start_byte": 1722,
+        "text": "func (entry *Entry) WithError(err error) *Entry {\n\treturn entry.WithField(ErrorKey, err)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "019ca5ca43a93bbf45cfe7a4",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "entry.go",
+        "start_byte": 1850,
+        "text": "func (entry *Entry) WithField(key string, value interface{}) *Entry {\n\treturn entry.WithFields(Fields{key: value})\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "cdf3b545ead010cb8bcc7eca",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "entry.go",
+        "start_byte": 2005,
+        "text": "func (entry *Entry) WithFields(fields Fields) *Entry {\n\tdata := make(Fields, len(entry.Data)+len(fields))\n\tfor k, v := range entry.Data {\n\t\tdata[k] = v\n\t}\n\tvar field_err string\n\tfor k, v := range fields {\n\t\tif t := reflect.TypeOf(v); t != nil && t.Kind() == reflect.Func {\n\t\t\tfield_err = fmt.Sprintf(\"can not add field %q\", k)\n\t\t\tif entry.err != \"\" {\n\t\t\t\tfield_err = entry.err + \", \" + field_err\n\t\t\t}\n\t\t} else {\n\t\t\tdata[k] = v\n\t\t}\n\t}\n\treturn &Entry{Logger: entry.Logger, Data: data, Time: entry.Time, err: field_err}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "46a8fc1291f8ca4fc31a785e",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "entry.go",
+        "start_byte": 2561,
+        "text": "func (entry *Entry) WithTime(t time.Time) *Entry {\n\treturn &Entry{Logger: entry.Logger, Data: entry.Data, Time: t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "c021df7bd81ab8eb775aeddb",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "entry.go",
+        "start_byte": 2812,
+        "text": "func (entry Entry) log(level Level, msg string) {\n\tvar buffer *bytes.Buffer\n\n\t// Default to now, but allow users to override if they want.\n\t//\n\t// We don't have to worry about polluting future calls to Entry#log()\n\t// with this assignment because this function is declared with a\n\t// non-pointer receiver.\n\tif entry.Time.IsZero() {\n\t\tentry.Time = time.Now()\n\t}\n\n\tentry.Level = level\n\tentry.Message = msg\n\n\tentry.fireHooks()\n\n\tbuffer = bufferPool.Get().(*bytes.Buffer)\n\tbuffer.Reset()\n\tdefer bufferPool.Put(buffer)\n\tentry.Buffer = buffer\n\n\tentry.write()\n\n\tentry.Buffer = nil\n\n\t// To avoid Entry#log() returning a value that only would make sense for\n\t// panic() to use in Entry#Panic(), we avoid the allocation by checking\n\t// directly here.\n\tif level <= PanicLevel {\n\t\tpanic(&entry)\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "817c078c0485474b12af1324",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "entry.go",
+        "start_byte": 2863,
+        "text": "var buffer *bytes.Buffer",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "fc4648b7f60aa015cc34c0fa",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "entry.go",
+        "start_byte": 3601,
+        "text": "func (entry *Entry) fireHooks() {\n\tentry.Logger.mu.Lock()\n\tdefer entry.Logger.mu.Unlock()\n\terr := entry.Logger.Hooks.Fire(entry.Level, entry)\n\tif err != nil {\n\t\tfmt.Fprintf(os.Stderr, \"Failed to fire hook: %v\\n\", err)\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "94180dd49fb99c28c1edce0d",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "entry.go",
+        "start_byte": 3825,
+        "text": "func (entry *Entry) write() {\n\tentry.Logger.mu.Lock()\n\tdefer entry.Logger.mu.Unlock()\n\tserialized, err := entry.Logger.Formatter.Format(entry)\n\tif err != nil {\n\t\tfmt.Fprintf(os.Stderr, \"Failed to obtain reader, %v\\n\", err)\n\t} else {\n\t\t_, err = entry.Logger.Out.Write(serialized)\n\t\tif err != nil {\n\t\t\tfmt.Fprintf(os.Stderr, \"Failed to write to log, %v\\n\", err)\n\t\t}\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "1e840bd84952cccd7d89bcd7",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "entry.go",
+        "start_byte": 4195,
+        "text": "func (entry *Entry) Trace(args ...interface{}) {\n\tif entry.Logger.IsLevelEnabled(TraceLevel) {\n\t\tentry.log(TraceLevel, fmt.Sprint(args...))\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "5bcc1f2cbb872204c41aa5b8",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "entry.go",
+        "start_byte": 4341,
+        "text": "func (entry *Entry) Debug(args ...interface{}) {\n\tif entry.Logger.IsLevelEnabled(DebugLevel) {\n\t\tentry.log(DebugLevel, fmt.Sprint(args...))\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "9c89e8d18424715f4429d71c",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "entry.go",
+        "start_byte": 4487,
+        "text": "func (entry *Entry) Print(args ...interface{}) {\n\tentry.Info(args...)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "ce11b261d20e6f40e9d09b97",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "entry.go",
+        "start_byte": 4560,
+        "text": "func (entry *Entry) Info(args ...interface{}) {\n\tif entry.Logger.IsLevelEnabled(InfoLevel) {\n\t\tentry.log(InfoLevel, fmt.Sprint(args...))\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "21e1dc1550ab1b1cdf089bf3",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "entry.go",
+        "start_byte": 4703,
+        "text": "func (entry *Entry) Warn(args ...interface{}) {\n\tif entry.Logger.IsLevelEnabled(WarnLevel) {\n\t\tentry.log(WarnLevel, fmt.Sprint(args...))\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "c14227cc92cae8f6a879861e",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "entry.go",
+        "start_byte": 4846,
+        "text": "func (entry *Entry) Warning(args ...interface{}) {\n\tentry.Warn(args...)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "e2619c9fe7e7ec2114b05a4b",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "entry.go",
+        "start_byte": 5067,
+        "text": "func (entry *Entry) Fatal(args ...interface{}) {\n\tif entry.Logger.IsLevelEnabled(FatalLevel) {\n\t\tentry.log(FatalLevel, fmt.Sprint(args...))\n\t}\n\tentry.Logger.Exit(1)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "6e93272c657bd5f338e0419b",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "entry.go",
+        "start_byte": 5235,
+        "text": "func (entry *Entry) Panic(args ...interface{}) {\n\tif entry.Logger.IsLevelEnabled(PanicLevel) {\n\t\tentry.log(PanicLevel, fmt.Sprint(args...))\n\t}\n\tpanic(fmt.Sprint(args...))\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "810317b5915dc7716435eb4b",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "entry.go",
+        "start_byte": 5443,
+        "text": "func (entry *Entry) Tracef(format string, args ...interface{}) {\n\tif entry.Logger.IsLevelEnabled(TraceLevel) {\n\t\tentry.Trace(fmt.Sprintf(format, args...))\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "9625d074d96986a09e9bda69",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "entry.go",
+        "start_byte": 5604,
+        "text": "func (entry *Entry) Debugf(format string, args ...interface{}) {\n\tif entry.Logger.IsLevelEnabled(DebugLevel) {\n\t\tentry.Debug(fmt.Sprintf(format, args...))\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "ae9675739669a729e9ac88b3",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "entry.go",
+        "start_byte": 5765,
+        "text": "func (entry *Entry) Infof(format string, args ...interface{}) {\n\tif entry.Logger.IsLevelEnabled(InfoLevel) {\n\t\tentry.Info(fmt.Sprintf(format, args...))\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "c440a0a9fc8ca777ca2d7bbf",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "entry.go",
+        "start_byte": 5923,
+        "text": "func (entry *Entry) Printf(format string, args ...interface{}) {\n\tentry.Infof(format, args...)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "57af998ac076db38b0361cd5",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "entry.go",
+        "start_byte": 6021,
+        "text": "func (entry *Entry) Warnf(format string, args ...interface{}) {\n\tif entry.Logger.IsLevelEnabled(WarnLevel) {\n\t\tentry.Warn(fmt.Sprintf(format, args...))\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "cd7755f59f3ce5099ae80c70",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "entry.go",
+        "start_byte": 6179,
+        "text": "func (entry *Entry) Warningf(format string, args ...interface{}) {\n\tentry.Warnf(format, args...)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "eebef3f2f19c9718c07164e3",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "entry.go",
+        "start_byte": 6440,
+        "text": "func (entry *Entry) Fatalf(format string, args ...interface{}) {\n\tif entry.Logger.IsLevelEnabled(FatalLevel) {\n\t\tentry.Fatal(fmt.Sprintf(format, args...))\n\t}\n\tentry.Logger.Exit(1)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "516980c2143baa81cec07af4",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "entry.go",
+        "start_byte": 6623,
+        "text": "func (entry *Entry) Panicf(format string, args ...interface{}) {\n\tif entry.Logger.IsLevelEnabled(PanicLevel) {\n\t\tentry.Panic(fmt.Sprintf(format, args...))\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "10b3b69c132cffba365e27af",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "entry.go",
+        "start_byte": 6819,
+        "text": "func (entry *Entry) Traceln(args ...interface{}) {\n\tif entry.Logger.IsLevelEnabled(TraceLevel) {\n\t\tentry.Trace(entry.sprintlnn(args...))\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "83c1e17f650775c74231aae8",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "entry.go",
+        "start_byte": 6962,
+        "text": "func (entry *Entry) Debugln(args ...interface{}) {\n\tif entry.Logger.IsLevelEnabled(DebugLevel) {\n\t\tentry.Debug(entry.sprintlnn(args...))\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "8d88ba91da267c64f0e85a37",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "entry.go",
+        "start_byte": 7105,
+        "text": "func (entry *Entry) Infoln(args ...interface{}) {\n\tif entry.Logger.IsLevelEnabled(InfoLevel) {\n\t\tentry.Info(entry.sprintlnn(args...))\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "527327e40abf60199abd6941",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "entry.go",
+        "start_byte": 7245,
+        "text": "func (entry *Entry) Println(args ...interface{}) {\n\tentry.Infoln(args...)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "8e2a8a8e7ceda5dc0afda1f7",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "entry.go",
+        "start_byte": 7322,
+        "text": "func (entry *Entry) Warnln(args ...interface{}) {\n\tif entry.Logger.IsLevelEnabled(WarnLevel) {\n\t\tentry.Warn(entry.sprintlnn(args...))\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "b0fdf4c849ee63bde14f77f2",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "entry.go",
+        "start_byte": 7462,
+        "text": "func (entry *Entry) Warningln(args ...interface{}) {\n\tentry.Warnln(args...)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "7ba9262930edefd02a8470ff",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "entry.go",
+        "start_byte": 7541,
+        "text": "func (entry *Entry) Errorln(args ...interface{}) {\n\tif entry.Logger.IsLevelEnabled(ErrorLevel) {\n\t\tentry.Error(entry.sprintlnn(args...))\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "949c1efd282dd03a7440c778",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "entry.go",
+        "start_byte": 7684,
+        "text": "func (entry *Entry) Fatalln(args ...interface{}) {\n\tif entry.Logger.IsLevelEnabled(FatalLevel) {\n\t\tentry.Fatal(entry.sprintlnn(args...))\n\t}\n\tentry.Logger.Exit(1)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "30e71757df6f35488b2e2124",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "entry.go",
+        "start_byte": 7849,
+        "text": "func (entry *Entry) Panicln(args ...interface{}) {\n\tif entry.Logger.IsLevelEnabled(PanicLevel) {\n\t\tentry.Panic(entry.sprintlnn(args...))\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "c4ea6e0f4583f7dba2525abb",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "entry.go",
+        "start_byte": 8263,
+        "text": "func (entry *Entry) sprintlnn(args ...interface{}) string {\n\tmsg := fmt.Sprintln(args...)\n\treturn msg[:len(msg)-1]\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "c5934c611b7cbb944b76af1d",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "exported.go",
+        "start_byte": 440,
+        "text": "func SetLevel(level Level) {\n\tstd.SetLevel(level)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "fe7c722ac6458e412788400d",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "exported.go",
+        "start_byte": 540,
+        "text": "func GetLevel() Level {\n\treturn std.GetLevel()\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "56819b50cb4d7a04ebe399ab",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "exported.go",
+        "start_byte": 687,
+        "text": "func IsLevelEnabled(level Level) bool {\n\treturn std.IsLevelEnabled(level)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "7dbf5855832db94c98a3e1c3",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "exported.go",
+        "start_byte": 989,
+        "text": "func WithError(err error) *Entry {\n\treturn std.WithField(ErrorKey, err)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "fd5a8386d959bb418af82645",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "exported.go",
+        "start_byte": 1308,
+        "text": "func WithField(key string, value interface{}) *Entry {\n\treturn std.WithField(key, value)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "5aeb21dbf414813d834e7c86",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "exported.go",
+        "start_byte": 1683,
+        "text": "func WithFields(fields Fields) *Entry {\n\treturn std.WithFields(fields)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "2bc2cdd0b83bdbc030b9f5a2",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "exported.go",
+        "start_byte": 1978,
+        "text": "func WithTime(t time.Time) *Entry {\n\treturn std.WithTime(t)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "6499739c98d8668c578625e0",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "formatter.go",
+        "start_byte": 775,
+        "text": "type Formatter interface {\n\tFormat(*Entry) ([]byte, error)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "f45d7a6772700e61a55238f5",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "hooks.go",
+        "start_byte": 383,
+        "text": "type Hook interface {\n\tLevels() []Level\n\tFire(*Entry) error\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "61f78be4da158209387b26c5",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "hooks.go",
+        "start_byte": 507,
+        "text": "type LevelHooks map[Level][]Hook",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "77232f6675c0ae5fd0290c5a",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "hooks.go",
+        "start_byte": 921,
+        "text": "func (hooks LevelHooks) Fire(level Level, entry *Entry) error {\n\tfor _, hook := range hooks[level] {\n\t\tif err := hook.Fire(entry); err != nil {\n\t\t\treturn err\n\t\t}\n\t}\n\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "5c27463bc5e2c84bc2122555",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "hooks/syslog/syslog.go",
+        "start_byte": 457,
+        "text": "func NewSyslogHook(network, raddr string, priority syslog.Priority, tag string) (*SyslogHook, error) {\n\tw, err := syslog.Dial(network, raddr, priority, tag)\n\treturn &SyslogHook{w, network, raddr}, err\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "93aad66e7acc32d3b72c8031",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "hooks/syslog/syslog.go",
+        "start_byte": 661,
+        "text": "func (hook *SyslogHook) Fire(entry *logrus.Entry) error {\n\tline, err := entry.String()\n\tif err != nil {\n\t\tfmt.Fprintf(os.Stderr, \"Unable to read entry, %v\", err)\n\t\treturn err\n\t}\n\n\tswitch entry.Level {\n\tcase logrus.PanicLevel:\n\t\treturn hook.Writer.Crit(line)\n\tcase logrus.FatalLevel:\n\t\treturn hook.Writer.Crit(line)\n\tcase logrus.ErrorLevel:\n\t\treturn hook.Writer.Err(line)\n\tcase logrus.WarnLevel:\n\t\treturn hook.Writer.Warning(line)\n\tcase logrus.InfoLevel:\n\t\treturn hook.Writer.Info(line)\n\tcase logrus.DebugLevel, logrus.TraceLevel:\n\t\treturn hook.Writer.Debug(line)\n\tdefault:\n\t\treturn nil\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "c91038248295a454f1b96dce",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "hooks/syslog/syslog.go",
+        "start_byte": 1253,
+        "text": "func (hook *SyslogHook) Levels() []logrus.Level {\n\treturn logrus.AllLevels\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "16d0e7e9e445091c1ce6168b",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "logger.go",
+        "start_byte": 71,
+        "text": "type Logger struct {\n\t// The logs are `io.Copy`'d to this in a mutex. It's common to set this to a\n\t// file, or leave it default which is `os.Stderr`. You can also set this to\n\t// something more adventurous, such as logging to Kafka.\n\tOut io.Writer\n\t// Hooks for the logger instance. These allow firing events based on logging\n\t// levels and log entries. For example, to send errors to an error tracking\n\t// service, log to StatsD or dump the core on fatal errors.\n\tHooks LevelHooks\n\t// All log entries pass through the formatter before logged to Out. The\n\t// included formatters are `TextFormatter` and `JSONFormatter` for which\n\t// TextFormatter is the default. In development (when a TTY is attached) it\n\t// logs with colors, but to a file it wouldn't. You can easily implement your\n\t// own that implements the `Formatter` interface, see the `README` or included\n\t// formatters for examples.\n\tFormatter Formatter\n\t// The logging level the logger should log at. This is typically (and defaults\n\t// to) `logrus.Info`, which allows Info(), Warn(), Error() and Fatal() to be\n\t// logged.\n\tLevel Level\n\t// Used to sync writing to the log. Locking is enabled by Default\n\tmu MutexWrap\n\t// Reusable empty entry\n\tentryPool sync.Pool\n\t// Function to exit the application, defaults to `os.Exit()`\n\tExitFunc exitFunc\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "0ef08d2059b8e2e3eebc039c",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "logger.go",
+        "start_byte": 2090,
+        "text": "func New() *Logger {\n\treturn &Logger{\n\t\tOut:       os.Stderr,\n\t\tFormatter: new(TextFormatter),\n\t\tHooks:     make(LevelHooks),\n\t\tLevel:     InfoLevel,\n\t\tExitFunc:  os.Exit,\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "c73b761455a2295d725be64e",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "logger.go",
+        "start_byte": 2268,
+        "text": "func (logger *Logger) newEntry() *Entry {\n\tentry, ok := logger.entryPool.Get().(*Entry)\n\tif ok {\n\t\treturn entry\n\t}\n\treturn NewEntry(logger)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "2280cdeceaa6495eb3c4555b",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "logger.go",
+        "start_byte": 2411,
+        "text": "func (logger *Logger) releaseEntry(entry *Entry) {\n\tentry.Data = map[string]interface{}{}\n\tlogger.entryPool.Put(entry)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "c435f8234e9eb6790c444681",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "logger.go",
+        "start_byte": 2738,
+        "text": "func (logger *Logger) WithField(key string, value interface{}) *Entry {\n\tentry := logger.newEntry()\n\tdefer logger.releaseEntry(entry)\n\treturn entry.WithField(key, value)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "635742853dc5c669e9a1e73c",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "logger.go",
+        "start_byte": 3009,
+        "text": "func (logger *Logger) WithFields(fields Fields) *Entry {\n\tentry := logger.newEntry()\n\tdefer logger.releaseEntry(entry)\n\treturn entry.WithFields(fields)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "23f75712323355b56849e8ad",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "logger.go",
+        "start_byte": 3273,
+        "text": "func (logger *Logger) WithError(err error) *Entry {\n\tentry := logger.newEntry()\n\tdefer logger.releaseEntry(entry)\n\treturn entry.WithError(err)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "10b9a0a85d023a437069e5ae",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "logger.go",
+        "start_byte": 3459,
+        "text": "func (logger *Logger) WithTime(t time.Time) *Entry {\n\tentry := logger.newEntry()\n\tdefer logger.releaseEntry(entry)\n\treturn entry.WithTime(t)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "46593e450d4302d340fbfaf3",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "logger.go",
+        "start_byte": 3603,
+        "text": "func (logger *Logger) Tracef(format string, args ...interface{}) {\n\tif logger.IsLevelEnabled(TraceLevel) {\n\t\tentry := logger.newEntry()\n\t\tentry.Tracef(format, args...)\n\t\tlogger.releaseEntry(entry)\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "29f24829ca9d3ce2b219ffbf",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "logger.go",
+        "start_byte": 3806,
+        "text": "func (logger *Logger) Debugf(format string, args ...interface{}) {\n\tif logger.IsLevelEnabled(DebugLevel) {\n\t\tentry := logger.newEntry()\n\t\tentry.Debugf(format, args...)\n\t\tlogger.releaseEntry(entry)\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "f8f02f4e44b55e3703a9aba8",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "logger.go",
+        "start_byte": 4009,
+        "text": "func (logger *Logger) Infof(format string, args ...interface{}) {\n\tif logger.IsLevelEnabled(InfoLevel) {\n\t\tentry := logger.newEntry()\n\t\tentry.Infof(format, args...)\n\t\tlogger.releaseEntry(entry)\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "d138697021f93546eec0a8e4",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "logger.go",
+        "start_byte": 4209,
+        "text": "func (logger *Logger) Printf(format string, args ...interface{}) {\n\tentry := logger.newEntry()\n\tentry.Printf(format, args...)\n\tlogger.releaseEntry(entry)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "611276312e1d2d61ddaaa32d",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "logger.go",
+        "start_byte": 4366,
+        "text": "func (logger *Logger) Warnf(format string, args ...interface{}) {\n\tif logger.IsLevelEnabled(WarnLevel) {\n\t\tentry := logger.newEntry()\n\t\tentry.Warnf(format, args...)\n\t\tlogger.releaseEntry(entry)\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "025cfa657e1dda4b39eb0ffd",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "logger.go",
+        "start_byte": 4566,
+        "text": "func (logger *Logger) Warningf(format string, args ...interface{}) {\n\tif logger.IsLevelEnabled(WarnLevel) {\n\t\tentry := logger.newEntry()\n\t\tentry.Warnf(format, args...)\n\t\tlogger.releaseEntry(entry)\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "88dbd43d602fe37ca74c2651",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "logger.go",
+        "start_byte": 4972,
+        "text": "func (logger *Logger) Fatalf(format string, args ...interface{}) {\n\tif logger.IsLevelEnabled(FatalLevel) {\n\t\tentry := logger.newEntry()\n\t\tentry.Fatalf(format, args...)\n\t\tlogger.releaseEntry(entry)\n\t}\n\tlogger.Exit(1)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "6b026727ad0661f5c2aa70ff",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "logger.go",
+        "start_byte": 5191,
+        "text": "func (logger *Logger) Panicf(format string, args ...interface{}) {\n\tif logger.IsLevelEnabled(PanicLevel) {\n\t\tentry := logger.newEntry()\n\t\tentry.Panicf(format, args...)\n\t\tlogger.releaseEntry(entry)\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "09d6bdf1e15fc23f1490918a",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "logger.go",
+        "start_byte": 5394,
+        "text": "func (logger *Logger) Trace(args ...interface{}) {\n\tif logger.IsLevelEnabled(TraceLevel) {\n\t\tentry := logger.newEntry()\n\t\tentry.Trace(args...)\n\t\tlogger.releaseEntry(entry)\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "eb037f1ccefb072af19b5016",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "logger.go",
+        "start_byte": 5572,
+        "text": "func (logger *Logger) Debug(args ...interface{}) {\n\tif logger.IsLevelEnabled(DebugLevel) {\n\t\tentry := logger.newEntry()\n\t\tentry.Debug(args...)\n\t\tlogger.releaseEntry(entry)\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "b9426791e9cc28e74e1791ac",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "logger.go",
+        "start_byte": 5750,
+        "text": "func (logger *Logger) Info(args ...interface{}) {\n\tif logger.IsLevelEnabled(InfoLevel) {\n\t\tentry := logger.newEntry()\n\t\tentry.Info(args...)\n\t\tlogger.releaseEntry(entry)\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "5c07127376945d3106388a7e",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "logger.go",
+        "start_byte": 5925,
+        "text": "func (logger *Logger) Print(args ...interface{}) {\n\tentry := logger.newEntry()\n\tentry.Info(args...)\n\tlogger.releaseEntry(entry)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "5a20577fe11fa1d730c836f8",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "logger.go",
+        "start_byte": 6056,
+        "text": "func (logger *Logger) Warn(args ...interface{}) {\n\tif logger.IsLevelEnabled(WarnLevel) {\n\t\tentry := logger.newEntry()\n\t\tentry.Warn(args...)\n\t\tlogger.releaseEntry(entry)\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "58d547eb80731503f6d4ac60",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "logger.go",
+        "start_byte": 6231,
+        "text": "func (logger *Logger) Warning(args ...interface{}) {\n\tif logger.IsLevelEnabled(WarnLevel) {\n\t\tentry := logger.newEntry()\n\t\tentry.Warn(args...)\n\t\tlogger.releaseEntry(entry)\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "3f8abb06b5542acd1845c8f0",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "logger.go",
+        "start_byte": 6587,
+        "text": "func (logger *Logger) Fatal(args ...interface{}) {\n\tif logger.IsLevelEnabled(FatalLevel) {\n\t\tentry := logger.newEntry()\n\t\tentry.Fatal(args...)\n\t\tlogger.releaseEntry(entry)\n\t}\n\tlogger.Exit(1)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "e1d5033f096fac11e88317db",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "logger.go",
+        "start_byte": 6781,
+        "text": "func (logger *Logger) Panic(args ...interface{}) {\n\tif logger.IsLevelEnabled(PanicLevel) {\n\t\tentry := logger.newEntry()\n\t\tentry.Panic(args...)\n\t\tlogger.releaseEntry(entry)\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "36e7193a8443620c41d0aedc",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "logger.go",
+        "start_byte": 6959,
+        "text": "func (logger *Logger) Traceln(args ...interface{}) {\n\tif logger.IsLevelEnabled(TraceLevel) {\n\t\tentry := logger.newEntry()\n\t\tentry.Traceln(args...)\n\t\tlogger.releaseEntry(entry)\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "0cab488dc39cd084c9e884d7",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "logger.go",
+        "start_byte": 7141,
+        "text": "func (logger *Logger) Debugln(args ...interface{}) {\n\tif logger.IsLevelEnabled(DebugLevel) {\n\t\tentry := logger.newEntry()\n\t\tentry.Debugln(args...)\n\t\tlogger.releaseEntry(entry)\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "ca55c720f6e13f6ef12b2b34",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "logger.go",
+        "start_byte": 7323,
+        "text": "func (logger *Logger) Infoln(args ...interface{}) {\n\tif logger.IsLevelEnabled(InfoLevel) {\n\t\tentry := logger.newEntry()\n\t\tentry.Infoln(args...)\n\t\tlogger.releaseEntry(entry)\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "c5635480b9434e8841a19616",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "logger.go",
+        "start_byte": 7502,
+        "text": "func (logger *Logger) Println(args ...interface{}) {\n\tentry := logger.newEntry()\n\tentry.Println(args...)\n\tlogger.releaseEntry(entry)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "4b40f435b0eb513b5e85a725",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "logger.go",
+        "start_byte": 7638,
+        "text": "func (logger *Logger) Warnln(args ...interface{}) {\n\tif logger.IsLevelEnabled(WarnLevel) {\n\t\tentry := logger.newEntry()\n\t\tentry.Warnln(args...)\n\t\tlogger.releaseEntry(entry)\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "5a37b3d354d436ac3a56cae5",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "logger.go",
+        "start_byte": 7817,
+        "text": "func (logger *Logger) Warningln(args ...interface{}) {\n\tif logger.IsLevelEnabled(WarnLevel) {\n\t\tentry := logger.newEntry()\n\t\tentry.Warnln(args...)\n\t\tlogger.releaseEntry(entry)\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "28c6af00ec21e90ff9eb60e5",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "logger.go",
+        "start_byte": 7999,
+        "text": "func (logger *Logger) Errorln(args ...interface{}) {\n\tif logger.IsLevelEnabled(ErrorLevel) {\n\t\tentry := logger.newEntry()\n\t\tentry.Errorln(args...)\n\t\tlogger.releaseEntry(entry)\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "9ce307f0724a5eecef60df5b",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "logger.go",
+        "start_byte": 8181,
+        "text": "func (logger *Logger) Fatalln(args ...interface{}) {\n\tif logger.IsLevelEnabled(FatalLevel) {\n\t\tentry := logger.newEntry()\n\t\tentry.Fatalln(args...)\n\t\tlogger.releaseEntry(entry)\n\t}\n\tlogger.Exit(1)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "68523b74e35c85711d259787",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "logger.go",
+        "start_byte": 8379,
+        "text": "func (logger *Logger) Panicln(args ...interface{}) {\n\tif logger.IsLevelEnabled(PanicLevel) {\n\t\tentry := logger.newEntry()\n\t\tentry.Panicln(args...)\n\t\tlogger.releaseEntry(entry)\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "093367a357def3af1f473180",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "logger.go",
+        "start_byte": 8932,
+        "text": "func (logger *Logger) level() Level {\n\treturn Level(atomic.LoadUint32((*uint32)(&logger.Level)))\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "c4756f38e5c20f9cd31781cc",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "logger.go",
+        "start_byte": 9067,
+        "text": "func (logger *Logger) SetLevel(level Level) {\n\tatomic.StoreUint32((*uint32)(&logger.Level), uint32(level))\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "b0804f4295171882d9091785",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "logger.go",
+        "start_byte": 9215,
+        "text": "func (logger *Logger) GetLevel() Level {\n\treturn logger.level()\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "548d8bfd4297e3ceac7f996f",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "logger.go",
+        "start_byte": 9528,
+        "text": "func (logger *Logger) IsLevelEnabled(level Level) bool {\n\treturn logger.level() >= level\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "5b30fd3c1d7c0e6a5fed808b",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "logrus.go",
+        "start_byte": 635,
+        "text": "func ParseLevel(lvl string) (Level, error) {\n\tswitch strings.ToLower(lvl) {\n\tcase \"panic\":\n\t\treturn PanicLevel, nil\n\tcase \"fatal\":\n\t\treturn FatalLevel, nil\n\tcase \"error\":\n\t\treturn ErrorLevel, nil\n\tcase \"warn\", \"warning\":\n\t\treturn WarnLevel, nil\n\tcase \"info\":\n\t\treturn InfoLevel, nil\n\tcase \"debug\":\n\t\treturn DebugLevel, nil\n\tcase \"trace\":\n\t\treturn TraceLevel, nil\n\t}\n\n\tvar l Level\n\treturn l, fmt.Errorf(\"not a valid logrus Level: %q\", lvl)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "abcd04be889fc9a5211aa9ec",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "logrus.go",
+        "start_byte": 1003,
+        "text": "var l Level",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "c88edeae806ed6945e7a19a4",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "logrus.go",
+        "start_byte": 1119,
+        "text": "var AllLevels = []Level{\n\tPanicLevel,\n\tFatalLevel,\n\tErrorLevel,\n\tWarnLevel,\n\tInfoLevel,\n\tDebugLevel,\n\tTraceLevel,\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "d701c11c9fe6c7ebffa96e31",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "logrus.go",
+        "start_byte": 1377,
+        "text": "const (\n\t// PanicLevel level, highest level of severity. Logs and then calls panic with the\n\t// message passed to Debug, Info, ...\n\tPanicLevel Level = iota\n\t// FatalLevel level. Logs and then calls `logger.Exit(1)`. It will exit even if the\n\t// logging level is set to Panic.\n\tFatalLevel\n\t// ErrorLevel level. Logs. Used for errors that should definitely be noted.\n\t// Commonly used for hooks to send errors to an error tracking service.\n\tErrorLevel\n\t// WarnLevel level. Non-critical entries that deserve eyes.\n\tWarnLevel\n\t// InfoLevel level. General operational entries about what's going on inside the\n\t// application.\n\tInfoLevel\n\t// DebugLevel level. Usually only enabled when debugging. Very verbose logging.\n\tDebugLevel\n\t// TraceLevel level. Designates finer-grained informational events than the Debug.\n\tTraceLevel\n)",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "483225c14e390c943bde331b",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "logrus.go",
+        "start_byte": 2265,
+        "text": "var (\n\t_ StdLogger = &log.Logger{}\n\t_ StdLogger = &Entry{}\n\t_ StdLogger = &Logger{}\n)",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "0dd223e6f094d048754c22d2",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "logrus.go",
+        "start_byte": 2893,
+        "text": "type FieldLogger interface {\n\tWithField(key string, value interface{}) *Entry\n\tWithFields(fields Fields) *Entry\n\tWithError(err error) *Entry\n\n\tDebugf(format string, args ...interface{})\n\tInfof(format string, args ...interface{})\n\tPrintf(format string, args ...interface{})\n\tWarnf(format string, args ...interface{})\n\tWarningf(format string, args ...interface{})\n\tErrorf(format string, args ...interface{})\n\tFatalf(format string, args ...interface{})\n\tPanicf(format string, args ...interface{})\n\n\tDebug(args ...interface{})\n\tInfo(args ...interface{})\n\tPrint(args ...interface{})\n\tWarn(args ...interface{})\n\tWarning(args ...interface{})\n\tError(args ...interface{})\n\tFatal(args ...interface{})\n\tPanic(args ...interface{})\n\n\tDebugln(args ...interface{})\n\tInfoln(args ...interface{})\n\tPrintln(args ...interface{})\n\tWarnln(args ...interface{})\n\tWarningln(args ...interface{})\n\tErrorln(args ...interface{})\n\tFatalln(args ...interface{})\n\tPanicln(args ...interface{})\n\n\t// IsDebugEnabled() bool\n\t// IsInfoEnabled() bool\n\t// IsWarnEnabled() bool\n\t// IsErrorEnabled() bool\n\t// IsFatalEnabled() bool\n\t// IsPanicEnabled() bool\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "e16b35c850e477bf00831367",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "terminal_check_notappengine.go",
+        "start_byte": 112,
+        "text": "func checkIfTerminal(w io.Writer) bool {\n\tswitch v := w.(type) {\n\tcase *os.File:\n\t\treturn terminal.IsTerminal(int(v.Fd()))\n\tdefault:\n\t\treturn false\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "cb0562a7c6f91ae3fc9291f0",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "terminal_check_windows.go",
+        "start_byte": 85,
+        "text": "func checkIfTerminal(w io.Writer) bool {\n\tswitch v := w.(type) {\n\tcase *os.File:\n\t\tvar mode uint32\n\t\terr := syscall.GetConsoleMode(syscall.Handle(v.Fd()), &mode)\n\t\treturn err == nil\n\tdefault:\n\t\treturn false\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "84af211c26abe58e2fad79f9",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "terminal_windows.go",
+        "start_byte": 150,
+        "text": "func initTerminal(w io.Writer) {\n\tswitch v := w.(type) {\n\tcase *os.File:\n\t\tsequences.EnableVirtualTerminalProcessing(syscall.Handle(v.Fd()), true)\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "6a518c8b1363b0861c38a3c1",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "text_formatter.go",
+        "start_byte": 179,
+        "text": "var (\n\tbaseTimestamp time.Time\n\temptyFieldMap FieldMap\n)",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "1cad48082e22e13926b6bfd5",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "text_formatter.go",
+        "start_byte": 322,
+        "text": "type TextFormatter struct {\n\t// Set to true to bypass checking for a TTY before outputting colors.\n\tForceColors bool\n\n\t// Force disabling colors.\n\tDisableColors bool\n\n\t// Override coloring based on CLICOLOR and CLICOLOR_FORCE. - https://bixense.com/clicolors/\n\tEnvironmentOverrideColors bool\n\n\t// Disable timestamp logging. useful when output is redirected to logging\n\t// system that already adds timestamps.\n\tDisableTimestamp bool\n\n\t// Enable logging the full timestamp when a TTY is attached instead of just\n\t// the time passed since beginning of execution.\n\tFullTimestamp bool\n\n\t// TimestampFormat to use for display when a full timestamp is printed\n\tTimestampFormat string\n\n\t// The fields are sorted by default for a consistent output. For applications\n\t// that log extremely frequently and don't use the JSON formatter this may not\n\t// be desired.\n\tDisableSorting bool\n\n\t// The keys sorting function, when uninitialized it uses sort.Strings.\n\tSortingFunc func([]string)\n\n\t// Disables the truncation of the level text to 4 characters.\n\tDisableLevelTruncation bool\n\n\t// QuoteEmptyFields will wrap empty fields in quotes if true\n\tQuoteEmptyFields bool\n\n\t// Whether the logger's out is to a terminal\n\tisTerminal bool\n\n\t// FieldMap allows users to customize the names of keys for default fields.\n\t// As an example:\n\t// formatter := &TextFormatter{\n\t//     FieldMap: FieldMap{\n\t//         FieldKeyTime:  \"@timestamp\",\n\t//         FieldKeyLevel: \"@level\",\n\t//         FieldKeyMsg:   \"@message\"}}\n\tFieldMap FieldMap\n\n\tterminalInitOnce sync.Once\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "c90fe0c8c0ccc65142ff237c",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "text_formatter.go",
+        "start_byte": 1867,
+        "text": "func (f *TextFormatter) init(entry *Entry) {\n\tif entry.Logger != nil {\n\t\tf.isTerminal = checkIfTerminal(entry.Logger.Out)\n\n\t\tif f.isTerminal {\n\t\t\tinitTerminal(entry.Logger.Out)\n\t\t}\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "6498a4ae4d9504f2a0fa3e35",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "text_formatter.go",
+        "start_byte": 2054,
+        "text": "func (f *TextFormatter) isColored() bool {\n\tisColored := f.ForceColors || f.isTerminal\n\n\tif f.EnvironmentOverrideColors {\n\t\tif force, ok := os.LookupEnv(\"CLICOLOR_FORCE\"); ok && force != \"0\" {\n\t\t\tisColored = true\n\t\t} else if ok && force == \"0\" {\n\t\t\tisColored = false\n\t\t} else if os.Getenv(\"CLICOLOR\") == \"0\" {\n\t\t\tisColored = false\n\t\t}\n\t}\n\n\treturn isColored && !f.DisableColors\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "2af96013851078d49e7391f2",
+        "revision": "4fabf2fffcecfd47f802869b7b92d75e43c5a095",
+        "path": "text_formatter.go",
+        "start_byte": 4263,
+        "text": "func (f *TextFormatter) printColored(b *bytes.Buffer, entry *Entry, keys []string, timestampFormat string) {\n\tvar levelColor int\n\tswitch entry.Level {\n\tcase DebugLevel, TraceLevel:\n\t\tlevelColor = gray\n\tcase WarnLevel:\n\t\tlevelColor = yellow\n\tcase ErrorLevel, FatalLevel, PanicLevel:\n\t\tlevelColor = red\n\tdefault:\n\t\tlevelColor = blue\n\t}\n\n\tlevelText := strings.ToUpper(entry",
+        "rank": 2,
+        "truncated": true
+      }
+    ]
+  },
+  "retrieval": {
+    "unresolved": [
+      {
+        "side": "ours",
+        "identifier": "f",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "entry",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "byte",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "error",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "data",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "make",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "len",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Data",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "k",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "v",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Error",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "entry.go",
+            "start": 5950
+          },
+          {
+            "path": "exported.go",
+            "start": 2621
+          },
+          {
+            "path": "logger.go",
+            "start": 5712
+          }
+        ]
+      },
+      {
+        "side": "ours",
+        "identifier": "timestampFormat",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "TimestampFormat",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "DisableTimestamp",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "FieldKeyTime",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Time",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Message",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "FieldKeyLevel",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "String",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "entry.go",
+            "start": 1804
+          },
+          {
+            "path": "logrus.go",
+            "start": 235
+          }
+        ]
+      },
+      {
+        "side": "ours",
+        "identifier": "FieldKeyFunc",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Caller",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "serialized",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "err",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "json",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Marshal",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "fmt",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Errorf",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "entry.go",
+            "start": 7104
+          },
+          {
+            "path": "exported.go",
+            "start": 3708
+          },
+          {
+            "path": "logger.go",
+            "start": 4292
+          }
+        ]
+      },
+      {
+        "side": "ours",
+        "identifier": "append",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "f",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "entry",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "byte",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "error",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "data",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "make",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "len",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Data",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "k",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "v",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Error",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "entry.go",
+            "start": 4921
+          },
+          {
+            "path": "exported.go",
+            "start": 2820
+          },
+          {
+            "path": "logger.go",
+            "start": 6409
+          }
+        ]
+      },
+      {
+        "side": "theirs",
+        "identifier": "DataKey",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "newData",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "timestampFormat",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "TimestampFormat",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "err",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "FieldKeyLogrusError",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "DisableTimestamp",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "FieldKeyTime",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Time",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "FieldKeyMsg",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Message",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "FieldKeyLevel",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "String",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "entry.go",
+            "start": 1452
+          },
+          {
+            "path": "logrus.go",
+            "start": 235
+          }
+        ]
+      },
+      {
+        "side": "theirs",
+        "identifier": "b",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "json_formatter.go",
+            "start": 1977
+          },
+          {
+            "path": "text_formatter.go",
+            "start": 3409
+          }
+        ]
+      },
+      {
+        "side": "theirs",
+        "identifier": "bytes",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Buffer",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "encoder",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "json",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "NewEncoder",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "PrettyPrint",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "SetIndent",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Encode",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "fmt",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Errorf",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "entry.go",
+            "start": 6279
+          },
+          {
+            "path": "exported.go",
+            "start": 4101
+          },
+          {
+            "path": "logger.go",
+            "start": 4769
+          }
+        ]
+      },
+      {
+        "side": "theirs",
+        "identifier": "Bytes",
+        "reason": "no-unique-declaration-established"
+      }
+    ],
+    "method": "syntax-ranges-and-identifier-candidates/3",
+    "budget_bytes": 32768,
+    "libraries": {
+      "C": "cbbd4827ee02cd5c018ab41f10d8404ff8741159054b352d9a6d763c506ba3c7",
+      "Go": "1612f8fd958ba1ec981bf4b91e2ff399f1e54d26a9da68e5b60b0d7cd00616fc"
+    }
+  }
+}

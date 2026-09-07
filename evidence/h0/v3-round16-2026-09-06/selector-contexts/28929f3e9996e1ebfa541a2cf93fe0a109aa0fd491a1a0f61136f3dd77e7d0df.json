@@ -1,0 +1,936 @@
+{
+  "id": "28929f3e9996e1ebfa541a2cf93fe0a109aa0fd491a1a0f61136f3dd77e7d0df",
+  "source_protocol_sha256": "86ffe38086e217acf6e1a4aa4162e226862463d1bde3160478f9a6f4d2b968ce",
+  "repair_module_sha256": "b6a7cf123b0ac50001e1498cdf64964b8ac56e8e6a68cbbc6dcc01c8517b4a20",
+  "contexts": {
+    "local-context": [
+      {
+        "id": "76dfa4347c1e3eb8b6b3080f",
+        "revision": "77345b20736d3eee3fd82ad68090fc09c173db37",
+        "path": "server.go",
+        "start_byte": 2280,
+        "text": "low the use of\n// ordinary functions as DNS handlers.  If f is a function\n// with the appropriate signature, HandlerFunc(f) is a\n// Handler object that calls f.\ntype HandlerFunc func(ResponseWriter, *Msg)\n\n// ServerDNS calls f(w, r)\nfunc (f HandlerFunc) ServeDNS(w ResponseWriter, r *Msg) {\n\tf(w, r)\n}\n\n// FailedHandler returns a HandlerFunc\n// returns SERVFAIL for every request it gets.\nfunc HandleFailed(w ResponseWriter, r *Msg) {\n\tm := new(Msg)\n\tm.SetRcode(r, RcodeServerFailure)\n\t// does not matter if this write fails\n\tw.WriteMsg(m)\n}\n\nfunc failedHandler() Handler { return HandlerFunc(HandleFailed) }\n\n// Start a server on addresss and network speficied. Invoke handler\n// for incoming queries.\nfunc ListenAndServe(addr string, network string, handler Handler) error {\n\tserver := &Server{Addr: addr, Net: network, Handler: handler}\n\treturn server.ListenAndServe()\n}\n\nfunc (mux *ServeMux) match(q string, t uint16) Handler {\n\tmux.m.RLock()\n\tdefer mux.m.RUnlock()\n\tvar handler Handler\n\tb := make([]byte, len(q)) // worst case, one label of length q\n\toff := 0\n\tend := false\n\tfor {\n\t\tl := len(q[off:])\n\t\tfor i := 0; i < l; i++ {\n\t\t\tb[i] = q[off+i]\n\t\t\tif b[i] >= 'A' && b[i] <= 'Z' {\n\t\t\t\tb[i] |= ('a' - 'A')\n\t\t\t}\n\t\t}\n\t\tif h, ok := mux.z[string(b[:l])]; ok { // 'causes garbage, might want to change the map key\n\t\t\tif t != TypeDS {\n\t\t\t\treturn h\n\t\t\t} else {\n\t\t\t\t// Continue for DS to see if we have a parent too, if so delegeate to the parent\n\t\t\t\thandler = h\n\t\t\t}\n\t\t}\n\t\toff, end = NextLabel(q, off)\n\t\tif end {\n\t\t\tbreak\n\t\t}\n\t}\n\t// Wildcard match, if we have found nothing try the root zone as a last resort.\n\tif h, ok := mux.z[\".\"]; ok {\n\t\treturn h\n\t}\n\treturn handler\n}\n\n// Handle adds a handler to the ServeMux for pattern.\nfunc (mux *ServeMux) Handle(pattern string, handler Handler) {\n\tif pattern == \"\" {\n\t\tpanic(\"dns: invalid pattern \" + pattern)\n\t}\n\tmux.m.Lock()\n\tmux.z[Fqdn(pattern)] = handler\n\tmux.m.Unlock()\n}\n\n// Handle adds a handler to the ServeMux for pattern.\nfunc (mux *ServeMux) HandleFunc(pattern string, handler func(ResponseWriter, *Msg)) {\n\tmux.Handle(pattern, HandlerFunc(handler))\n}\n\n// HandleRemove deregistrars the handler specific for pattern from the ServeMux.\nfunc (mux *ServeMux) HandleRemove(pattern string) {\n\tif pattern == \"\" {\n\t\tpanic(\"dns: invalid pattern \" + pattern)\n\t}\n\t// don't need a mutex here, because deleting is OK, even if the\n\t// entry is note there.\n\tdelete(mux.z, Fqdn(pattern))\n}\n\n// ServeDNS dispatches the request to the handler whose\n// pattern most closely matches the request message. If DefaultServeMux\n// is used the correct thing for DS queries is done: a possible parent\n// is sought.\n// If no handler is found a standard SERVFAIL message is returned\n// If the request message does not have a single question in the\n// question section a SERVFAIL is returned.\nfunc (mux *ServeMux) ServeDNS(w ResponseWriter, request *Msg) {\n\tvar h Handler\n\tif len(request.Question) != 1 {\n\t\th = failedHandler()\n\t} else {\n\t\tif h = mux.match(request.Question[0].Name, request.Question[0].Qtype); h == nil {\n\t\t\th = failedHandler()\n\t\t}\n\t}\n\th.ServeDNS(w, request)\n}\n\n// Handle registers the handler with the given pattern\n// in the DefaultServeMux. The documentation for\n// ServeMux explains how patterns are matched.\nfunc Handle(pattern string, handler Handler) { DefaultServeMux.Handle(pattern, handler) }\n\n// HandleRemove deregisters the handle with the given pattern\n// in the DefaultServeMux.\nfunc HandleRemove(pattern string) { DefaultServeMux.HandleRemove(pattern) }\n\n// HandleFunc registers the handler function with the given pattern\n// in the DefaultServeMux.\nfunc HandleFunc(pattern string, handler func(ResponseWriter, *Msg)) {\n\tDefaultServeMux.HandleFunc(pattern, handler)\n}\n\n// A Server defines parameters for running an DNS server.\ntype Server struct {\n\tAddr         string               // address to listen on, \":dns\" if empty\n\tNet          string               // if \"tcp\" it will invoke a TCP listener, otherwise an UDP one\n\tHandler      Handler              // handler to invoke, dns.DefaultServeMux if nil\n\tUDPSize      int                  // default buffer size to use to read incoming UDP messages\n\tReadTimeout  time.Duration        // the net.Conn.SetReadTimeout value for new connections\n\tWriteTimeout time.Duration        // the net.Conn.SetWriteTimeout value for new connections\n\tIdleTimeout  func() time.Duration // TCP idle timeout for multiple queries, if nil, defaults to 8 * time.Second (RFC 5966)\n\tTsigSecret   map[string]string    // secret(s) for Tsig map[<zonename>]<base64 secret>\n}\n\n// ListenAndServe starts a nameserver on the configured address in *Server.\nfunc (srv *Server) ListenAndServe() error {\n\taddr := srv.Addr\n\tif addr == \"\" {\n\t\taddr = \":domain\"\n\t}\n\tswitch srv.Net {\n\tcase \"tcp\", \"tcp4\", \"tcp6\":\n\t\ta, e := net.ResolveTCPAddr(srv.Net, addr)\n\t\tif e != nil {\n\t\t\treturn e\n\t\t}\n\t\tl, e := net.ListenTCP(srv.Net, a)\n\t\tif e != nil {\n\t\t\treturn e\n\t\t}\n\t\treturn srv.serveTCP(l)\n\tcase \"udp\", \"udp4\", \"udp6\":\n\t\ta, e := net.ResolveUDPAddr(srv.Net, addr)\n\t\tif e != nil {\n\t\t\treturn e\n\t\t}\n\t\tl, e := net.ListenUDP(srv.Net, a)\n\t\tif e != nil {\n\t\t\treturn e\n\t\t}\n\t\treturn srv.serveUDP(l)\n\t}\n\treturn &Error{err: \"bad network\"}\n}\n\n// serveTCP starts a TCP listener for the server.\n// Each request is handled in a seperate goroutine.\nfunc (srv *Server) serveTCP(l *net.TCPListener) error {\n\tdefer l.Close()\n\thandler := srv.Handler\n\tif handler == nil {\n\t\thandler = DefaultServeMux\n\t}\n\trtimeout := dnsTimeout\n\tif srv.ReadTimeout != 0 {\n\t\trtimeout = srv.ReadTimeout\n\t}\n\tfor {\n\t\trw, e := l.AcceptTCP()\n\t\tif e != nil {\n\t\t\tcontinue\n\t\t}\n\t\tm, e := srv.readTCP(rw, rtimeout)\n\t\tif e != nil {\n\t\t\tcontinue\n\t\t}\n\t\tgo srv.serve(rw.RemoteAddr(), handler, m, nil, rw)\n\t}\n\tpanic(\"dns: not reached\")\n}\n\n// serveUDP starts a UDP listener for the server.\n// Each request is handled in a seperate goroutine.\nfunc (srv *Server) serveUDP(l *net.UDPConn) error {\n\tdefer l.Close()\n\thandler := srv.Handler\n\tif handler == nil {\n\t\thandler = DefaultServeMux\n\t}\n\tif srv.UDPSize == 0 {\n\t\tsrv.UDPSize = MinMsgSize\n\t}\n\trtimeout := dnsTimeout\n\tif srv.ReadTimeout != 0 {\n\t\trtimeout = srv.ReadTimeout\n\t}\n\tfor {\n\t\tm, a, e := srv.readUDP(l, rtimeout)\n\t\tif e != nil {\n\t\t\tcontinue\n\t\t}\n\t\tgo srv.serve(a, handler, m, l, nil)\n\t}\n\tpanic(\"dns: not reached\")\n}\n\n// Serve a new connection.\nfunc (srv *Server) serve(a net.Addr, h Handler, m []byte, u *net.UDPConn, t *net.TCPConn) {\n\tw := &response{tsigSecret: srv.TsigSecret, udp: u, tcp: t, remoteAddr: a}\n\tq := 0\nRedo:\n\treq := new(Msg)\n\tif req.Unpack(m) != nil { // Send a FormatError back\n\t\tx := new(Msg)\n\t\tx.SetRcodeFormatError(req)\n\t\tw.WriteMsg(x)\n\t\tgoto Exit\n\t}\n\n\tw.tsigStatus = nil\n\tif w.tsigSecret != nil {\n\t\tif t := req.IsTsig(); t != nil {\n\t\t\tsecret := t.Hdr.Name\n\t\t\tif _, ok := w.tsigSecret[secret]; !ok {\n\t\t\t\tw.tsigStatus = ErrKeyAlg\n\t\t\t}\n\t\t\tw.tsigStatus = TsigVerify(m, w.tsigSecret[secret], \"\", false)\n\t\t\tw.tsigTimersOnly = false\n\t\t\tw.tsigRequestMAC = req.Extra[len(req.Extra)-1].(*TSIG).MAC\n\t\t}\n\t}\n\th.ServeDNS(w, req) // Writes back to the client\n\nExit:\n\tif w.hijacked {\n\t\treturn // client calls Close()\n\t}\n\tif u != nil { // UDP, \"close\" and return\n\t\tw.Close()\n\t\treturn\n\t}\n\tidleTimeout := tcpIdleTimeout\n\tif srv.IdleTimeout != nil {\n\t\tidleTimeout = srv.IdleTimeout()\n\t}\n\tm, e := srv.readTCP(w.tcp, idleTimeout)\n\tif e == nil {\n\t\tq++\n\t\t// TODO(miek): make this number configurable?\n\t\tif q > 128 { // close socket after this many queries\n\t\t\tw.Close()\n\t\t\treturn\n\t\t}\n\t\tgoto Redo\n\t}\n\tw.Close()\n\treturn\n}\n\nfunc (srv *Server) readTCP(conn *net.TCPConn, timeout time.Duration) ([]byte, error) {\n\tl := make([]byte, 2)\n\tn, err := conn.Read(l)\n\tif err != nil || n != 2 {\n\t\tif err != nil {\n\t\t\treturn nil, err\n\t\t}\n\t\treturn nil, ErrConn\n\t}\n\tlength, _ := unpackUint16(l, 0)\n\tif length == 0 {\n\t\treturn nil, ErrConn\n\t}\n\tm := make([]byte, int(length))\n\tn, err = conn.Read(m[:int(length)])\n\tif err != nil || n == 0 {\n\t\tif err != nil {\n\t\t\treturn nil, err\n\t\t}\n\t\treturn nil, ErrConn\n\t}\n\ti := n\n\tfor i < int(length) {\n\t\tj, err := conn.Read(m[i:int(length)])\n\t\tif err != nil {\n\t\t\treturn nil, err\n\t\t}\n\t\ti += j\n\t}\n\tn = i\n\tm = m[:n]\n\treturn m, nil\n}\n\nfunc (srv *Server) readUDP(conn *net.UDPConn, timeout time.Duration) ([]byte, net.Addr, error) {\n\tm := make([]byte, srv.UDPSize)\n\tn, a, e := conn.ReadFromUDP(m)\n\tif e != nil || n == 0 {\n\t\treturn nil, nil, ErrConn\n\t}\n\tm = m[:n]\n\treturn m, a, nil\n}\n\n// WriteMsg implements the ResponseWriter.WriteMsg method.\nfunc (w *response) WriteMsg(m *Msg) (err error) {\n\tvar data []byte\n\tif w.tsigSecret != nil { // if no secrets, dont check for the tsig (which is a longer check)\n\t\tif t := m.IsTsig(); t != nil {\n\t\t\tdata, w.tsigRequestMAC, err = TsigGenerate(m, w.tsigSecret[t.Hdr.Name], w.tsigRequestMAC, w.tsigTimersOnly)\n\t\t\tif err != nil {\n\t\t\t\treturn err\n\t\t\t}\n\t\t\t_, err = w.Write(data)\n\t\t\treturn err\n\t\t}\n\t}\n\tdata, err = m.Pack()\n\tif err != nil {\n\t\treturn err\n\t}\n\t_, err = w.Write(data)\n\treturn err\n}\n\n// Write implements the ResponseWriter.Write method.\nfunc (w *response) Write(m []byte) (int, error) {\n\tswitch {\n\tcase w.udp != nil:\n\t\tn, err := w.udp.WriteTo(m, w.remoteAddr)\n\t\treturn n, err\n\tcase w.tcp != nil:\n\t\tlm := len(m)\n\t\tif lm < 2 {\n\t\t\treturn 0, io.ErrShortBuffer\n\t\t}\n\t\tif lm > MaxMsgSize {\n\t\t\treturn 0, &Error{err: \"message too large\"}\n\t\t}\n\t\tl := make([]byte, 2, 2+lm)\n\t\tl[0], l[1] = packUint16(uint16(lm))\n\t\tm = append(l, m...)\n\n\t\tn, err := io.Copy(w.tcp, bytes.NewReader(m))\n\t\treturn int(n), err\n\t}\n\tpanic(\"not reached\")\n}\n\n// RemoteAddr implements the ResponseWriter.RemoteAddr method.\nfunc (w *response) RemoteAddr() net.Addr { return w.remoteAddr }\n\n// TsigStatus implements the ResponseWriter.TsigStatus method.\nfunc (w *response) TsigStatus() error { return w.tsigStatus }\n\n// TsigTimersOnly implements the ResponseWriter.TsigTimersOnly method.\nfunc (w *response) TsigTimersOnly(b bool) { w.tsigTimersOnly = b }\n\n// Hijack implements the ResponseWriter.Hijack method.\nfunc (w *response) Hijack() { w.hijacked = true }\n\n// Close implements the ResponseWriter.Close method\nfunc (w *response) Close() error {\n\t// Can't close the udp conn, as that is actually the listener.\n\tif w.tcp != nil {\n\t\te := w.tcp.Close()\n\t\tw.tcp = nil\n\t\treturn e\n\t}\n\treturn nil\n}\n",
+        "rank": 0,
+        "truncated": false
+      },
+      {
+        "id": "0b89966c5a8efecb7f298c94",
+        "revision": "18e84f97d18808e0525190163616755889857307",
+        "path": "server.go",
+        "start_byte": 2651,
+        "text": " request it gets.\nfunc HandleFailed(w ResponseWriter, r *Msg) {\n\tm := new(Msg)\n\tm.SetRcode(r, RcodeServerFailure)\n\t// does not matter if this write fails\n\tw.WriteMsg(m)\n}\n\nfunc failedHandler() Handler { return HandlerFunc(HandleFailed) }\n\n// Start a server on addresss and network speficied. Invoke handler\n// for incoming queries.\nfunc ListenAndServe(addr string, network string, handler Handler) error {\n\tserver := &Server{Addr: addr, Net: network, Handler: handler}\n\treturn server.ListenAndServe()\n}\n\nfunc (mux *ServeMux) match(q string, t uint16) Handler {\n\tmux.m.RLock()\n\tdefer mux.m.RUnlock()\n\tvar handler Handler\n\tb := make([]byte, len(q)) // worst case, one label of length q\n\toff := 0\n\tend := false\n\tfor {\n\t\tl := len(q[off:])\n\t\tfor i := 0; i < l; i++ {\n\t\t\tb[i] = q[off+i]\n\t\t\tif b[i] >= 'A' && b[i] <= 'Z' {\n\t\t\t\tb[i] |= ('a' - 'A')\n\t\t\t}\n\t\t}\n\t\tif h, ok := mux.z[string(b[:l])]; ok { // 'causes garbage, might want to change the map key\n\t\t\tif t != TypeDS {\n\t\t\t\treturn h\n\t\t\t} else {\n\t\t\t\t// Continue for DS to see if we have a parent too, if so delegeate to the parent\n\t\t\t\thandler = h\n\t\t\t}\n\t\t}\n\t\toff, end = NextLabel(q, off)\n\t\tif end {\n\t\t\tbreak\n\t\t}\n\t}\n\t// Wildcard match, if we have found nothing try the root zone as a last resort.\n\tif h, ok := mux.z[\".\"]; ok {\n\t\treturn h\n\t}\n\treturn handler\n}\n\n// Handle adds a handler to the ServeMux for pattern.\nfunc (mux *ServeMux) Handle(pattern string, handler Handler) {\n\tif pattern == \"\" {\n\t\tpanic(\"dns: invalid pattern \" + pattern)\n\t}\n\tmux.m.Lock()\n\tmux.z[Fqdn(pattern)] = handler\n\tmux.m.Unlock()\n}\n\n// Handle adds a handler to the ServeMux for pattern.\nfunc (mux *ServeMux) HandleFunc(pattern string, handler func(ResponseWriter, *Msg)) {\n\tmux.Handle(pattern, HandlerFunc(handler))\n}\n\n// HandleRemove deregistrars the handler specific for pattern from the ServeMux.\nfunc (mux *ServeMux) HandleRemove(pattern string) {\n\tif pattern == \"\" {\n\t\tpanic(\"dns: invalid pattern \" + pattern)\n\t}\n\t// don't need a mutex here, because deleting is OK, even if the\n\t// entry is note there.\n\tdelete(mux.z, Fqdn(pattern))\n}\n\n// ServeDNS dispatches the request to the handler whose\n// pattern most closely matches the request message. If DefaultServeMux\n// is used the correct thing for DS queries is done: a possible parent\n// is sought.\n// If no handler is found a standard SERVFAIL message is returned\n// If the request message does not have a single question in the\n// question section a SERVFAIL is returned.\nfunc (mux *ServeMux) ServeDNS(w ResponseWriter, request *Msg) {\n\tvar h Handler\n\tif len(request.Question) != 1 {\n\t\th = failedHandler()\n\t} else {\n\t\tif h = mux.match(request.Question[0].Name, request.Question[0].Qtype); h == nil {\n\t\t\th = failedHandler()\n\t\t}\n\t}\n\th.ServeDNS(w, request)\n}\n\n// Handle registers the handler with the given pattern\n// in the DefaultServeMux. The documentation for\n// ServeMux explains how patterns are matched.\nfunc Handle(pattern string, handler Handler) { DefaultServeMux.Handle(pattern, handler) }\n\n// HandleRemove deregisters the handle with the given pattern\n// in the DefaultServeMux.\nfunc HandleRemove(pattern string) { DefaultServeMux.HandleRemove(pattern) }\n\n// HandleFunc registers the handler function with the given pattern\n// in the DefaultServeMux.\nfunc HandleFunc(pattern string, handler func(ResponseWriter, *Msg)) {\n\tDefaultServeMux.HandleFunc(pattern, handler)\n}\n\n// A Server defines parameters for running an DNS server.\ntype Server struct {\n\tAddr         string               // address to listen on, \":dns\" if empty\n\tNet          string               // if \"tcp\" it will invoke a TCP listener, otherwise an UDP one\n\tHandler      Handler              // handler to invoke, dns.DefaultServeMux if nil\n\tUDPSize      int                  // default buffer size to use to read incoming UDP messages\n\tReadTimeout  time.Duration        // the net.Conn.SetReadTimeout value for new connections\n\tWriteTimeout time.Duration        // the net.Conn.SetWriteTimeout value for new connections\n\tIdleTimeout  func() time.Duration // TCP idle timeout for multiple queries, if nil, defaults to 8 * time.Second (RFC 5966)\n\tTsigSecret   map[string]string    // secret(s) for Tsig map[<zonename>]<base64 secret>\n\tPool         bool                 // if true use a pool to recycle buffers for UDP queries\n\tget, give    chan []byte          // channels for the pool\n}\n\n// ListenAndServe starts a nameserver on the configured address in *Server.\nfunc (srv *Server) ListenAndServe() error {\n\taddr := srv.Addr\n\tif addr == \"\" {\n\t\taddr = \":domain\"\n\t}\n\tif srv.UDPSize == 0 {\n\t\tsrv.UDPSize = MinMsgSize\n\t}\n\tif srv.Pool {\n\t\tsrv.get, srv.give = pool(srv.UDPSize)\n\t}\n\tswitch srv.Net {\n\tcase \"tcp\", \"tcp4\", \"tcp6\":\n\t\ta, e := net.ResolveTCPAddr(srv.Net, addr)\n\t\tif e != nil {\n\t\t\treturn e\n\t\t}\n\t\tl, e := net.ListenTCP(srv.Net, a)\n\t\tif e != nil {\n\t\t\treturn e\n\t\t}\n\t\treturn srv.serveTCP(l)\n\tcase \"udp\", \"udp4\", \"udp6\":\n\t\ta, e := net.ResolveUDPAddr(srv.Net, addr)\n\t\tif e != nil {\n\t\t\treturn e\n\t\t}\n\t\tl, e := net.ListenUDP(srv.Net, a)\n\t\tif e != nil {\n\t\t\treturn e\n\t\t}\n\t\treturn srv.serveUDP(l)\n\t}\n\treturn &Error{err: \"bad network\"}\n}\n\n// serveTCP starts a TCP listener for the server.\n// Each request is handled in a seperate goroutine.\nfunc (srv *Server) serveTCP(l *net.TCPListener) error {\n\tdefer l.Close()\n\thandler := srv.Handler\n\tif handler == nil {\n\t\thandler = DefaultServeMux\n\t}\n\trtimeout := dnsTimeout\n\tif srv.ReadTimeout != 0 {\n\t\trtimeout = srv.ReadTimeout\n\t}\n\tfor {\n\t\trw, e := l.AcceptTCP()\n\t\tif e != nil {\n\t\t\tcontinue\n\t\t}\n\t\tm, e := srv.readTCP(rw, rtimeout)\n\t\tif e != nil {\n\t\t\tcontinue\n\t\t}\n\t\tgo srv.serve(rw.RemoteAddr(), handler, m, nil, rw)\n\t}\n\tpanic(\"dns: not reached\")\n}\n\n// serveUDP starts a UDP listener for the server.\n// Each request is handled in a seperate goroutine.\nfunc (srv *Server) serveUDP(l *net.UDPConn) error {\n\tdefer l.Close()\n\thandler := srv.Handler\n\tif handler == nil {\n\t\thandler = DefaultServeMux\n\t}\n\trtimeout := dnsTimeout\n\tif srv.ReadTimeout != 0 {\n\t\trtimeout = srv.ReadTimeout\n\t}\n\tfor {\n\t\tm, a, e := srv.readUDP(l, rtimeout)\n\t\tif e != nil {\n\t\t\t// TODO(miek): logging?\n\t\t\tcontinue\n\t\t}\n\t\tgo srv.serve(a, handler, m, l, nil)\n\t}\n\tpanic(\"dns: not reached\")\n}\n\n// Serve a new connection.\nfunc (srv *Server) serve(a net.Addr, h Handler, m []byte, u *net.UDPConn, t *net.TCPConn) {\n\tw := &response{tsigSecret: srv.TsigSecret, udp: u, tcp: t, remoteAddr: a}\n\tq := 0\nRedo:\n\treq := new(Msg)\n\terr := req.Unpack(m)\n\tif srv.Pool && u != nil {\n\t\tsrv.give <- m[:srv.UDPSize]\n\t}\n\tif err != nil { // Send a FormatError back\n\t\tx := new(Msg)\n\t\tx.SetRcodeFormatError(req)\n\t\tw.WriteMsg(x)\n\t\tgoto Exit\n\t}\n\n\tw.tsigStatus = nil\n\tif w.tsigSecret != nil {\n\t\tif t := req.IsTsig(); t != nil {\n\t\t\tsecret := t.Hdr.Name\n\t\t\tif _, ok := w.tsigSecret[secret]; !ok {\n\t\t\t\tw.tsigStatus = ErrKeyAlg\n\t\t\t}\n\t\t\tw.tsigStatus = TsigVerify(m, w.tsigSecret[secret], \"\", false)\n\t\t\tw.tsigTimersOnly = false\n\t\t\tw.tsigRequestMAC = req.Extra[len(req.Extra)-1].(*TSIG).MAC\n\t\t}\n\t}\n\th.ServeDNS(w, req) // Writes back to the client\n\nExit:\n\tif w.hijacked {\n\t\treturn // client calls Close()\n\t}\n\tif u != nil { // UDP, \"close\" and return\n\t\tw.Close()\n\t\treturn\n\t}\n\tidleTimeout := tcpIdleTimeout\n\tif srv.IdleTimeout != nil {\n\t\tidleTimeout = srv.IdleTimeout()\n\t}\n\tm, e := srv.readTCP(w.tcp, idleTimeout)\n\tif e == nil {\n\t\tq++\n\t\t// TODO(miek): make this number configurable?\n\t\tif q > 128 { // close socket after this many queries\n\t\t\tw.Close()\n\t\t\treturn\n\t\t}\n\t\tgoto Redo\n\t}\n\tw.Close()\n\treturn\n}\n\nfunc (srv *Server) readTCP(conn *net.TCPConn, timeout time.Duration) ([]byte, error) {\n\tconn.SetReadDeadline(time.Now().Add(timeout))\n\tl := make([]byte, 2)\n\tn, err := conn.Read(l)\n\tif err != nil || n != 2 {\n\t\tif err != nil {\n\t\t\treturn nil, err\n\t\t}\n\t\treturn nil, ErrShortRead\n\t}\n\tlength, _ := unpackUint16(l, 0)\n\tif length == 0 {\n\t\treturn nil, ErrShortRead\n\t}\n\tm := make([]byte, int(length))\n\tn, err = conn.Read(m[:int(length)])\n\tif err != nil || n == 0 {\n\t\tif err != nil {\n\t\t\treturn nil, err\n\t\t}\n\t\treturn nil, ErrShortRead\n\t}\n\ti := n\n\tfor i < int(length) {\n\t\tj, err := conn.Read(m[i:int(length)])\n\t\tif err != nil {\n\t\t\treturn nil, err\n\t\t}\n\t\ti += j\n\t}\n\tn = i\n\tm = m[:n]\n\treturn m, nil\n}\n\nfunc (srv *Server) readUDP(conn *net.UDPConn, timeout time.Duration) ([]byte, net.Addr, error) {\n\tconn.SetReadDeadline(time.Now().Add(timeout))\n\tvar m []byte\n\tif srv.Pool {\n\t\tm = <-srv.get\n\t} else {\n\t\tm = make([]byte, srv.UDPSize)\n\t}\n\tn, a, e := conn.ReadFromUDP(m)\n\tif e != nil || n == 0 {\n\t\tif e != nil {\n\t\t\treturn nil, nil, e\n\t\t}\n\t\treturn nil, nil, ErrShortRead\n\t}\n\tm = m[:n]\n\treturn m, a, nil\n}\n\n// WriteMsg implements the ResponseWriter.WriteMsg method.\nfunc (w *response) WriteMsg(m *Msg) (err error) {\n\tvar data []byte\n\tif w.tsigSecret != nil { // if no secrets, dont check for the tsig (which is a longer check)\n\t\tif t := m.IsTsig(); t != nil {\n\t\t\tdata, w.tsigRequestMAC, err = TsigGenerate(m, w.tsigSecret[t.Hdr.Name], w.tsigRequestMAC, w.tsigTimersOnly)\n\t\t\tif err != nil {\n\t\t\t\treturn err\n\t\t\t}\n\t\t\t_, err = w.Write(data)\n\t\t\treturn err\n\t\t}\n\t}\n\tdata, err = m.Pack()\n\tif err != nil {\n\t\treturn err\n\t}\n\t_, err = w.Write(data)\n\treturn err\n}\n\n// Write implements the ResponseWriter.Write method.\nfunc (w *response) Write(m []byte) (int, error) {\n\tswitch {\n\tcase w.udp != nil:\n\t\tn, err := w.udp.WriteTo(m, w.remoteAddr)\n\t\treturn n, err\n\tcase w.tcp != nil:\n\t\tlm := len(m)\n\t\tif lm < 2 {\n\t\t\treturn 0, io.ErrShortBuffer\n\t\t}\n\t\tif lm > MaxMsgSize {\n\t\t\treturn 0, &Error{err: \"message too large\"}\n\t\t}\n\t\tl := make([]byte, 2, 2+lm)\n\t\tl[0], l[1] = packUint16(uint16(lm))\n\t\tm = append(l, m...)\n\n\t\tn, err := io.Copy(w.tcp, bytes.NewReader(m))\n\t\treturn int(n), err\n\t}\n\tpanic(\"not reached\")\n}\n\n// RemoteAddr implements the ResponseWriter.RemoteAddr method.\nfunc (w *response) RemoteAddr() net.Addr { return w.remoteAddr }\n\n// TsigStatus implements the ResponseWriter.TsigStatus method.\nfunc (w *response) TsigStatus() error { return w.tsigStatus }\n\n// TsigTimersOnly implements the ResponseWriter.TsigTimersOnly method.\nfunc (w *response) TsigTimersOnly(b bool) { w.tsigTimersOnly = b }\n\n// Hijack implements the ResponseWriter.Hijack method.\nfunc (w *response) Hijack() { w.hijacked = true }\n\n// Close implements the ResponseWriter.Close method\nfunc (w *response) Close() error {\n\t// Can't close the udp conn, as that is actually the listener.\n\tif w.tcp != nil {\n\t\te := w.tcp.Close()\n\t\tw.tcp = nil\n\t\treturn e\n\t}\n\treturn nil\n}\n",
+        "rank": 0,
+        "truncated": false
+      }
+    ],
+    "selected": [
+      {
+        "id": "3a6f0067bf69b6163fc89d37",
+        "revision": "18e84f97d18808e0525190163616755889857307",
+        "path": "server.go",
+        "start_byte": 10746,
+        "text": "func (srv *Server) readUDP(conn *net.UDPConn, timeout time.Duration) ([]byte, net.Addr, error) {\n\tconn.SetReadDeadline(time.Now().Add(timeout))\n\tvar m []byte\n\tif srv.Pool {\n\t\tm = <-srv.get\n\t} else {\n\t\tm = make([]byte, srv.UDPSize)\n\t}\n\tn, a, e := conn.ReadFromUDP(m)\n\tif e != nil || n == 0 {\n\t\tif e != nil {\n\t\t\treturn nil, nil, e\n\t\t}\n\t\treturn nil, nil, ErrShortRead\n\t}\n\tm = m[:n]\n\treturn m, a, nil\n}",
+        "rank": 0,
+        "truncated": false
+      },
+      {
+        "id": "bd35f12c1ff1315660d231ab",
+        "revision": "77345b20736d3eee3fd82ad68090fc09c173db37",
+        "path": "server.go",
+        "start_byte": 10375,
+        "text": "func (srv *Server) readUDP(conn *net.UDPConn, timeout time.Duration) ([]byte, net.Addr, error) {\n\tm := make([]byte, srv.UDPSize)\n\tn, a, e := conn.ReadFromUDP(m)\n\tif e != nil || n == 0 {\n\t\treturn nil, nil, ErrConn\n\t}\n\tm = m[:n]\n\treturn m, a, nil\n}",
+        "rank": 0,
+        "truncated": false
+      },
+      {
+        "id": "f1e072a7e530b73bab69016e",
+        "revision": "18e84f97d18808e0525190163616755889857307",
+        "path": "client.go",
+        "start_byte": 8307,
+        "text": "func (co *Conn) SetReadDeadline(t time.Time) error { return co.Conn.SetReadDeadline(t) }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "7ea049fa8b0b7c6aa0807a4d",
+        "revision": "18e84f97d18808e0525190163616755889857307",
+        "path": "edns.go",
+        "start_byte": 3440,
+        "text": "func (rr *OPT) UDPSize() uint16 {\n\treturn rr.Hdr.Class\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "a71f61abed71aa17ea6e7981",
+        "revision": "18e84f97d18808e0525190163616755889857307",
+        "path": "server.go",
+        "start_byte": 6060,
+        "text": "type Server struct {\n\tAddr         string               // address to listen on, \":dns\" if empty\n\tNet          string               // if \"tcp\" it will invoke a TCP listener, otherwise an UDP one\n\tHandler      Handler              // handler to invoke, dns.DefaultServeMux if nil\n\tUDPSize      int                  // default buffer size to use to read incoming UDP messages\n\tReadTimeout  time.Duration        // the net.Conn.SetReadTimeout value for new connections\n\tWriteTimeout time.Duration        // the net.Conn.SetWriteTimeout value for new connections\n\tIdleTimeout  func() time.Duration // TCP idle timeout for multiple queries, if nil, defaults to 8 * time.Second (RFC 5966)\n\tTsigSecret   map[string]string    // secret(s) for Tsig map[<zonename>]<base64 secret>\n\tPool         bool                 // if true use a pool to recycle buffers for UDP queries\n\tget, give    chan []byte          // channels for the pool\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "ec95f6ff9964bb677649d710",
+        "revision": "18e84f97d18808e0525190163616755889857307",
+        "path": "server.go",
+        "start_byte": 10891,
+        "text": "var m []byte",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "0f2763a17be57160ba2a9ce0",
+        "revision": "77345b20736d3eee3fd82ad68090fc09c173db37",
+        "path": "edns.go",
+        "start_byte": 3440,
+        "text": "func (rr *OPT) UDPSize() uint16 {\n\treturn rr.Hdr.Class\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "6cf6c94b9ee9061ba12fd02d",
+        "revision": "77345b20736d3eee3fd82ad68090fc09c173db37",
+        "path": "server.go",
+        "start_byte": 6060,
+        "text": "type Server struct {\n\tAddr         string               // address to listen on, \":dns\" if empty\n\tNet          string               // if \"tcp\" it will invoke a TCP listener, otherwise an UDP one\n\tHandler      Handler              // handler to invoke, dns.DefaultServeMux if nil\n\tUDPSize      int                  // default buffer size to use to read incoming UDP messages\n\tReadTimeout  time.Duration        // the net.Conn.SetReadTimeout value for new connections\n\tWriteTimeout time.Duration        // the net.Conn.SetWriteTimeout value for new connections\n\tIdleTimeout  func() time.Duration // TCP idle timeout for multiple queries, if nil, defaults to 8 * time.Second (RFC 5966)\n\tTsigSecret   map[string]string    // secret(s) for Tsig map[<zonename>]<base64 secret>\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "919ea939a9ccd5db31394471",
+        "revision": "18e84f97d18808e0525190163616755889857307",
+        "path": "client.go",
+        "start_byte": 241,
+        "text": "const dnsTimeout time.Duration = 2 * 1e9",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "ad6d46ce3c290a5e3b934b14",
+        "revision": "18e84f97d18808e0525190163616755889857307",
+        "path": "client.go",
+        "start_byte": 282,
+        "text": "const tcpIdleTimeout time.Duration = 8 * time.Second",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "152afb2c856bce3b265479fc",
+        "revision": "18e84f97d18808e0525190163616755889857307",
+        "path": "client.go",
+        "start_byte": 387,
+        "text": "type Conn struct {\n\tnet.Conn                         // a net.Conn holding the connection\n\tUDPSize        uint16            // Minimum receive buffer for UDP messages\n\tTsigSecret     map[string]string // Secret(s) for Tsig map[<zonename>]<base64 secret>, zonename must be fully qualified\n\trtt            time.Duration\n\tt              time.Time\n\ttsigRequestMAC string\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "645d548b1dc16e1129df7ec7",
+        "revision": "18e84f97d18808e0525190163616755889857307",
+        "path": "client.go",
+        "start_byte": 806,
+        "text": "type Client struct {\n\tNet            string            // if \"tcp\" a TCP query will be initiated, otherwise an UDP one (default is \"\" for UDP)\n\tDialTimeout    time.Duration     // net.DialTimeout (ns), defaults to 2 * 1e9\n\tReadTimeout    time.Duration     // net.Conn.SetReadTimeout value for connections (ns), defaults to 2 * 1e9\n\tWriteTimeout   time.Duration     // net.Conn.SetWriteTimeout value for connections (ns), defaults to 2 * 1e9\n\tTsigSecret     map[string]string // secret(s) for Tsig map[<zonename>]<base64 secret>, zonename must be fully qualified\n\tSingleInflight bool              // if true suppress multiple outstanding queries for the same Qname, Qtype and Qclass\n\tgroup          singleflight\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "7f7a3dc79cf04e6ce755bcbc",
+        "revision": "18e84f97d18808e0525190163616755889857307",
+        "path": "client.go",
+        "start_byte": 1741,
+        "text": "func Exchange(m *Msg, a string) (r *Msg, err error) {\n\tvar co *Conn\n\tco, err = DialTimeout(\"udp\", a, dnsTimeout)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\n\tdefer co.Close()\n\tco.SetReadDeadline(time.Now().Add(dnsTimeout))\n\tco.SetWriteDeadline(time.Now().Add(dnsTimeout))\n\tif err = co.WriteMsg(m); err != nil {\n\t\treturn nil, err\n\t}\n\tr, err = co.ReadMsg()\n\treturn r, err\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "2af39e98d27485a89c90f214",
+        "revision": "18e84f97d18808e0525190163616755889857307",
+        "path": "client.go",
+        "start_byte": 2447,
+        "text": "func ExchangeConn(c net.Conn, m *Msg) (r *Msg, err error) {\n\tprintln(\"dns: this function is deprecated\")\n\tco := new(Conn)\n\tco.Conn = c\n\tif err = co.WriteMsg(m); err != nil {\n\t\treturn nil, err\n\t}\n\tr, err = co.ReadMsg()\n\treturn r, err\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "7cc55e958ed2970026163436",
+        "revision": "18e84f97d18808e0525190163616755889857307",
+        "path": "client.go",
+        "start_byte": 3027,
+        "text": "func (c *Client) Exchange(m *Msg, a string) (r *Msg, rtt time.Duration, err error) {\n\tif !c.SingleInflight {\n\t\treturn c.exchange(m, a)\n\t}\n\t// This adds a bunch of garbage, TODO(miek).\n\tt := \"nop\"\n\tif t1, ok := TypeToString[m.Question[0].Qtype]; ok {\n\t\tt = t1\n\t}\n\tcl := \"nop\"\n\tif cl1, ok := ClassToString[m.Question[0].Qclass]; ok {\n\t\tcl = cl1\n\t}\n\tr, rtt, err, shared := c.group.Do(m.Question[0].Name+t+cl, func() (*Msg, time.Duration, error) {\n\t\treturn c.exchange(m, a)\n\t})\n\tif err != nil {\n\t\treturn r, rtt, err\n\t}\n\tif shared {\n\t\tr1 := r.copy()\n\t\tr = r1\n\t}\n\treturn r, rtt, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "7b949b6527887244cd8486ba",
+        "revision": "18e84f97d18808e0525190163616755889857307",
+        "path": "client.go",
+        "start_byte": 3607,
+        "text": "func (c *Client) exchange(m *Msg, a string) (r *Msg, rtt time.Duration, err error) {\n\ttimeout := dnsTimeout\n\tvar co *Conn\n\tif c.DialTimeout != 0 {\n\t\ttimeout = c.DialTimeout\n\t}\n\tif c.Net == \"\" {\n\t\tco, err = DialTimeout(\"udp\", a, timeout)\n\t} else {\n\t\tco, err = DialTimeout(c.Net, a, timeout)\n\t}\n\tif err != nil {\n\t\treturn nil, 0, err\n\t}\n\ttimeout = dnsTimeout\n\tif c.ReadTimeout != 0 {\n\t\ttimeout = c.ReadTimeout\n\t}\n\tco.SetReadDeadline(time.Now().Add(timeout))\n\ttimeout = dnsTimeout\n\tif c.WriteTimeout != 0 {\n\t\ttimeout = c.WriteTimeout\n\t}\n\tco.SetWriteDeadline(time.Now().Add(timeout))\n\tdefer co.Close()\n\topt := m.IsEdns0()\n\tif opt != nil && opt.UDPSize() >= MinMsgSize {\n\t\tco.UDPSize = opt.UDPSize()\n\t}\n\tco.TsigSecret = c.TsigSecret\n\tif err = co.WriteMsg(m); err != nil {\n\t\treturn nil, 0, err\n\t}\n\tr, err = co.ReadMsg()\n\treturn r, co.rtt, err\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "a90f6e232968872c9a9bf3c4",
+        "revision": "18e84f97d18808e0525190163616755889857307",
+        "path": "client.go",
+        "start_byte": 4589,
+        "text": "func (co *Conn) ReadMsg() (*Msg, error) {\n\tvar p []byte\n\tm := new(Msg)\n\tif _, ok := co.Conn.(*net.TCPConn); ok {\n\t\tp = make([]byte, MaxMsgSize)\n\t} else {\n\t\tif co.UDPSize >= 512 {\n\t\t\tp = make([]byte, co.UDPSize)\n\t\t} else {\n\t\t\tp = make([]byte, MinMsgSize)\n\t\t}\n\t}\n\tn, err := co.Read(p)\n\tif err != nil && n == 0 {\n\t\treturn nil, err\n\t}\n\tp = p[:n]\n\tif err := m.Unpack(p); err != nil {\n\t\treturn nil, err\n\t}\n\tco.rtt = time.Since(co.t)\n\tif t := m.IsTsig(); t != nil {\n\t\tif _, ok := co.TsigSecret[t.Hdr.Name]; !ok {\n\t\t\treturn m, ErrSecret\n\t\t}\n\t\t// Need to work on the original message p, as that was used to calculate the tsig.\n\t\terr = TsigVerify(p, co.TsigSecret[t.Hdr.Name], co.tsigRequestMAC, false)\n\t}\n\treturn m, err\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "ea35c4eb898414bcffe23b43",
+        "revision": "18e84f97d18808e0525190163616755889857307",
+        "path": "client.go",
+        "start_byte": 4632,
+        "text": "var p []byte",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "daafe999e8c5557191a8bce7",
+        "revision": "18e84f97d18808e0525190163616755889857307",
+        "path": "client.go",
+        "start_byte": 5348,
+        "text": "func (co *Conn) Read(p []byte) (n int, err error) {\n\tif co.Conn == nil {\n\t\treturn 0, ErrConnEmpty\n\t}\n\tif len(p) < 2 {\n\t\treturn 0, io.ErrShortBuffer\n\t}\n\tif t, ok := co.Conn.(*net.TCPConn); ok {\n\t\tn, err = t.Read(p[0:2])\n\t\tif err != nil || n != 2 {\n\t\t\treturn n, err\n\t\t}\n\t\tl, _ := unpackUint16(p[0:2], 0)\n\t\tif l == 0 {\n\t\t\treturn 0, ErrShortRead\n\t\t}\n\t\tif int(l) > len(p) {\n\t\t\treturn int(l), io.ErrShortBuffer\n\t\t}\n\t\tn, err = t.Read(p[:l])\n\t\tif err != nil {\n\t\t\treturn n, err\n\t\t}\n\t\ti := n\n\t\tfor i < int(l) {\n\t\t\tj, err := t.Read(p[i:int(l)])\n\t\t\tif err != nil {\n\t\t\t\treturn i, err\n\t\t\t}\n\t\t\ti += j\n\t\t}\n\t\tn = i\n\t\treturn n, err\n\t}\n\t// assume udp connection\n\tn, err = co.Conn.Read(p)\n\tif err != nil {\n\t\treturn n, err\n\t}\n\treturn n, err\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "af61428c9fa316a803d69e14",
+        "revision": "18e84f97d18808e0525190163616755889857307",
+        "path": "client.go",
+        "start_byte": 6214,
+        "text": "func (co *Conn) WriteMsg(m *Msg) (err error) {\n\tvar out []byte\n\tif t := m.IsTsig(); t != nil {\n\t\tmac := \"\"\n\t\tif _, ok := co.TsigSecret[t.Hdr.Name]; !ok {\n\t\t\treturn ErrSecret\n\t\t}\n\t\tout, mac, err = TsigGenerate(m, co.TsigSecret[t.Hdr.Name], co.tsigRequestMAC, false)\n\t\t// Set for the next read, allthough only used in zone transfers\n\t\tco.tsigRequestMAC = mac\n\t} else {\n\t\tout, err = m.Pack()\n\t}\n\tif err != nil {\n\t\treturn err\n\t}\n\tco.t = time.Now()\n\tif _, err = co.Write(out); err != nil {\n\t\treturn err\n\t}\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "3b93688e298457a343a757af",
+        "revision": "18e84f97d18808e0525190163616755889857307",
+        "path": "client.go",
+        "start_byte": 6262,
+        "text": "var out []byte",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "aef5728c78235b19ba3151d5",
+        "revision": "18e84f97d18808e0525190163616755889857307",
+        "path": "client.go",
+        "start_byte": 6777,
+        "text": "func (co *Conn) Write(p []byte) (n int, err error) {\n\tif t, ok := co.Conn.(*net.TCPConn); ok {\n\t\tlp := len(p)\n\t\tif lp < 2 {\n\t\t\treturn 0, io.ErrShortBuffer\n\t\t}\n\t\tif lp > MaxMsgSize {\n\t\t\treturn 0, &Error{err: \"message too large\"}\n\t\t}\n\t\tl := make([]byte, 2, lp+2)\n\t\tl[0], l[1] = packUint16(uint16(lp))\n\t\tp = append(l, p...)\n\t\tn, err := io.Copy(t, bytes.NewReader(p))\n\t\treturn int(n), err\n\t}\n\tn, err = co.Conn.(*net.UDPConn).Write(p)\n\treturn n, err\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "f7eeb039116511745361a995",
+        "revision": "18e84f97d18808e0525190163616755889857307",
+        "path": "client.go",
+        "start_byte": 7279,
+        "text": "func Dial(network, address string) (conn *Conn, err error) {\n\tconn = new(Conn)\n\tconn.Conn, err = net.Dial(network, address)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\treturn conn, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "3efffc510aae07e31d93bb3b",
+        "revision": "18e84f97d18808e0525190163616755889857307",
+        "path": "client.go",
+        "start_byte": 7513,
+        "text": "func DialTimeout(network, address string, timeout time.Duration) (conn *Conn, err error) {\n\tconn = new(Conn)\n\tconn.Conn, err = net.DialTimeout(network, address, timeout)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\treturn conn, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "13e0d126f3362644d2748230",
+        "revision": "18e84f97d18808e0525190163616755889857307",
+        "path": "client.go",
+        "start_byte": 7789,
+        "text": "func (co *Conn) Close() error { return co.Conn.Close() }",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "c0c5ddacf77f9ff04aab0df1",
+        "revision": "18e84f97d18808e0525190163616755889857307",
+        "path": "client.go",
+        "start_byte": 7902,
+        "text": "func (co *Conn) LocalAddr() net.Addr { return co.Conn.LocalAddr() }",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "29400ffd19a11ec089cfe0fe",
+        "revision": "18e84f97d18808e0525190163616755889857307",
+        "path": "client.go",
+        "start_byte": 8028,
+        "text": "func (co *Conn) RemoteAddr() net.Addr { return co.Conn.RemoteAddr() }",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "d8b7db9b9eda0f52e00d785f",
+        "revision": "18e84f97d18808e0525190163616755889857307",
+        "path": "client.go",
+        "start_byte": 8158,
+        "text": "func (co *Conn) SetDeadline(t time.Time) error { return co.Conn.SetDeadline(t) }",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "5ff9b0e4f25db10f046dda8a",
+        "revision": "18e84f97d18808e0525190163616755889857307",
+        "path": "client.go",
+        "start_byte": 8466,
+        "text": "func (co *Conn) SetWriteDeadline(t time.Time) error { return co.Conn.SetWriteDeadline(t) }",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "4372e0ac3e31cddbfb40c297",
+        "revision": "18e84f97d18808e0525190163616755889857307",
+        "path": "clientconfig.go",
+        "start_byte": 810,
+        "text": "func ClientConfigFromFile(conf string) (*ClientConfig, error) {\n\tfile, err := os.Open(conf)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\tdefer file.Close()\n\tc := new(ClientConfig)\n\tb := bufio.NewReader(file)\n\tc.Servers = make([]string, 0)\n\tc.Search = make([]string, 0)\n\tc.Port = \"53\"\n\tc.Ndots = 1\n\tc.Timeout = 5\n\tc.Attempts = 2\n\tfor line, ok := b.ReadString('\\n'); ok == nil; line, ok = b.ReadString('\\n') {\n\t\tf := strings.Fields(line)\n\t\tif len(f) < 1 {\n\t\t\tcontinue\n\t\t}\n\t\tswitch f[0] {\n\t\tcase \"nameserver\": // add one name server\n\t\t\tif len(f) > 1 {\n\t\t\t\t// One more check: make sure server name is\n\t\t\t\t// just an IP address.  Otherwise we need DNS\n\t\t\t\t// to look it up.\n\t\t\t\tname := f[1]\n\t\t\t\t// Don't use this. net.JoinHostPort will fix this for you\n\t\t\t\t//\t\t\t\tswitch x := net.ParseIP(name); true {\n\t\t\t\t//\t\t\t\tcase x.To4() != nil:\n\t\t\t\t//\t\t\t\t\tc.Servers = append(c.Servers, name)\n\t\t\t\t//\t\t\t\tcase x.To16() != nil:\n\t\t\t\t//\t\t\t\t\tname = \"[\" + name + \"]\"\n\t\t\t\tc.Servers = append(c.Servers, name)\n\t\t\t\t//\t\t\t\t}\n\t\t\t}\n\n\t\tcase \"domain\": // set search path to just this domain\n\t\t\tif len(f) > 1 {\n\t\t\t\tc.Search = make([]string, 1)\n\t\t\t\tc.Search[0] = f[1]\n\t\t\t} else {\n\t\t\t\tc.Search = make([]string, 0)\n\t\t\t}\n\n\t\tcase \"search\": // set search path to given servers\n\t\t\tc.Search = make([]string, len(f)-1)\n\t\t\tfor i := 0; i < len(c.Search); i++ {\n\t\t\t\tc.Search[i] = f[i+1]\n\t\t\t}\n\n\t\tcase \"options\": // magic options\n\t\t\tfor i := 1; i < len(f); i++ {\n\t\t\t\ts := f[i]\n\t\t\t\tswitch {\n\t\t\t\tcase len(s) >= 6 && s[:6] == \"ndots:\":\n\t\t\t\t\tn, _ := strconv.Atoi(s[6:])\n\t\t\t\t\tif n < 1 {\n\t\t\t\t\t\tn = 1\n\t\t\t\t\t}\n\t\t\t\t\tc.Ndots = n\n\t\t\t\tcase len(s) >= 8 && s[:8] == \"timeout:\":\n\t\t\t\t\tn, _ := strconv.Atoi(s[8:])\n\t\t\t\t\tif n < 1 {\n\t\t\t\t\t\tn = 1\n\t\t\t\t\t}\n\t\t\t\t\tc.Timeout = n\n\t\t\t\tcase len(s) >= 8 && s[:9] == \"attempts:\":\n\t\t\t\t\tn, _ := strconv.Atoi(s[9:])\n\t\t\t\t\tif n < 1 {\n\t\t\t\t\t\tn = 1\n\t\t\t\t\t}\n\t\t\t\t\tc.Attempts = n\n\t\t\t\tcase s == \"rotate\":\n\t\t\t\t\t/* not imp */\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t}\n\treturn c, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "547ef664fb5dcadfb3497073",
+        "revision": "18e84f97d18808e0525190163616755889857307",
+        "path": "defaults.go",
+        "start_byte": 396,
+        "text": "func (dns *Msg) SetReply(request *Msg) *Msg {\n\tdns.Id = request.Id\n\tdns.RecursionDesired = request.RecursionDesired // Copy rd bit\n\tdns.Response = true\n\tdns.Opcode = OpcodeQuery\n\tdns.Rcode = RcodeSuccess\n\tif len(request.Question) > 0 {\n\t\tdns.Question = make([]Question, 1)\n\t\tdns.Question[0] = request.Question[0]\n\t}\n\treturn dns\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "f6bbb00397ec4d5035d8ac77",
+        "revision": "18e84f97d18808e0525190163616755889857307",
+        "path": "defaults.go",
+        "start_byte": 769,
+        "text": "func (dns *Msg) SetQuestion(z string, t uint16) *Msg {\n\tdns.Id = Id()\n\tdns.RecursionDesired = true\n\tdns.Question = make([]Question, 1)\n\tdns.Question[0] = Question{z, t, ClassINET}\n\treturn dns\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "3bf809379e525bd452f915af",
+        "revision": "18e84f97d18808e0525190163616755889857307",
+        "path": "defaults.go",
+        "start_byte": 1002,
+        "text": "func (dns *Msg) SetNotify(z string) *Msg {\n\tdns.Opcode = OpcodeNotify\n\tdns.Authoritative = true\n\tdns.Id = Id()\n\tdns.Question = make([]Question, 1)\n\tdns.Question[0] = Question{z, TypeSOA, ClassINET}\n\treturn dns\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "67fd496b91b86869f60f2aee",
+        "revision": "18e84f97d18808e0525190163616755889857307",
+        "path": "defaults.go",
+        "start_byte": 1277,
+        "text": "func (dns *Msg) SetRcode(request *Msg, rcode int) *Msg {\n\tdns.Rcode = rcode\n\tdns.Opcode = OpcodeQuery\n\tdns.Response = true\n\tdns.Id = request.Id\n\t// Note that this is actually a FORMERR\n\tif len(request.Question) > 0 {\n\t\tdns.Question = make([]Question, 1)\n\t\tdns.Question[0] = request.Question[0]\n\t}\n\treturn dns\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "efd7678a7b4f1581a66f7400",
+        "revision": "18e84f97d18808e0525190163616755889857307",
+        "path": "defaults.go",
+        "start_byte": 1957,
+        "text": "func (dns *Msg) SetUpdate(z string) *Msg {\n\tdns.Id = Id()\n\tdns.Response = false\n\tdns.Opcode = OpcodeUpdate\n\tdns.Compress = false // BIND9 cannot handle compression\n\tdns.Question = make([]Question, 1)\n\tdns.Question[0] = Question{z, TypeSOA, ClassINET}\n\treturn dns\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "12a483f4037373b41b056d10",
+        "revision": "18e84f97d18808e0525190163616755889857307",
+        "path": "defaults.go",
+        "start_byte": 2274,
+        "text": "func (dns *Msg) SetIxfr(z string, serial uint32) *Msg {\n\tdns.Id = Id()\n\tdns.Question = make([]Question, 1)\n\tdns.Ns = make([]RR, 1)\n\ts := new(SOA)\n\ts.Hdr = RR_Header{z, TypeSOA, ClassINET, defaultTtl, 0}\n\ts.Serial = serial\n\tdns.Question[0] = Question{z, TypeIXFR, ClassINET}\n\tdns.Ns[0] = s\n\treturn dns\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "8c7c5bd7dc6fa07957a3ceb4",
+        "revision": "18e84f97d18808e0525190163616755889857307",
+        "path": "defaults.go",
+        "start_byte": 2629,
+        "text": "func (dns *Msg) SetAxfr(z string) *Msg {\n\tdns.Id = Id()\n\tdns.Question = make([]Question, 1)\n\tdns.Question[0] = Question{z, TypeAXFR, ClassINET}\n\treturn dns\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "d5b3f798d152e52ac0c95460",
+        "revision": "18e84f97d18808e0525190163616755889857307",
+        "path": "defaults.go",
+        "start_byte": 3355,
+        "text": "func (dns *Msg) SetEdns0(udpsize uint16, do bool) *Msg {\n\te := new(OPT)\n\te.Hdr.Name = \".\"\n\te.Hdr.Rrtype = TypeOPT\n\te.SetUDPSize(udpsize)\n\tif do {\n\t\te.SetDo()\n\t}\n\tdns.Extra = append(dns.Extra, e)\n\treturn dns\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "a5baca62c28ff169ca8470d7",
+        "revision": "18e84f97d18808e0525190163616755889857307",
+        "path": "defaults.go",
+        "start_byte": 5518,
+        "text": "func ReverseAddr(addr string) (arpa string, err error) {\n\tip := net.ParseIP(addr)\n\tif ip == nil {\n\t\treturn \"\", &Error{err: \"unrecognized address: \" + addr}\n\t}\n\tif ip.To4() != nil {\n\t\treturn strconv.Itoa(int(ip[15])) + \".\" + strconv.Itoa(int(ip[14])) + \".\" + strconv.Itoa(int(ip[13])) + \".\" +\n\t\t\tstrconv.Itoa(int(ip[12])) + \".in-addr.arpa.\", nil\n\t}\n\t// Must be IPv6\n\tbuf := make([]byte, 0, len(ip)*4+len(\"ip6.arpa.\"))\n\t// Add it, in reverse, to the buffer\n\tfor i := len(ip) - 1; i >= 0; i-- {\n\t\tv := ip[i]\n\t\tbuf = append(buf, hexDigit[v&0xF])\n\t\tbuf = append(buf, '.')\n\t\tbuf = append(buf, hexDigit[v>>4])\n\t\tbuf = append(buf, '.')\n\t}\n\t// Append \"ip6.arpa.\" and return (buf already has the final .)\n\tbuf = append(buf, \"ip6.arpa.\"...)\n\treturn string(buf), nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "7b2a3dd5ce59edcba61cc0e2",
+        "revision": "18e84f97d18808e0525190163616755889857307",
+        "path": "dns.go",
+        "start_byte": 3637,
+        "text": "func (e *Error) Error() string {\n\tif e == nil {\n\t\treturn \"dns: <nil>\"\n\t}\n\treturn \"dns: \" + e.err\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "6fd7f1a5f516cc17f0370091",
+        "revision": "18e84f97d18808e0525190163616755889857307",
+        "path": "dns.go",
+        "start_byte": 5667,
+        "text": "func (rr *RFC3597) ToRFC3597(r RR) error {\n\tbuf := make([]byte, r.len()*2)\n\toff, err := PackStruct(r, buf, 0)\n\tif err != nil {\n\t\treturn err\n\t}\n\tbuf = buf[:off]\n\trawSetRdlength(buf, 0, off)\n\t_, err = UnpackStruct(rr, buf, 0)\n\tif err != nil {\n\t\treturn err\n\t}\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "1b641960cd7ca905d6a1dbef",
+        "revision": "18e84f97d18808e0525190163616755889857307",
+        "path": "dnssec.go",
+        "start_byte": 2228,
+        "text": "func (k *DNSKEY) KeyTag() uint16 {\n\tif k == nil {\n\t\treturn 0\n\t}\n\tvar keytag int\n\tswitch k.Algorithm {\n\tcase RSAMD5:\n\t\t// Look at the bottom two bytes of the modules, which the last\n\t\t// item in the pubkey. We could do this faster by looking directly\n\t\t// at the base64 values. But I'm lazy.\n\t\tmodulus, _ := packBase64([]byte(k.PublicKey))\n\t\tif len(modulus) > 1 {\n\t\t\tx, _ := unpackUint16(modulus, len(modulus)-2)\n\t\t\tkeytag = int(x)\n\t\t}\n\tdefault:\n\t\tkeywire := new(dnskeyWireFmt)\n\t\tkeywire.Flags = k.Flags\n\t\tkeywire.Protocol = k.Protocol\n\t\tkeywire.Algorithm = k.Algorithm\n\t\tkeywire.PublicKey = k.PublicKey\n\t\twire := make([]byte, DefaultMsgSize)\n\t\tn, err := PackStruct(keywire, wire, 0)\n\t\tif err != nil {\n\t\t\treturn 0\n\t\t}\n\t\twire = wire[:n]\n\t\tfor i, v := range wire {\n\t\t\tif i&1 != 0 {\n\t\t\t\tkeytag += int(v) // must be larger than uint32\n\t\t\t} else {\n\t\t\t\tkeytag += int(v) << 8\n\t\t\t}\n\t\t}\n\t\tkeytag += (keytag >> 16) & 0xFFFF\n\t\tkeytag &= 0xFFFF\n\t}\n\treturn uint16(keytag)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "a8e5eeb488e6d5ee28416842",
+        "revision": "18e84f97d18808e0525190163616755889857307",
+        "path": "dnssec.go",
+        "start_byte": 3238,
+        "text": "func (k *DNSKEY) ToDS(h int) *DS {\n\tif k == nil {\n\t\treturn nil\n\t}\n\tds := new(DS)\n\tds.Hdr.Name = k.Hdr.Name\n\tds.Hdr.Class = k.Hdr.Class\n\tds.Hdr.Rrtype = TypeDS\n\tds.Hdr.Ttl = k.Hdr.Ttl\n\tds.Algorithm = k.Algorithm\n\tds.DigestType = uint8(h)\n\tds.KeyTag = k.KeyTag()\n\n\tkeywire := new(dnskeyWireFmt)\n\tkeywire.Flags = k.Flags\n\tkeywire.Protocol = k.Protocol\n\tkeywire.Algorithm = k.Algorithm\n\tkeywire.PublicKey = k.PublicKey\n\twire := make([]byte, DefaultMsgSize)\n\tn, err := PackStruct(keywire, wire, 0)\n\tif err != nil {\n\t\treturn nil\n\t}\n\twire = wire[:n]\n\n\towner := make([]byte, 255)\n\toff, err1 := PackDomainName(k.Hdr.Name, owner, 0, nil, false)\n\tif err1 != nil {\n\t\treturn nil\n\t}\n\towner = owner[:off]\n\t// RFC4034:\n\t// digest = digest_algorithm( DNSKEY owner name | DNSKEY RDATA);\n\t// \"|\" denotes concatenation\n\t// DNSKEY RDATA = Flags | Protocol | Algorithm | Public Key.\n\n\t// digest buffer\n\tdigest := append(owner, wire...) // another copy\n\n\tswitch h {\n\tcase SHA1:\n\t\ts := sha1.New()\n\t\tio.WriteString(s, string(digest))\n\t\tds.Digest = hex.EncodeToString(s.Sum(nil))\n\tcase SHA256:\n\t\ts := sha256.New()\n\t\tio.WriteString(s, string(digest))\n\t\tds.Digest = hex.EncodeToString(s.Sum(nil))\n\tcase SHA384:\n\t\ts := sha512.New384()\n\t\tio.WriteString(s, string(digest))\n\t\tds.Digest = hex.EncodeToString(s.Sum(nil))\n\tcase GOST94:\n\t\t/* I have no clue */\n\tdefault:\n\t\treturn nil\n\t}\n\treturn ds\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "419df73f073ddc335ef0ca1f",
+        "revision": "18e84f97d18808e0525190163616755889857307",
+        "path": "dnssec.go",
+        "start_byte": 4901,
+        "text": "func (rr *RRSIG) Sign(k PrivateKey, rrset []RR) error {\n\tif k == nil {\n\t\treturn ErrPrivKey\n\t}\n\t// s.Inception and s.Expiration may be 0 (rollover etc.), the rest must be set\n\tif rr.KeyTag == 0 || len(rr.SignerName) == 0 || rr.Algorithm == 0 {\n\t\treturn ErrKey\n\t}\n\n\trr.Hdr.Rrtype = TypeRRSIG\n\trr.Hdr.Name = rrset[0].Header().Name\n\trr.Hdr.Class = rrset[0].Header().Class\n\trr.OrigTtl = rrset[0].Header().Ttl\n\trr.TypeCovered = rrset[0].Header().Rrtype\n\trr.TypeCovered = rrset[0].Header().Rrtype\n\trr.Labels = uint8(CountLabel(rrset[0].Header().Name))\n\n\tif strings.HasPrefix(rrset[0].Header().Name, \"*\") {\n\t\trr.Labels-- // wildcard, remove from label count\n\t}\n\n\tsigwire := new(rrsigWireFmt)\n\tsigwire.TypeCovered = rr.TypeCovered\n\tsigwire.Algorithm = rr.Algorithm\n\tsigwire.Labels = rr.Labels\n\tsigwire.OrigTtl = rr.OrigTtl\n\tsigwire.Expiration = rr.Expiration\n\tsigwire.Inception = rr.Inception\n\tsigwire.KeyTag = rr.KeyTag\n\t// For signing, lowercase this name\n\tsigwire.SignerName = strings.ToLower(rr.SignerName)\n\n\t// Create the desired binary blob\n\tsigndata := make([]byte, DefaultMsgSize)\n\tn, err := PackStruct(sigwire, signdata, 0)\n\tif err != nil {\n\t\treturn err\n\t}\n\tsigndata = signdata[:n]\n\twire, err := rawSignatureData(rrset, rr)\n\tif err != nil {\n\t\treturn err\n\t}\n\tsigndata = append(signdata, wire...)\n\n\tvar sighash []byte\n\tvar h hash.Hash\n\tvar ch crypto.Hash // Only need for RSA\n\tswitch rr.Algorithm {\n\tcase DSA, DSANSEC3SHA1:\n\t\t// Implicit in the ParameterSizes\n\tcase RSASHA1, RSASHA1NSEC3SHA1:\n\t\th = sha1.New()\n\t\tch = crypto.SHA1\n\tcase RSASHA256, ECDSAP256SHA256:\n\t\th = sha256.New()\n\t\tch = crypto.SHA256\n\tcase ECDSAP384SHA384:\n\t\th = sha512.New384()\n\tcase RSASHA512:\n\t\th = sha512.New()\n\t\tch = crypto.SHA512\n\tcase RSAMD5:\n\t\tfallthrough // Deprecated in RFC 6725\n\tdefault:\n\t\treturn ErrAlg\n\t}\n\tio.WriteString(h, string(signdata))\n\tsighash = h.Sum(nil)\n\n\tswitch p := k.(type) {\n\tcase *dsa.PrivateKey:\n\t\tr1, s1, err := dsa.Sign(rand.Reader, p, sighash)\n\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n\t\tsignature := []byte{0x4D} // T value, here the ASCII M for Miek (not used in DNSSEC)\n\t\tsignature = append(signature, r1.Bytes()...)\n\t\tsignature = append(signature, s1.Bytes()...)\n\t\trr.Signature = unpackBase64(signature)\n\tcase *rsa.PrivateKey:\n\t\t// We can use nil as rand.Reader here (says AGL)\n\t\tsignature, err := rsa.SignPKCS1v15(nil, p, ch, sighash)\n\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n\t\trr.Signature = unpackBase64(signature)\n\tcase *ecdsa.PrivateKey:\n\t\tr1, s1, err := ecdsa.Sign(rand.Reader, p, sighash)\n\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n\t\tsignature := r1.Bytes()\n\t\tsignature = append(signature, s1.Bytes()...)\n\t\trr.Signature = unpackBase64(signature)\n\tdefault:\n\t\t// Not given the correct key\n\t\treturn ErrKeyAlg\n\t}\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "49c3650a2d547f975c8061d0",
+        "revision": "18e84f97d18808e0525190163616755889857307",
+        "path": "dnssec.go",
+        "start_byte": 6198,
+        "text": "var sighash []byte",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "ed533373aff0ed9343670793",
+        "revision": "18e84f97d18808e0525190163616755889857307",
+        "path": "dnssec.go",
+        "start_byte": 7875,
+        "text": "func (rr *RRSIG) Verify(k *DNSKEY, rrset []RR) error {\n\t// First the easy checks\n\tif len(rrset) == 0 {\n\t\treturn ErrRRset\n\t}\n\tif rr.KeyTag != k.KeyTag() {\n\t\treturn ErrKey\n\t}\n\tif rr.Hdr.Class != k.Hdr.Class {\n\t\treturn ErrKey\n\t}\n\tif rr.Algorithm != k.Algorithm {\n\t\treturn ErrKey\n\t}\n\tif strings.ToLower(rr.SignerName) != strings.ToLower(k.Hdr.Name) {\n\t\treturn ErrKey\n\t}\n\tif k.Protocol != 3 {\n\t\treturn ErrKey\n\t}\n\tfor _, r := range rrset {\n\t\tif r.Header().Class != rr.Hdr.Class {\n\t\t\treturn ErrRRset\n\t\t}\n\t\tif r.Header().Rrtype != rr.TypeCovered {\n\t\t\treturn ErrRRset\n\t\t}\n\t}\n\t// RFC 4035 5.3.2.  Reconstructing the Signed Data\n\t// Copy the sig, except the rrsig data\n\tsigwire := new(rrsigWireFmt)\n\tsigwire.TypeCovered = rr.TypeCovered\n\tsigwire.Algorithm = rr.Algorithm\n\tsigwire.Labels = rr.Labels\n\tsigwire.OrigTtl = rr.OrigTtl\n\tsigwire.Expiration = rr.Expiration\n\tsigwire.Inception = rr.Inception\n\tsigwire.KeyTag = rr.KeyTag\n\tsigwire.SignerName = strings.ToLower(rr.SignerName)\n\t// Create the desired binary blob\n\tsigneddata := make([]byte, DefaultMsgSize)\n\tn, err := PackStruct(sigwire, signeddata, 0)\n\tif err != nil {\n\t\treturn err\n\t}\n\tsigneddata = signeddata[:n]\n\twire, err := rawSignatureData(rrset, rr)\n\tif err != nil {\n\t\treturn err\n\t}\n\tsigneddata = append(signeddata, wire...)\n\n\tsigbuf := rr.sigBuf()           // Get the binary signature data\n\tif rr.Algorithm == PRIVATEDNS { // PRIVATEOID\n\t\t// TODO(mg)\n\t\t// remove the domain name and assume its our\n\t}\n\n\tswitch rr.Algorithm {\n\tcase RSASHA1, RSASHA1NSEC3SHA1, RSASHA256, RSASHA512, RSAMD5:\n\t\t// TODO(mg): this can be done quicker, ie. cache the pubkey data somewhere??\n\t\tpubkey := k.publicKeyRSA() // Get the key\n\t\tif pubkey == nil {\n\t\t\treturn ErrKey\n\t\t}\n\t\t// Setup the hash as defined for this alg.\n\t\tvar h hash.Hash\n\t\tvar ch crypto.Hash\n\t\tswitch rr.Algorithm {\n\t\tcase RSAMD5:\n\t\t\th = md5.New()\n\t\t\tch = crypto.MD5\n\t\tcase RSASHA1, RSASHA1NSEC3SHA1:\n\t\t\th = sha1.New()\n\t\t\tch = crypto.SHA1\n\t\tcase RSASHA256:\n\t\t\th = sha256.New()\n\t\t\tch = crypto.SHA256\n\t\tcase RSASHA512:\n\t\t\th = sha512.New()\n\t\t\tch = crypto.SHA512\n\t\t}\n\t\tio.WriteString(h, string(signeddata))\n\t\tsighash := h.Sum(nil)\n\t\treturn rsa.VerifyPKCS1v15(pubkey, ch, sighash, sigbuf)\n\tcase ECDSAP256SHA256, ECDSAP384SHA384:\n\t\tpubkey := k.publicKeyCurve()\n\t\tif pubkey == nil {\n\t\t\treturn ErrKey\n\t\t}\n\t\tvar h hash.Hash\n\t\tswitch rr.Algorithm {\n\t\tcase ECDSAP256SHA256:\n\t\t\th = sha256.New()\n\t\tcase ECDSAP384SHA384:\n\t\t\th = sha512.New()\n\t\t}\n\t\tio.WriteString(h, string(signeddata))\n\t\tsighash := h.Sum(nil)\n\t\t// Split sigbuf into the r and s coordinates\n\t\tr := big.NewInt(0)\n\t\tr.SetBytes(sigbuf[:len(sigbuf)/2])\n\t\ts := big.NewInt(0)\n\t\ts.SetBytes(sigbuf[len(sigbuf)/2:])\n\t\tif ecdsa.Verify(pubkey, sighash, r, s) {\n\t\t\treturn ErrSig\n\t\t}\n\t\treturn nil\n\t}\n\t// Unknown alg\n\treturn ErrAlg\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "cffcab750d6fc2951c34736a",
+        "revision": "18e84f97d18808e0525190163616755889857307",
+        "path": "dnssec.go",
+        "start_byte": 10739,
+        "text": "func (rr *RRSIG) ValidityPeriod() bool {\n\tutc := time.Now().UTC().Unix()\n\tmodi := (int64(rr.Inception) - utc) / year68\n\tmode := (int64(rr.Expiration) - utc) / year68\n\tti := int64(rr.Inception) + (modi * year68)\n\tte := int64(rr.Expiration) + (mode * year68)\n\treturn ti <= utc && utc <= te\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "be0b82c8e085ab9565eb4ec5",
+        "revision": "18e84f97d18808e0525190163616755889857307",
+        "path": "dnssec.go",
+        "start_byte": 11097,
+        "text": "func (s *RRSIG) sigBuf() []byte {\n\tsigbuf, err := packBase64([]byte(s.Signature))\n\tif err != nil {\n\t\treturn nil\n\t}\n\treturn sigbuf\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "6e280f72f15004a25d305b8f",
+        "revision": "18e84f97d18808e0525190163616755889857307",
+        "path": "dnssec.go",
+        "start_byte": 11773,
+        "text": "func (k *DNSKEY) publicKeyRSA() *rsa.PublicKey {\n\tkeybuf, err := packBase64([]byte(k.PublicKey))\n\tif err != nil {\n\t\treturn nil\n\t}\n\n\t// RFC 2537/3110, section 2. RSA Public KEY Resource Records\n\t// Length is in the 0th byte, unless its zero, then it\n\t// it in bytes 1 and 2 and its a 16 bit number\n\texplen := uint16(keybuf[0])\n\tkeyoff := 1\n\tif explen == 0 {\n\t\texplen = uint16(keybuf[1])<<8 | uint16(keybuf[2])\n\t\tkeyoff = 3\n\t}\n\tpubkey := new(rsa.PublicKey)\n\n\tpubkey.N = big.NewInt(0)\n\tshift := uint64((explen - 1) * 8)\n\texpo := uint64(0)\n\tfor i := int(explen - 1); i > 0; i-- {\n\t\texpo += uint64(keybuf[keyoff+i]) << shift\n\t\tshift -= 8\n\t}\n\t// Remainder\n\texpo += uint64(keybuf[keyoff])\n\tif expo > 2<<31 {\n\t\t// Larger expo than supported.\n\t\t// println(\"dns: F5 primes (or larger) are not supported\")\n\t\treturn nil\n\t}\n\tpubkey.E = int(expo)\n\n\tpubkey.N.SetBytes(keybuf[keyoff+int(explen):])\n\treturn pubkey\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "b57421bc7ae1521542281fec",
+        "revision": "18e84f97d18808e0525190163616755889857307",
+        "path": "dnssec.go",
+        "start_byte": 12744,
+        "text": "func (k *DNSKEY) publicKeyCurve() *ecdsa.PublicKey {\n\tkeybuf, err := packBase64([]byte(k.PublicKey))\n\tif err != nil {\n\t\treturn nil\n\t}\n\tpubkey := new(ecdsa.PublicKey)\n\tswitch k.Algorithm {\n\tcase ECDSAP256SHA256:\n\t\tpubkey.Curve = elliptic.P256()\n\t\tif len(keybuf) != 64 {\n\t\t\t// wrongly encoded key\n\t\t\treturn nil\n\t\t}\n\tcase ECDSAP384SHA384:\n\t\tpubkey.Curve = elliptic.P384()\n\t\tif len(keybuf) != 96 {\n\t\t\t// Wrongly encoded key\n\t\t\treturn nil\n\t\t}\n\t}\n\tpubkey.X = big.NewInt(0)\n\tpubkey.X.SetBytes(keybuf[:len(keybuf)/2])\n\tpubkey.Y = big.NewInt(0)\n\tpubkey.Y.SetBytes(keybuf[len(keybuf)/2:])\n\treturn pubkey\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "330f4ec91d5cb8636208989b",
+        "revision": "18e84f97d18808e0525190163616755889857307",
+        "path": "dnssec.go",
+        "start_byte": 13341,
+        "text": "func (k *DNSKEY) publicKeyDSA() *dsa.PublicKey {\n\tkeybuf, err := packBase64([]byte(k.PublicKey))\n\tif err != nil {\n\t\treturn nil\n\t}\n\tif len(keybuf) < 22 { // TODO: check\n\t\treturn nil\n\t}\n\tt := int(keybuf[0])\n\tsize := 64 + t*8\n\tpubkey := new(dsa.PublicKey)\n\tpubkey.Parameters.Q = big.NewInt(0)\n\tpubkey.Parameters.Q.SetBytes(keybuf[1:21]) // +/- 1 ?\n\tpubkey.Parameters.P = big.NewInt(0)\n\tpubkey.Parameters.P.SetBytes(keybuf[22 : 22+size])\n\tpubkey.Parameters.G = big.NewInt(0)\n\tpubkey.Parameters.G.SetBytes(keybuf[22+size+1 : 22+size*2])\n\tpubkey.Y = big.NewInt(0)\n\tpubkey.Y.SetBytes(keybuf[22+size*2+1 : 22+size*3])\n\treturn pubkey\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "1653b08b4162da1a66ef7093",
+        "revision": "18e84f97d18808e0525190163616755889857307",
+        "path": "dnssec.go",
+        "start_byte": 14865,
+        "text": "func exponentToBuf(_E int) []byte {\n\tvar buf []byte\n\ti := big.NewInt(int64(_E))\n\tif len(i.Bytes()) < 256 {\n\t\tbuf = make([]byte, 1)\n\t\tbuf[0] = uint8(len(i.Bytes()))\n\t} else {\n\t\tbuf = make([]byte, 3)\n\t\tbuf[0] = 0\n\t\tbuf[1] = uint8(len(i.Bytes()) >> 8)\n\t\tbuf[2] = uint8(len(i.Bytes()))\n\t}\n\tbuf = append(buf, i.Bytes()...)\n\treturn buf\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "b3862da159c24bd23ce22f20",
+        "revision": "18e84f97d18808e0525190163616755889857307",
+        "path": "dnssec.go",
+        "start_byte": 14902,
+        "text": "var buf []byte",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "791b1db21e1d116b4fbc86ab",
+        "revision": "18e84f97d18808e0525190163616755889857307",
+        "path": "dnssec.go",
+        "start_byte": 15284,
+        "text": "func curveToBuf(_X, _Y *big.Int) []byte {\n\tbuf := _X.Bytes()\n\tbuf = append(buf, _Y.Bytes()...)\n\treturn buf\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "6ea4ce7b154158c93d52b121",
+        "revision": "18e84f97d18808e0525190163616755889857307",
+        "path": "dnssec.go",
+        "start_byte": 15480,
+        "text": "func dsaToBuf(_Q, _P, _G, _Y *big.Int) []byte {\n\tt := byte((len(_G.Bytes()) - 64) / 8)\n\tbuf := []byte{t}\n\tbuf = append(buf, _Q.Bytes()...)\n\tbuf = append(buf, _P.Bytes()...)\n\tbuf = append(buf, _G.Bytes()...)\n\tbuf = append(buf, _Y.Bytes()...)\n\treturn buf\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "d04e059364316d049702e98f",
+        "revision": "18e84f97d18808e0525190163616755889857307",
+        "path": "dnssec.go",
+        "start_byte": 15736,
+        "text": "type wireSlice [][]byte",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "9898a62c53fdcde565105dfe",
+        "revision": "18e84f97d18808e0525190163616755889857307",
+        "path": "dnssec.go",
+        "start_byte": 16093,
+        "text": "func rawSignatureData(rrset []RR, s *RRSIG) (buf []byte, err error) {\n\twires := make(wireSlice, len(rrset))\n\tfor i, r := range rrset {\n\t\tr1 := r.copy()\n\t\tr1.Header().Ttl = s.OrigTtl\n\t\tlabels := SplitDomainName(r1.Header().Name)\n\t\t// 6.2. Canonical RR Form. (4) - wildcards\n\t\tif len(labels) > int(s.Labels) {\n\t\t\t// Wildcard\n\t\t\tr1.Header().Name = \"*.\" + strings.Join(labels[len(labels)-int(s.Labels):], \".\") + \".\"\n\t\t}\n\t\t// RFC 4034: 6.2.  Canonical RR Form. (2) - domain name to lowercase\n\t\tr1.Header().Name = strings.ToLower(r1.Header().Name)\n\t\t// 6.2. Canonical RR Form. (3) - domain rdata to lowercase.\n\t\t//   NS, MD, MF, CNAME, SOA, MB, MG, MR, PTR,\n\t\t//   HINFO, MINFO, MX, RP, AFSDB, RT, SIG, PX, NXT, NAPTR, KX,\n\t\t//   SRV, DNAME, A6\n\t\tswitch x := r1.(type) {\n\t\tcase *NS:\n\t\t\tx.Ns = strings.ToLower(x.Ns)\n\t\tcase *CNAME:\n\t\t\tx.Target = strings.ToLower(x.Target)\n\t\tcase *SOA:\n\t\t\tx.Ns = strings.ToLower(x.Ns)\n\t\t\tx.Mbox = strings.ToLower(x.Mbox)\n\t\tcase *MB:\n\t\t\tx.Mb = strings.ToLower(x.Mb)\n\t\tcase *MG:\n\t\t\tx.Mg = strings.ToLower(x.Mg)\n\t\tcase *MR:\n\t\t\tx.Mr = strings.ToLower(x.Mr)\n\t\tcase *PTR:\n\t\t\tx.Ptr = strings.ToLower(x.Ptr)\n\t\tcase *MINFO:\n\t\t\tx.Rmail = strings.ToLower(x.Rmail)\n\t\t\tx.Email = strings.ToLower(x.Email)\n\t\tcase *MX:\n\t\t\tx.Mx = strings.ToLower(x.Mx)\n\t\tcase *NAPTR:\n\t\t\tx.Replacement = strings.ToLower(x.Replacement)\n\t\tcase *KX:\n\t\t\tx.Exchanger = strings.ToLower(x.Exchanger)\n\t\tcase *SRV:\n\t\t\tx.Target = strings.ToLower(x.Target)\n\t\tcase *DNAME:\n\t\t\tx.Target = strings.ToLower(x.Target)\n\t\t}\n\t\t// 6.2. Canonical RR Form. (5) - origTTL\n\t\twire := make([]byte, r1.len()+1) // +1 to be safe(r)\n\t\toff, err1 := PackRR(r1, wire, 0, nil, false)\n\t\tif err1 != nil {\n\t\t\treturn nil, err1\n\t\t}\n\t\twire = wire[:off]\n\t\twires[i] = wire\n\t}\n\tsort.Sort(wires)\n\tfor _, wire := range wires {\n\t\tbuf = append(buf, wire...)\n\t}\n\treturn buf, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "8fefd89f13115d76334bd0c8",
+        "revision": "18e84f97d18808e0525190163616755889857307",
+        "path": "edns.go",
+        "start_byte": 1870,
+        "text": "func (rr *OPT) String() string {\n\ts := \"\\n;; OPT PSEUDOSECTION:\\n; EDNS: version \" + strconv.Itoa(int(rr.Version())) + \"; \"\n\tif rr.Do() {\n\t\ts += \"flags: do; \"\n\t} else {\n\t\ts += \"flags: ; \"\n\t}\n\ts += \"udp: \" + strconv.Itoa(int(rr.UDPSize()))\n\n\tfor _, o := range rr.Option {\n\t\tswitch o.(type) {\n\t\tcase *EDNS0_NSID:\n\t\t\ts += \"\\n; NSID: \" + o.String()\n\t\t\th, e := o.pack()\n\t\t\tvar r string\n\t\t\tif e == nil {\n\t\t\t\tfor _, c := range h {\n\t\t\t\t\tr += \"(\" + string(c) + \")\"\n\t\t\t\t}\n\t\t\t\ts += \"  \" + r\n\t\t\t}\n\t\tcase *EDNS0_SUBNET:\n\t\t\ts += \"\\n; SUBNET: \" + o.String()\n\t\t\tif o.(*EDNS0_SUBNET).DraftOption {\n\t\t\t\ts += \" (draft)\"\n\t\t\t}\n\t\tcase *EDNS0_UL:\n\t\t\ts += \"\\n; UPDATE LEASE: \" + o.String()\n\t\tcase *EDNS0_LLQ:\n\t\t\ts += \"\\n; LONG LIVED QUERIES: \" + o.String()\n\t\tcase *EDNS0_DAU:\n\t\t\ts += \"\\n; DNSSEC ALGORITHM UNDERSTOOD: \" + o.String()\n\t\tcase *EDNS0_DHU:\n\t\t\ts += \"\\n; DS HASH UNDERSTOOD: \" + o.String()\n\t\tcase *EDNS0_N3U:\n\t\t\ts += \"\\n; NSEC3 HASH UNDERSTOOD: \" + o.String()\n\t\t}\n\t}\n\treturn s\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "2a2bd79bf368d2350c03e25e",
+        "revision": "18e84f97d18808e0525190163616755889857307",
+        "path": "edns.go",
+        "start_byte": 3654,
+        "text": "func (rr *OPT) Do() bool {\n\treturn byte(rr.Hdr.Ttl>>8)&_DO == _DO\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "ae8a48ee2053298cd9900f6b",
+        "revision": "18e84f97d18808e0525190163616755889857307",
+        "path": "edns.go",
+        "start_byte": 3761,
+        "text": "func (rr *OPT) SetDo() {\n\tb1 := byte(rr.Hdr.Ttl >> 24)\n\tb2 := byte(rr.Hdr.Ttl >> 16)\n\tb3 := byte(rr.Hdr.Ttl >> 8)\n\tb4 := byte(rr.Hdr.Ttl)\n\tb3 |= _DO // Set it\n\trr.Hdr.Ttl = uint32(b1)<<24 | uint32(b2)<<16 | uint32(b3)<<8 | uint32(b4)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "ba09d763481d869b9d84bf57",
+        "revision": "18e84f97d18808e0525190163616755889857307",
+        "path": "edns.go",
+        "start_byte": 4087,
+        "text": "type EDNS0 interface {\n\t// Option returns the option code for the option.\n\tOption() uint16\n\t// pack returns the bytes of the option data.\n\tpack() ([]byte, error)\n\t// unpack sets the data as found in the buffer. Is also sets\n\t// the length of the slice as the length of the option data.\n\tunpack([]byte)\n\t// String returns the string representation of the option.\n\tString() string\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "1400959f7c4ce2b68ea95692",
+        "revision": "18e84f97d18808e0525190163616755889857307",
+        "path": "edns.go",
+        "start_byte": 4981,
+        "text": "func (e *EDNS0_NSID) pack() ([]byte, error) {\n\th, err := hex.DecodeString(e.Nsid)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\treturn h, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "a3b091319f4f203788f0e70e",
+        "revision": "18e84f97d18808e0525190163616755889857307",
+        "path": "edns.go",
+        "start_byte": 5119,
+        "text": "func (e *EDNS0_NSID) Option() uint16  { return EDNS0NSID }",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "e145781d395c893caa9509cc",
+        "revision": "18e84f97d18808e0525190163616755889857307",
+        "path": "edns.go",
+        "start_byte": 5178,
+        "text": "func (e *EDNS0_NSID) unpack(b []byte) { e.Nsid = hex.EncodeToString(b) }",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "c659f48ec879d63a6896d231",
+        "revision": "18e84f97d18808e0525190163616755889857307",
+        "path": "edns.go",
+        "start_byte": 5251,
+        "text": "func (e *EDNS0_NSID) String() string  { return string(e.Nsid) }",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "27dc68abe95a940a0340c93a",
+        "revision": "18e84f97d18808e0525190163616755889857307",
+        "path": "edns.go",
+        "start_byte": 5972,
+        "text": "type EDNS0_SUBNET struct {\n\tCode          uint16 // Always EDNS0SUBNET\n\tFamily        uint16 // 1 for IP, 2 for IP6\n\tSourceNetmask uint8\n\tSourceScope   uint8\n\tAddress       net.IP\n\tDraftOption   bool // Set to true if using the old (0x50fa) option code\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "d8e3dc8fd7a6b4a89a4b0250",
+        "revision": "18e84f97d18808e0525190163616755889857307",
+        "path": "edns.go",
+        "start_byte": 6228,
+        "text": "func (e *EDNS0_SUBNET) Option() uint16 {\n\tif e.DraftOption {\n\t\treturn EDNS0SUBNETDRAFT\n\t}\n\treturn EDNS0SUBNET\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "cea39bf61b786cda7f280236",
+        "revision": "18e84f97d18808e0525190163616755889857307",
+        "path": "edns.go",
+        "start_byte": 6341,
+        "text": "func (e *EDNS0_SUBNET) pack() ([]byte, error) {\n\tb := make([]byte, 4)\n\tb[0], b[1] = packUint16(e.Family)\n\tb[2] = e.SourceNetmask\n\tb[3] = e.SourceScope\n\tswitch e.Family {\n\tcase 1:\n\t\tif e.SourceNetmask > net.IPv4len*8 {\n\t\t\treturn nil, errors.New(\"dns: bad netmask\")\n\t\t}\n\t\tip := make([]byte, net.IPv4len)\n\t\ta := e.Address.To4().Mask(net.CIDRMask(int(e.SourceNetmask), net.IPv4len*8))\n\t\tfor i := 0; i < net.IPv4len; i++ {\n\t\t\tif i+1 > len(e.Address) {\n\t\t\t\tbreak\n\t\t\t}\n\t\t\tip[i] = a[i]\n\t\t}\n\t\tneedLength := e.SourceNetmask / 8\n\t\tif e.SourceNetmask%8 > 0 {\n\t\t\tneedLength++\n\t\t}\n\t\tip = ip[:needLength]\n\t\tb = append(b, ip...)\n\tcase 2:\n\t\tif e.SourceNetmask > net.IPv6len*8 {\n\t\t\treturn nil, errors.New(\"dns: bad netmask\")\n\t\t}\n\t\tip := make([]byte, net.IPv6len)\n\t\ta := e.Address.Mask(net.CIDRMask(int(e.SourceNetmask), net.IPv6len*8))\n\t\tfor i := 0; i < net.IPv6len; i++ {\n\t\t\tif i+1 > len(e.Address) {\n\t\t\t\tbreak\n\t\t\t}\n\t\t\tip[i] = a[i]\n\t\t}\n\t\tneedLength := e.SourceNetmask / 8\n\t\tif e.SourceNetmask%8 > 0 {\n\t\t\tneedLength++\n\t\t}\n\t\tip = ip[:needLength]\n\t\tb = append(b, ip...)\n\tdefault:\n\t\treturn nil, errors.New(\"dns: bad address family\")\n\t}\n\treturn b, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "e7cb630edaee515a44f22720",
+        "revision": "18e84f97d18808e0525190163616755889857307",
+        "path": "edns.go",
+        "start_byte": 7474,
+        "text": "func (e *EDNS0_SUBNET) unpack(b []byte) {\n\tlb := len(b)\n\tif lb < 4 {\n\t\treturn\n\t}\n\te.Family, _ = unpackUint16(b, 0)\n\te.SourceNetmask = b[2]\n\te.SourceScope = b[3]\n\tswitch e.Family {\n\tcase 1:\n\t\taddr := make([]byte, 4)\n\t\tfor i := 0; i < int(e.SourceNetmask/8); i++ {\n\t\t\tif 4+i > len(b) {\n\t\t\t\tbreak\n\t\t\t}\n\t\t\taddr[i] = b[4+i]\n\t\t}\n\t\te.Address = net.IPv4(addr[0], addr[1], addr[2], addr[3])\n\tcase 2:\n\t\taddr := make([]byte, 16)\n\t\tfor i := 0; i < int(e.SourceNetmask/8); i++ {\n\t\t\tif 4+i > len(b) {\n\t\t\t\tbreak\n\t\t\t}\n\t\t\taddr[i] = b[4+i]\n\t\t}\n\t\te.Address = net.IP{addr[0], addr[1], addr[2], addr[3], addr[4],\n\t\t\taddr[5], addr[6], addr[7], addr[8], addr[9], addr[10],\n\t\t\taddr[11], addr[12], addr[13], addr[14], addr[15]}\n\t}\n\treturn\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "4be3bf3948d000bc0e8f9042",
+        "revision": "18e84f97d18808e0525190163616755889857307",
+        "path": "edns.go",
+        "start_byte": 8191,
+        "text": "func (e *EDNS0_SUBNET) String() (s string) {\n\tif e.Address == nil {\n\t\ts = \"<nil>\"\n\t} else if e.Address.To4() != nil {\n\t\ts = e.Address.String()\n\t} else {\n\t\ts = \"[\" + e.Address.String() + \"]\"\n\t}\n\ts += \"/\" + strconv.Itoa(int(e.SourceNetmask)) + \"/\" + strconv.Itoa(int(e.SourceScope))\n\treturn\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "e6a292bf673a59669d378dee",
+        "revision": "18e84f97d18808e0525190163616755889857307",
+        "path": "edns.go",
+        "start_byte": 9090,
+        "text": "func (e *EDNS0_UL) pack() ([]byte, error) {\n\tb := make([]byte, 4)\n\tb[0] = byte(e.Lease >> 24)\n\tb[1] = byte(e.Lease >> 16)\n\tb[2] = byte(e.Lease >> 8)\n\tb[3] = byte(e.Lease)\n\treturn b, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "4c2e17198b8d01587383ba4f",
+        "revision": "18e84f97d18808e0525190163616755889857307",
+        "path": "edns.go",
+        "start_byte": 9279,
+        "text": "func (e *EDNS0_UL) Option() uint16 { return EDNS0UL }",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "4a58db24002d7eb17eddc41f",
+        "revision": "18e84f97d18808e0525190163616755889857307",
+        "path": "edns.go",
+        "start_byte": 9333,
+        "text": "func (e *EDNS0_UL) unpack(b []byte) {\n\te.Lease = uint32(b[0])<<24 | uint32(b[1])<<16 | uint32(b[2])<<8 | uint32(b[3])\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "6c647ebf9482882a385cea66",
+        "revision": "18e84f97d18808e0525190163616755889857307",
+        "path": "edns.go",
+        "start_byte": 9453,
+        "text": "func (e *EDNS0_UL) String() string { return strconv.FormatUint(uint64(e.Lease), 10) }",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "c24b6a102f1f4bc49461887f",
+        "revision": "18e84f97d18808e0525190163616755889857307",
+        "path": "edns.go",
+        "start_byte": 9836,
+        "text": "func (e *EDNS0_LLQ) Option() uint16 { return EDNS0LLQ }",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "e7405740fc4411e53d096523",
+        "revision": "18e84f97d18808e0525190163616755889857307",
+        "path": "edns.go",
+        "start_byte": 9893,
+        "text": "func (e *EDNS0_LLQ) pack() ([]byte, error) {\n\tb := make([]byte, 18)\n\tb[0], b[1] = packUint16(e.Version)\n\tb[2], b[3] = packUint16(e.Opcode)\n\tb[4], b[5] = packUint16(e.Error)\n\tb[6] = byte(e.Id >> 56)\n\tb[7] = byte(e.Id >> 48)\n\tb[8] = byte(e.Id >> 40)\n\tb[9] = byte(e.Id >> 32)\n\tb[10] = byte(e.Id >> 24)\n\tb[11] = byte(e.Id >> 16)\n\tb[12] = byte(e.Id >> 8)\n\tb[13] = byte(e.Id)\n\tb[14] = byte(e.LeaseLife >> 24)\n\tb[15] = byte(e.LeaseLife >> 16)\n\tb[16] = byte(e.LeaseLife >> 8)\n\tb[17] = byte(e.LeaseLife)\n\treturn b, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "bb460caed6f1179df5759412",
+        "revision": "18e84f97d18808e0525190163616755889857307",
+        "path": "edns.go",
+        "start_byte": 10406,
+        "text": "func (e *EDNS0_LLQ) unpack(b []byte) {\n\te.Version, _ = unpackUint16(b, 0)\n\te.Opcode, _ = unpackUint16(b, 2)\n\te.Error, _ = unpackUint16(b, 4)\n\te.Id = uint64(b[6])<<56 | uint64(b[6+1])<<48 | uint64(b[6+2])<<40 |\n\t\tuint64(b[6+3])<<32 | uint64(b[6+4])<<24 | uint64(b[6+5])<<16 | uint64(b[6+6])<<8 | uint64(b[6+7])\n\te.LeaseLife = uint32(b[14])<<24 | uint32(b[14+1])<<16 | uint32(b[14+2])<<8 | uint32(b[14+3])\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "797cd4a1bbb6d85714941e45",
+        "revision": "18e84f97d18808e0525190163616755889857307",
+        "path": "edns.go",
+        "start_byte": 10813,
+        "text": "func (e *EDNS0_LLQ) String() string ",
+        "rank": 2,
+        "truncated": true
+      }
+    ]
+  },
+  "retrieval": {
+    "unresolved": [
+      {
+        "side": "ours",
+        "identifier": "srv",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "readUDP",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "conn",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "net",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "UDPConn",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "timeout",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "time",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Duration",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "byte",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Addr",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "error",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "m",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "make",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "n",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "a",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "e",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "ReadFromUDP",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "ErrConn",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "srv",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "readUDP",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "conn",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "net",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "UDPConn",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "timeout",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "time",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Duration",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "byte",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Addr",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "error",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Now",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Add",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Pool",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "get",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "make",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "n",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "a",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "e",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "ReadFromUDP",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "ErrShortRead",
+        "reason": "no-unique-declaration-established"
+      }
+    ],
+    "method": "syntax-ranges-and-identifier-candidates/3",
+    "budget_bytes": 32768,
+    "libraries": {
+      "C": "cbbd4827ee02cd5c018ab41f10d8404ff8741159054b352d9a6d763c506ba3c7",
+      "Go": "1612f8fd958ba1ec981bf4b91e2ff399f1e54d26a9da68e5b60b0d7cd00616fc"
+    }
+  }
+}

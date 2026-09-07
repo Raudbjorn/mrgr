@@ -1,0 +1,982 @@
+{
+  "id": "7e3f01ecb7c6f72d9342e8eced041aef66294a37793fb8498ae4e747ee4a887d",
+  "source_protocol_sha256": "86ffe38086e217acf6e1a4aa4162e226862463d1bde3160478f9a6f4d2b968ce",
+  "repair_module_sha256": "475070c72aaadf08fe1cbd1ec90cde5210664924e6b0589d61d2226e86f3da7f",
+  "contexts": {
+    "local-context": [
+      {
+        "id": "3c5099b1b36e8eeaf47f750b",
+        "revision": "65ef308daa00a92eab095fcc9c1fa28509b221dd",
+        "path": "config/config.go",
+        "start_byte": 11233,
+        "text": "ist of keys to be replaced in the URLPattern\n\tURLKeys []string\n\t// number of concurrent calls this endpoint must send to the API\n\tConcurrentCalls int\n\t// timeout of this backend\n\tTimeout time.Duration\n\t// decoder to use in order to parse the received response from the API\n\tDecoder encoding.Decoder `json:\"-\"`\n\t// Backend Extra configuration for customized behaviours\n\tExtraConfig ExtraConfig `mapstructure:\"extra_config\"`\n\t// HeadersToPass defines the list of headers to pass to this backend\n\tHeadersToPass []string `mapstructure:\"input_headers\"`\n}\n\n// Plugin contains the config required by the plugin module\ntype Plugin struct {\n\tFolder  string `mapstructure:\"folder\"`\n\tPattern string `mapstructure:\"pattern\"`\n}\n\n// TLS defines the configuration params for enabling TLS (HTTPS & HTTP/2) at the router layer\ntype TLS struct {\n\tIsDisabled               bool     `mapstructure:\"disabled\"`\n\tPublicKey                string   `mapstructure:\"public_key\"`\n\tPrivateKey               string   `mapstructure:\"private_key\"`\n\tCaCerts                  []string `mapstructure:\"ca_certs\"`\n\tMinVersion               string   `mapstructure:\"min_version\"`\n\tMaxVersion               string   `mapstructure:\"max_version\"`\n\tCurvePreferences         []uint16 `mapstructure:\"curve_preferences\"`\n\tPreferServerCipherSuites bool     `mapstructure:\"prefer_server_cipher_suites\"`\n\tCipherSuites             []uint16 `mapstructure:\"cipher_suites\"`\n\tEnableMTLS               bool     `mapstructure:\"enable_mtls\"`\n\tDisableSystemCaPool      bool     `mapstructure:\"disable_system_ca_pool\"`\n}\n\n// ClientTLS defines the configuration params for an HTTP Client\ntype ClientTLS struct {\n\tAllowInsecureConnections bool     `mapstructure:\"allow_insecure_connections\"`\n\tCaCerts                  []string `mapstructure:\"ca_certs\"`\n\tDisableSystemCaPool      bool     `mapstructure:\"disable_system_ca_pool\"`\n\tMinVersion               string   `mapstructure:\"min_version\"`\n\tMaxVersion               string   `mapstructure:\"max_version\"`\n\tCurvePreferences         []uint16 `mapstructure:\"curve_preferences\"`\n\tCipherSuites             []uint16 `mapstructure:\"cipher_suites\"`\n}\n\n// ExtraConfig is a type to store extra configurations for customized behaviours\ntype ExtraConfig map[string]interface{}\n\nfunc (e *ExtraConfig) sanitize() {\n\tfor module, extra := range *e {\n\t\tif extra, ok := extra.(map[interface{}]interface{}); ok {\n\t\t\tsanitized := map[string]interface{}{}\n\t\t\tfor k, v := range extra {\n\t\t\t\tsanitized[fmt.Sprintf(\"%v\", k)] = v\n\t\t\t}\n\t\t\t(*e)[module] = sanitized\n\t\t}\n\t}\n}\n\nfunc (e *ExtraConfig) Normalize() {\n\tfor module := range *e {\n\t\tif alias, ok := ExtraConfigAlias[module]; ok {\n\t\t\t(*e)[alias] = (*e)[module]\n\t\t\tdelete(*e, module)\n\t\t}\n\t}\n}\n\n// ExtraConfigAlias is the set of alias to accept as namespace\nvar ExtraConfigAlias = map[string]string{}\n\nvar (\n\tsimpleURLKeysPattern    = regexp.MustCompile(`\\{([\\w\\-\\.:/]+)\\}`)\n\tsequentialParamsPattern = regexp.MustCompile(`^(resp[\\d]+_.+)?(JWT\\.([\\w\\-\\.:/]+))?$`)\n\tinvalidPattern          = `^[^/]|\\*.|/__(debug|echo|health)(/.*)?$`\n\terrInvalidHost          = errors.New(\"invalid host\")\n\terrInvalidNoOpEncoding  = errors.New(\"can not use NoOp encoding with more than one backends connected to the same endpoint\")\n\tdefaultPort             = 8080\n)\n\n// Hash returns the sha 256 hash of the configuration in a standard base64 encoded string. It ignores the\n// name in order to reduce the noise.\nfunc (s *ServiceConfig) Hash() (string, error) {\n\tvar name string\n\tname, s.Name = s.Name, \"\"\n\tdefer func() { s.Name = name }()\n\n\tb, err := json.Marshal(s)\n\tif err != nil {\n\t\treturn \"\", err\n\t}\n\tsum := sha256.Sum256(b)\n\treturn base64.StdEncoding.EncodeToString(sum[:]), nil\n}\n\n// Init initializes the configuration struct and its defined endpoints and backends.\n// Init also sanitizes the values, applies the default ones whenever necessary and\n// normalizes all the things.\nfunc (s *ServiceConfig) Init() error {\n\ts.uriParser = NewURIParser()\n\n\tif s.Version != ConfigVersion {\n\t\treturn &UnsupportedVersionError{\n\t\t\tHave: s.Version,\n\t\t\tWant: ConfigVersion,\n\t\t}\n\t}\n\n\ts.initGlobalParams()\n\n\ts.initAsyncAgents()\n\n\treturn s.initEndpoints()\n}\n\nfunc (s *ServiceConfig) Normalize() {\n\ts.ExtraConfig.Normalize()\n\tfor _, e := range s.Endpoints {\n\t\te.ExtraConfig.Normalize()\n\t\tfor _, b := range e.Backend {\n\t\t\tb.ExtraConfig.Normalize()\n\t\t}\n\t}\n\tfor _, a := range s.AsyncAgents {\n\t\ta.ExtraConfig.Normalize()\n\t\tfor _, b := range a.Backend {\n\t\t\tb.ExtraConfig.Normalize()\n\t\t}\n\t}\n}\n\nfunc (s *ServiceConfig) initGlobalParams() {\n\tif s.Port == 0 {\n\t\ts.Port = defaultPort\n\t}\n\tif s.MaxIdleConnsPerHost == 0 {\n\t\ts.MaxIdleConnsPerHost = DefaultMaxIdleConnsPerHost\n\t}\n\tif s.Timeout == 0 {\n\t\ts.Timeout = DefaultTimeout\n\t}\n\n\ts.Host = s.uriParser.CleanHosts(s.Host)\n\n\ts.ExtraConfig.sanitize()\n}\n\nfunc (s *ServiceConfig) initAsyncAgents() error {\n\tfor i, e := range s.AsyncAgents {\n\t\ts.initAsyncAgentDefaults(i)\n\n\t\te.ExtraConfig.sanitize()\n\n\t\tfor _, b := range e.Backend {\n\t\t\tif len(b.Host) == 0 {\n\t\t\t\tb.Host = s.Host\n\t\t\t} else if !b.HostSanitizationDisabled {\n\t\t\t\tb.Host = s.uriParser.CleanHosts(b.Host)\n\t\t\t}\n\t\t\tif b.Method == \"\" {\n\t\t\t\tb.Method = http.MethodGet\n\t\t\t}\n\t\t\tb.Timeout = e.Consumer.Timeout\n\t\t\tb.Decoder = encoding.GetRegister().Get(strings.ToLower(b.Encoding))(b.IsCollection)\n\n\t\t\tb.ExtraConfig.sanitize()\n\t\t}\n\t}\n\treturn nil\n}\n\nfunc (s *ServiceConfig) initEndpoints() error {\n\tfor i, e := range s.Endpoints {\n\t\te.Endpoint = s.uriParser.CleanPath(e.Endpoint)\n\n\t\tif err := e.validate(); err != nil {\n\t\t\treturn err\n\t\t}\n\n\t\tfor i := range e.HeadersToPass {\n\t\t\te.HeadersToPass[i] = textproto.CanonicalMIMEHeaderKey(e.HeadersToPass[i])\n\t\t}\n\n\t\tinputParams := s.extractPlaceHoldersFromURLTemplate(e.Endpoint, s.paramExtractionPattern())\n\t\tinputSet := map[string]interface{}{}\n\t\tfor ip := range inputParams {\n\t\t\tinputSet[inputParams[ip]] = nil\n\t\t}\n\n\t\te.Endpoint = s.uriParser.GetEndpointPath(e.Endpoint, inputParams)\n\n\t\ts.initEndpointDefaults(i)\n\n\t\tif e.OutputEncoding == encoding.NOOP && len(e.Backend) > 1 {\n\t\t\treturn errInvalidNoOpEncoding\n\t\t}\n\n\t\te.ExtraConfig.sanitize()\n\n\t\tfor j, b := range e.Backend {\n\t\t\ts.initBackendDefaults(i, j)\n\n\t\t\tif err := s.initBackendURLMappings(i, j, inputSet); err != nil {\n\t\t\t\treturn err\n\t\t\t}\n\n\t\t\tb.ExtraConfig.sanitize()\n\t\t}\n\t}\n\treturn nil\n}\n\nfunc (s *ServiceConfig) paramExtractionPattern() *regexp.Regexp {\n\tif s.DisableStrictREST {\n\t\treturn simpleURLKeysPattern\n\t}\n\treturn endpointURLKeysPattern\n}\n\nfunc (*ServiceConfig) extractPlaceHoldersFromURLTemplate(subject string, pattern *regexp.Regexp) []string {\n\tmatches := pattern.FindAllStringSubmatch(subject, -1)\n\tkeys := make([]string, len(matches))\n\tfor k, v := range matches {\n\t\tkeys[k] = v[1]\n\t}\n\treturn keys\n}\n\nfunc (s *ServiceConfig) initEndpointDefaults(e int) {\n\tendpoint := s.Endpoints[e]\n\tif endpoint.Method == \"\" {\n\t\tendpoint.Method = \"GET\"\n\t}\n\tif s.CacheTTL != 0 && endpoint.CacheTTL == 0 {\n\t\tendpoint.CacheTTL = s.CacheTTL\n\t}\n\tif s.Timeout != 0 && endpoint.Timeout == 0 {\n\t\tendpoint.Timeout = s.Timeout\n\t}\n\tif endpoint.ConcurrentCalls == 0 {\n\t\tendpoint.ConcurrentCalls = 1\n\t}\n\tif endpoint.OutputEncoding == \"\" {\n\t\tif s.OutputEncoding != \"\" {\n\t\t\tendpoint.OutputEncoding = s.OutputEncoding\n\t\t} else {\n\t\t\tendpoint.OutputEncoding = encoding.JSON\n\t\t}\n\t}\n}\n\nfunc (s *ServiceConfig) initAsyncAgentDefaults(e int) {\n\tagent := s.AsyncAgents[e]\n\tif s.Timeout != 0 && agent.Consumer.Timeout == 0 {\n\t\tagent.Consumer.Timeout = s.Timeout\n\t}\n\tif agent.Consumer.Workers < 1 {\n\t\tagent.Consumer.Workers = 1\n\t}\n\tif agent.Connection.HealthInterval < time.Second {\n\t\tagent.Connection.HealthInterval = time.Second\n\t}\n}\n\nfunc (s *ServiceConfig) initBackendDefaults(e, b int) {\n\tendpoint := s.Endpoints[e]\n\tbackend := endpoint.Backend[b]\n\tif len(backend.Host) == 0 {\n\t\tbackend.Host = s.Host\n\t} else if !backend.HostSanitizationDisabled {\n\t\tbackend.Host = s.uriParser.CleanHosts(backend.Host)\n\t}\n\tif backend.Method == \"\" {\n\t\tbackend.Method = endpoint.Method\n\t}\n\tif endpoint.OutputEncoding == encoding.NOOP {\n\t\tbackend.Encoding = encoding.NOOP\n\t}\n\tbackend.Timeout = endpoint.Timeout\n\tbackend.ConcurrentCalls = endpoint.ConcurrentCalls\n\tbackend.Decoder = encoding.GetRegister().Get(strings.ToLower(backend.Encoding))(backend.IsCollection)\n\n\tfor i := range backend.HeadersToPass {\n\t\tbackend.HeadersToPass[i] = textproto.CanonicalMIMEHeaderKey(backend.HeadersToPass[i])\n\t}\n}\n\nfunc (s *ServiceConfig) initBackendURLMappings(e, b int, inputParams map[string]interface{}) error {\n\tbackend := s.Endpoints[e].Backend[b]\n\n\tbackend.URLPattern = s.uriParser.CleanPath(backend.URLPattern)\n\n\toutputParams, outputSetSize := uniqueOutput(s.extractPlaceHoldersFromURLTemplate(backend.URLPattern, simpleURLKeysPattern))\n\n\tip := fromSetToSortedSlice(inputParams)\n\n\tif outputSetSize > len(ip) {\n\t\treturn &WrongNumberOfParamsError{\n\t\t\tEndpoint:     s.Endpoints[e].Endpoint,\n\t\t\tMethod:       s.Endpoints[e].Method,\n\t\t\tBackend:      b,\n\t\t\tInputParams:  ip,\n\t\t\tOutputParams: outputParams,\n\t\t}\n\t}\n\n\ttitle := cases.Title(language.Und)\n\tbackend.URLKeys = []string{}\n\tfor _, output := range outputParams {\n\t\tif !sequentialParamsPattern.MatchString(output) {\n\t\t\tif _, ok := inputParams[output]; !ok {\n\t\t\t\treturn &UndefinedOutputParamError{\n\t\t\t\t\tParam:        output,\n\t\t\t\t\tEndpoint:     s.Endpoints[e].Endpoint,\n\t\t\t\t\tMethod:       s.Endpoints[e].Method,\n\t\t\t\t\tBackend:      b,\n\t\t\t\t\tInputParams:  ip,\n\t\t\t\t\tOutputParams: outputParams,\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t\tkey := title.String(output[:1]) + output[1:]\n\t\tbackend.URLPattern = strings.ReplaceAll(backend.URLPattern, \"{\"+output+\"}\", \"{{.\"+key+\"}}\")\n\t\tbackend.URLKeys = append(backend.URLKeys, key)\n\t}\n\treturn nil\n}\n\nfunc fromSetToSortedSlice(set map[string]interface{}) []string {\n\tres := make([]string, 0, len(set))\n\tfor element := range set {\n\t\tres = append(res, element)\n\t}\n\tsort.Strings(res)\n\treturn res\n}\n\nfunc uniqueOutput(output []string) ([]string, int) {\n\tsort.Strings(output)\n\tj := 0\n\toutputSetSize := 0\n\tfor i := 1; i < len(output); i++ {\n\t\tif output[j] == output[i] {\n\t\t\tcontinue\n\t\t}\n\t\tif !sequentialParamsPattern.MatchString(output[j]) {\n\t\t\toutputSetSize++\n\t\t}\n\t\tj++\n\t\toutput[j] = output[i]\n\t}\n\tif j == len(output) {\n\t\treturn output, outputSetSize\n\t}\n\treturn output[:j+1], outputSetSize\n}\n\nfunc (e *EndpointConfig) validate() error {\n\tmatched, err := regexp.MatchString(invalidPattern, e.Endpoint)\n\tif err != nil {\n\t\treturn &EndpointMatchError{\n\t\t\tErr:    err,\n\t\t\tPath:   e.Endpoint,\n\t\t\tMethod: e.Method,\n\t\t}\n\t}\n\tif matched {\n\t\treturn &EndpointPathError{Path: e.Endpoint, Method: e.Method}\n\t}\n\n\tif len(e.Backend) == 0 {\n\t\treturn &NoBackendsError{Path: e.Endpoint, Method: e.Method}\n\t}\n\treturn nil\n}\n\n// EndpointMatchError is the error returned by the configuration init process when the endpoint pattern\n// check fails\ntype EndpointMatchError struct {\n\tPath   string\n\tMethod string\n\tErr    error\n}\n\n// Error returns a string representation of the EndpointMatchError\nfunc (e *EndpointMatchError) Error() string {\n\treturn fmt.Sprintf(\"ignoring the '%s %s' endpoint due to a parsing error: %s\", e.Method, e.Path, e.Err.Error())\n}\n\n// NoBackendsError is the error returned by the configuration init process when an endpoint\n// is connected to 0 backends\ntype NoBackendsError struct {\n\tPath   string\n\tMethod string\n}\n\n// Error returns a string representation of the NoBackendsError\nfunc (n *NoBackendsError) Error() string {\n\treturn \"ignoring the '\" + n.Method + \" \" + n.Path + \"' endpoint, since it has 0 backends defined!\"\n}\n\n// UnsupportedVersionError is the error returned by the configuration init process when the configuration\n// version is not supoprted\ntype UnsupportedVersionError struct {\n\tHave int\n\tWant int\n}\n\n// Error returns a string representation of the UnsupportedVersionError\nfunc (u *UnsupportedVersionError) Error() string {\n\treturn fmt.Sprintf(\"unsupported version: %d (want: %d)\", u.Have, u.Want)\n}\n\n// EndpointPathError is the error returned by the configuration init process when an endpoint\n// is using a forbidden path\ntype EndpointPathError struct {\n\tPath   string\n\tMethod string\n}\n\n// Error returns a string representation of the EndpointPathError\nfunc (e *EndpointPathError) Error() string {\n\treturn \"ignoring the '\" + e.Method + \" \" + e.Path + \"' endpoint, since it is invalid!!!\"\n}\n\n// UndefinedOutputParamError is the error returned by the configuration init process when an output\n// param is not present in the input param set\ntype UndefinedOutputParamError struct {\n\tEndpoint     string\n\tMethod       string\n\tBackend      int\n\tInputParams  []string\n\tOutputParams []string\n\tParam        string\n}\n\n// Error returns a string representation of the UndefinedOutputParamError\nfunc (u *UndefinedOutputParamError) Error() string {\n\treturn fmt.Sprintf(\n\t\t\"undefined output param '%s'! endpoint: %s %s, backend: %d. input: %v, output: %v\",\n\t\tu.Param,\n\t\tu.Method,\n\t\tu.Endpoint,\n\t\tu.Backend,\n\t\tu.InputParams,\n\t\tu.OutputParams,\n\t)\n}\n\n// WrongNumberOfParamsError is the error returned by the configuration init process when the number of output\n// params is greatter than the number of input params\ntype WrongNumberOfParamsError struct {\n\tEndpoint     string\n\tMethod       string\n\tBackend      int\n\tInputParams  []string\n\tOutputParams []string\n}\n\n// Error returns a string representation of the WrongNumberOfParamsError\nfunc (w *WrongNumberOfParamsError) Error() string {\n\treturn fmt.Sprintf(\n\t\t\"input and output params do not match. endpoint: %s %s, backend: %d. input: %v, output: %v\",\n\t\tw.Method,\n\t\tw.Endpoint,\n\t\tw.Backend,\n\t\tw.InputParams,\n\t\tw.OutputParams,\n\t)\n}\n\nfunc SetSequentialParamsPattern(pattern string) error {\n\tre, err := regexp.Compile(pattern)\n\tif err != nil {\n\t\treturn err\n\t}\n\tsequentialParamsPattern = re\n\treturn nil\n}\n",
+        "rank": 0,
+        "truncated": false
+      },
+      {
+        "id": "eaa736e71dc43e5c0245416a",
+        "revision": "7bce6502d2147b47ec04ac266254061eecc27e4c",
+        "path": "config/config.go",
+        "start_byte": 11194,
+        "text": "e\n\tSD string `mapstructure:\"sd\"`\n\t// scheme to use for servers fetched from\n\tSDScheme string `mapstructure:\"sd_scheme\"`\n\n\t// list of keys to be replaced in the URLPattern\n\tURLKeys []string\n\t// number of concurrent calls this endpoint must send to the API\n\tConcurrentCalls int\n\t// timeout of this backend\n\tTimeout time.Duration\n\t// decoder to use in order to parse the received response from the API\n\tDecoder encoding.Decoder `json:\"-\"`\n\t// Backend Extra configuration for customized behaviours\n\tExtraConfig ExtraConfig `mapstructure:\"extra_config\"`\n}\n\n// Plugin contains the config required by the plugin module\ntype Plugin struct {\n\tFolder  string `mapstructure:\"folder\"`\n\tPattern string `mapstructure:\"pattern\"`\n}\n\n// TLS defines the configuration params for enabling TLS (HTTPS & HTTP/2) at the router layer\ntype TLS struct {\n\tIsDisabled               bool     `mapstructure:\"disabled\"`\n\tPublicKey                string   `mapstructure:\"public_key\"`\n\tPrivateKey               string   `mapstructure:\"private_key\"`\n\tCaCerts                  []string `mapstructure:\"ca_certs\"`\n\tMinVersion               string   `mapstructure:\"min_version\"`\n\tMaxVersion               string   `mapstructure:\"max_version\"`\n\tCurvePreferences         []uint16 `mapstructure:\"curve_preferences\"`\n\tPreferServerCipherSuites bool     `mapstructure:\"prefer_server_cipher_suites\"`\n\tCipherSuites             []uint16 `mapstructure:\"cipher_suites\"`\n\tEnableMTLS               bool     `mapstructure:\"enable_mtls\"`\n\tDisableSystemCaPool      bool     `mapstructure:\"disable_system_ca_pool\"`\n}\n\n// ClientTLS defines the configuration params for an HTTP Client\ntype ClientTLS struct {\n\tAllowInsecureConnections bool     `mapstructure:\"allow_insecure_connections\"`\n\tCaCerts                  []string `mapstructure:\"ca_certs\"`\n\tDisableSystemCaPool      bool     `mapstructure:\"disable_system_ca_pool\"`\n\tMinVersion               string   `mapstructure:\"min_version\"`\n\tMaxVersion               string   `mapstructure:\"max_version\"`\n\tCurvePreferences         []uint16 `mapstructure:\"curve_preferences\"`\n\tCipherSuites             []uint16 `mapstructure:\"cipher_suites\"`\n}\n\n// ExtraConfig is a type to store extra configurations for customized behaviours\ntype ExtraConfig map[string]interface{}\n\nfunc (e *ExtraConfig) sanitize() {\n\tfor module, extra := range *e {\n\t\tif extra, ok := extra.(map[interface{}]interface{}); ok {\n\t\t\tsanitized := map[string]interface{}{}\n\t\t\tfor k, v := range extra {\n\t\t\t\tsanitized[fmt.Sprintf(\"%v\", k)] = v\n\t\t\t}\n\t\t\t(*e)[module] = sanitized\n\t\t}\n\t}\n}\n\nfunc (e *ExtraConfig) Normalize() {\n\tfor module := range *e {\n\t\tif alias, ok := ExtraConfigAlias[module]; ok {\n\t\t\t(*e)[alias] = (*e)[module]\n\t\t\tdelete(*e, module)\n\t\t}\n\t}\n}\n\n// ExtraConfigAlias is the set of alias to accept as namespace\nvar ExtraConfigAlias = map[string]string{}\n\nvar (\n\tsimpleURLKeysPattern    = regexp.MustCompile(`\\{([\\w\\-\\.:/]+)\\}`)\n\tsequentialParamsPattern = regexp.MustCompile(`^(resp[\\d]+_.+)?(JWT\\.([\\w\\-\\.:/]+))?$`)\n\tinvalidPattern          = `^[^/]|\\*.|/__(debug|echo|health)(/.*)?$`\n\terrInvalidHost          = errors.New(\"invalid host\")\n\terrInvalidNoOpEncoding  = errors.New(\"can not use NoOp encoding with more than one backends connected to the same endpoint\")\n\tdefaultPort             = 8080\n)\n\n// Hash returns the sha 256 hash of the configuration in a standard base64 encoded string. It ignores the\n// name in order to reduce the noise.\nfunc (s *ServiceConfig) Hash() (string, error) {\n\tvar name string\n\tname, s.Name = s.Name, \"\"\n\tdefer func() { s.Name = name }()\n\n\tb, err := json.Marshal(s)\n\tif err != nil {\n\t\treturn \"\", err\n\t}\n\tsum := sha256.Sum256(b)\n\treturn base64.StdEncoding.EncodeToString(sum[:]), nil\n}\n\n// Init initializes the configuration struct and its defined endpoints and backends.\n// Init also sanitizes the values, applies the default ones whenever necessary and\n// normalizes all the things.\nfunc (s *ServiceConfig) Init() error {\n\ts.uriParser = NewURIParser()\n\n\tif s.Version != ConfigVersion {\n\t\treturn &UnsupportedVersionError{\n\t\t\tHave: s.Version,\n\t\t\tWant: ConfigVersion,\n\t\t}\n\t}\n\n\ts.initGlobalParams()\n\n\ts.initAsyncAgents()\n\n\treturn s.initEndpoints()\n}\n\nfunc (s *ServiceConfig) Normalize() {\n\ts.ExtraConfig.Normalize()\n\tfor _, e := range s.Endpoints {\n\t\te.ExtraConfig.Normalize()\n\t\tfor _, b := range e.Backend {\n\t\t\tb.ExtraConfig.Normalize()\n\t\t}\n\t}\n\tfor _, a := range s.AsyncAgents {\n\t\ta.ExtraConfig.Normalize()\n\t\tfor _, b := range a.Backend {\n\t\t\tb.ExtraConfig.Normalize()\n\t\t}\n\t}\n}\n\nfunc (s *ServiceConfig) initGlobalParams() {\n\tif s.Port == 0 {\n\t\ts.Port = defaultPort\n\t}\n\tif s.MaxIdleConnsPerHost == 0 {\n\t\ts.MaxIdleConnsPerHost = DefaultMaxIdleConnsPerHost\n\t}\n\tif s.Timeout == 0 {\n\t\ts.Timeout = DefaultTimeout\n\t}\n\n\ts.Host = s.uriParser.CleanHosts(s.Host)\n\ts.ExtraConfig.sanitize()\n}\n\nfunc (s *ServiceConfig) initAsyncAgents() error {\n\tfor i, e := range s.AsyncAgents {\n\t\ts.initAsyncAgentDefaults(i)\n\n\t\te.ExtraConfig.sanitize()\n\n\t\tfor _, b := range e.Backend {\n\t\t\tif len(b.Host) == 0 {\n\t\t\t\tb.Host = s.Host\n\t\t\t} else if !b.HostSanitizationDisabled {\n\t\t\t\tb.Host = s.uriParser.CleanHosts(b.Host)\n\t\t\t}\n\t\t\tif b.Method == \"\" {\n\t\t\t\tb.Method = http.MethodGet\n\t\t\t}\n\t\t\tb.Timeout = e.Consumer.Timeout\n\t\t\tb.Decoder = encoding.GetRegister().Get(strings.ToLower(b.Encoding))(b.IsCollection)\n\n\t\t\tb.ExtraConfig.sanitize()\n\t\t}\n\t}\n\treturn nil\n}\n\nfunc (s *ServiceConfig) initEndpoints() error {\n\tfor i, e := range s.Endpoints {\n\t\te.Endpoint = s.uriParser.CleanPath(e.Endpoint)\n\n\t\tif err := e.validate(); err != nil {\n\t\t\treturn err\n\t\t}\n\n\t\tfor i := range e.HeadersToPass {\n\t\t\te.HeadersToPass[i] = textproto.CanonicalMIMEHeaderKey(e.HeadersToPass[i])\n\t\t}\n\n\t\tinputParams := s.extractPlaceHoldersFromURLTemplate(e.Endpoint, s.paramExtractionPattern())\n\t\tinputSet := map[string]interface{}{}\n\t\tfor ip := range inputParams {\n\t\t\tinputSet[inputParams[ip]] = nil\n\t\t}\n\n\t\te.Endpoint = s.uriParser.GetEndpointPath(e.Endpoint, inputParams)\n\n\t\ts.initEndpointDefaults(i)\n\n\t\tif e.OutputEncoding == encoding.NOOP && len(e.Backend) > 1 {\n\t\t\treturn errInvalidNoOpEncoding\n\t\t}\n\n\t\te.ExtraConfig.sanitize()\n\n\t\tfor j, b := range e.Backend {\n\t\t\ts.initBackendDefaults(i, j)\n\n\t\t\tif err := s.initBackendURLMappings(i, j, inputSet); err != nil {\n\t\t\t\treturn err\n\t\t\t}\n\n\t\t\tb.ExtraConfig.sanitize()\n\t\t}\n\t}\n\treturn nil\n}\n\nfunc (s *ServiceConfig) paramExtractionPattern() *regexp.Regexp {\n\tif s.DisableStrictREST {\n\t\treturn simpleURLKeysPattern\n\t}\n\treturn endpointURLKeysPattern\n}\n\nfunc (*ServiceConfig) extractPlaceHoldersFromURLTemplate(subject string, pattern *regexp.Regexp) []string {\n\tmatches := pattern.FindAllStringSubmatch(subject, -1)\n\tkeys := make([]string, len(matches))\n\tfor k, v := range matches {\n\t\tkeys[k] = v[1]\n\t}\n\treturn keys\n}\n\nfunc (s *ServiceConfig) initEndpointDefaults(e int) {\n\tendpoint := s.Endpoints[e]\n\tif endpoint.Method == \"\" {\n\t\tendpoint.Method = \"GET\"\n\t}\n\tif s.CacheTTL != 0 && endpoint.CacheTTL == 0 {\n\t\tendpoint.CacheTTL = s.CacheTTL\n\t}\n\tif s.Timeout != 0 && endpoint.Timeout == 0 {\n\t\tendpoint.Timeout = s.Timeout\n\t}\n\tif endpoint.ConcurrentCalls == 0 {\n\t\tendpoint.ConcurrentCalls = 1\n\t}\n\tif endpoint.OutputEncoding == \"\" {\n\t\tif s.OutputEncoding != \"\" {\n\t\t\tendpoint.OutputEncoding = s.OutputEncoding\n\t\t} else {\n\t\t\tendpoint.OutputEncoding = encoding.JSON\n\t\t}\n\t}\n}\n\nfunc (s *ServiceConfig) initAsyncAgentDefaults(e int) {\n\tagent := s.AsyncAgents[e]\n\tif s.Timeout != 0 && agent.Consumer.Timeout == 0 {\n\t\tagent.Consumer.Timeout = s.Timeout\n\t}\n\tif agent.Consumer.Workers < 1 {\n\t\tagent.Consumer.Workers = 1\n\t}\n\tif agent.Connection.HealthInterval < time.Second {\n\t\tagent.Connection.HealthInterval = time.Second\n\t}\n}\n\nfunc (s *ServiceConfig) initBackendDefaults(e, b int) {\n\tendpoint := s.Endpoints[e]\n\tbackend := endpoint.Backend[b]\n\tif len(backend.Host) == 0 {\n\t\tbackend.Host = s.Host\n\t} else if !backend.HostSanitizationDisabled {\n\t\tbackend.Host = s.uriParser.CleanHosts(backend.Host)\n\t}\n\tif backend.Method == \"\" {\n\t\tbackend.Method = endpoint.Method\n\t}\n\tif endpoint.OutputEncoding == encoding.NOOP {\n\t\tbackend.Encoding = encoding.NOOP\n\t}\n\tbackend.Timeout = endpoint.Timeout\n\tbackend.ConcurrentCalls = endpoint.ConcurrentCalls\n\tbackend.Decoder = encoding.GetRegister().Get(strings.ToLower(backend.Encoding))(backend.IsCollection)\n\tif backend.SDScheme == \"\" {\n\t\tbackend.SDScheme = \"http\"\n\t}\n}\n\nfunc (s *ServiceConfig) initBackendURLMappings(e, b int, inputParams map[string]interface{}) error {\n\tbackend := s.Endpoints[e].Backend[b]\n\n\tbackend.URLPattern = s.uriParser.CleanPath(backend.URLPattern)\n\n\toutputParams, outputSetSize := uniqueOutput(s.extractPlaceHoldersFromURLTemplate(backend.URLPattern, simpleURLKeysPattern))\n\n\tip := fromSetToSortedSlice(inputParams)\n\n\tif outputSetSize > len(ip) {\n\t\treturn &WrongNumberOfParamsError{\n\t\t\tEndpoint:     s.Endpoints[e].Endpoint,\n\t\t\tMethod:       s.Endpoints[e].Method,\n\t\t\tBackend:      b,\n\t\t\tInputParams:  ip,\n\t\t\tOutputParams: outputParams,\n\t\t}\n\t}\n\n\ttitle := cases.Title(language.Und)\n\tbackend.URLKeys = []string{}\n\tfor _, output := range outputParams {\n\t\tif !sequentialParamsPattern.MatchString(output) {\n\t\t\tif _, ok := inputParams[output]; !ok {\n\t\t\t\treturn &UndefinedOutputParamError{\n\t\t\t\t\tParam:        output,\n\t\t\t\t\tEndpoint:     s.Endpoints[e].Endpoint,\n\t\t\t\t\tMethod:       s.Endpoints[e].Method,\n\t\t\t\t\tBackend:      b,\n\t\t\t\t\tInputParams:  ip,\n\t\t\t\t\tOutputParams: outputParams,\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t\tkey := title.String(output[:1]) + output[1:]\n\t\tbackend.URLPattern = strings.ReplaceAll(backend.URLPattern, \"{\"+output+\"}\", \"{{.\"+key+\"}}\")\n\t\tbackend.URLKeys = append(backend.URLKeys, key)\n\t}\n\treturn nil\n}\n\nfunc fromSetToSortedSlice(set map[string]interface{}) []string {\n\tres := make([]string, 0, len(set))\n\tfor element := range set {\n\t\tres = append(res, element)\n\t}\n\tsort.Strings(res)\n\treturn res\n}\n\nfunc uniqueOutput(output []string) ([]string, int) {\n\tsort.Strings(output)\n\tj := 0\n\toutputSetSize := 0\n\tfor i := 1; i < len(output); i++ {\n\t\tif output[j] == output[i] {\n\t\t\tcontinue\n\t\t}\n\t\tif !sequentialParamsPattern.MatchString(output[j]) {\n\t\t\toutputSetSize++\n\t\t}\n\t\tj++\n\t\toutput[j] = output[i]\n\t}\n\tif j == len(output) {\n\t\treturn output, outputSetSize\n\t}\n\treturn output[:j+1], outputSetSize\n}\n\nfunc (e *EndpointConfig) validate() error {\n\tmatched, err := regexp.MatchString(invalidPattern, e.Endpoint)\n\tif err != nil {\n\t\treturn &EndpointMatchError{\n\t\t\tErr:    err,\n\t\t\tPath:   e.Endpoint,\n\t\t\tMethod: e.Method,\n\t\t}\n\t}\n\tif matched {\n\t\treturn &EndpointPathError{Path: e.Endpoint, Method: e.Method}\n\t}\n\n\tif len(e.Backend) == 0 {\n\t\treturn &NoBackendsError{Path: e.Endpoint, Method: e.Method}\n\t}\n\treturn nil\n}\n\n// EndpointMatchError is the error returned by the configuration init process when the endpoint pattern\n// check fails\ntype EndpointMatchError struct {\n\tPath   string\n\tMethod string\n\tErr    error\n}\n\n// Error returns a string representation of the EndpointMatchError\nfunc (e *EndpointMatchError) Error() string {\n\treturn fmt.Sprintf(\"ignoring the '%s %s' endpoint due to a parsing error: %s\", e.Method, e.Path, e.Err.Error())\n}\n\n// NoBackendsError is the error returned by the configuration init process when an endpoint\n// is connected to 0 backends\ntype NoBackendsError struct {\n\tPath   string\n\tMethod string\n}\n\n// Error returns a string representation of the NoBackendsError\nfunc (n *NoBackendsError) Error() string {\n\treturn \"ignoring the '\" + n.Method + \" \" + n.Path + \"' endpoint, since it has 0 backends defined!\"\n}\n\n// UnsupportedVersionError is the error returned by the configuration init process when the configuration\n// version is not supported\ntype UnsupportedVersionError struct {\n\tHave int\n\tWant int\n}\n\n// Error returns a string representation of the UnsupportedVersionError\nfunc (u *UnsupportedVersionError) Error() string {\n\treturn fmt.Sprintf(\"unsupported version: %d (want: %d)\", u.Have, u.Want)\n}\n\n// EndpointPathError is the error returned by the configuration init process when an endpoint\n// is using a forbidden path\ntype EndpointPathError struct {\n\tPath   string\n\tMethod string\n}\n\n// Error returns a string representation of the EndpointPathError\nfunc (e *EndpointPathError) Error() string {\n\treturn \"ignoring the '\" + e.Method + \" \" + e.Path + \"' endpoint, since it is invalid!!!\"\n}\n\n// UndefinedOutputParamError is the error returned by the configuration init process when an output\n// param is not present in the input param set\ntype UndefinedOutputParamError struct {\n\tEndpoint     string\n\tMethod       string\n\tBackend      int\n\tInputParams  []string\n\tOutputParams []string\n\tParam        string\n}\n\n// Error returns a string representation of the UndefinedOutputParamError\nfunc (u *UndefinedOutputParamError) Error() string {\n\treturn fmt.Sprintf(\n\t\t\"undefined output param '%s'! endpoint: %s %s, backend: %d. input: %v, output: %v\",\n\t\tu.Param,\n\t\tu.Method,\n\t\tu.Endpoint,\n\t\tu.Backend,\n\t\tu.InputParams,\n\t\tu.OutputParams,\n\t)\n}\n\n// WrongNumberOfParamsError is the error returned by the configuration init process when the number of output\n// params is greatter than the number of input params\ntype WrongNumberOfParamsError struct {\n\tEndpoint     string\n\tMethod       string\n\tBackend      int\n\tInputParams  []string\n\tOutputParams []string\n}\n\n// Error returns a string representation of the WrongNumberOfParamsError\nfunc (w *WrongNumberOfParamsError) Error() string {\n\treturn fmt.Sprintf(\n\t\t\"input and output params do not match. endpoint: %s %s, backend: %d. input: %v, output: %v\",\n\t\tw.Method,\n\t\tw.Endpoint,\n\t\tw.Backend,\n\t\tw.InputParams,\n\t\tw.OutputParams,\n\t)\n}\n\nfunc SetSequentialParamsPattern(pattern string) error {\n\tre, err := regexp.Compile(pattern)\n\tif err != nil {\n\t\treturn err\n\t}\n\tsequentialParamsPattern = re\n\treturn nil\n}\n",
+        "rank": 0,
+        "truncated": false
+      }
+    ],
+    "selected": [
+      {
+        "id": "eb045e002048abcc53606f7c",
+        "revision": "65ef308daa00a92eab095fcc9c1fa28509b221dd",
+        "path": "config/config.go",
+        "start_byte": 18811,
+        "text": "func (s *ServiceConfig) initBackendDefaults(e, b int) {\n\tendpoint := s.Endpoints[e]\n\tbackend := endpoint.Backend[b]\n\tif len(backend.Host) == 0 {\n\t\tbackend.Host = s.Host\n\t} else if !backend.HostSanitizationDisabled {\n\t\tbackend.Host = s.uriParser.CleanHosts(backend.Host)\n\t}\n\tif backend.Method == \"\" {\n\t\tbackend.Method = endpoint.Method\n\t}\n\tif endpoint.OutputEncoding == encoding.NOOP {\n\t\tbackend.Encoding = encoding.NOOP\n\t}\n\tbackend.Timeout = endpoint.Timeout\n\tbackend.ConcurrentCalls = endpoint.ConcurrentCalls\n\tbackend.Decoder = encoding.GetRegister().Get(strings.ToLower(backend.Encoding))(backend.IsCollection)\n\n\tfor i := range backend.HeadersToPass {\n\t\tbackend.HeadersToPass[i] = textproto.CanonicalMIMEHeaderKey(backend.HeadersToPass[i])\n\t}\n}",
+        "rank": 0,
+        "truncated": false
+      },
+      {
+        "id": "cb017bb9db1b70a747202407",
+        "revision": "7bce6502d2147b47ec04ac266254061eecc27e4c",
+        "path": "config/config.go",
+        "start_byte": 18772,
+        "text": "func (s *ServiceConfig) initBackendDefaults(e, b int) {\n\tendpoint := s.Endpoints[e]\n\tbackend := endpoint.Backend[b]\n\tif len(backend.Host) == 0 {\n\t\tbackend.Host = s.Host\n\t} else if !backend.HostSanitizationDisabled {\n\t\tbackend.Host = s.uriParser.CleanHosts(backend.Host)\n\t}\n\tif backend.Method == \"\" {\n\t\tbackend.Method = endpoint.Method\n\t}\n\tif endpoint.OutputEncoding == encoding.NOOP {\n\t\tbackend.Encoding = encoding.NOOP\n\t}\n\tbackend.Timeout = endpoint.Timeout\n\tbackend.ConcurrentCalls = endpoint.ConcurrentCalls\n\tbackend.Decoder = encoding.GetRegister().Get(strings.ToLower(backend.Encoding))(backend.IsCollection)\n\tif backend.SDScheme == \"\" {\n\t\tbackend.SDScheme = \"http\"\n\t}\n}",
+        "rank": 0,
+        "truncated": false
+      },
+      {
+        "id": "233294bbcdf3facd83d8b134",
+        "revision": "65ef308daa00a92eab095fcc9c1fa28509b221dd",
+        "path": "config/config.go",
+        "start_byte": 1122,
+        "text": "type ServiceConfig struct {\n\t// name of the service\n\tName string `mapstructure:\"name\"`\n\t// set of endpoint definitions\n\tEndpoints []*EndpointConfig `mapstructure:\"endpoints\"`\n\t// set of async agent definitions\n\tAsyncAgents []*AsyncAgent `mapstructure:\"async_agent\"`\n\t// defafult timeout\n\tTimeout time.Duration `mapstructure:\"timeout\"`\n\t// default TTL for GET\n\tCacheTTL time.Duration `mapstructure:\"cache_ttl\"`\n\t// default set of hosts\n\tHost []string `mapstructure:\"host\"`\n\t// port to bind the lura service\n\tPort int `mapstructure:\"port\"`\n\t// version code of the configuration\n\tVersion int `mapstructure:\"version\"`\n\t// OutputEncoding defines the default encoding strategy to use for the endpoint responses\n\tOutputEncoding string `mapstructure:\"output_encoding\"`\n\t// Extra configuration for customized behaviour\n\tExtraConfig ExtraConfig `mapstructure:\"extra_config\"`\n\n\t// ReadTimeout is the maximum duration for reading the entire\n\t// request, including the body.\n\t//\n\t// Because ReadTimeout does not let Handlers make per-request\n\t// decisions on each request body's acceptable deadline or\n\t// upload rate, most users will prefer to use\n\t// ReadHeaderTimeout. It is valid to use them both.\n\tReadTimeout time.Duration `mapstructure:\"read_timeout\"`\n\t// WriteTimeout is the maximum duration before timing out\n\t// writes of the response. It is reset whenever a new\n\t// request's header is read. Like ReadTimeout, it does not\n\t// let Handlers make decisions on a per-request basis.\n\tWriteTimeout time.Duration `mapstructure:\"write_timeout\"`\n\t// IdleTimeout is the maximum amount of time to wait for the\n\t// next request when keep-alives are enabled. If IdleTimeout\n\t// is zero, the value of ReadTimeout is used. If both are\n\t// zero, ReadHeaderTimeout is used.\n\tIdleTimeout time.Duration `mapstructure:\"idle_timeout\"`\n\t// ReadHeaderTimeout is the amount of time allowed to read\n\t// request headers. The connection's read deadline is reset\n\t// after reading the headers and the Handler can decide what\n\t// is considered too slow for the body.\n\tReadHeaderTimeout time.Duration `mapstructure:\"read_header_timeout\"`\n\n\t// DisableKeepAlives, if true, prevents re-use of TCP connections\n\t// between different HTTP requests.\n\tDisableKeepAlives bool `mapstructure:\"disable_keep_alives\"`\n\t// DisableCompression, if true, prevents the Transport from\n\t// requesting compression with an \"Accept-Encoding: gzip\"\n\t// request header when the Request contains no existing\n\t// Accept-Encoding value. If the Transport requests gzip on\n\t// its own and gets a gzipped response, it's transparently\n\t// decoded in the Response.Body. However, if the user\n\t// explicitly requested gzip it is not automatically\n\t// uncompressed.\n\tDisableCompression bool `mapstructure:\"disable_compression\"`\n\t// MaxIdleConns controls the maximum number of idle (keep-alive)\n\t// connections across all hosts. Zero means no limit.\n\tMaxIdleConns int `mapstructure:\"max_idle_connections\"`\n\t// MaxIdleConnsPerHost, if non-zero, controls the maximum idle\n\t// (keep-alive) connections to keep per-host. If zero,\n\t// DefaultMaxIdleConnsPerHost is used.\n\tMaxIdleConnsPerHost int `mapstructure:\"max_idle_connections_per_host\"`\n\t// IdleConnTimeout is the maximum amount of time an idle\n\t// (keep-alive) connection will remain idle before closing\n\t// itself.\n\t// Zero means no limit.\n\tIdleConnTimeout time.Duration `mapstructure:\"idle_connection_timeout\"`\n\t// ResponseHeaderTimeout, if non-zero, specifies the amount of\n\t// time to wait for a server's response headers after fully\n\t// writing the request (including its body, if any). This\n\t// time does not include the time to read the response body.\n\tResponseHeaderTimeout time.Duration `mapstructure:\"response_header_timeout\"`\n\t// ExpectContinueTimeout, if non-zero, specifies the amount of\n\t// time to wait for a server's first response headers after fully\n\t// writing the request headers if the request has an\n\t// \"Expect: 100-continue\" header. Zero means no timeout and\n\t// causes the body to be sent immediately, without\n\t// waiting for the server to approve.\n\t// This time does not include the time to send the request header.\n\tExpectContinueTimeout time.Duration `mapstructure:\"expect_continue_timeout\"`\n\t// DialerTimeout is the maximum amount of time a dial will wait for\n\t// a connect to complete. If Deadline is also set, it may fail\n\t// earlier.\n\t//\n\t// The default is no timeout.\n\t//\n\t// When using TCP and dialing a host name with multiple IP\n\t// addresses, the timeout may be divided between them.\n\t//\n\t// With or without a timeout, the operating system may impose\n\t// its own earlier timeout. For instance, TCP timeouts are\n\t// often around 3 minutes.\n\tDialerTimeout time.Duration `mapstructure:\"dialer_timeout\"`\n\t// DialerFallbackDelay specifies the length of time to wait before\n\t// spawning a fallback connection, when DualStack is enabled.\n\t// If zero, a default delay of 300ms is used.\n\tDialerFallbackDelay time.Duration `mapstructure:\"dialer_fallback_delay\"`\n\t// DialerKeepAlive specifies the keep-alive period for an active\n\t// network connection.\n\t// If zero, keep-alives are not enabled. Network protocols\n\t// that do not support keep-alives ignore this field.\n\tDialerKeepAlive time.Duration `mapstructure:\"dialer_keep_alive\"`\n\n\t// DisableStrictREST flags if the REST enforcement is disabled\n\tDisableStrictREST bool `mapstructure:\"disable_rest\"`\n\n\t// Plugin defines the configuration for the plugin loader\n\tPlugin *Plugin `mapstructure:\"plugin\"`\n\n\t// TLS defines the configuration params for enabling TLS (HTTPS & HTTP/2) at\n\t// the router layer\n\tTLS *TLS `mapstructure:\"tls\"`\n\n\t// run lura in debug mode\n\tDebug     bool `mapstructure:\"debug_endpoint\"`\n\tEcho      bool `mapstructure:\"echo_endpoint\"`\n\turiParser URIParser\n\n\t// SequentialStart flags if the agents should be started sequentially\n\t// before starting the router\n\tSequentialStart bool `mapstructure:\"sequential_start\"`\n\n\t// AllowInsecureConnections sets the http client tls configuration to allow\n\t// insecure connections to the backends for development (enables InsecureSkipVerify)\n\tAllowInsecureConnections bool `mapstructure:\"allow_insecure_connections\"`\n\n\t// ClientTLS is used to configure the http default transport\n\t// with TLS parameters\n\tClientTLS *ClientTLS `mapstructure:\"client_tls\"`\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "262f26ff1a5836ac42f16215",
+        "revision": "65ef308daa00a92eab095fcc9c1fa28509b221dd",
+        "path": "config/config.go",
+        "start_byte": 9850,
+        "text": "type Backend struct {\n\t// Group defines the name of the property the response should be moved to. If empty, the response is\n\t// not changed\n\tGroup string `mapstructure:\"group\"`\n\t// Method defines the HTTP method of the request to send to the backend\n\tMethod string `mapstructure:\"method\"`\n\t// Host is a set of hosts of the API\n\tHost []string `mapstructure:\"host\"`\n\t// HostSanitizationDisabled can be set to false if the hostname should be sanitized\n\tHostSanitizationDisabled bool `mapstructure:\"disable_host_sanitize\"`\n\t// URLPattern is the URL pattern to use to locate the resource to be consumed\n\tURLPattern string `mapstructure:\"url_pattern\"`\n\t// AllowList is a set of response fields to allow. If empty, the filter id not used\n\tAllowList []string `mapstructure:\"allow\"`\n\t// DenyList is a set of response fields to remove. If empty, the filter id not used\n\tDenyList []string `mapstructure:\"deny\"`\n\t// map of response fields to be renamed and their new names\n\tMapping map[string]string `mapstructure:\"mapping\"`\n\t// the encoding format\n\tEncoding string `mapstructure:\"encoding\"`\n\t// the response to process is a collection\n\tIsCollection bool `mapstructure:\"is_collection\"`\n\t// name of the field to extract to the root. If empty, the formater will do nothing\n\tTarget string `mapstructure:\"target\"`\n\t// name of the service discovery driver to use\n\tSD string `mapstructure:\"sd\"`\n\n\t// list of keys to be replaced in the URLPattern\n\tURLKeys []string\n\t// number of concurrent calls this endpoint must send to the API\n\tConcurrentCalls int\n\t// timeout of this backend\n\tTimeout time.Duration\n\t// decoder to use in order to parse the received response from the API\n\tDecoder encoding.Decoder `json:\"-\"`\n\t// Backend Extra configuration for customized behaviours\n\tExtraConfig ExtraConfig `mapstructure:\"extra_config\"`\n\t// HeadersToPass defines the list of headers to pass to this backend\n\tHeadersToPass []string `mapstructure:\"input_headers\"`\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "853dc8e2fc3aa392568cedd8",
+        "revision": "65ef308daa00a92eab095fcc9c1fa28509b221dd",
+        "path": "config/uri.go",
+        "start_byte": 795,
+        "text": "func (u URI) CleanHosts(hosts []string) []string {\n\tcleaned := make([]string, 0, len(hosts))\n\tfor i := range hosts {\n\t\tcleaned = append(cleaned, u.CleanHost(hosts[i]))\n\t}\n\treturn cleaned\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "be937497eb5907e638ae051c",
+        "revision": "65ef308daa00a92eab095fcc9c1fa28509b221dd",
+        "path": "encoding/encoding.go",
+        "start_byte": 410,
+        "text": "type Decoder func(io.Reader, *map[string]interface{}) error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "ee9c0c0e401a2a4d188d290e",
+        "revision": "65ef308daa00a92eab095fcc9c1fa28509b221dd",
+        "path": "encoding/encoding.go",
+        "start_byte": 674,
+        "text": "const NOOP = \"no-op\"",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "6c6e270986ae2c535db74032",
+        "revision": "65ef308daa00a92eab095fcc9c1fa28509b221dd",
+        "path": "encoding/register.go",
+        "start_byte": 164,
+        "text": "func GetRegister() *DecoderRegister {\n\treturn decoders\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "3aaccc57a02ab80c1139222b",
+        "revision": "65ef308daa00a92eab095fcc9c1fa28509b221dd",
+        "path": "encoding/register.go",
+        "start_byte": 834,
+        "text": "func (r *DecoderRegister) Get(name string) func(bool) func(io.Reader, *map[string]interface{}) error {\n\tfor _, n := range []string{name, JSON} {\n\t\tif v, ok := r.data.Get(n); ok {\n\t\t\tif dec, ok := v.(func(bool) func(io.Reader, *map[string]interface{}) error); ok {\n\t\t\t\treturn dec\n\t\t\t}\n\t\t}\n\t}\n\treturn NewJSONDecoder\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "333b24e643f13fd7fbb2b95c",
+        "revision": "65ef308daa00a92eab095fcc9c1fa28509b221dd",
+        "path": "proxy/balancing.go",
+        "start_byte": 2240,
+        "text": "var b strings.Builder",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "6029c7068da3a9b3052069d2",
+        "revision": "65ef308daa00a92eab095fcc9c1fa28509b221dd",
+        "path": "proxy/merging.go",
+        "start_byte": 3780,
+        "text": "var b strings.Builder",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "08816032c270ab5effe662d3",
+        "revision": "65ef308daa00a92eab095fcc9c1fa28509b221dd",
+        "path": "proxy/plugin.go",
+        "start_byte": 5632,
+        "text": "func (r *requestWrapper) Method() string               { return r.method }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "c783b348c242843ab6300529",
+        "revision": "65ef308daa00a92eab095fcc9c1fa28509b221dd",
+        "path": "register/register.go",
+        "start_byte": 466,
+        "text": "func (n *Namespaced) Get(namespace string) (*Untyped, bool) {\n\tv, ok := n.data.Get(namespace)\n\tif !ok {\n\t\treturn nil, ok\n\t}\n\tregister, ok := v.(*Untyped)\n\treturn register, ok\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "29a504e625232d3707bca41f",
+        "revision": "65ef308daa00a92eab095fcc9c1fa28509b221dd",
+        "path": "register/register.go",
+        "start_byte": 1718,
+        "text": "func (u *Untyped) Get(name string) (interface{}, bool) {\n\tu.mutex.RLock()\n\tv, ok := u.data[name]\n\tu.mutex.RUnlock()\n\treturn v, ok\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "c27eb4bc0bff2af0742f5c81",
+        "revision": "65ef308daa00a92eab095fcc9c1fa28509b221dd",
+        "path": "sd/loadbalancing.go",
+        "start_byte": 1446,
+        "text": "func (r *roundRobinLB) Host() (string, error) {\n\thosts, err := r.hosts()\n\tif err != nil {\n\t\treturn \"\", err\n\t}\n\toffset := (atomic.AddUint64(&r.counter, 1) - 1) % uint64(len(hosts))\n\treturn hosts[offset], nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "6097010db4c99868358aca57",
+        "revision": "65ef308daa00a92eab095fcc9c1fa28509b221dd",
+        "path": "sd/loadbalancing.go",
+        "start_byte": 2083,
+        "text": "func (r *randomLB) Host() (string, error) {\n\thosts, err := r.hosts()\n\tif err != nil {\n\t\treturn \"\", err\n\t}\n\treturn hosts[int(r.rand(uint32(len(hosts))))], nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "efab969e6eda27b3555b5bc6",
+        "revision": "65ef308daa00a92eab095fcc9c1fa28509b221dd",
+        "path": "sd/loadbalancing.go",
+        "start_byte": 2500,
+        "text": "func (b nopBalancer) Host() (string, error) { return string(b), nil }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "360252fd94aceefddf2dc9b3",
+        "revision": "65ef308daa00a92eab095fcc9c1fa28509b221dd",
+        "path": "sd/register.go",
+        "start_byte": 151,
+        "text": "func GetRegister() *Register {\n\treturn subscriberFactories\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "91f22bd647b69ef915243dd9",
+        "revision": "65ef308daa00a92eab095fcc9c1fa28509b221dd",
+        "path": "sd/register.go",
+        "start_byte": 932,
+        "text": "func (r *Register) Get(name string) SubscriberFactory {\n\ttmp, ok := r.data.Get(name)\n\tif !ok {\n\t\treturn FixedSubscriberFactory\n\t}\n\tsf, ok := tmp.(SubscriberFactory)\n\tif !ok {\n\t\treturn FixedSubscriberFactory\n\t}\n\treturn sf\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "0492712fddffcbfd281ba747",
+        "revision": "7bce6502d2147b47ec04ac266254061eecc27e4c",
+        "path": "config/config.go",
+        "start_byte": 1122,
+        "text": "type ServiceConfig struct {\n\t// name of the service\n\tName string `mapstructure:\"name\"`\n\t// set of endpoint definitions\n\tEndpoints []*EndpointConfig `mapstructure:\"endpoints\"`\n\t// set of async agent definitions\n\tAsyncAgents []*AsyncAgent `mapstructure:\"async_agent\"`\n\t// defafult timeout\n\tTimeout time.Duration `mapstructure:\"timeout\"`\n\t// default TTL for GET\n\tCacheTTL time.Duration `mapstructure:\"cache_ttl\"`\n\t// default set of hosts\n\tHost []string `mapstructure:\"host\"`\n\t// port to bind the lura service\n\tPort int `mapstructure:\"port\"`\n\t// version code of the configuration\n\tVersion int `mapstructure:\"version\"`\n\t// OutputEncoding defines the default encoding strategy to use for the endpoint responses\n\tOutputEncoding string `mapstructure:\"output_encoding\"`\n\t// Extra configuration for customized behaviour\n\tExtraConfig ExtraConfig `mapstructure:\"extra_config\"`\n\n\t// ReadTimeout is the maximum duration for reading the entire\n\t// request, including the body.\n\t//\n\t// Because ReadTimeout does not let Handlers make per-request\n\t// decisions on each request body's acceptable deadline or\n\t// upload rate, most users will prefer to use\n\t// ReadHeaderTimeout. It is valid to use them both.\n\tReadTimeout time.Duration `mapstructure:\"read_timeout\"`\n\t// WriteTimeout is the maximum duration before timing out\n\t// writes of the response. It is reset whenever a new\n\t// request's header is read. Like ReadTimeout, it does not\n\t// let Handlers make decisions on a per-request basis.\n\tWriteTimeout time.Duration `mapstructure:\"write_timeout\"`\n\t// IdleTimeout is the maximum amount of time to wait for the\n\t// next request when keep-alives are enabled. If IdleTimeout\n\t// is zero, the value of ReadTimeout is used. If both are\n\t// zero, ReadHeaderTimeout is used.\n\tIdleTimeout time.Duration `mapstructure:\"idle_timeout\"`\n\t// ReadHeaderTimeout is the amount of time allowed to read\n\t// request headers. The connection's read deadline is reset\n\t// after reading the headers and the Handler can decide what\n\t// is considered too slow for the body.\n\tReadHeaderTimeout time.Duration `mapstructure:\"read_header_timeout\"`\n\n\t// DisableKeepAlives, if true, prevents re-use of TCP connections\n\t// between different HTTP requests.\n\tDisableKeepAlives bool `mapstructure:\"disable_keep_alives\"`\n\t// DisableCompression, if true, prevents the Transport from\n\t// requesting compression with an \"Accept-Encoding: gzip\"\n\t// request header when the Request contains no existing\n\t// Accept-Encoding value. If the Transport requests gzip on\n\t// its own and gets a gzipped response, it's transparently\n\t// decoded in the Response.Body. However, if the user\n\t// explicitly requested gzip it is not automatically\n\t// uncompressed.\n\tDisableCompression bool `mapstructure:\"disable_compression\"`\n\t// MaxIdleConns controls the maximum number of idle (keep-alive)\n\t// connections across all hosts. Zero means no limit.\n\tMaxIdleConns int `mapstructure:\"max_idle_connections\"`\n\t// MaxIdleConnsPerHost, if non-zero, controls the maximum idle\n\t// (keep-alive) connections to keep per-host. If zero,\n\t// DefaultMaxIdleConnsPerHost is used.\n\tMaxIdleConnsPerHost int `mapstructure:\"max_idle_connections_per_host\"`\n\t// IdleConnTimeout is the maximum amount of time an idle\n\t// (keep-alive) connection will remain idle before closing\n\t// itself.\n\t// Zero means no limit.\n\tIdleConnTimeout time.Duration `mapstructure:\"idle_connection_timeout\"`\n\t// ResponseHeaderTimeout, if non-zero, specifies the amount of\n\t// time to wait for a server's response headers after fully\n\t// writing the request (including its body, if any). This\n\t// time does not include the time to read the response body.\n\tResponseHeaderTimeout time.Duration `mapstructure:\"response_header_timeout\"`\n\t// ExpectContinueTimeout, if non-zero, specifies the amount of\n\t// time to wait for a server's first response headers after fully\n\t// writing the request headers if the request has an\n\t// \"Expect: 100-continue\" header. Zero means no timeout and\n\t// causes the body to be sent immediately, without\n\t// waiting for the server to approve.\n\t// This time does not include the time to send the request header.\n\tExpectContinueTimeout time.Duration `mapstructure:\"expect_continue_timeout\"`\n\t// DialerTimeout is the maximum amount of time a dial will wait for\n\t// a connect to complete. If Deadline is also set, it may fail\n\t// earlier.\n\t//\n\t// The default is no timeout.\n\t//\n\t// When using TCP and dialing a host name with multiple IP\n\t// addresses, the timeout may be divided between them.\n\t//\n\t// With or without a timeout, the operating system may impose\n\t// its own earlier timeout. For instance, TCP timeouts are\n\t// often around 3 minutes.\n\tDialerTimeout time.Duration `mapstructure:\"dialer_timeout\"`\n\t// DialerFallbackDelay specifies the length of time to wait before\n\t// spawning a fallback connection, when DualStack is enabled.\n\t// If zero, a default delay of 300ms is used.\n\tDialerFallbackDelay time.Duration `mapstructure:\"dialer_fallback_delay\"`\n\t// DialerKeepAlive specifies the keep-alive period for an active\n\t// network connection.\n\t// If zero, keep-alives are not enabled. Network protocols\n\t// that do not support keep-alives ignore this field.\n\tDialerKeepAlive time.Duration `mapstructure:\"dialer_keep_alive\"`\n\n\t// DisableStrictREST flags if the REST enforcement is disabled\n\tDisableStrictREST bool `mapstructure:\"disable_rest\"`\n\n\t// Plugin defines the configuration for the plugin loader\n\tPlugin *Plugin `mapstructure:\"plugin\"`\n\n\t// TLS defines the configuration params for enabling TLS (HTTPS & HTTP/2) at\n\t// the router layer\n\tTLS *TLS `mapstructure:\"tls\"`\n\n\t// run lura in debug mode\n\tDebug     bool `mapstructure:\"debug_endpoint\"`\n\tEcho      bool `mapstructure:\"echo_endpoint\"`\n\turiParser URIParser\n\n\t// SequentialStart flags if the agents should be started sequentially\n\t// before starting the router\n\tSequentialStart bool `mapstructure:\"sequential_start\"`\n\n\t// AllowInsecureConnections sets the http client tls configuration to allow\n\t// insecure connections to the backends for development (enables InsecureSkipVerify)\n\tAllowInsecureConnections bool `mapstructure:\"allow_insecure_connections\"`\n\n\t// ClientTLS is used to configure the http default transport\n\t// with TLS parameters\n\tClientTLS *ClientTLS `mapstructure:\"client_tls\"`\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "95d30be8986f539c4ac5f2f0",
+        "revision": "7bce6502d2147b47ec04ac266254061eecc27e4c",
+        "path": "config/config.go",
+        "start_byte": 9850,
+        "text": "type Backend struct {\n\t// Group defines the name of the property the response should be moved to. If empty, the response is\n\t// not changed\n\tGroup string `mapstructure:\"group\"`\n\t// Method defines the HTTP method of the request to send to the backend\n\tMethod string `mapstructure:\"method\"`\n\t// Host is a set of hosts of the API\n\tHost []string `mapstructure:\"host\"`\n\t// HostSanitizationDisabled can be set to false if the hostname should be sanitized\n\tHostSanitizationDisabled bool `mapstructure:\"disable_host_sanitize\"`\n\t// URLPattern is the URL pattern to use to locate the resource to be consumed\n\tURLPattern string `mapstructure:\"url_pattern\"`\n\t// AllowList is a set of response fields to allow. If empty, the filter id not used\n\tAllowList []string `mapstructure:\"allow\"`\n\t// DenyList is a set of response fields to remove. If empty, the filter id not used\n\tDenyList []string `mapstructure:\"deny\"`\n\t// map of response fields to be renamed and their new names\n\tMapping map[string]string `mapstructure:\"mapping\"`\n\t// the encoding format\n\tEncoding string `mapstructure:\"encoding\"`\n\t// the response to process is a collection\n\tIsCollection bool `mapstructure:\"is_collection\"`\n\t// name of the field to extract to the root. If empty, the formater will do nothing\n\tTarget string `mapstructure:\"target\"`\n\t// name of the service discovery driver to use\n\tSD string `mapstructure:\"sd\"`\n\t// scheme to use for servers fetched from\n\tSDScheme string `mapstructure:\"sd_scheme\"`\n\n\t// list of keys to be replaced in the URLPattern\n\tURLKeys []string\n\t// number of concurrent calls this endpoint must send to the API\n\tConcurrentCalls int\n\t// timeout of this backend\n\tTimeout time.Duration\n\t// decoder to use in order to parse the received response from the API\n\tDecoder encoding.Decoder `json:\"-\"`\n\t// Backend Extra configuration for customized behaviours\n\tExtraConfig ExtraConfig `mapstructure:\"extra_config\"`\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "f5a31c3b23f14315166a7873",
+        "revision": "7bce6502d2147b47ec04ac266254061eecc27e4c",
+        "path": "config/uri.go",
+        "start_byte": 795,
+        "text": "func (u URI) CleanHosts(hosts []string) []string {\n\tcleaned := make([]string, 0, len(hosts))\n\tfor i := range hosts {\n\t\tcleaned = append(cleaned, u.CleanHost(hosts[i]))\n\t}\n\treturn cleaned\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "0b9af4bdb820e84c1e091588",
+        "revision": "7bce6502d2147b47ec04ac266254061eecc27e4c",
+        "path": "encoding/encoding.go",
+        "start_byte": 410,
+        "text": "type Decoder func(io.Reader, *map[string]interface{}) error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "f91dd44b1ddb2662b7290926",
+        "revision": "7bce6502d2147b47ec04ac266254061eecc27e4c",
+        "path": "encoding/encoding.go",
+        "start_byte": 674,
+        "text": "const NOOP = \"no-op\"",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "144e6f3d65b9f6fada5b7476",
+        "revision": "7bce6502d2147b47ec04ac266254061eecc27e4c",
+        "path": "encoding/register.go",
+        "start_byte": 164,
+        "text": "func GetRegister() *DecoderRegister {\n\treturn decoders\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "97e06871acef949bde8749b5",
+        "revision": "7bce6502d2147b47ec04ac266254061eecc27e4c",
+        "path": "encoding/register.go",
+        "start_byte": 834,
+        "text": "func (r *DecoderRegister) Get(name string) func(bool) func(io.Reader, *map[string]interface{}) error {\n\tfor _, n := range []string{name, JSON} {\n\t\tif v, ok := r.data.Get(n); ok {\n\t\t\tif dec, ok := v.(func(bool) func(io.Reader, *map[string]interface{}) error); ok {\n\t\t\t\treturn dec\n\t\t\t}\n\t\t}\n\t}\n\treturn NewJSONDecoder\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "c5ed03727297a077415c56b8",
+        "revision": "7bce6502d2147b47ec04ac266254061eecc27e4c",
+        "path": "proxy/balancing.go",
+        "start_byte": 2240,
+        "text": "var b strings.Builder",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "1783191750331afc65201765",
+        "revision": "7bce6502d2147b47ec04ac266254061eecc27e4c",
+        "path": "proxy/merging.go",
+        "start_byte": 3780,
+        "text": "var b strings.Builder",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "9f514c55a81ada7424af1a53",
+        "revision": "7bce6502d2147b47ec04ac266254061eecc27e4c",
+        "path": "proxy/plugin.go",
+        "start_byte": 5632,
+        "text": "func (r *requestWrapper) Method() string               { return r.method }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "e2fa923c0b23a59deff56dcb",
+        "revision": "7bce6502d2147b47ec04ac266254061eecc27e4c",
+        "path": "register/register.go",
+        "start_byte": 466,
+        "text": "func (n *Namespaced) Get(namespace string) (*Untyped, bool) {\n\tv, ok := n.data.Get(namespace)\n\tif !ok {\n\t\treturn nil, ok\n\t}\n\tregister, ok := v.(*Untyped)\n\treturn register, ok\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "fb214ff45d4c5ddfe0d09a9d",
+        "revision": "7bce6502d2147b47ec04ac266254061eecc27e4c",
+        "path": "register/register.go",
+        "start_byte": 1718,
+        "text": "func (u *Untyped) Get(name string) (interface{}, bool) {\n\tu.mutex.RLock()\n\tv, ok := u.data[name]\n\tu.mutex.RUnlock()\n\treturn v, ok\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "9aa0d7fe61b1045f6ff0a947",
+        "revision": "7bce6502d2147b47ec04ac266254061eecc27e4c",
+        "path": "sd/loadbalancing.go",
+        "start_byte": 1446,
+        "text": "func (r *roundRobinLB) Host() (string, error) {\n\thosts, err := r.hosts()\n\tif err != nil {\n\t\treturn \"\", err\n\t}\n\toffset := (atomic.AddUint64(&r.counter, 1) - 1) % uint64(len(hosts))\n\treturn hosts[offset], nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "69651d9e3a84f18e2d26f1c0",
+        "revision": "7bce6502d2147b47ec04ac266254061eecc27e4c",
+        "path": "sd/loadbalancing.go",
+        "start_byte": 2083,
+        "text": "func (r *randomLB) Host() (string, error) {\n\thosts, err := r.hosts()\n\tif err != nil {\n\t\treturn \"\", err\n\t}\n\treturn hosts[int(r.rand(uint32(len(hosts))))], nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "6048bdf56f20a469ec20ce06",
+        "revision": "7bce6502d2147b47ec04ac266254061eecc27e4c",
+        "path": "sd/loadbalancing.go",
+        "start_byte": 2500,
+        "text": "func (b nopBalancer) Host() (string, error) { return string(b), nil }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "f8a1692ebed1b985184bd613",
+        "revision": "7bce6502d2147b47ec04ac266254061eecc27e4c",
+        "path": "sd/register.go",
+        "start_byte": 151,
+        "text": "func GetRegister() *Register {\n\treturn subscriberFactories\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "453fbac6dadd9e5d8f75f774",
+        "revision": "7bce6502d2147b47ec04ac266254061eecc27e4c",
+        "path": "sd/register.go",
+        "start_byte": 932,
+        "text": "func (r *Register) Get(name string) SubscriberFactory {\n\ttmp, ok := r.data.Get(name)\n\tif !ok {\n\t\treturn FixedSubscriberFactory\n\t}\n\tsf, ok := tmp.(SubscriberFactory)\n\tif !ok {\n\t\treturn FixedSubscriberFactory\n\t}\n\treturn sf\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "31c904df178fa65dad885572",
+        "revision": "65ef308daa00a92eab095fcc9c1fa28509b221dd",
+        "path": "async/asyncagent.go",
+        "start_byte": 381,
+        "text": "type Options struct {\n\t// Agent keeps the configuration for the async agent\n\tAgent *config.AsyncAgent\n\t// Endpoint encapsulates the configuration for the associated pipe\n\tEndpoint *config.EndpointConfig\n\t// Proxy is the pipe associated with the async agent\n\tProxy proxy.Proxy\n\t// AgentPing is the channel for the agent to send ping messages\n\tAgentPing chan<- string\n\t// G is the error group responsible for managing the agents and the router itself\n\tG *errgroup.Group\n\t// ShouldContinue is a function signaling when to stop the connection retries\n\tShouldContinue func(int) bool\n\t// BackoffF is a function encapsulating the backoff strategy\n\tBackoffF backoff.TimeToWaitBeforeRetry\n\tLogger   logging.Logger\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "22f0c7846f1e3c761ae44460",
+        "revision": "65ef308daa00a92eab095fcc9c1fa28509b221dd",
+        "path": "async/asyncagent.go",
+        "start_byte": 1346,
+        "text": "func (a AgentStarter) Start(\n\tctx context.Context,\n\tagents []*config.AsyncAgent,\n\tlogger logging.Logger,\n\tagentPing chan<- string,\n\tpf proxy.Factory,\n) func() error {\n\tif len(a) == 0 {\n\t\treturn func() error { return ErrNoAgents }\n\t}\n\n\tg, ctx := errgroup.WithContext(ctx)\n\n\tfor i, agent := range agents {\n\t\ti, agent := i, agent\n\t\tif agent.Name == \"\" {\n\t\t\tagent.Name = fmt.Sprintf(\"AsyncAgent-%02d\", i)\n\t\t}\n\n\t\tlogger.Debug(fmt.Sprintf(\"[SERVICE: AsyncAgent][%s] Starting the async agent\", agent.Name))\n\n\t\tendpoint := &config.EndpointConfig{\n\t\t\tEndpoint:    agent.Name,\n\t\t\tBackend:     agent.Backend,\n\t\t\tExtraConfig: agent.ExtraConfig,\n\t\t}\n\t\tp, err := pf.New(endpoint)\n\t\tif err != nil {\n\t\t\tlogger.Error(fmt.Sprintf(\"[SERVICE: AsyncAgent][%s] building the proxy pipe:\", agent.Name), err)\n\t\t\tcontinue\n\t\t}\n\n\t\tif agent.Connection.MaxRetries <= 0 {\n\t\t\tagent.Connection.MaxRetries = math.MaxInt64\n\t\t}\n\n\t\topts := Options{\n\t\t\tAgent:          agent,\n\t\t\tEndpoint:       endpoint,\n\t\t\tProxy:          p,\n\t\t\tAgentPing:      agentPing,\n\t\t\tG:              g,\n\t\t\tShouldContinue: func(i int) bool { return i <= agent.Connection.MaxRetries },\n\t\t\tBackoffF:       backoff.GetByName(agent.Connection.BackoffStrategy),\n\t\t\tLogger:         logger,\n\t\t}\n\n\t\tfor _, f := range a {\n\t\t\tif f(ctx, opts) {\n\t\t\t\tbreak\n\t\t\t}\n\t\t}\n\n\t}\n\n\treturn g.Wait\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "f41b2425912a7f92ffdfae25",
+        "revision": "65ef308daa00a92eab095fcc9c1fa28509b221dd",
+        "path": "backoff/backoff.go",
+        "start_byte": 270,
+        "text": "func GetByName(strategy string) TimeToWaitBeforeRetry {\n\tswitch strings.ToLower(strategy) {\n\tcase \"linear\":\n\t\treturn LinearBackoff\n\tcase \"linear-jitter\":\n\t\treturn LinearJitterBackoff\n\tcase \"exponential\":\n\t\treturn ExponentialBackoff\n\tcase \"exponential-jitter\":\n\t\treturn ExponentialJitterBackoff\n\t}\n\treturn DefaultBackoff\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "c398094af8df576c25be8ac8",
+        "revision": "65ef308daa00a92eab095fcc9c1fa28509b221dd",
+        "path": "backoff/backoff.go",
+        "start_byte": 685,
+        "text": "type TimeToWaitBeforeRetry func(int) time.Duration",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "ff60f255a031dcfd9a0fe0d5",
+        "revision": "65ef308daa00a92eab095fcc9c1fa28509b221dd",
+        "path": "backoff/backoff.go",
+        "start_byte": 908,
+        "text": "func DefaultBackoff(_ int) time.Duration {\n\treturn DefaultBackoffDuration\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "6d8e8719ceb613160e23b6cc",
+        "revision": "65ef308daa00a92eab095fcc9c1fa28509b221dd",
+        "path": "backoff/backoff.go",
+        "start_byte": 1056,
+        "text": "func ExponentialBackoff(i int) time.Duration {\n\treturn time.Duration(1<<uint(i)) * time.Second\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "9e621de040a1937f4751c175",
+        "revision": "65ef308daa00a92eab095fcc9c1fa28509b221dd",
+        "path": "backoff/backoff.go",
+        "start_byte": 1282,
+        "text": "func ExponentialJitterBackoff(i int) time.Duration {\n\treturn jitter(int(1 << uint(i)))\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "6c7ce0ec0df409e38ad74561",
+        "revision": "65ef308daa00a92eab095fcc9c1fa28509b221dd",
+        "path": "backoff/backoff.go",
+        "start_byte": 1454,
+        "text": "func LinearBackoff(i int) time.Duration {\n\treturn time.Duration(i) * time.Second\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "013dcd4299c40bf7424ee750",
+        "revision": "65ef308daa00a92eab095fcc9c1fa28509b221dd",
+        "path": "backoff/backoff.go",
+        "start_byte": 1677,
+        "text": "func LinearJitterBackoff(i int) time.Duration {\n\treturn jitter(i)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "52e76de3c4e082b986ab25e9",
+        "revision": "65ef308daa00a92eab095fcc9c1fa28509b221dd",
+        "path": "backoff/backoff.go",
+        "start_byte": 1893,
+        "text": "func jitter(i int) time.Duration {\n\tms := i * 1000\n\tmaxJitter := ms/3 + 1\n\tms += random.Intn(2*maxJitter) - maxJitter\n\tif ms <= 0 {\n\t\tms = 1\n\t}\n\n\treturn time.Duration(ms) * time.Millisecond\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "6609c62e23234ecc96771779",
+        "revision": "65ef308daa00a92eab095fcc9c1fa28509b221dd",
+        "path": "config/config.go",
+        "start_byte": 7524,
+        "text": "type AsyncAgent struct {\n\tName       string     `mapstructure:\"name\"`\n\tConnection Connection `mapstructure:\"connection\"`\n\tConsumer   Consumer   `mapstructure:\"consumer\"`\n\t// the encoding format\n\tEncoding string `mapstructure:\"encoding\"`\n\t// set of definitions of the backends to be linked to this endpoint\n\tBackend []*Backend `mapstructure:\"backend\"`\n\n\t// Endpoint Extra configuration for customized behaviour\n\tExtraConfig ExtraConfig `mapstructure:\"extra_config\"`\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "dcc8dfcc0ff79a0ab67b4a90",
+        "revision": "65ef308daa00a92eab095fcc9c1fa28509b221dd",
+        "path": "config/config.go",
+        "start_byte": 7992,
+        "text": "type Consumer struct {\n\t// timeout of the pipe defined by this subscriber\n\tTimeout time.Duration `mapstructure:\"timeout\"`\n\tWorkers int           `mapstructure:\"workers\"`\n\tTopic   string        `mapstructure:\"topic\"`\n\tMaxRate float64       `mapstructure:\"max_rate\"`\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "00f2565c49c084590e9f4ce5",
+        "revision": "65ef308daa00a92eab095fcc9c1fa28509b221dd",
+        "path": "config/config.go",
+        "start_byte": 8260,
+        "text": "type Connection struct {\n\tMaxRetries      int           `mapstructure:\"max_retries\"`\n\tBackoffStrategy string        `mapstructure:\"backoff_strategy\"`\n\tHealthInterval  time.Duration `mapstructure:\"health_interval\"`\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "0a010c5497316cc700bbdd5d",
+        "revision": "65ef308daa00a92eab095fcc9c1fa28509b221dd",
+        "path": "config/config.go",
+        "start_byte": 8579,
+        "text": "type EndpointConfig struct {\n\t// url pattern to be registered and exposed to the world\n\tEndpoint string `mapstructure:\"endpoint\"`\n\t// HTTP method of the endpoint (GET, POST, PUT, etc)\n\tMethod string `mapstructure:\"method\"`\n\t// set of definitions of the backends to be linked to this endpoint\n\tBackend []*Backend `mapstructure:\"backend\"`\n\t// number of concurrent calls this endpoint must send to the backends\n\tConcurrentCalls int `mapstructure:\"concurrent_calls\"`\n\t// timeout of this endpoint\n\tTimeout time.Duration `mapstructure:\"timeout\"`\n\t// duration of the cache header\n\tCacheTTL time.Duration `mapstructure:\"cache_ttl\"`\n\t// list of query string params to be extracted from the URI\n\tQueryString []string `mapstructure:\"input_query_strings\"`\n\t// Endpoint Extra configuration for customized behaviour\n\tExtraConfig ExtraConfig `mapstructure:\"extra_config\"`\n\t// HeadersToPass defines the list of headers to pass to the backends\n\tHeadersToPass []string `mapstructure:\"input_headers\"`\n\t// OutputEncoding defines the encoding strategy to use for the endpoint responses\n\tOutputEncoding string `mapstructure:\"output_encoding\"`\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "c0a851700ecc3c2d7f5c65db",
+        "revision": "65ef308daa00a92eab095fcc9c1fa28509b221dd",
+        "path": "config/config.go",
+        "start_byte": 13489,
+        "text": "func (e *ExtraConfig) sanitize() {\n\tfor module, extra := range *e {\n\t\tif extra, ok := extra.(map[interface{}]interface{}); ok {\n\t\t\tsanitized := map[string]interface{}{}\n\t\t\tfor k, v := range extra {\n\t\t\t\tsanitized[fmt.Sprintf(\"%v\", k)] = v\n\t\t\t}\n\t\t\t(*e)[module] = sanitized\n\t\t}\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "2cd5e9594d40aca7c5054568",
+        "revision": "65ef308daa00a92eab095fcc9c1fa28509b221dd",
+        "path": "config/config.go",
+        "start_byte": 13770,
+        "text": "func (e *ExtraConfig) Normalize() {\n\tfor module := range *e {\n\t\tif alias, ok := ExtraConfigAlias[module]; ok {\n\t\t\t(*e)[alias] = (*e)[module]\n\t\t\tdelete(*e, module)\n\t\t}\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "22db6b5c610ac7ba2792f353",
+        "revision": "65ef308daa00a92eab095fcc9c1fa28509b221dd",
+        "path": "config/config.go",
+        "start_byte": 14639,
+        "text": "func (s *ServiceConfig) Hash() (string, error) {\n\tvar name string\n\tname, s.Name = s.Name, \"\"\n\tdefer func() { s.Name = name }()\n\n\tb, err := json.Marshal(s)\n\tif err != nil {\n\t\treturn \"\", err\n\t}\n\tsum := sha256.Sum256(b)\n\treturn base64.StdEncoding.EncodeToString(sum[:]), nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "4fc939a5288abe1fed2045f3",
+        "revision": "65ef308daa00a92eab095fcc9c1fa28509b221dd",
+        "path": "config/config.go",
+        "start_byte": 15112,
+        "text": "func (s *ServiceConfig) Init() error {\n\ts.uriParser = NewURIParser()\n\n\tif s.Version != ConfigVersion {\n\t\treturn &UnsupportedVersionError{\n\t\t\tHave: s.Version,\n\t\t\tWant: ConfigVersion,\n\t\t}\n\t}\n\n\ts.initGlobalParams()\n\n\ts.initAsyncAgents()\n\n\treturn s.initEndpoints()\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "7c97f957e526195aab196fcb",
+        "revision": "65ef308daa00a92eab095fcc9c1fa28509b221dd",
+        "path": "config/config.go",
+        "start_byte": 15376,
+        "text": "func (s *ServiceConfig) Normalize() {\n\ts.ExtraConfig.Normalize()\n\tfor _, e := range s.Endpoints {\n\t\te.ExtraConfig.Normalize()\n\t\tfor _, b := range e.Backend {\n\t\t\tb.ExtraConfig.Normalize()\n\t\t}\n\t}\n\tfor _, a := range s.AsyncAgents {\n\t\ta.ExtraConfig.Normalize()\n\t\tfor _, b := range a.Backend {\n\t\t\tb.ExtraConfig.Normalize()\n\t\t}\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "b0f3a6eb731d8de7483abb0a",
+        "revision": "65ef308daa00a92eab095fcc9c1fa28509b221dd",
+        "path": "config/config.go",
+        "start_byte": 15704,
+        "text": "func (s *ServiceConfig) initGlobalParams() {\n\tif s.Port == 0 {\n\t\ts.Port = defaultPort\n\t}\n\tif s.MaxIdleConnsPerHost == 0 {\n\t\ts.MaxIdleConnsPerHost = DefaultMaxIdleConnsPerHost\n\t}\n\tif s.Timeout == 0 {\n\t\ts.Timeout = DefaultTimeout\n\t}\n\n\ts.Host = s.uriParser.CleanHosts(s.Host)\n\n\ts.ExtraConfig.sanitize()\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "5babadefc0babbb628699576",
+        "revision": "65ef308daa00a92eab095fcc9c1fa28509b221dd",
+        "path": "config/config.go",
+        "start_byte": 16007,
+        "text": "func (s *ServiceConfig) initAsyncAgents() error {\n\tfor i, e := range s.AsyncAgents {\n\t\ts.initAsyncAgentDefaults(i)\n\n\t\te.ExtraConfig.sanitize()\n\n\t\tfor _, b := range e.Backend {\n\t\t\tif len(b.Host) == 0 {\n\t\t\t\tb.Host = s.Host\n\t\t\t} else if !b.HostSanitizationDisabled {\n\t\t\t\tb.Host = s.uriParser.CleanHosts(b.Host)\n\t\t\t}\n\t\t\tif b.Method == \"\" {\n\t\t\t\tb.Method = http.MethodGet\n\t\t\t}\n\t\t\tb.Timeout = e.Consumer.Timeout\n\t\t\tb.Decoder = encoding.GetRegister().Get(strings.ToLower(b.Encoding))(b.IsCollection)\n\n\t\t\tb.ExtraConfig.sanitize()\n\t\t}\n\t}\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "fbb5ef530640ecce110e91d0",
+        "revision": "65ef308daa00a92eab095fcc9c1fa28509b221dd",
+        "path": "config/config.go",
+        "start_byte": 16550,
+        "text": "func (s *ServiceConfig) initEndpoints() error {\n\tfor i, e := range s.Endpoints {\n\t\te.Endpoint = s.uriParser.CleanPath(e.Endpoint)\n\n\t\tif err := e.validate(); err != nil {\n\t\t\treturn err\n\t\t}\n\n\t\tfor i := range e.HeadersToPass {\n\t\t\te.HeadersToPass[i] = textproto.CanonicalMIMEHeaderKey(e.HeadersToPass[i])\n\t\t}\n\n\t\tinputParams := s.extractPlaceHoldersFromURLTemplate(e.Endpoint, s.paramExtractionPattern())\n\t\tinputSet := map[string]interface{}{}\n\t\tfor ip := range inputParams {\n\t\t\tinputSet[inputParams[ip]] = nil\n\t\t}\n\n\t\te.Endpoint = s.uriParser.GetEndpointPath(e.Endpoint, inputParams)\n\n\t\ts.initEndpointDefaults(i)\n\n\t\tif e.OutputEncoding == encoding.NOOP && len(e.Backend) > 1 {\n\t\t\treturn errInvalidNoOpEncoding\n\t\t}\n\n\t\te.ExtraConfig.sanitize()\n\n\t\tfor j, b := range e.Backend {\n\t\t\ts.initBackendDefaults(i, j)\n\n\t\t\tif err := s.initBackendURLMappings(i, j, inputSet); err != nil {\n\t\t\t\treturn err\n\t\t\t}\n\n\t\t\tb.ExtraConfig.sanitize()\n\t\t}\n\t}\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "400e86066c6fff3d69e97cc0",
+        "revision": "65ef308daa00a92eab095fcc9c1fa28509b221dd",
+        "path": "config/config.go",
+        "start_byte": 17491,
+        "text": "func (s *ServiceConfig) paramExtractionPattern() *regexp.Regexp {\n\tif s.DisableStrictREST {\n\t\treturn simpleURLKeysPattern\n\t}\n\treturn endpointURLKeysPattern\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "84cf04d338d0d3ab97c2c7cc",
+        "revision": "65ef308daa00a92eab095fcc9c1fa28509b221dd",
+        "path": "config/config.go",
+        "start_byte": 17650,
+        "text": "func (*ServiceConfig) extractPlaceHoldersFromURLTemplate(subject string, pattern *regexp.Regexp) []string {\n\tmatches := pattern.FindAllStringSubmatch(subject, -1)\n\tkeys := make([]string, len(matches))\n\tfor k, v := range matches {\n\t\tkeys[k] = v[1]\n\t}\n\treturn keys\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "17efa676196d46dfa781ad40",
+        "revision": "65ef308daa00a92eab095fcc9c1fa28509b221dd",
+        "path": "config/config.go",
+        "start_byte": 17916,
+        "text": "func (s *ServiceConfig) initEndpointDefaults(e int) {\n\tendpoint := s.Endpoints[e]\n\tif endpoint.Method == \"\" {\n\t\tendpoint.Method = \"GET\"\n\t}\n\tif s.CacheTTL != 0 && endpoint.CacheTTL == 0 {\n\t\tendpoint.CacheTTL = s.CacheTTL\n\t}\n\tif s.Timeout != 0 && endpoint.Timeout == 0 {\n\t\tendpoint.Timeout = s.Timeout\n\t}\n\tif endpoint.ConcurrentCalls == 0 {\n\t\tendpoint.ConcurrentCalls = 1\n\t}\n\tif endpoint.OutputEncoding == \"\" {\n\t\tif s.OutputEncoding != \"\" {\n\t\t\tendpoint.OutputEncoding = s.OutputEncoding\n\t\t} else {\n\t\t\tendpoint.OutputEncoding = encoding.JSON\n\t\t}\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "b652fd4e470007c3ef58ff62",
+        "revision": "65ef308daa00a92eab095fcc9c1fa28509b221dd",
+        "path": "config/config.go",
+        "start_byte": 18465,
+        "text": "func (s *ServiceConfig) initAsyncAgentDefaults(e int) {\n\tagent := s.AsyncAgents[e]\n\tif s.Timeout != 0 && agent.Consumer.Timeout == 0 {\n\t\tagent.Consumer.Timeout = s.Timeout\n\t}\n\tif agent.Consumer.Workers < 1 {\n\t\tagent.Consumer.Workers = 1\n\t}\n\tif agent.Connection.HealthInterval < time.Second {\n\t\tagent.Connection.HealthInterval = time.Second\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "d47bf4a0dfcc2ddd6432b561",
+        "revision": "65ef308daa00a92eab095fcc9c1fa28509b221dd",
+        "path": "config/config.go",
+        "start_byte": 19560,
+        "text": "func (s *ServiceConfig) initBackendURLMappings(e, b int, inputParams map[string]interface{}) error {\n\tbackend := s.Endpoints[e].Backend[b]\n\n\tbackend.URLPattern = s.uriParser.CleanPath(backend.URLPattern)\n\n\toutputParams, outputSetSize := uniqueOutput(s.extractPlaceHoldersFromURLTemplate(backend.URLPattern, simpleURLKeysPattern))\n\n\tip := fromSetToSortedSlice(inputParams)\n\n\tif outputSetSize > len(ip) {\n\t\treturn &WrongNumberOfParamsError{\n\t\t\tEndpoint:     s.Endpoints[e].Endpoint,\n\t\t\tMethod:       s.Endpoints[e].Method,\n\t\t\tBackend:      b,\n\t\t\tInputParams:  ip,\n\t\t\tOutputParams: outputParams,\n\t\t}\n\t}\n\n\ttitle := cases.Title(language.Und)\n\tbackend.URLKeys = []string{}\n\tfor _, output := range outputParams {\n\t\tif !sequentialParamsPattern.MatchString(output) {\n\t\t\tif _, ok := inputParams[output]; !ok {\n\t\t\t\treturn &UndefinedOutputParamError{\n\t\t\t\t\tParam:        output,\n\t\t\t\t\tEndpoint:     s.Endpoints[e].Endpoint,\n\t\t\t\t\tMethod:       s.Endpoints[e].Method,\n\t\t\t\t\tBackend:      b,\n\t\t\t\t\tInputParams:  ip,\n\t\t\t\t\tOutputParams: outputParams,\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t\tkey := title.String(output[:1]) + output[1:]\n\t\tbackend.URLPattern = strings.ReplaceAll(backend.URLPattern, \"{\"+output+\"}\", \"{{.\"+key+\"}}\")\n\t\tbackend.URLKeys = append(backend.URLKeys, key)\n\t}\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "b131f9a4306e14e272862168",
+        "revision": "65ef308daa00a92eab095fcc9c1fa28509b221dd",
+        "path": "config/config.go",
+        "start_byte": 20813,
+        "text": "func fromSetToSortedSlice(set map[string]interface{}) []string {\n\tres := make([]string, 0, len(set))\n\tfor element := range set {\n\t\tres = append(res, element)\n\t}\n\tsort.Strings(res)\n\treturn res\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "31d34af18e99b08d54ce1528",
+        "revision": "65ef308daa00a92eab095fcc9c1fa28509b221dd",
+        "path": "config/config.go",
+        "start_byte": 21008,
+        "text": "func uniqueOutput(output []string) ([]string, int) {\n\tsort.Strings(output)\n\tj := 0\n\toutputSetSize := 0\n\tfor i := 1; i < len(output); i++ {\n\t\tif output[j] == output[i] {\n\t\t\tcontinue\n\t\t}\n\t\tif !sequentialParamsPattern.MatchString(output[j]) {\n\t\t\toutputSetSize++\n\t\t}\n\t\tj++\n\t\toutput[j] = output[i]\n\t}\n\tif j == len(output) {\n\t\treturn output, outputSetSize\n\t}\n\treturn output[:j+1], outputSetSize\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "234081ebd5a83f9e8ed6900f",
+        "revision": "65ef308daa00a92eab095fcc9c1fa28509b221dd",
+        "path": "config/config.go",
+        "start_byte": 21400,
+        "text": "func (e *EndpointConfig) validate() error {\n\tmatched, err := regexp.MatchString(invalidPattern, e.Endpoint)\n\tif err != nil {",
+        "rank": 2,
+        "truncated": true
+      }
+    ]
+  },
+  "retrieval": {
+    "unresolved": [
+      {
+        "side": "ours",
+        "identifier": "s",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "initBackendDefaults",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "e",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "b",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "proxy/balancing.go",
+            "start": 2240
+          },
+          {
+            "path": "proxy/merging.go",
+            "start": 3780
+          }
+        ]
+      },
+      {
+        "side": "ours",
+        "identifier": "int",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "endpoint",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Endpoints",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "backend",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "len",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Host",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "sd/loadbalancing.go",
+            "start": 1446
+          },
+          {
+            "path": "sd/loadbalancing.go",
+            "start": 2083
+          },
+          {
+            "path": "sd/loadbalancing.go",
+            "start": 2500
+          }
+        ]
+      },
+      {
+        "side": "ours",
+        "identifier": "HostSanitizationDisabled",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "uriParser",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "OutputEncoding",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "encoding",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Encoding",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Timeout",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "ConcurrentCalls",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "GetRegister",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "encoding/register.go",
+            "start": 164
+          },
+          {
+            "path": "sd/register.go",
+            "start": 151
+          }
+        ]
+      },
+      {
+        "side": "ours",
+        "identifier": "Get",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "encoding/register.go",
+            "start": 834
+          },
+          {
+            "path": "register/register.go",
+            "start": 466
+          },
+          {
+            "path": "register/register.go",
+            "start": 1718
+          },
+          {
+            "path": "sd/register.go",
+            "start": 932
+          }
+        ]
+      },
+      {
+        "side": "ours",
+        "identifier": "strings",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "ToLower",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "IsCollection",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "i",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "HeadersToPass",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "textproto",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "CanonicalMIMEHeaderKey",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "s",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "initBackendDefaults",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "e",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "b",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "proxy/balancing.go",
+            "start": 2240
+          },
+          {
+            "path": "proxy/merging.go",
+            "start": 3780
+          }
+        ]
+      },
+      {
+        "side": "theirs",
+        "identifier": "int",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "endpoint",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Endpoints",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "backend",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "len",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Host",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "sd/loadbalancing.go",
+            "start": 1446
+          },
+          {
+            "path": "sd/loadbalancing.go",
+            "start": 2083
+          },
+          {
+            "path": "sd/loadbalancing.go",
+            "start": 2500
+          }
+        ]
+      },
+      {
+        "side": "theirs",
+        "identifier": "HostSanitizationDisabled",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "uriParser",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "OutputEncoding",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "encoding",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Encoding",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Timeout",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "ConcurrentCalls",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "GetRegister",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "encoding/register.go",
+            "start": 164
+          },
+          {
+            "path": "sd/register.go",
+            "start": 151
+          }
+        ]
+      },
+      {
+        "side": "theirs",
+        "identifier": "Get",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "encoding/register.go",
+            "start": 834
+          },
+          {
+            "path": "register/register.go",
+            "start": 466
+          },
+          {
+            "path": "register/register.go",
+            "start": 1718
+          },
+          {
+            "path": "sd/register.go",
+            "start": 932
+          }
+        ]
+      },
+      {
+        "side": "theirs",
+        "identifier": "strings",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "ToLower",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "IsCollection",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "SDScheme",
+        "reason": "no-unique-declaration-established"
+      }
+    ],
+    "method": "syntax-ranges-and-identifier-candidates/3",
+    "budget_bytes": 32768,
+    "libraries": {
+      "C": "cbbd4827ee02cd5c018ab41f10d8404ff8741159054b352d9a6d763c506ba3c7",
+      "Go": "1612f8fd958ba1ec981bf4b91e2ff399f1e54d26a9da68e5b60b0d7cd00616fc"
+    }
+  }
+}

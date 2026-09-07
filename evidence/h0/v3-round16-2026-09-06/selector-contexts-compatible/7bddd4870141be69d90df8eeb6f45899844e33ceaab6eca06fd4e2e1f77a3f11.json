@@ -1,0 +1,2103 @@
+{
+  "id": "7bddd4870141be69d90df8eeb6f45899844e33ceaab6eca06fd4e2e1f77a3f11",
+  "source_protocol_sha256": "86ffe38086e217acf6e1a4aa4162e226862463d1bde3160478f9a6f4d2b968ce",
+  "repair_module_sha256": "475070c72aaadf08fe1cbd1ec90cde5210664924e6b0589d61d2226e86f3da7f",
+  "contexts": {
+    "local-context": [
+      {
+        "id": "4ae4d81b1ae6b12fceef56f5",
+        "revision": "d4ebabf889f7b016ffcb5f74c350e1e5424b2094",
+        "path": "flag.go",
+        "start_byte": 10148,
+        "text": "string {\n\tx := new(bytes.Buffer)\n\n\tf.VisitAll(func(flag *Flag) {\n\t\tif len(flag.Deprecated) > 0 {\n\t\t\treturn\n\t\t}\n\t\tformat := \"--%s=%s: %s\\n\"\n\t\tif _, ok := flag.Value.(*stringValue); ok {\n\t\t\t// put quotes on the value\n\t\t\tformat = \"--%s=%q: %s\\n\"\n\t\t}\n\t\tif len(flag.Shorthand) > 0 {\n\t\t\tformat = \"  -%s, \" + format\n\t\t} else {\n\t\t\tformat = \"   %s   \" + format\n\t\t}\n\t\tfmt.Fprintf(x, format, flag.Shorthand, flag.Name, flag.DefValue, flag.Usage)\n\t})\n\n\treturn x.String()\n}\n\n// PrintDefaults prints to standard error the default values of all defined command-line flags.\nfunc PrintDefaults() {\n\tCommandLine.PrintDefaults()\n}\n\n// defaultUsage is the default function to print a usage message.\nfunc defaultUsage(f *FlagSet) {\n\tfmt.Fprintf(f.out(), \"Usage of %s:\\n\", f.name)\n\tf.PrintDefaults()\n}\n\n// NOTE: Usage is not just defaultUsage(CommandLine)\n// because it serves (via godoc flag Usage) as the example\n// for how to write your own usage function.\n\n// Usage prints to standard error a usage message documenting all defined command-line flags.\n// The function is a variable that may be changed to point to a custom function.\nvar Usage = func() {\n\tfmt.Fprintf(os.Stderr, \"Usage of %s:\\n\", os.Args[0])\n\tPrintDefaults()\n}\n\n// NFlag returns the number of flags that have been set.\nfunc (f *FlagSet) NFlag() int { return len(f.actual) }\n\n// NFlag returns the number of command-line flags that have been set.\nfunc NFlag() int { return len(CommandLine.actual) }\n\n// Arg returns the i'th argument.  Arg(0) is the first remaining argument\n// after flags have been processed.\nfunc (f *FlagSet) Arg(i int) string {\n\tif i < 0 || i >= len(f.args) {\n\t\treturn \"\"\n\t}\n\treturn f.args[i]\n}\n\n// Arg returns the i'th command-line argument.  Arg(0) is the first remaining argument\n// after flags have been processed.\nfunc Arg(i int) string {\n\treturn CommandLine.Arg(i)\n}\n\n// NArg is the number of arguments remaining after flags have been processed.\nfunc (f *FlagSet) NArg() int { return len(f.args) }\n\n// NArg is the number of arguments remaining after flags have been processed.\nfunc NArg() int { return len(CommandLine.args) }\n\n// Args returns the non-flag arguments.\nfunc (f *FlagSet) Args() []string { return f.args }\n\n// Args returns the non-flag command-line arguments.\nfunc Args() []string { return CommandLine.args }\n\n// Var defines a flag with the specified name and usage string. The type and\n// value of the flag are represented by the first argument, of type Value, which\n// typically holds a user-defined implementation of Value. For instance, the\n// caller could create a flag that turns a comma-separated string into a slice\n// of strings by giving the slice the methods of Value; in particular, Set would\n// decompose the comma-separated string into the slice.\nfunc (f *FlagSet) Var(value Value, name string, usage string) {\n\tf.VarP(value, name, \"\", usage)\n}\n\n// Like Var, but accepts a shorthand letter that can be used after a single dash.\nfunc (f *FlagSet) VarP(value Value, name, shorthand, usage string) {\n\t// Remember the default value as a string; it won't change.\n\tflag := &Flag{\n\t\tName:      name,\n\t\tShorthand: shorthand,\n\t\tUsage:     usage,\n\t\tValue:     value,\n\t\tDefValue:  value.String(),\n\t}\n\tf.AddFlag(flag)\n}\n\nfunc (f *FlagSet) AddFlag(flag *Flag) {\n\t_, alreadythere := f.formal[f.normalizeFlagName(flag.Name)]\n\tif alreadythere {\n\t\tmsg := fmt.Sprintf(\"%s flag redefined: %s\", f.name, flag.Name)\n\t\tfmt.Fprintln(f.out(), msg)\n\t\tpanic(msg) // Happens only if flags are declared with identical names\n\t}\n\tif f.formal == nil {\n\t\tf.formal = make(map[NormalizedName]*Flag)\n\t}\n\tf.formal[f.normalizeFlagName(flag.Name)] = flag\n\n\tif len(flag.Shorthand) == 0 {\n\t\treturn\n\t}\n\tif len(flag.Shorthand) > 1 {\n\t\tfmt.Fprintf(f.out(), \"%s shorthand more than ASCII character: %s\\n\", f.name, flag.Shorthand)\n\t\tpanic(\"shorthand is more than one character\")\n\t}\n\tif f.shorthands == nil {\n\t\tf.shorthands = make(map[byte]*Flag)\n\t}\n\tc := flag.Shorthand[0]\n\told, alreadythere := f.shorthands[c]\n\tif alreadythere {\n\t\tfmt.Fprintf(f.out(), \"%s shorthand reused: %q for %s already used for %s\\n\", f.name, c, flag.Name, old.Name)\n\t\tpanic(\"shorthand redefinition\")\n\t}\n\tf.shorthands[c] = flag\n}\n\n// Var defines a flag with the specified name and usage string. The type and\n// value of the flag are represented by the first argument, of type Value, which\n// typically holds a user-defined implementation of Value. For instance, the\n// caller could create a flag that turns a comma-separated string into a slice\n// of strings by giving the slice the methods of Value; in particular, Set would\n// decompose the comma-separated string into the slice.\nfunc Var(value Value, name string, usage string) {\n\tCommandLine.VarP(value, name, \"\", usage)\n}\n\n// Like Var, but accepts a shorthand letter that can be used after a single dash.\nfunc VarP(value Value, name, shorthand, usage string) {\n\tCommandLine.VarP(value, name, shorthand, usage)\n}\n\n// failf prints to standard error a formatted error and usage message and\n// returns the error.\nfunc (f *FlagSet) failf(format string, a ...interface{}) error {\n\terr := fmt.Errorf(format, a...)\n\tfmt.Fprintln(f.out(), err)\n\tf.usage()\n\treturn err\n}\n\n// usage calls the Usage method for the flag set, or the usage function if\n// the flag set is CommandLine.\nfunc (f *FlagSet) usage() {\n\tif f == CommandLine {\n\t\tUsage()\n\t} else if f.Usage == nil {\n\t\tdefaultUsage(f)\n\t} else {\n\t\tf.Usage()\n\t}\n}\n\nfunc (f *FlagSet) setFlag(flag *Flag, value string, origArg string) error {\n\tif err := flag.Value.Set(value); err != nil {\n\t\treturn f.failf(\"invalid argument %q for %s: %v\", value, origArg, err)\n\t}\n\t// mark as visited for Visit()\n\tif f.actual == nil {\n\t\tf.actual = make(map[NormalizedName]*Flag)\n\t}\n\tf.actual[f.normalizeFlagName(flag.Name)] = flag\n\tflag.Changed = true\n\tif len(flag.Deprecated) > 0 {\n\t\tfmt.Fprintf(os.Stderr, \"Flag --%s has been deprecated, %s\\n\", flag.Name, flag.Deprecated)\n\t}\n\treturn nil\n}\n\nfunc (f *FlagSet) parseLongArg(s string, args []string) (a []string, err error) {\n\ta = args\n\tif len(s) == 2 { // \"--\" terminates the flags\n\t\tf.args = append(f.args, args...)\n\t\treturn\n\t}\n\tname := s[2:]\n\tif len(name) == 0 || name[0] == '-' || name[0] == '=' {\n\t\terr = f.failf(\"bad flag syntax: %s\", s)\n\t\treturn\n\t}\n\tsplit := strings.SplitN(name, \"=\", 2)\n\tname = split[0]\n\tm := f.formal\n\tflag, alreadythere := m[f.normalizeFlagName(name)] // BUG\n\tif !alreadythere {\n\t\tif name == \"help\" { // special case for nice help message.\n\t\t\tf.usage()\n\t\t\treturn args, ErrHelp\n\t\t}\n\t\terr = f.failf(\"unknown flag: --%s\", name)\n\t\treturn\n\t}\n\tif len(split) == 1 {\n\t\tif bv, ok := flag.Value.(boolFlag); !ok || !bv.IsBoolFlag() {\n\t\t\terr = f.failf(\"flag needs an argument: %s\", s)\n\t\t\treturn\n\t\t}\n\t\tf.setFlag(flag, \"true\", s)\n\t} else {\n\t\tif e := f.setFlag(flag, split[1], s); e != nil {\n\t\t\terr = e\n\t\t\treturn\n\t\t}\n\t}\n\treturn args, nil\n}\n\nfunc (f *FlagSet) parseShortArg(s string, args []string) (a []string, err error) {\n\ta = args\n\tshorthands := s[1:]\n\n\tfor i := 0; i < len(shorthands); i++ {\n\t\tc := shorthands[i]\n\t\tflag, alreadythere := f.shorthands[c]\n\t\tif !alreadythere {\n\t\t\tif c == 'h' { // special case for nice help message.\n\t\t\t\tf.usage()\n\t\t\t\terr = ErrHelp\n\t\t\t\treturn\n\t\t\t}\n\t\t\t//TODO continue on error\n\t\t\terr = f.failf(\"unknown shorthand flag: %q in -%s\", c, shorthands)\n\t\t\tif len(args) == 0 {\n\t\t\t\treturn\n\t\t\t}\n\t\t\treturn\n\t\t}\n\t\tif alreadythere {\n\t\t\tif bv, ok := flag.Value.(boolFlag); ok && bv.IsBoolFlag() {\n\t\t\t\tf.setFlag(flag, \"true\", s)\n\t\t\t\tcontinue\n\t\t\t}\n\t\t\tif i < len(shorthands)-1 {\n\t\t\t\tv := strings.TrimPrefix(shorthands[i+1:], \"=\")\n\t\t\t\tif e := f.setFlag(flag, v, s); e != nil {\n\t\t\t\t\terr = e\n\t\t\t\t\treturn\n\t\t\t\t}\n\t\t\t\tbreak\n\t\t\t}\n\t\t\tif len(args) == 0 {\n\t\t\t\terr = f.failf(\"flag needs an argument: %q in -%s\", c, shorthands)\n\t\t\t\treturn\n\t\t\t}\n\t\t\tif e := f.setFlag(flag, args[0], s); e != nil {\n\t\t\t\terr = e\n\t\t\t\treturn\n\t\t\t}\n\t\t}\n\t\ta = args[1:]\n\t\tbreak // should be unnecessary\n\t}\n\n\treturn\n}\n\nfunc (f *FlagSet) parseArgs(args []string) (err error) {\n\tfor len(args) > 0 {\n\t\ts := args[0]\n\t\targs = args[1:]\n\t\tif len(s) == 0 || s[0] != '-' || len(s) == 1 {\n\t\t\tif !f.interspersed {\n\t\t\t\tf.args = append(f.args, s)\n\t\t\t\tf.args = append(f.args, args...)\n\t\t\t\treturn nil\n\t\t\t}\n\t\t\tf.args = append(f.args, s)\n\t\t\tcontinue\n\t\t}\n\n\t\tif s[1] == '-' {\n\t\t\targs, err = f.parseLongArg(s, args)\n\n\t\t\tif len(s) == 2 {\n\t\t\t\t// stop parsing after --\n\t\t\t\tbreak\n\t\t\t}\n\t\t} else {\n\t\t\targs, err = f.parseShortArg(s, args)\n\t\t}\n\t\tif err != nil {\n\t\t\treturn\n\t\t}\n\t}\n\treturn\n}\n\n// Parse parses flag definitions from the argument list, which should not\n// include the command name.  Must be called after all flags in the FlagSet\n// are defined and before flags are accessed by the program.\n// The return value will be ErrHelp if -help was set but not defined.\nfunc (f *FlagSet) Parse(arguments []string) error {\n\tf.parsed = true\n\tf.args = make([]string, 0, len(arguments))\n\terr := f.parseArgs(arguments)\n\tif err != nil {\n\t\tswitch f.errorHandling {\n\t\tcase ContinueOnError:\n\t\t\treturn err\n\t\tcase ExitOnError:\n\t\t\tos.Exit(2)\n\t\tcase PanicOnError:\n\t\t\tpanic(err)\n\t\t}\n\t}\n\treturn nil\n}\n\n// Parsed reports whether f.Parse has been called.\nfunc (f *FlagSet) Parsed() bool {\n\treturn f.parsed\n}\n\n// Parse parses the command-line flags from os.Args[1:].  Must be called\n// after all flags are defined and before flags are accessed by the program.\nfunc Parse() {\n\t// Ignore errors; CommandLine is set for ExitOnError.\n\tCommandLine.Parse(os.Args[1:])\n}\n\n// Whether to support interspersed option/non-option arguments.\nfunc SetInterspersed(interspersed bool) {\n\tCommandLine.SetInterspersed(interspersed)\n}\n\n// Parsed returns true if the command-line flags have been parsed.\nfunc Parsed() bool {\n\treturn CommandLine.Parsed()\n}\n\n// The default set of command-line flags, parsed from os.Args.\nvar CommandLine = NewFlagSet(os.Args[0], ExitOnError)\n\n// NewFlagSet returns a new, empty flag set with the specified name and\n// error handling property.\nfunc NewFlagSet(name string, errorHandling ErrorHandling) *FlagSet {\n\tf := &FlagSet{\n\t\tname:          name,\n\t\terrorHandling: errorHandling,\n\t\tinterspersed:  true,\n\t}\n\treturn f\n}\n\n// Whether to support interspersed option/non-option arguments.\nfunc (f *FlagSet) SetInterspersed(interspersed bool) {\n\tf.interspersed = interspersed\n}\n\n// Init sets the name and error handling property for a flag set.\n// By default, the zero FlagSet uses an empty name and the\n// ContinueOnError error handling policy.\nfunc (f *FlagSet) Init(name string, errorHandling ErrorHandling) {\n\tf.name = name\n\tf.errorHandling = errorHandling\n}\n",
+        "rank": 0,
+        "truncated": false
+      },
+      {
+        "id": "749832db8cd114c24ff8348f",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "flag.go",
+        "start_byte": 5105,
+        "text": " for usage message\n}\n\n// sortFlags returns the flags as a slice in lexicographical sorted order.\nfunc sortFlags(flags map[string]*Flag) []*Flag {\n\tlist := make(sort.StringSlice, len(flags))\n\ti := 0\n\tfor _, f := range flags {\n\t\tlist[i] = f.Name\n\t\ti++\n\t}\n\tlist.Sort()\n\tresult := make([]*Flag, len(list))\n\tfor i, name := range list {\n\t\tresult[i] = flags[name]\n\t}\n\treturn result\n}\n\nfunc (f *FlagSet) out() io.Writer {\n\tif f.output == nil {\n\t\treturn os.Stderr\n\t}\n\treturn f.output\n}\n\n// SetOutput sets the destination for usage and error messages.\n// If output is nil, os.Stderr is used.\nfunc (f *FlagSet) SetOutput(output io.Writer) {\n\tf.output = output\n}\n\n// VisitAll visits the flags in lexicographical order, calling fn for each.\n// It visits all flags, even those not set.\nfunc (f *FlagSet) VisitAll(fn func(*Flag)) {\n\tfor _, flag := range sortFlags(f.formal) {\n\t\tfn(flag)\n\t}\n}\n\n// VisitAll visits the command-line flags in lexicographical order, calling\n// fn for each.  It visits all flags, even those not set.\nfunc VisitAll(fn func(*Flag)) {\n\tCommandLine.VisitAll(fn)\n}\n\n// Visit visits the flags in lexicographical order, calling fn for each.\n// It visits only those flags that have been set.\nfunc (f *FlagSet) Visit(fn func(*Flag)) {\n\tfor _, flag := range sortFlags(f.actual) {\n\t\tfn(flag)\n\t}\n}\n\n// Visit visits the command-line flags in lexicographical order, calling fn\n// for each.  It visits only those flags that have been set.\nfunc Visit(fn func(*Flag)) {\n\tCommandLine.Visit(fn)\n}\n\n// Lookup returns the Flag structure of the named flag, returning nil if none exists.\nfunc (f *FlagSet) Lookup(name string) *Flag {\n\treturn f.formal[name]\n}\n\n// Lookup returns the Flag structure of the named command-line flag,\n// returning nil if none exists.\nfunc Lookup(name string) *Flag {\n\treturn CommandLine.formal[name]\n}\n\n// Set sets the value of the named flag.\nfunc (f *FlagSet) Set(name, value string) error {\n\tflag, ok := f.formal[name]\n\tif !ok {\n\t\treturn fmt.Errorf(\"no such flag -%v\", name)\n\t}\n\terr := flag.Value.Set(value)\n\tif err != nil {\n\t\treturn err\n\t}\n\tif f.actual == nil {\n\t\tf.actual = make(map[string]*Flag)\n\t}\n\tf.actual[name] = flag\n\treturn nil\n}\n\n// Set sets the value of the named command-line flag.\nfunc Set(name, value string) error {\n\treturn CommandLine.Set(name, value)\n}\n\n// PrintDefaults prints, to standard error unless configured\n// otherwise, the default values of all defined flags in the set.\nfunc (f *FlagSet) PrintDefaults() {\n\tf.VisitAll(func(flag *Flag) {\n\t\tformat := \"--%s=%s: %s\\n\"\n\t\tif _, ok := flag.Value.(*stringValue); ok {\n\t\t\t// put quotes on the value\n\t\t\tformat = \"--%s=%q: %s\\n\"\n\t\t}\n\t\tif len(flag.Shorthand) > 0 {\n\t\t\tformat = \"  -%s, \" + format\n\t\t} else {\n\t\t\tformat = \"   %s   \" + format\n\t\t}\n\t\tfmt.Fprintf(f.out(), format, flag.Shorthand, flag.Name, flag.DefValue, flag.Usage)\n\t})\n}\n\n// PrintDefaults prints to standard error the default values of all defined command-line flags.\nfunc PrintDefaults() {\n\tCommandLine.PrintDefaults()\n}\n\n// defaultUsage is the default function to print a usage message.\nfunc defaultUsage(f *FlagSet) {\n\tfmt.Fprintf(f.out(), \"Usage of %s:\\n\", f.name)\n\tf.PrintDefaults()\n}\n\n// NOTE: Usage is not just defaultUsage(CommandLine)\n// because it serves (via godoc flag Usage) as the example\n// for how to write your own usage function.\n\n// Usage prints to standard error a usage message documenting all defined command-line flags.\n// The function is a variable that may be changed to point to a custom function.\nvar Usage = func() {\n\tfmt.Fprintf(os.Stderr, \"Usage of %s:\\n\", os.Args[0])\n\tPrintDefaults()\n}\n\n// NFlag returns the number of flags that have been set.\nfunc (f *FlagSet) NFlag() int { return len(f.actual) }\n\n// NFlag returns the number of command-line flags that have been set.\nfunc NFlag() int { return len(CommandLine.actual) }\n\n// Arg returns the i'th argument.  Arg(0) is the first remaining argument\n// after flags have been processed.\nfunc (f *FlagSet) Arg(i int) string {\n\tif i < 0 || i >= len(f.args) {\n\t\treturn \"\"\n\t}\n\treturn f.args[i]\n}\n\n// Arg returns the i'th command-line argument.  Arg(0) is the first remaining argument\n// after flags have been processed.\nfunc Arg(i int) string {\n\treturn CommandLine.Arg(i)\n}\n\n// NArg is the number of arguments remaining after flags have been processed.\nfunc (f *FlagSet) NArg() int { return len(f.args) }\n\n// NArg is the number of arguments remaining after flags have been processed.\nfunc NArg() int { return len(CommandLine.args) }\n\n// Args returns the non-flag arguments.\nfunc (f *FlagSet) Args() []string { return f.args }\n\n// Args returns the non-flag command-line arguments.\nfunc Args() []string { return CommandLine.args }\n\n// Var defines a flag with the specified name and usage string. The type and\n// value of the flag are represented by the first argument, of type Value, which\n// typically holds a user-defined implementation of Value. For instance, the\n// caller could create a flag that turns a comma-separated string into a slice\n// of strings by giving the slice the methods of Value; in particular, Set would\n// decompose the comma-separated string into the slice.\nfunc (f *FlagSet) Var(value Value, name string, usage string) {\n\tf.VarP(value, name, \"\", usage)\n}\n\n// Like Var, but accepts a shorthand letter that can be used after a single dash.\nfunc (f *FlagSet) VarP(value Value, name, shorthand, usage string) {\n\t// Remember the default value as a string; it won't change.\n\tflag := &Flag{name, shorthand, usage, value, value.String()}\n\t_, alreadythere := f.formal[name]\n\tif alreadythere {\n\t\tmsg := fmt.Sprintf(\"%s flag redefined: %s\", f.name, name)\n\t\tfmt.Fprintln(f.out(), msg)\n\t\tpanic(msg) // Happens only if flags are declared with identical names\n\t}\n\tif f.formal == nil {\n\t\tf.formal = make(map[string]*Flag)\n\t}\n\tf.formal[name] = flag\n\n\tif len(shorthand) == 0 {\n\t\treturn\n\t}\n\tif len(shorthand) > 1 {\n\t\tfmt.Fprintf(f.out(), \"%s shorthand more than ASCII character: %s\\n\", f.name, shorthand)\n\t\tpanic(\"shorthand is more than one character\")\n\t}\n\tif f.shorthands == nil {\n\t\tf.shorthands = make(map[byte]*Flag)\n\t}\n\tc := shorthand[0]\n\told, alreadythere := f.shorthands[c]\n\tif alreadythere {\n\t\tfmt.Fprintf(f.out(), \"%s shorthand reused: %q for %s already used for %s\\n\", f.name, c, name, old.Name)\n\t\tpanic(\"shorthand redefinition\")\n\t}\n\tf.shorthands[c] = flag\n}\n\n// Var defines a flag with the specified name and usage string. The type and\n// value of the flag are represented by the first argument, of type Value, which\n// typically holds a user-defined implementation of Value. For instance, the\n// caller could create a flag that turns a comma-separated string into a slice\n// of strings by giving the slice the methods of Value; in particular, Set would\n// decompose the comma-separated string into the slice.\nfunc Var(value Value, name string, usage string) {\n\tCommandLine.VarP(value, name, \"\", usage)\n}\n\n// Like Var, but accepts a shorthand letter that can be used after a single dash.\nfunc VarP(value Value, name, shorthand, usage string) {\n\tCommandLine.VarP(value, name, shorthand, usage)\n}\n\n// failf prints to standard error a formatted error and usage message and\n// returns the error.\nfunc (f *FlagSet) failf(format string, a ...interface{}) error {\n\terr := fmt.Errorf(format, a...)\n\tfmt.Fprintln(f.out(), err)\n\tf.usage()\n\treturn err\n}\n\n// usage calls the Usage method for the flag set, or the usage function if\n// the flag set is CommandLine.\nfunc (f *FlagSet) usage() {\n\tif f == CommandLine {\n\t\tUsage()\n\t} else if f.Usage == nil {\n\t\tdefaultUsage(f)\n\t} else {\n\t\tf.Usage()\n\t}\n}\n\nfunc (f *FlagSet) setFlag(flag *Flag, value string, origArg string) error {\n\tif err := flag.Value.Set(value); err != nil {\n\t\treturn f.failf(\"invalid argument %q for %s: %v\", value, origArg, err)\n\t}\n\t// mark as visited for Visit()\n\tif f.actual == nil {\n\t\tf.actual = make(map[string]*Flag)\n\t}\n\tf.actual[flag.Name] = flag\n\n\treturn nil\n}\n\nfunc (f *FlagSet) parseArgs(args []string) error {\n\tfor len(args) > 0 {\n\t\ts := args[0]\n\t\targs = args[1:]\n\t\tif len(s) == 0 || s[0] != '-' || len(s) == 1 {\n\t\t\tif !f.interspersed {\n\t\t\t\tf.args = append(f.args, s)\n\t\t\t\tf.args = append(f.args, args...)\n\t\t\t\treturn nil\n\t\t\t}\n\t\t\tf.args = append(f.args, s)\n\t\t\tcontinue\n\t\t}\n\n\t\tif s[1] == '-' {\n\t\t\tif len(s) == 2 { // \"--\" terminates the flags\n\t\t\t\tf.args = append(f.args, args...)\n\t\t\t\treturn nil\n\t\t\t}\n\t\t\tname := s[2:]\n\t\t\tif len(name) == 0 || name[0] == '-' || name[0] == '=' {\n\t\t\t\treturn f.failf(\"bad flag syntax: %s\", s)\n\t\t\t}\n\t\t\tsplit := strings.SplitN(name, \"=\", 2)\n\t\t\tname = split[0]\n\t\t\tm := f.formal\n\t\t\tflag, alreadythere := m[name] // BUG\n\t\t\tif !alreadythere {\n\t\t\t\tif name == \"help\" { // special case for nice help message.\n\t\t\t\t\tf.usage()\n\t\t\t\t\treturn ErrHelp\n\t\t\t\t}\n\t\t\t\treturn f.failf(\"unknown flag: --%s\", name)\n\t\t\t}\n\t\t\tif len(split) == 1 {\n\t\t\t\tif bv, ok := flag.Value.(boolFlag); !ok || !bv.IsBoolFlag() {\n\t\t\t\t\treturn f.failf(\"flag needs an argument: %s\", s)\n\t\t\t\t}\n\t\t\t\tf.setFlag(flag, \"true\", s)\n\t\t\t} else {\n\t\t\t\tif err := f.setFlag(flag, split[1], s); err != nil {\n\t\t\t\t\treturn err\n\t\t\t\t}\n\t\t\t}\n\t\t} else {\n\t\t\tshorthands := s[1:]\n\t\t\tfor i := 0; i < len(shorthands); i++ {\n\t\t\t\tc := shorthands[i]\n\t\t\t\tflag, alreadythere := f.shorthands[c]\n\t\t\t\tif !alreadythere {\n\t\t\t\t\tif c == 'h' { // special case for nice help message.\n\t\t\t\t\t\tf.usage()\n\t\t\t\t\t\treturn ErrHelp\n\t\t\t\t\t}\n\t\t\t\t\treturn f.failf(\"unknown shorthand flag: %q in -%s\", c, shorthands)\n\t\t\t\t}\n\t\t\t\tif bv, ok := flag.Value.(boolFlag); ok && bv.IsBoolFlag() {\n\t\t\t\t\tf.setFlag(flag, \"true\", s)\n\t\t\t\t\tcontinue\n\t\t\t\t}\n\t\t\t\tif i < len(shorthands)-1 {\n\t\t\t\t\tif err := f.setFlag(flag, shorthands[i+1:], s); err != nil {\n\t\t\t\t\t\treturn err\n\t\t\t\t\t}\n\t\t\t\t\tbreak\n\t\t\t\t}\n\t\t\t\tif len(args) == 0 {\n\t\t\t\t\treturn f.failf(\"flag needs an argument: %q in -%s\", c, shorthands)\n\t\t\t\t}\n\t\t\t\tif err := f.setFlag(flag, args[0], s); err != nil {\n\t\t\t\t\treturn err\n\t\t\t\t}\n\t\t\t\targs = args[1:]\n\t\t\t\tbreak // should be unnecessary\n\t\t\t}\n\t\t}\n\t}\n\treturn nil\n}\n\n// Parse parses flag definitions from the argument list, which should not\n// include the command name.  Must be called after all flags in the FlagSet\n// are defined and before flags are accessed by the program.\n// The return value will be ErrHelp if -help was set but not defined.\nfunc (f *FlagSet) Parse(arguments []string) error {\n\tf.parsed = true\n\tf.args = make([]string, 0, len(arguments))\n\terr := f.parseArgs(arguments)\n\tif err != nil {\n\t\tswitch f.errorHandling {\n\t\tcase ContinueOnError:\n\t\t\treturn err\n\t\tcase ExitOnError:\n\t\t\tos.Exit(2)\n\t\tcase PanicOnError:\n\t\t\tpanic(err)\n\t\t}\n\t}\n\treturn nil\n}\n\n// Parsed reports whether f.Parse has been called.\nfunc (f *FlagSet) Parsed() bool {\n\treturn f.parsed\n}\n\n// Parse parses the command-line flags from os.Args[1:].  Must be called\n// after all flags are defined and before flags are accessed by the program.\nfunc Parse() {\n\t// Ignore errors; CommandLine is set for ExitOnError.\n\tCommandLine.Parse(os.Args[1:])\n}\n\n// Whether to support interspersed option/non-option arguments.\nfunc SetInterspersed(interspersed bool) {\n\tCommandLine.SetInterspersed(interspersed)\n}\n\n// Parsed returns true if the command-line flags have been parsed.\nfunc Parsed() bool {\n\treturn CommandLine.Parsed()\n}\n\n// The default set of command-line flags, parsed from os.Args.\nvar CommandLine = NewFlagSet(os.Args[0], ExitOnError)\n\n// NewFlagSet returns a new, empty flag set with the specified name and\n// error handling property.\nfunc NewFlagSet(name string, errorHandling ErrorHandling) *FlagSet {\n\tf := &FlagSet{\n\t\tname:          name,\n\t\terrorHandling: errorHandling,\n\t\tinterspersed:  true,\n\t}\n\treturn f\n}\n\n// Whether to support interspersed option/non-option arguments.\nfunc (f *FlagSet) SetInterspersed(interspersed bool) {\n\tf.interspersed = interspersed\n}\n\n// Init sets the name and error handling property for a flag set.\n// By default, the zero FlagSet uses an empty name and the\n// ContinueOnError error handling policy.\nfunc (f *FlagSet) Init(name string, errorHandling ErrorHandling) {\n\tf.name = name\n\tf.errorHandling = errorHandling\n}\n",
+        "rank": 0,
+        "truncated": false
+      }
+    ],
+    "selected": [
+      {
+        "id": "ebaf8eb493f1b2915c1b877e",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "flag.go",
+        "start_byte": 12965,
+        "text": "func (f *FlagSet) parseArgs(args []string) error {\n\tfor len(args) > 0 {\n\t\ts := args[0]\n\t\targs = args[1:]\n\t\tif len(s) == 0 || s[0] != '-' || len(s) == 1 {\n\t\t\tif !f.interspersed {\n\t\t\t\tf.args = append(f.args, s)\n\t\t\t\tf.args = append(f.args, args...)\n\t\t\t\treturn nil\n\t\t\t}\n\t\t\tf.args = append(f.args, s)\n\t\t\tcontinue\n\t\t}\n\n\t\tif s[1] == '-' {\n\t\t\tif len(s) == 2 { // \"--\" terminates the flags\n\t\t\t\tf.args = append(f.args, args...)\n\t\t\t\treturn nil\n\t\t\t}\n\t\t\tname := s[2:]\n\t\t\tif len(name) == 0 || name[0] == '-' || name[0] == '=' {\n\t\t\t\treturn f.failf(\"bad flag syntax: %s\", s)\n\t\t\t}\n\t\t\tsplit := strings.SplitN(name, \"=\", 2)\n\t\t\tname = split[0]\n\t\t\tm := f.formal\n\t\t\tflag, alreadythere := m[name] // BUG\n\t\t\tif !alreadythere {\n\t\t\t\tif name == \"help\" { // special case for nice help message.\n\t\t\t\t\tf.usage()\n\t\t\t\t\treturn ErrHelp\n\t\t\t\t}\n\t\t\t\treturn f.failf(\"unknown flag: --%s\", name)\n\t\t\t}\n\t\t\tif len(split) == 1 {\n\t\t\t\tif bv, ok := flag.Value.(boolFlag); !ok || !bv.IsBoolFlag() {\n\t\t\t\t\treturn f.failf(\"flag needs an argument: %s\", s)\n\t\t\t\t}\n\t\t\t\tf.setFlag(flag, \"true\", s)\n\t\t\t} else {\n\t\t\t\tif err := f.setFlag(flag, split[1], s); err != nil {\n\t\t\t\t\treturn err\n\t\t\t\t}\n\t\t\t}\n\t\t} else {\n\t\t\tshorthands := s[1:]\n\t\t\tfor i := 0; i < len(shorthands); i++ {\n\t\t\t\tc := shorthands[i]\n\t\t\t\tflag, alreadythere := f.shorthands[c]\n\t\t\t\tif !alreadythere {\n\t\t\t\t\tif c == 'h' { // special case for nice help message.\n\t\t\t\t\t\tf.usage()\n\t\t\t\t\t\treturn ErrHelp\n\t\t\t\t\t}\n\t\t\t\t\treturn f.failf(\"unknown shorthand flag: %q in -%s\", c, shorthands)\n\t\t\t\t}\n\t\t\t\tif bv, ok := flag.Value.(boolFlag); ok && bv.IsBoolFlag() {\n\t\t\t\t\tf.setFlag(flag, \"true\", s)\n\t\t\t\t\tcontinue\n\t\t\t\t}\n\t\t\t\tif i < len(shorthands)-1 {\n\t\t\t\t\tif err := f.setFlag(flag, shorthands[i+1:], s); err != nil {\n\t\t\t\t\t\treturn err\n\t\t\t\t\t}\n\t\t\t\t\tbreak\n\t\t\t\t}\n\t\t\t\tif len(args) == 0 {\n\t\t\t\t\treturn f.failf(\"flag needs an argument: %q in -%s\", c, shorthands)\n\t\t\t\t}\n\t\t\t\tif err := f.setFlag(flag, args[0], s); err != nil {\n\t\t\t\t\treturn err\n\t\t\t\t}\n\t\t\t\targs = args[1:]\n\t\t\t\tbreak // should be unnecessary\n\t\t\t}\n\t\t}\n\t}\n\treturn nil\n}",
+        "rank": 0,
+        "truncated": false
+      },
+      {
+        "id": "eeb6816317111d5e4a786236",
+        "revision": "d4ebabf889f7b016ffcb5f74c350e1e5424b2094",
+        "path": "flag.go",
+        "start_byte": 18002,
+        "text": "func (f *FlagSet) parseArgs(args []string) (err error) {\n\tfor len(args) > 0 {\n\t\ts := args[0]\n\t\targs = args[1:]\n\t\tif len(s) == 0 || s[0] != '-' || len(s) == 1 {\n\t\t\tif !f.interspersed {\n\t\t\t\tf.args = append(f.args, s)\n\t\t\t\tf.args = append(f.args, args...)\n\t\t\t\treturn nil\n\t\t\t}\n\t\t\tf.args = append(f.args, s)\n\t\t\tcontinue\n\t\t}\n\n\t\tif s[1] == '-' {\n\t\t\targs, err = f.parseLongArg(s, args)\n\n\t\t\tif len(s) == 2 {\n\t\t\t\t// stop parsing after --\n\t\t\t\tbreak\n\t\t\t}\n\t\t} else {\n\t\t\targs, err = f.parseShortArg(s, args)\n\t\t}\n\t\tif err != nil {\n\t\t\treturn\n\t\t}\n\t}\n\treturn\n}",
+        "rank": 0,
+        "truncated": false
+      },
+      {
+        "id": "0926ee3f3391195159488ecb",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "bool.go",
+        "start_byte": 139,
+        "text": "type boolFlag interface {\n\tValue\n\tIsBoolFlag() bool\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "06ad0ea9920e4a960aad74c6",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "bool.go",
+        "start_byte": 497,
+        "text": "func (b *boolValue) IsBoolFlag() bool { return true }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "13e0b99c3be8d40c5556c513",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "duration.go",
+        "start_byte": 521,
+        "text": "type Value interface {\n\tString() string\n\tSet(string) error\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "f8b1872b5eb1bc4d55a8a5d5",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "flag.go",
+        "start_byte": 3930,
+        "text": "var ErrHelp = errors.New(\"pflag: help requested\")",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "d95f844e22826b8dfb36241e",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "flag.go",
+        "start_byte": 4189,
+        "text": "type FlagSet struct {\n\t// Usage is the function called when an error occurs while parsing flags.\n\t// The field is a function (not a method) that may be changed to point to\n\t// a custom error handler.\n\tUsage func()\n\n\tname          string\n\tparsed        bool\n\tactual        map[string]*Flag\n\tformal        map[string]*Flag\n\tshorthands    map[byte]*Flag\n\targs          []string // arguments after flags\n\texitOnError   bool     // does the program exit if there's an error?\n\terrorHandling ErrorHandling\n\toutput        io.Writer // nil means stderr; use out() accessor\n\tinterspersed  bool      // allow interspersed option/non-option args\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "6427638eb64b3fa1a869137d",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "flag.go",
+        "start_byte": 12236,
+        "text": "func (f *FlagSet) failf(format string, a ...interface{}) error {\n\terr := fmt.Errorf(format, a...)\n\tfmt.Fprintln(f.out(), err)\n\tf.usage()\n\treturn err\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "29b949edf08d33b2b736bb76",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "flag.go",
+        "start_byte": 12495,
+        "text": "func (f *FlagSet) usage() {\n\tif f == CommandLine {\n\t\tUsage()\n\t} else if f.Usage == nil {\n\t\tdefaultUsage(f)\n\t} else {\n\t\tf.Usage()\n\t}\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "f6f7d24554159d910c09df1e",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "flag.go",
+        "start_byte": 12630,
+        "text": "func (f *FlagSet) setFlag(flag *Flag, value string, origArg string) error {\n\tif err := flag.Value.Set(value); err != nil {\n\t\treturn f.failf(\"invalid argument %q for %s: %v\", value, origArg, err)\n\t}\n\t// mark as visited for Visit()\n\tif f.actual == nil {\n\t\tf.actual = make(map[string]*Flag)\n\t}\n\tf.actual[flag.Name] = flag\n\n\treturn nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "9696c9e85dce2ba63ea5bf48",
+        "revision": "d4ebabf889f7b016ffcb5f74c350e1e5424b2094",
+        "path": "flag.go",
+        "start_byte": 4360,
+        "text": "type FlagSet struct {\n\t// Usage is the function called when an error occurs while parsing flags.\n\t// The field is a function (not a method) that may be changed to point to\n\t// a custom error handler.\n\tUsage func()\n\n\tname              string\n\tparsed            bool\n\tactual            map[NormalizedName]*Flag\n\tformal            map[NormalizedName]*Flag\n\tshorthands        map[byte]*Flag\n\targs              []string // arguments after flags\n\texitOnError       bool     // does the program exit if there's an error?\n\terrorHandling     ErrorHandling\n\toutput            io.Writer // nil means stderr; use out() accessor\n\tinterspersed      bool      // allow interspersed option/non-option args\n\tnormalizeNameFunc func(f *FlagSet, name string) NormalizedName\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "fa7842436818a03b5cf4f5dc",
+        "revision": "d4ebabf889f7b016ffcb5f74c350e1e5424b2094",
+        "path": "flag.go",
+        "start_byte": 16042,
+        "text": "func (f *FlagSet) parseLongArg(s string, args []string) (a []string, err error) {\n\ta = args\n\tif len(s) == 2 { // \"--\" terminates the flags\n\t\tf.args = append(f.args, args...)\n\t\treturn\n\t}\n\tname := s[2:]\n\tif len(name) == 0 || name[0] == '-' || name[0] == '=' {\n\t\terr = f.failf(\"bad flag syntax: %s\", s)\n\t\treturn\n\t}\n\tsplit := strings.SplitN(name, \"=\", 2)\n\tname = split[0]\n\tm := f.formal\n\tflag, alreadythere := m[f.normalizeFlagName(name)] // BUG\n\tif !alreadythere {\n\t\tif name == \"help\" { // special case for nice help message.\n\t\t\tf.usage()\n\t\t\treturn args, ErrHelp\n\t\t}\n\t\terr = f.failf(\"unknown flag: --%s\", name)\n\t\treturn\n\t}\n\tif len(split) == 1 {\n\t\tif bv, ok := flag.Value.(boolFlag); !ok || !bv.IsBoolFlag() {\n\t\t\terr = f.failf(\"flag needs an argument: %s\", s)\n\t\t\treturn\n\t\t}\n\t\tf.setFlag(flag, \"true\", s)\n\t} else {\n\t\tif e := f.setFlag(flag, split[1], s); e != nil {\n\t\t\terr = e\n\t\t\treturn\n\t\t}\n\t}\n\treturn args, nil\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "ab800f85ef229a92b4a58723",
+        "revision": "d4ebabf889f7b016ffcb5f74c350e1e5424b2094",
+        "path": "flag.go",
+        "start_byte": 16951,
+        "text": "func (f *FlagSet) parseShortArg(s string, args []string) (a []string, err error) {\n\ta = args\n\tshorthands := s[1:]\n\n\tfor i := 0; i < len(shorthands); i++ {\n\t\tc := shorthands[i]\n\t\tflag, alreadythere := f.shorthands[c]\n\t\tif !alreadythere {\n\t\t\tif c == 'h' { // special case for nice help message.\n\t\t\t\tf.usage()\n\t\t\t\terr = ErrHelp\n\t\t\t\treturn\n\t\t\t}\n\t\t\t//TODO continue on error\n\t\t\terr = f.failf(\"unknown shorthand flag: %q in -%s\", c, shorthands)\n\t\t\tif len(args) == 0 {\n\t\t\t\treturn\n\t\t\t}\n\t\t\treturn\n\t\t}\n\t\tif alreadythere {\n\t\t\tif bv, ok := flag.Value.(boolFlag); ok && bv.IsBoolFlag() {\n\t\t\t\tf.setFlag(flag, \"true\", s)\n\t\t\t\tcontinue\n\t\t\t}\n\t\t\tif i < len(shorthands)-1 {\n\t\t\t\tv := strings.TrimPrefix(shorthands[i+1:], \"=\")\n\t\t\t\tif e := f.setFlag(flag, v, s); e != nil {\n\t\t\t\t\terr = e\n\t\t\t\t\treturn\n\t\t\t\t}\n\t\t\t\tbreak\n\t\t\t}\n\t\t\tif len(args) == 0 {\n\t\t\t\terr = f.failf(\"flag needs an argument: %q in -%s\", c, shorthands)\n\t\t\t\treturn\n\t\t\t}\n\t\t\tif e := f.setFlag(flag, args[0], s); e != nil {\n\t\t\t\terr = e\n\t\t\t\treturn\n\t\t\t}\n\t\t}\n\t\ta = args[1:]\n\t\tbreak // should be unnecessary\n\t}\n\n\treturn\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "b4e2a4b3fa11cdca0628b51e",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "bool.go",
+        "start_byte": 319,
+        "text": "func (b *boolValue) Set(s string) error {\n\tv, err := strconv.ParseBool(s)\n\t*b = boolValue(v)\n\treturn err\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "c848e6f768bbc0dd712cb3fd",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "bool.go",
+        "start_byte": 427,
+        "text": "func (b *boolValue) String() string { return fmt.Sprintf(\"%v\", *b) }",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "d05a222099aa9cf07f0fafd0",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "bool.go",
+        "start_byte": 722,
+        "text": "func (f *FlagSet) BoolVar(p *bool, name string, value bool, usage string) {\n\tf.VarP(newBoolValue(value, p), name, \"\", usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "8e5160accba9fee4682e63c7",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "bool.go",
+        "start_byte": 936,
+        "text": "func (f *FlagSet) BoolVarP(p *bool, name, shorthand string, value bool, usage string) {\n\tf.VarP(newBoolValue(value, p), name, shorthand, usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "28faacaf414d2a146ad00676",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "bool.go",
+        "start_byte": 1253,
+        "text": "func BoolVar(p *bool, name string, value bool, usage string) {\n\tCommandLine.VarP(newBoolValue(value, p), name, \"\", usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "9a5cc91162e865b67514e19c",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "bool.go",
+        "start_byte": 1464,
+        "text": "func BoolVarP(p *bool, name, shorthand string, value bool, usage string) {\n\tCommandLine.VarP(newBoolValue(value, p), name, shorthand, usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "289f6b51c8b70fb828fc06d3",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "bool.go",
+        "start_byte": 1779,
+        "text": "func (f *FlagSet) Bool(name string, value bool, usage string) *bool {\n\tp := new(bool)\n\tf.BoolVarP(p, name, \"\", value, usage)\n\treturn p\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "7751da93db9b39dccef30b26",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "bool.go",
+        "start_byte": 2000,
+        "text": "func (f *FlagSet) BoolP(name, shorthand string, value bool, usage string) *bool {\n\tp := new(bool)\n\tf.BoolVarP(p, name, shorthand, value, usage)\n\treturn p\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "5757bbb648667f9d5500524e",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "bool.go",
+        "start_byte": 2328,
+        "text": "func Bool(name string, value bool, usage string) *bool {\n\treturn CommandLine.BoolP(name, \"\", value, usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "737b51d912146cd24bd7f399",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "bool.go",
+        "start_byte": 2521,
+        "text": "func BoolP(name, shorthand string, value bool, usage string) *bool {\n\treturn CommandLine.BoolP(name, shorthand, value, usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "101dfa10d1ef6e97ca4094c6",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "duration.go",
+        "start_byte": 207,
+        "text": "func (d *durationValue) Set(s string) error {\n\tv, err := time.ParseDuration(s)\n\t*d = durationValue(v)\n\treturn err\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "f5112e9bae9e36439328d390",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "duration.go",
+        "start_byte": 324,
+        "text": "func (d *durationValue) String() string { return (*time.Duration)(d).String() }",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "618550d1ec91458642aa67be",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "duration.go",
+        "start_byte": 775,
+        "text": "func (f *FlagSet) DurationVar(p *time.Duration, name string, value time.Duration, usage string) {\n\tf.VarP(newDurationValue(value, p), name, \"\", usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "2f0c162454579d857ca6dfa8",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "duration.go",
+        "start_byte": 1019,
+        "text": "func (f *FlagSet) DurationVarP(p *time.Duration, name, shorthand string, value time.Duration, usage string) {\n\tf.VarP(newDurationValue(value, p), name, shorthand, usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "ddb683943739add16726308c",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "duration.go",
+        "start_byte": 1384,
+        "text": "func DurationVar(p *time.Duration, name string, value time.Duration, usage string) {\n\tCommandLine.VarP(newDurationValue(value, p), name, \"\", usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "c2f4f436ae0cdac1e1dfb7b4",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "duration.go",
+        "start_byte": 1625,
+        "text": "func DurationVarP(p *time.Duration, name, shorthand string, value time.Duration, usage string) {\n\tCommandLine.VarP(newDurationValue(value, p), name, shorthand, usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "98f765acb7a567e5f11ab709",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "duration.go",
+        "start_byte": 1988,
+        "text": "func (f *FlagSet) Duration(name string, value time.Duration, usage string) *time.Duration {\n\tp := new(time.Duration)\n\tf.DurationVarP(p, name, \"\", value, usage)\n\treturn p\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "255f46fcdf14c907c371cb09",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "duration.go",
+        "start_byte": 2248,
+        "text": "func (f *FlagSet) DurationP(name, shorthand string, value time.Duration, usage string) *time.Duration {\n\tp := new(time.Duration)\n\tf.DurationVarP(p, name, shorthand, value, usage)\n\treturn p\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "5f541a02f3a61301fddd3abb",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "duration.go",
+        "start_byte": 2633,
+        "text": "func Duration(name string, value time.Duration, usage string) *time.Duration {\n\treturn CommandLine.DurationP(name, \"\", value, usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "21f47a08d1908ca662aa652d",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "duration.go",
+        "start_byte": 2856,
+        "text": "func DurationP(name, shorthand string, value time.Duration, usage string) *time.Duration {\n\treturn CommandLine.DurationP(name, shorthand, value, usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "403a0d8d7bb6b2e368835209",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "flag.go",
+        "start_byte": 4868,
+        "text": "type Flag struct {\n\tName      string // name as it appears on command line\n\tShorthand string // one-letter abbreviated flag\n\tUsage     string // help message\n\tValue     Value  // value as set\n\tDefValue  string // default value (as text); for usage message\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "1e6d02a698040496af912276",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "flag.go",
+        "start_byte": 5202,
+        "text": "func sortFlags(flags map[string]*Flag) []*Flag {\n\tlist := make(sort.StringSlice, len(flags))\n\ti := 0\n\tfor _, f := range flags {\n\t\tlist[i] = f.Name\n\t\ti++\n\t}\n\tlist.Sort()\n\tresult := make([]*Flag, len(list))\n\tfor i, name := range list {\n\t\tresult[i] = flags[name]\n\t}\n\treturn result\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "05be2891348ac6e9a1f14db0",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "flag.go",
+        "start_byte": 5483,
+        "text": "func (f *FlagSet) out() io.Writer {\n\tif f.output == nil {\n\t\treturn os.Stderr\n\t}\n\treturn f.output\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "62f06609d5f8a1c1fac63551",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "flag.go",
+        "start_byte": 5687,
+        "text": "func (f *FlagSet) SetOutput(output io.Writer) {\n\tf.output = output\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "d47c2c21754716ae7441bab0",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "flag.go",
+        "start_byte": 5877,
+        "text": "func (f *FlagSet) VisitAll(fn func(*Flag)) {\n\tfor _, flag := range sortFlags(f.formal) {\n\t\tfn(flag)\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "2c732a088b1d532d8f3ce440",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "flag.go",
+        "start_byte": 6301,
+        "text": "func (f *FlagSet) Visit(fn func(*Flag)) {\n\tfor _, flag := range sortFlags(f.actual) {\n\t\tfn(flag)\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "b33aaa18d1d43a1bc4141f8d",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "flag.go",
+        "start_byte": 6682,
+        "text": "func (f *FlagSet) Lookup(name string) *Flag {\n\treturn f.formal[name]\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "b7f1c087660c7970e099cfd9",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "flag.go",
+        "start_byte": 6856,
+        "text": "func Lookup(name string) *Flag {\n\treturn CommandLine.formal[name]\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "8f4d7b79015ebd1a414cc2cb",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "flag.go",
+        "start_byte": 6966,
+        "text": "func (f *FlagSet) Set(name, value string) error {\n\tflag, ok := f.formal[name]\n\tif !ok {\n\t\treturn fmt.Errorf(\"no such flag -%v\", name)\n\t}\n\terr := flag.Value.Set(value)\n\tif err != nil {\n\t\treturn err\n\t}\n\tif f.actual == nil {\n\t\tf.actual = make(map[string]*Flag)\n\t}\n\tf.actual[name] = flag\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "3d87d5c207640af846eb785c",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "flag.go",
+        "start_byte": 7319,
+        "text": "func Set(name, value string) error {\n\treturn CommandLine.Set(name, value)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "f5f2a7974d15a7706ba3d3dc",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "flag.go",
+        "start_byte": 7523,
+        "text": "func (f *FlagSet) PrintDefaults() {\n\tf.VisitAll(func(flag *Flag) {\n\t\tformat := \"--%s=%s: %s\\n\"\n\t\tif _, ok := flag.Value.(*stringValue); ok {\n\t\t\t// put quotes on the value\n\t\t\tformat = \"--%s=%q: %s\\n\"\n\t\t}\n\t\tif len(flag.Shorthand) > 0 {\n\t\t\tformat = \"  -%s, \" + format\n\t\t} else {\n\t\t\tformat = \"   %s   \" + format\n\t\t}\n\t\tfmt.Fprintf(f.out(), format, flag.Shorthand, flag.Name, flag.DefValue, flag.Usage)\n\t})\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "467e7753b37da935c75b97ee",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "flag.go",
+        "start_byte": 8144,
+        "text": "func defaultUsage(f *FlagSet) {\n\tfmt.Fprintf(f.out(), \"Usage of %s:\\n\", f.name)\n\tf.PrintDefaults()\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "4dec4b9e9244c18958d04fa6",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "flag.go",
+        "start_byte": 8731,
+        "text": "func (f *FlagSet) NFlag() int { return len(f.actual) }",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "3006d4882eea92c90e5e9855",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "flag.go",
+        "start_byte": 8857,
+        "text": "func NFlag() int { return len(CommandLine.actual) }",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "e069c553229f3e4a6de84f47",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "flag.go",
+        "start_byte": 9020,
+        "text": "func (f *FlagSet) Arg(i int) string {\n\tif i < 0 || i >= len(f.args) {\n\t\treturn \"\"\n\t}\n\treturn f.args[i]\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "fa518b18f5d8c2caa1be163e",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "flag.go",
+        "start_byte": 9249,
+        "text": "func Arg(i int) string {\n\treturn CommandLine.Arg(i)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "807879d20d814aa18858470d",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "flag.go",
+        "start_byte": 9382,
+        "text": "func (f *FlagSet) NArg() int { return len(f.args) }",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "83353edfd8463d3fa16c87ca",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "flag.go",
+        "start_byte": 9513,
+        "text": "func NArg() int { return len(CommandLine.args) }",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "a68e5f1f33947b1f6e4a3fc9",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "flag.go",
+        "start_byte": 9603,
+        "text": "func (f *FlagSet) Args() []string { return f.args }",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "b101be58f17626ba3d0df216",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "flag.go",
+        "start_byte": 9709,
+        "text": "func Args() []string { return CommandLine.args }",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "f888b4a786947941e5fcedd7",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "flag.go",
+        "start_byte": 10210,
+        "text": "func (f *FlagSet) Var(value Value, name string, usage string) {\n\tf.VarP(value, name, \"\", usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "f30597f33334caa5d0b83735",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "flag.go",
+        "start_byte": 10391,
+        "text": "func (f *FlagSet) VarP(value Value, name, shorthand, usage string) {\n\t// Remember the default value as a string; it won't change.\n\tflag := &Flag{name, shorthand, usage, value, value.String()}\n\t_, alreadythere := f.formal[name]\n\tif alreadythere {\n\t\tmsg := fmt.Sprintf(\"%s flag redefined: %s\", f.name, name)\n\t\tfmt.Fprintln(f.out(), msg)\n\t\tpanic(msg) // Happens only if flags are declared with identical names\n\t}\n\tif f.formal == nil {\n\t\tf.formal = make(map[string]*Flag)\n\t}\n\tf.formal[name] = flag\n\n\tif len(shorthand) == 0 {\n\t\treturn\n\t}\n\tif len(shorthand) > 1 {\n\t\tfmt.Fprintf(f.out(), \"%s shorthand more than ASCII character: %s\\n\", f.name, shorthand)\n\t\tpanic(\"shorthand is more than one character\")\n\t}\n\tif f.shorthands == nil {\n\t\tf.shorthands = make(map[byte]*Flag)\n\t}\n\tc := shorthand[0]\n\told, alreadythere := f.shorthands[c]\n\tif alreadythere {\n\t\tfmt.Fprintf(f.out(), \"%s shorthand reused: %q for %s already used for %s\\n\", f.name, c, name, old.Name)\n\t\tpanic(\"shorthand redefinition\")\n\t}\n\tf.shorthands[c] = flag\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "9bb408f86d159be063e194c4",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "flag.go",
+        "start_byte": 11854,
+        "text": "func Var(value Value, name string, usage string) {\n\tCommandLine.VarP(value, name, \"\", usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "53d60ae01da3e0486a64fc68",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "flag.go",
+        "start_byte": 12032,
+        "text": "func VarP(value Value, name, shorthand, usage string) {\n\tCommandLine.VarP(value, name, shorthand, usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "76212baa484e0f3cbc3232b4",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "flag.go",
+        "start_byte": 15241,
+        "text": "func (f *FlagSet) Parse(arguments []string) error {\n\tf.parsed = true\n\tf.args = make([]string, 0, len(arguments))\n\terr := f.parseArgs(arguments)\n\tif err != nil {\n\t\tswitch f.errorHandling {\n\t\tcase ContinueOnError:\n\t\t\treturn err\n\t\tcase ExitOnError:\n\t\t\tos.Exit(2)\n\t\tcase PanicOnError:\n\t\t\tpanic(err)\n\t\t}\n\t}\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "5fe05782561566d31d3e6099",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "flag.go",
+        "start_byte": 15609,
+        "text": "func (f *FlagSet) Parsed() bool {\n\treturn f.parsed\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "a2bde215c59c0f965afbccfa",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "flag.go",
+        "start_byte": 15982,
+        "text": "func SetInterspersed(interspersed bool) {\n\tCommandLine.SetInterspersed(interspersed)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "675ba58494bc4ed1f3cb12d6",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "flag.go",
+        "start_byte": 16408,
+        "text": "func NewFlagSet(name string, errorHandling ErrorHandling) *FlagSet {\n\tf := &FlagSet{\n\t\tname:          name,\n\t\terrorHandling: errorHandling,\n\t\tinterspersed:  true,\n\t}\n\treturn f\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "cfd95ac1d3d057a32659f195",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "flag.go",
+        "start_byte": 16651,
+        "text": "func (f *FlagSet) SetInterspersed(interspersed bool) {\n\tf.interspersed = interspersed\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "8c78b2a52558a3fc84f62702",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "flag.go",
+        "start_byte": 16907,
+        "text": "func (f *FlagSet) Init(name string, errorHandling ErrorHandling) {\n\tf.name = name\n\tf.errorHandling = errorHandling\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "6ba91ff475997d09312a3c50",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "float32.go",
+        "start_byte": 194,
+        "text": "func (f *float32Value) Set(s string) error {\n\tv, err := strconv.ParseFloat(s, 32)\n\t*f = float32Value(v)\n\treturn err\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "a49962360635bfcfd6f283ff",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "float32.go",
+        "start_byte": 313,
+        "text": "func (f *float32Value) String() string { return fmt.Sprintf(\"%v\", *f) }",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "dfad504b8fb23ab7691427ad",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "float32.go",
+        "start_byte": 565,
+        "text": "func (f *FlagSet) Float32Var(p *float32, name string, value float32, usage string) {\n\tf.VarP(newFloat32Value(value, p), name, \"\", usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "ba55ab92cacc7a813f1c724b",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "float32.go",
+        "start_byte": 794,
+        "text": "func (f *FlagSet) Float32VarP(p *float32, name, shorthand string, value float32, usage string) {\n\tf.VarP(newFloat32Value(value, p), name, shorthand, usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "a6b3761a5d474477bd6f6315",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "float32.go",
+        "start_byte": 1132,
+        "text": "func Float32Var(p *float32, name string, value float32, usage string) {\n\tCommandLine.VarP(newFloat32Value(value, p), name, \"\", usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "8045142c88f2b5f6d6ac2951",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "float32.go",
+        "start_byte": 1358,
+        "text": "func Float32VarP(p *float32, name, shorthand string, value float32, usage string) {\n\tCommandLine.VarP(newFloat32Value(value, p), name, shorthand, usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "d059122ef94741c51e6ea4a1",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "float32.go",
+        "start_byte": 1694,
+        "text": "func (f *FlagSet) Float32(name string, value float32, usage string) *float32 {\n\tp := new(float32)\n\tf.Float32VarP(p, name, \"\", value, usage)\n\treturn p\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "2dd0100e3d65165d02ce0978",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "float32.go",
+        "start_byte": 1933,
+        "text": "func (f *FlagSet) Float32P(name, shorthand string, value float32, usage string) *float32 {\n\tp := new(float32)\n\tf.Float32VarP(p, name, shorthand, value, usage)\n\treturn p\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "1d13f6fa36119a4fc61f1eba",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "float32.go",
+        "start_byte": 2285,
+        "text": "func Float32(name string, value float32, usage string) *float32 {\n\treturn CommandLine.Float32P(name, \"\", value, usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "71d0f3dc5e2123c3c382477d",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "float32.go",
+        "start_byte": 2493,
+        "text": "func Float32P(name, shorthand string, value float32, usage string) *float32 {\n\treturn CommandLine.Float32P(name, shorthand, value, usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "6496e7e1ceccd15531a040f8",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "float64.go",
+        "start_byte": 194,
+        "text": "func (f *float64Value) Set(s string) error {\n\tv, err := strconv.ParseFloat(s, 64)\n\t*f = float64Value(v)\n\treturn err\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "339d305cb8a1fea4d8cc9153",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "float64.go",
+        "start_byte": 313,
+        "text": "func (f *float64Value) String() string { return fmt.Sprintf(\"%v\", *f) }",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "43541d422e6230723b43f265",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "float64.go",
+        "start_byte": 565,
+        "text": "func (f *FlagSet) Float64Var(p *float64, name string, value float64, usage string) {\n\tf.VarP(newFloat64Value(value, p), name, \"\", usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "3d6ac1516a4e45748037c7dc",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "float64.go",
+        "start_byte": 794,
+        "text": "func (f *FlagSet) Float64VarP(p *float64, name, shorthand string, value float64, usage string) {\n\tf.VarP(newFloat64Value(value, p), name, shorthand, usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "b2b0604f87587b58dad3cf21",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "float64.go",
+        "start_byte": 1132,
+        "text": "func Float64Var(p *float64, name string, value float64, usage string) {\n\tCommandLine.VarP(newFloat64Value(value, p), name, \"\", usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "db384307b45636fa902542da",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "float64.go",
+        "start_byte": 1358,
+        "text": "func Float64VarP(p *float64, name, shorthand string, value float64, usage string) {\n\tCommandLine.VarP(newFloat64Value(value, p), name, shorthand, usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "e7d075c8f0b171ff4e10edfb",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "float64.go",
+        "start_byte": 1694,
+        "text": "func (f *FlagSet) Float64(name string, value float64, usage string) *float64 {\n\tp := new(float64)\n\tf.Float64VarP(p, name, \"\", value, usage)\n\treturn p\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "67ffe9453b96659259a6d854",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "float64.go",
+        "start_byte": 1933,
+        "text": "func (f *FlagSet) Float64P(name, shorthand string, value float64, usage string) *float64 {\n\tp := new(float64)\n\tf.Float64VarP(p, name, shorthand, value, usage)\n\treturn p\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "58180e36fead312a17f05cec",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "float64.go",
+        "start_byte": 2285,
+        "text": "func Float64(name string, value float64, usage string) *float64 {\n\treturn CommandLine.Float64P(name, \"\", value, usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "4ba11bcafbf1cc5eeb1423ef",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "float64.go",
+        "start_byte": 2493,
+        "text": "func Float64P(name, shorthand string, value float64, usage string) *float64 {\n\treturn CommandLine.Float64P(name, shorthand, value, usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "e4be7669e56d202d0e21af2a",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "int.go",
+        "start_byte": 162,
+        "text": "func (i *intValue) Set(s string) error {\n\tv, err := strconv.ParseInt(s, 0, 64)\n\t*i = intValue(v)\n\treturn err\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "0d0c6bc8d65b7711dafa5437",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "int.go",
+        "start_byte": 274,
+        "text": "func (i *intValue) String() string { return fmt.Sprintf(\"%v\", *i) }",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "9b940e72c87e2a0a22099c64",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "int.go",
+        "start_byte": 512,
+        "text": "func (f *FlagSet) IntVar(p *int, name string, value int, usage string) {\n\tf.VarP(newIntValue(value, p), name, \"\", usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "07eff677523eb2ee98d931dd",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "int.go",
+        "start_byte": 721,
+        "text": "func (f *FlagSet) IntVarP(p *int, name, shorthand string, value int, usage string) {\n\tf.VarP(newIntValue(value, p), name, shorthand, usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "689423c7d79626d70647da49",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "int.go",
+        "start_byte": 1033,
+        "text": "func IntVar(p *int, name string, value int, usage string) {\n\tCommandLine.VarP(newIntValue(value, p), name, \"\", usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "9083e93f46dbbd5c4ba32ad8",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "int.go",
+        "start_byte": 1239,
+        "text": "func IntVarP(p *int, name, shorthand string, value int, usage string) {\n\tCommandLine.VarP(newIntValue(value, p), name, shorthand, usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "c236b043576e0ba1476a9c53",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "int.go",
+        "start_byte": 1549,
+        "text": "func (f *FlagSet) Int(name string, value int, usage string) *int {\n\tp := new(int)\n\tf.IntVarP(p, name, \"\", value, usage)\n\treturn p\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "a0b91e1547c4d8f586893059",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "int.go",
+        "start_byte": 1764,
+        "text": "func (f *FlagSet) IntP(name, shorthand string, value int, usage string) *int {\n\tp := new(int)\n\tf.IntVarP(p, name, shorthand, value, usage)\n\treturn p\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "af3782c0a89d7d660c04b775",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "int.go",
+        "start_byte": 2086,
+        "text": "func Int(name string, value int, usage string) *int {\n\treturn CommandLine.IntP(name, \"\", value, usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "01cf108be04750b1486ec7db",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "int.go",
+        "start_byte": 2274,
+        "text": "func IntP(name, shorthand string, value int, usage string) *int {\n\treturn CommandLine.IntP(name, shorthand, value, usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "e884bc3f0bbc22903ee794f1",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "int32.go",
+        "start_byte": 178,
+        "text": "func (i *int32Value) Set(s string) error {\n\tv, err := strconv.ParseInt(s, 0, 32)\n\t*i = int32Value(v)\n\treturn err\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "6d07be7f9ef234a575e041dc",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "int32.go",
+        "start_byte": 294,
+        "text": "func (i *int32Value) String() string { return fmt.Sprintf(\"%v\", *i) }",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "e3a6d1b420eac14f9fb77038",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "int32.go",
+        "start_byte": 540,
+        "text": "func (f *FlagSet) Int32Var(p *int32, name string, value int32, usage string) {\n\tf.VarP(newInt32Value(value, p), name, \"\", usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "e37c4e0aee0e74a9afcd2c3d",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "int32.go",
+        "start_byte": 759,
+        "text": "func (f *FlagSet) Int32VarP(p *int32, name, shorthand string, value int32, usage string) {\n\tf.VarP(newInt32Value(value, p), name, shorthand, usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "4dcad0a4eed0e94afafad76a",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "int32.go",
+        "start_byte": 1085,
+        "text": "func Int32Var(p *int32, name string, value int32, usage string) {\n\tCommandLine.VarP(newInt32Value(value, p), name, \"\", usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "84f9527f054e8ae65b93d954",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "int32.go",
+        "start_byte": 1301,
+        "text": "func Int32VarP(p *int32, name, shorthand string, value int32, usage string) {\n\tCommandLine.VarP(newInt32Value(value, p), name, shorthand, usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "10717a93327903f58116d7b4",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "int32.go",
+        "start_byte": 1625,
+        "text": "func (f *FlagSet) Int32(name string, value int32, usage string) *int32 {\n\tp := new(int32)\n\tf.Int32VarP(p, name, \"\", value, usage)\n\treturn p\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "648a1319805c9c00b2aa8eca",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "int32.go",
+        "start_byte": 1852,
+        "text": "func (f *FlagSet) Int32P(name, shorthand string, value int32, usage string) *int32 {\n\tp := new(int32)\n\tf.Int32VarP(p, name, shorthand, value, usage)\n\treturn p\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "f525e0411b2cbfac11c344df",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "int32.go",
+        "start_byte": 2190,
+        "text": "func Int32(name string, value int32, usage string) *int32 {\n\treturn CommandLine.Int32P(name, \"\", value, usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "a7e4f777c78e1b706b3f2e2c",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "int32.go",
+        "start_byte": 2388,
+        "text": "func Int32P(name, shorthand string, value int32, usage string) *int32 {\n\treturn CommandLine.Int32P(name, shorthand, value, usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "ff5150c5ce6290a0dbdf201b",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "int64.go",
+        "start_byte": 178,
+        "text": "func (i *int64Value) Set(s string) error {\n\tv, err := strconv.ParseInt(s, 0, 64)\n\t*i = int64Value(v)\n\treturn err\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "46d88ef815f90bf33055f3ec",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "int64.go",
+        "start_byte": 294,
+        "text": "func (i *int64Value) String() string { return fmt.Sprintf(\"%v\", *i) }",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "1614ad6c1a5bb0192ce8fab2",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "int64.go",
+        "start_byte": 540,
+        "text": "func (f *FlagSet) Int64Var(p *int64, name string, value int64, usage string) {\n\tf.VarP(newInt64Value(value, p), name, \"\", usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "a99994eab517f1cc47c3dd30",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "int64.go",
+        "start_byte": 759,
+        "text": "func (f *FlagSet) Int64VarP(p *int64, name, shorthand string, value int64, usage string) {\n\tf.VarP(newInt64Value(value, p), name, shorthand, usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "197d440b7723169a9ff0f8fa",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "int64.go",
+        "start_byte": 1085,
+        "text": "func Int64Var(p *int64, name string, value int64, usage string) {\n\tCommandLine.VarP(newInt64Value(value, p), name, \"\", usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "837c01c33d4e11e1288e7765",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "int64.go",
+        "start_byte": 1301,
+        "text": "func Int64VarP(p *int64, name, shorthand string, value int64, usage string) {\n\tCommandLine.VarP(newInt64Value(value, p), name, shorthand, usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "b373a58a873839e18ceb7708",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "int64.go",
+        "start_byte": 1625,
+        "text": "func (f *FlagSet) Int64(name string, value int64, usage string) *int64 {\n\tp := new(int64)\n\tf.Int64VarP(p, name, \"\", value, usage)\n\treturn p\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "7dba4054e170e9c732e08888",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "int64.go",
+        "start_byte": 1852,
+        "text": "func (f *FlagSet) Int64P(name, shorthand string, value int64, usage string) *int64 {\n\tp := new(int64)\n\tf.Int64VarP(p, name, shorthand, value, usage)\n\treturn p\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "487eced494acef523a8a9324",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "int64.go",
+        "start_byte": 2190,
+        "text": "func Int64(name string, value int64, usage string) *int64 {\n\treturn CommandLine.Int64P(name, \"\", value, usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "e0ba07c668a1bac411647994",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "int64.go",
+        "start_byte": 2388,
+        "text": "func Int64P(name, shorthand string, value int64, usage string) *int64 {\n\treturn CommandLine.Int64P(name, shorthand, value, usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "197fa8482e7d3b65970cf512",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "int8.go",
+        "start_byte": 170,
+        "text": "func (i *int8Value) Set(s string) error {\n\tv, err := strconv.ParseInt(s, 0, 8)\n\t*i = int8Value(v)\n\treturn err\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "44f975b225c1e50b8d89aa2d",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "int8.go",
+        "start_byte": 283,
+        "text": "func (i *int8Value) String() string { return fmt.Sprintf(\"%v\", *i) }",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "c42a3613dfdac322c718cd2a",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "int8.go",
+        "start_byte": 525,
+        "text": "func (f *FlagSet) Int8Var(p *int8, name string, value int8, usage string) {\n\tf.VarP(newInt8Value(value, p), name, \"\", usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "cc2576011fc6aa5f2f112211",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "int8.go",
+        "start_byte": 739,
+        "text": "func (f *FlagSet) Int8VarP(p *int8, name, shorthand string, value int8, usage string) {\n\tf.VarP(newInt8Value(value, p), name, shorthand, usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "974ad32f3bd279af6d581221",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "int8.go",
+        "start_byte": 1058,
+        "text": "func Int8Var(p *int8, name string, value int8, usage string) {\n\tCommandLine.VarP(newInt8Value(value, p), name, \"\", usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "3585332f55578e188a252998",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "int8.go",
+        "start_byte": 1269,
+        "text": "func Int8VarP(p *int8, name, shorthand string, value int8, usage string) {\n\tCommandLine.VarP(newInt8Value(value, p), name, shorthand, usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "db7186b955a51f4ae555d36f",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "int8.go",
+        "start_byte": 1586,
+        "text": "func (f *FlagSet) Int8(name string, value int8, usage string) *int8 {\n\tp := new(int8)\n\tf.Int8VarP(p, name, \"\", value, usage)\n\treturn p\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "ea8d674657256df717b5225a",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "int8.go",
+        "start_byte": 1807,
+        "text": "func (f *FlagSet) Int8P(name, shorthand string, value int8, usage string) *int8 {\n\tp := new(int8)\n\tf.Int8VarP(p, name, shorthand, value, usage)\n\treturn p\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "12ea6990fca358ab1f10c6e1",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "int8.go",
+        "start_byte": 2137,
+        "text": "func Int8(name string, value int8, usage string) *int8 {\n\treturn CommandLine.Int8P(name, \"\", value, usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "4258924b8321528af2a1902d",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "int8.go",
+        "start_byte": 2330,
+        "text": "func Int8P(name, shorthand string, value int8, usage string) *int8 {\n\treturn CommandLine.Int8P(name, shorthand, value, usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "480f5f7c079a5a4adea467ca",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "ip.go",
+        "start_byte": 166,
+        "text": "func (i *ipValue) String() string { return net.IP(*i).String() }",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "06bb1e2909d4556f09a02970",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "ip.go",
+        "start_byte": 231,
+        "text": "func (i *ipValue) Set(s string) error {\n\tip := net.ParseIP(s)\n\tif ip == nil {\n\t\treturn fmt.Errorf(\"failed to parse IP: %q\", s)\n\t}\n\t*i = ipValue(ip)\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "24e3d04317f98cb3aee1d21d",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "ip.go",
+        "start_byte": 393,
+        "text": "func (i *ipValue) Get() interface{} {\n\treturn net.IP(*i)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "02844ce4994f640d980d9172",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "ip.go",
+        "start_byte": 627,
+        "text": "func (f *FlagSet) IPVar(p *net.IP, name string, value net.IP, usage string) {\n\tf.VarP(newIPValue(value, p), name, \"\", usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "38962eab9468d276427888f2",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "ip.go",
+        "start_byte": 839,
+        "text": "func (f *FlagSet) IPVarP(p *net.IP, name, shorthand string, value net.IP, usage string) {\n\tf.VarP(newIPValue(value, p), name, shorthand, usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "63558ee52189f214ab7a225e",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "ip.go",
+        "start_byte": 1160,
+        "text": "func IPVar(p *net.IP, name string, value net.IP, usage string) {\n\tCommandLine.VarP(newIPValue(value, p), name, \"\", usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "fda9cad16e73dc7b68a38c5d",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "ip.go",
+        "start_byte": 1369,
+        "text": "func IPVarP(p *net.IP, name, shorthand string, value net.IP, usage string) {\n\tCommandLine.VarP(newIPValue(value, p), name, shorthand, usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "10ad9985774faa5327ff2d27",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "ip.go",
+        "start_byte": 1688,
+        "text": "func (f *FlagSet) IP(name string, value net.IP, usage string) *net.IP {\n\tp := new(net.IP)\n\tf.IPVarP(p, name, \"\", value, usage)\n\treturn p\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "361186d70a7a4917afb9552b",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "ip.go",
+        "start_byte": 1909,
+        "text": "func (f *FlagSet) IPP(name, shorthand string, value net.IP, usage string) *net.IP {\n\tp := new(net.IP)\n\tf.IPVarP(p, name, shorthand, value, usage)\n\treturn p\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "94a8adc6618e5ec98e7951a3",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "ip.go",
+        "start_byte": 2243,
+        "text": "func IP(name string, value net.IP, usage string) *net.IP {\n\treturn CommandLine.IPP(name, \"\", value, usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "e4baffe5b3f6dbbe841fbf67",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "ip.go",
+        "start_byte": 2434,
+        "text": "func IPP(name, shorthand string, value net.IP, usage string) *net.IP {\n\treturn CommandLine.IPP(name, shorthand, value, usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "43d0bc533ccc1ea4782277a1",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "ipmask.go",
+        "start_byte": 198,
+        "text": "func (i *ipMaskValue) String() string { return net.IPMask(*i).String() }",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "1249ad63c049c60b064a169f",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "ipmask.go",
+        "start_byte": 271,
+        "text": "func (i *ipMaskValue) Set(s string) error {\n\tip := ParseIPv4Mask(s)\n\tif ip == nil {\n\t\treturn fmt.Errorf(\"failed to parse IP mask: %q\", s)\n\t}\n\t*i = ipMaskValue(ip)\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "11115f92bb85b5554b28d74e",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "ipmask.go",
+        "start_byte": 448,
+        "text": "func (i *ipMaskValue) Get() interface{} {\n\treturn net.IPMask(*i)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "58f32b6a3e2e0bccfe8abbfd",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "ipmask.go",
+        "start_byte": 637,
+        "text": "func ParseIPv4Mask(s string) net.IPMask {\n\tmask := net.ParseIP(s)\n\tif mask == nil {\n\t\treturn nil\n\t}\n\treturn net.IPv4Mask(mask[12], mask[13], mask[14], mask[15])\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "a93db83a3148088cca7acfe8",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "ipmask.go",
+        "start_byte": 987,
+        "text": "func (f *FlagSet) IPMaskVar(p *net.IPMask, name string, value net.IPMask, usage string) {\n\tf.VarP(newIPMaskValue(value, p), name, \"\", usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "37b15bbc0f11a5dc823a3dc0",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "ipmask.go",
+        "start_byte": 1219,
+        "text": "func (f *FlagSet) IPMaskVarP(p *net.IPMask, name, shorthand string, value net.IPMask, usage string) {\n\tf.VarP(newIPMaskValue(value, p), name, shorthand, usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "2ef2a95b95de568e83824348",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "ipmask.go",
+        "start_byte": 1568,
+        "text": "func IPMaskVar(p *net.IPMask, name string, value net.IPMask, usage string) {\n\tCommandLine.VarP(newIPMaskValue(value, p), name, \"\", usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "c4c3ff996470fca1baa713b2",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "ipmask.go",
+        "start_byte": 1797,
+        "text": "func IPMaskVarP(p *net.IPMask, name, shorthand string, value net.IPMask, usage string) {\n\tCommandLine.VarP(newIPMaskValue(value, p), name, shorthand, usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "6e451a5cde0e67c15952c8bb",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "ipmask.go",
+        "start_byte": 2144,
+        "text": "func (f *FlagSet) IPMask(name string, value net.IPMask, usage string) *net.IPMask {\n\tp := new(net.IPMask)\n\tf.IPMaskVarP(p, name, \"\", value, usage)\n\treturn p\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "0a51ab944ea108e7d3cee98d",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "ipmask.go",
+        "start_byte": 2389,
+        "text": "func (f *FlagSet) IPMaskP(name, shorthand string, value net.IPMask, usage string) *net.IPMask {\n\tp := new(net.IPMask)\n\tf.IPMaskVarP(p, name, shorthand, value, usage)\n\treturn p\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "758d72d10eaa30cfd8449b0f",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "ipmask.go",
+        "start_byte": 2755,
+        "text": "func IPMask(name string, value net.IPMask, usage string) *net.IPMask {\n\treturn CommandLine.IPMaskP(name, \"\", value, usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "9eecf0fa87e2a0052e5c6d8b",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "ipmask.go",
+        "start_byte": 2962,
+        "text": "func IPMaskP(name, shorthand string, value net.IPMask, usage string) *net.IPMask {\n\treturn CommandLine.IPMaskP(name, shorthand, value, usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "bcdfc644a75e8510c28a2f24",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "string.go",
+        "start_byte": 48,
+        "text": "type stringValue string",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "8a7cf602c0b9c587e442584b",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "string.go",
+        "start_byte": 73,
+        "text": "func newStringValue(val string, p *string) *stringValue {\n\t*p = val\n\treturn (*stringValue)(p)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "dacb4fe2fc3566725276fe6a",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "string.go",
+        "start_byte": 170,
+        "text": "func (s *stringValue) Set(val string) error {\n\t*s = stringValue(val)\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "06855b65849aff4aee8ee736",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "string.go",
+        "start_byte": 254,
+        "text": "func (s *stringValue) String() string { return fmt.Sprintf(\"%s\", *s) }",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "dffc9ead6671a8d5cb0c3ef9",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "string.go",
+        "start_byte": 502,
+        "text": "func (f *FlagSet) StringVar(p *string, name string, value string, usage string) {\n\tf.VarP(newStringValue(value, p), name, \"\", usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "30abc49dcde9e9321d0155d6",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "string.go",
+        "start_byte": 726,
+        "text": "func (f *FlagSet) StringVarP(p *string, name, shorthand string, value string, usage string) {\n\tf.VarP(newStringValue(value, p), name, shorthand, usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "f3547e1e241b5ba570a5cce6",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "string.go",
+        "start_byte": 1057,
+        "text": "func StringVar(p *string, name string, value string, usage string) {\n\tCommandLine.VarP(newStringValue(value, p), name, \"\", usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "57cd97598c2353aaddd2f10e",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "string.go",
+        "start_byte": 1278,
+        "text": "func StringVarP(p *string, name, shorthand string, value string, usage string) {\n\tCommandLine.VarP(newStringValue(value, p), name, shorthand, usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "6bdd918eb860b9bedbffe41e",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "string.go",
+        "start_byte": 1607,
+        "text": "func (f *FlagSet) String(name string, value string, usage string) *string {\n\tp := new(string)\n\tf.StringVarP(p, name, \"\", value, usage)\n\treturn p\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "1d94d2752723112b0ae3d1dd",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "string.go",
+        "start_byte": 1840,
+        "text": "func (f *FlagSet) StringP(name, shorthand string, value string, usage string) *string {\n\tp := new(string)\n\tf.StringVarP(p, name, shorthand, value, usage)\n\treturn p\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "8ad1159aa468ff8b64ef3e5e",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "string.go",
+        "start_byte": 2184,
+        "text": "func String(name string, value string, usage string) *string {\n\treturn CommandLine.StringP(name, \"\", value, usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "68c9b2dd19a53075d1afa2dd",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "string.go",
+        "start_byte": 2387,
+        "text": "func StringP(name, shorthand string, value string, usage string) *string {\n\treturn CommandLine.StringP(name, shorthand, value, usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "7b24f0fd6d0378ddea554760",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "uint.go",
+        "start_byte": 170,
+        "text": "func (i *uintValue) Set(s string) error {\n\tv, err := strconv.ParseUint(s, 0, 64)\n\t*i = uintValue(v)\n\treturn err\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "9793b7edc7b8d99e52bd41f5",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "uint.go",
+        "start_byte": 285,
+        "text": "func (i *uintValue) String() string { return fmt.Sprintf(\"%v\", *i) }",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "2c2ac73fa450bc0ec872e10b",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "uint.go",
+        "start_byte": 525,
+        "text": "func (f *FlagSet) UintVar(p *uint, name string, value uint, usage string) {\n\tf.VarP(newUintValue(value, p), name, \"\", usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "1fcceb9370261e91efa05db2",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "uint.go",
+        "start_byte": 739,
+        "text": "func (f *FlagSet) UintVarP(p *uint, name, shorthand string, value uint, usage string) {\n\tf.VarP(newUintValue(value, p), name, shorthand, usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "0fad43464bf3fda82e2b02e5",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "uint.go",
+        "start_byte": 1057,
+        "text": "func UintVar(p *uint, name string, value uint, usage string) {\n\tCommandLine.VarP(newUintValue(value, p), name, \"\", usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "2e38797f6900db71e4b0e671",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "uint.go",
+        "start_byte": 1268,
+        "text": "func UintVarP(p *uint, name, shorthand string, value uint, usage string) {\n\tCommandLine.VarP(newUintValue(value, p), name, shorthand, usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "96d7db09c70a80f4dcfd4b4a",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "uint.go",
+        "start_byte": 1584,
+        "text": "func (f *FlagSet) Uint(name string, value uint, usage string) *uint {\n\tp := new(uint)\n\tf.UintVarP(p, name, \"\", value, usage)\n\treturn p\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "83e3aec76422cb1a20a8d658",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "uint.go",
+        "start_byte": 1805,
+        "text": "func (f *FlagSet) UintP(name, shorthand string, value uint, usage string) *uint {\n\tp := new(uint)\n\tf.UintVarP(p, name, shorthand, value, usage)\n\treturn p\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "d257aed08525d5a79602a78d",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "uint.go",
+        "start_byte": 2134,
+        "text": "func Uint(name string, value uint, usage string) *uint {\n\treturn CommandLine.UintP(name, \"\", value, usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "7496090d512b5f04b1d39542",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "uint.go",
+        "start_byte": 2327,
+        "text": "func UintP(name, shorthand string, value uint, usage string) *uint {\n\treturn CommandLine.UintP(name, shorthand, value, usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "64ae21959d78911b07da944f",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "uint16.go",
+        "start_byte": 185,
+        "text": "func (i *uint16Value) String() string { return fmt.Sprintf(\"%d\", *i) }",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "3782a6a1bc2976e7e7bef491",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "uint16.go",
+        "start_byte": 256,
+        "text": "func (i *uint16Value) Set(s string) error {\n\tv, err := strconv.ParseUint(s, 0, 16)\n\t*i = uint16Value(v)\n\treturn err\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "d98945a843204f4c0ca79545",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "uint16.go",
+        "start_byte": 374,
+        "text": "func (i *uint16Value) Get() interface{} {\n\treturn uint16(*i)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "1593846b90459cdb29b5a915",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "uint16.go",
+        "start_byte": 610,
+        "text": "func (f *FlagSet) Uint16Var(p *uint16, name string, value uint16, usage string) {\n\tf.VarP(newUint16Value(value, p), name, \"\", usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "bbd3a46bd5d321076bd80cb6",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "uint16.go",
+        "start_byte": 834,
+        "text": "func (f *FlagSet) Uint16VarP(p *uint16, name, shorthand string, value uint16, usage string) {\n\tf.VarP(newUint16Value(value, p), name, shorthand, usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "9583682abe5e5ecdfa7688a5",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "uint16.go",
+        "start_byte": 1162,
+        "text": "func Uint16Var(p *uint16, name string, value uint16, usage string) {\n\tCommandLine.VarP(newUint16Value(value, p), name, \"\", usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "0e1df0ac1c05b5e444b47791",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "uint16.go",
+        "start_byte": 1383,
+        "text": "func Uint16VarP(p *uint16, name, shorthand string, value uint16, usage string) {\n\tCommandLine.VarP(newUint16Value(value, p), name, shorthand, usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "db7e62078346f4d7e2ba37ae",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "uint16.go",
+        "start_byte": 1709,
+        "text": "func (f *FlagSet) Uint16(name string, value uint16, usage string) *uint16 {\n\tp := new(uint16)\n\tf.Uint16VarP(p, name, \"\", value, usage)\n\treturn p\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "0453035ffa390351cf870a70",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "uint16.go",
+        "start_byte": 1942,
+        "text": "func (f *FlagSet) Uint16P(name, shorthand string, value uint16, usage string) *uint16 {\n\tp := new(uint16)\n\tf.Uint16VarP(p, name, shorthand, value, usage)\n\treturn p\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "d46ed95623ca62147ab612e9",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "uint16.go",
+        "start_byte": 2283,
+        "text": "func Uint16(name string, value uint16, usage string) *uint16 {\n\treturn CommandLine.Uint16P(name, \"\", value, usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "03676b3d5aa431c63c41d7ed",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "uint16.go",
+        "start_byte": 2486,
+        "text": "func Uint16P(name, shorthand string, value uint16, usage string) *uint16 {\n\treturn CommandLine.Uint16P(name, shorthand, value, usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "596f9dc5152aeb1c75d51541",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "uint32.go",
+        "start_byte": 185,
+        "text": "func (i *uint32Value) String() string { return fmt.Sprintf(\"%d\", *i) }",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "68539cf6078abfecc3ef2e55",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "uint32.go",
+        "start_byte": 256,
+        "text": "func (i *uint32Value) Set(s string) error {\n\tv, err := strconv.ParseUint(s, 0, 32)\n\t*i = uint32Value(v)\n\treturn err\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "828ee78c4f0e9c675d583317",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "uint32.go",
+        "start_byte": 374,
+        "text": "func (i *uint32Value) Get() interface{} {\n\treturn uint32(*i)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "0ed9b4a0ad22d5a3215a30c4",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "uint32.go",
+        "start_byte": 614,
+        "text": "func (f *FlagSet) Uint32Var(p *uint32, name string, value uint32, usage string) {\n\tf.VarP(newUint32Value(value, p), name, \"\", usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "efb66ab5c18809799d582298",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "uint32.go",
+        "start_byte": 838,
+        "text": "func (f *FlagSet) Uint32VarP(p *uint32, name, shorthand string, value uint32, usage string) {\n\tf.VarP(newUint32Value(value, p), name, shorthand, usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "764fb27bebcc53b3d783f66d",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "uint32.go",
+        "start_byte": 1170,
+        "text": "func Uint32Var(p *uint32, name string, value uint32, usage string) {\n\tCommandLine.VarP(newUint32Value(value, p), name, \"\", usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "3cb1955e939f58128825cdc0",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "uint32.go",
+        "start_byte": 1391,
+        "text": "func Uint32VarP(p *uint32, name, shorthand string, value uint32, usage string) {\n\tCommandLine.VarP(newUint32Value(value, p), name, shorthand, usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "3aaf61d44b10d40850415c8b",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "uint32.go",
+        "start_byte": 1721,
+        "text": "func (f *FlagSet) Uint32(name string, value uint32, usage string) *uint32 {\n\tp := new(uint32)\n\tf.Uint32VarP(p, name, \"\", value, usage)\n\treturn p\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "2c20260ef9a7c97a48e905ee",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "uint32.go",
+        "start_byte": 1954,
+        "text": "func (f *FlagSet) Uint32P(name, shorthand string, value uint32, usage string) *uint32 {\n\tp := new(uint32)\n\tf.Uint32VarP(p, name, shorthand, value, usage)\n\treturn p\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "162067da3007f4121e1bab9d",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "uint32.go",
+        "start_byte": 2299,
+        "text": "func Uint32(name string, value uint32, usage string) *uint32 {\n\treturn CommandLine.Uint32P(name, \"\", value, usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "9f1d06f14c9393c3975c3cf3",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "uint32.go",
+        "start_byte": 2502,
+        "text": "func Uint32P(name, shorthand string, value uint32, usage string) *uint32 {\n\treturn CommandLine.Uint32P(name, shorthand, value, usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "31218ec536bb68b2a55b101c",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "uint64.go",
+        "start_byte": 186,
+        "text": "func (i *uint64Value) Set(s string) error {\n\tv, err := strconv.ParseUint(s, 0, 64)\n\t*i = uint64Value(v)\n\treturn err\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "8d0d5ac1c1d620bbae5d97ed",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "uint64.go",
+        "start_byte": 305,
+        "text": "func (i *uint64Value) String() string { return fmt.Sprintf(\"%v\", *i) }",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "d9daec7b9ce4a26f73f0d115",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "uint64.go",
+        "start_byte": 553,
+        "text": "func (f *FlagSet) Uint64Var(p *uint64, name string, value uint64, usage string) {\n\tf.VarP(newUint64Value(value, p), name, \"\", usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "78625bd14561567d9edb433b",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "uint64.go",
+        "start_byte": 777,
+        "text": "func (f *FlagSet) Uint64VarP(p *uint64, name, shorthand string, value uint64, usage string) {\n\tf.VarP(newUint64Value(value, p), name, shorthand, usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "8692a81e0f8588f95e895cc6",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "uint64.go",
+        "start_byte": 1108,
+        "text": "func Uint64Var(p *uint64, name string, value uint64, usage string) {\n\tCommandLine.VarP(newUint64Value(value, p), name, \"\", usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "b6c0f1314c49ca159b694b7b",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "uint64.go",
+        "start_byte": 1329,
+        "text": "func Uint64VarP(p *uint64, name, shorthand string, value uint64, usage string) {\n\tCommandLine.VarP(newUint64Value(value, p), name, shorthand, usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "070f51870c94cf99c625bbcb",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "uint64.go",
+        "start_byte": 1658,
+        "text": "func (f *FlagSet) Uint64(name string, value uint64, usage string) *uint64 {\n\tp := new(uint64)\n\tf.Uint64VarP(p, name, \"\", value, usage)\n\treturn p\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "a3348c7773d0d3b107544cc1",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "uint64.go",
+        "start_byte": 1891,
+        "text": "func (f *FlagSet) Uint64P(name, shorthand string, value uint64, usage string) *uint64 {\n\tp := new(uint64)\n\tf.Uint64VarP(p, name, shorthand, value, usage)\n\treturn p\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "0afef57e96ef66b802e22462",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "uint64.go",
+        "start_byte": 2235,
+        "text": "func Uint64(name string, value uint64, usage string) *uint64 {\n\treturn CommandLine.Uint64P(name, \"\", value, usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "09d451b436c74f401adac2eb",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "uint64.go",
+        "start_byte": 2438,
+        "text": "func Uint64P(name, shorthand string, value uint64, usage string) *uint64 {\n\treturn CommandLine.Uint64P(name, shorthand, value, usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "9bf7d16e030ed197ba1031f3",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "uint8.go",
+        "start_byte": 178,
+        "text": "func (i *uint8Value) Set(s string) error {\n\tv, err := strconv.ParseUint(s, 0, 8)\n\t*i = uint8Value(v)\n\treturn err\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "e77d47cabb72becd52196662",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "uint8.go",
+        "start_byte": 294,
+        "text": "func (i *uint8Value) String() string { return fmt.Sprintf(\"%v\", *i) }",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "fb1f04bd1369adaa557c5823",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "uint8.go",
+        "start_byte": 538,
+        "text": "func (f *FlagSet) Uint8Var(p *uint8, name string, value uint8, usage string) {\n\tf.VarP(newUint8Value(value, p), name, \"\", usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "3700940e9083cfd1013899cf",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "uint8.go",
+        "start_byte": 757,
+        "text": "func (f *FlagSet) Uint8VarP(p *uint8, name, shorthand string, value uint8, usage string) {\n\tf.VarP(newUint8Value(value, p), name, shorthand, usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "dc359792fcad268f41b79d6a",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "uint8.go",
+        "start_byte": 1081,
+        "text": "func Uint8Var(p *uint8, name string, value uint8, usage string) {\n\tCommandLine.VarP(newUint8Value(value, p), name, \"\", usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "3c6acad5fb7c9b236e7813c9",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "uint8.go",
+        "start_byte": 1297,
+        "text": "func Uint8VarP(p *uint8, name, shorthand string, value uint8, usage string) {\n\tCommandLine.VarP(newUint8Value(value, p), name, shorthand, usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "68434d0248b89700b03c3c65",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "uint8.go",
+        "start_byte": 1619,
+        "text": "func (f *FlagSet) Uint8(name string, value uint8, usage string) *uint8 {\n\tp := new(uint8)\n\tf.Uint8VarP(p, name, \"\", value, usage)\n\treturn p\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "837db1a157c45fc7193f716d",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "uint8.go",
+        "start_byte": 1846,
+        "text": "func (f *FlagSet) Uint8P(name, shorthand string, value uint8, usage string) *uint8 {\n\tp := new(uint8)\n\tf.Uint8VarP(p, name, shorthand, value, usage)\n\treturn p\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "9832eb0b84a05b8bb427b9bf",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "uint8.go",
+        "start_byte": 2182,
+        "text": "func Uint8(name string, value uint8, usage string) *uint8 {\n\treturn CommandLine.Uint8P(name, \"\", value, usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "b346a6414f783eebe7563d7d",
+        "revision": "2e6f5f3f0c40ab9cb459742296f6a2aaab1fd5dc",
+        "path": "uint8.go",
+        "start_byte": 2380,
+        "text": "func Uint8P(name, shorthand string, value uint8, usage string) *uint8 {\n\treturn CommandLine.Uint8P(name, shorthand, value, usage)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "e589ca1b8a3f41ac896ae4dd",
+        "revision": "d4ebabf889f7b016ffcb5f74c350e1e5424b2094",
+        "path": "bool.go",
+        "start_byte": 319,
+        "text": "func (b *boolValue) Set(s string) error {\n\tv, err := strconv.ParseBool(s)\n\t*b = boolValue",
+        "rank": 2,
+        "truncated": true
+      }
+    ]
+  },
+  "retrieval": {
+    "unresolved": [
+      {
+        "side": "ours",
+        "identifier": "f",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "parseArgs",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "args",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "string",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "err",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "error",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "len",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "s",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "interspersed",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "append",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "f",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "parseArgs",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "args",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "string",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "error",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "len",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "s",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "interspersed",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "append",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "name",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "split",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "strings",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "SplitN",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "m",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "formal",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "flag",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "alreadythere",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "bv",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "ok",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "err",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "shorthands",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "i",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "c",
+        "reason": "no-unique-declaration-established"
+      }
+    ],
+    "method": "syntax-ranges-and-identifier-candidates/3",
+    "budget_bytes": 32768,
+    "libraries": {
+      "C": "cbbd4827ee02cd5c018ab41f10d8404ff8741159054b352d9a6d763c506ba3c7",
+      "Go": "1612f8fd958ba1ec981bf4b91e2ff399f1e54d26a9da68e5b60b0d7cd00616fc"
+    }
+  }
+}

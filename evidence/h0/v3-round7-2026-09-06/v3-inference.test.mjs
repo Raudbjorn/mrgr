@@ -1,0 +1,12 @@
+import assert from 'node:assert/strict';
+import {clusterJackknife} from './v3-inference.mjs';
+import {audit} from './v3-inference-audit.mjs';
+const rows=[{repo:'a',selected:true,c:false},{repo:'b',selected:false,c:false},{repo:'c',selected:true,c:true},{repo:'d',selected:false,c:true}];
+const result=clusterJackknife(rows,['c']).c;
+assert.equal(result.delta,0);assert(Math.abs(result.variance-1/6)<1e-12);assert.equal(result.df,3);
+assert.deepEqual(clusterJackknife([...rows].reverse(),['c']),clusterJackknife(rows,['c']));
+assert.equal(clusterJackknife(rows.map(r=>({...r,repo:'one'})),['c']).c.lower,-1);
+assert.throws(()=>clusterJackknife([{repo:'a',selected:1,c:false}],['c']));
+const config={sizes:[10,10],heterogeneity:0,repetitions:3,bootstrap:100,method:'jackknife'};
+assert.deepEqual(audit(config),audit(config));assert.throws(()=>audit({...config,heterogeneity:1}));
+console.log('CV3 fixed-value, permutation, singleton, input and simulation checks passed');

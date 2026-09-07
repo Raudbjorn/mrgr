@@ -1,0 +1,1417 @@
+{
+  "id": "119871589f01f2681c9e853a3b0af7020b16615c8540f5d946bdf1e98f35bbe3",
+  "source_protocol_sha256": "86ffe38086e217acf6e1a4aa4162e226862463d1bde3160478f9a6f4d2b968ce",
+  "repair_module_sha256": "b6a7cf123b0ac50001e1498cdf64964b8ac56e8e6a68cbbc6dcc01c8517b4a20",
+  "contexts": {
+    "local-context": [
+      {
+        "id": "5f14e60b3b8a8a2578ac40d9",
+        "revision": "f2c2b8b2735d22420811aa89a96701839920b79a",
+        "path": "parser.go",
+        "start_byte": 0,
+        "text": "package jsonparser\n\nimport (\n\t\"bytes\"\n\t\"errors\"\n\t\"fmt\"\n\td \"runtime/debug\"\n\t\"strconv\"\n)\n\n// Find position of next character which is not ' ', ',', '}' or ']'\nfunc nextValue(data []byte) (offset int) {\n\tfor true {\n\t\tif len(data) == offset {\n\t\t\treturn -1\n\t\t}\n\n\t\tif data[offset] != ' ' && data[offset] != '\\n' && data[offset] != ',' {\n\t\t\treturn\n\t\t}\n\n\t\toffset++\n\t}\n\n\treturn -1\n}\n\n// Tries to find the end of string\n// Support if string contains escaped quote symbols.\nfunc stringEnd(data []byte) int {\n\ti := 0\n\n\tfor len(data) > i {\n\t\tif data[i] != '\"' {\n\t\t\ti++\n\t\t\tcontinue\n\t\t}\n\n\t\t// If it just escaped \\\", continue\n\t\tif i >= 1 && data[i-1] == '\\\\' {\n\t\t\ti++\n\t\t\tcontinue\n\t\t} else {\n\t\t\treturn i + 1\n\t\t}\n\t}\n\n\treturn -1\n}\n\n// Find end of the data structure, array or object.\n// For array openSym and closeSym will be '[' and ']', for object '{' and '}'\n// Know about nested structures\nfunc trailingBracket(data []byte, openSym byte, closeSym byte) int {\n\tlevel := 0\n\ti := 0\n\tln := len(data)\n\n\tfor true {\n\t\tif i >= ln {\n\t\t\treturn -1\n\t\t}\n\n\t\tc := data[i]\n\n\t\t// If inside string, skip it\n\t\tif c == '\"' {\n\t\t\t//sFrom := i\n\t\t\ti++\n\n\t\t\tse := stringEnd(data[i:])\n\t\t\tif se == -1 {\n\t\t\t\treturn -1\n\t\t\t}\n\t\t\ti += se - 1\n\t\t}\n\n\t\tif c == openSym {\n\t\t\tlevel++\n\t\t} else if c == closeSym {\n\t\t\tlevel--\n\t\t}\n\n\t\ti++\n\n\t\tif level == 0 {\n\t\t\tbreak\n\t\t}\n\t}\n\n\treturn i\n}\n\nfunc searchKeys(data []byte, keys ...string) int {\n\tkeyLevel := 0\n\tlevel := 0\n\ti := 0\n\tln := len(data)\n\tlk := len(keys)\n\n\tfor true {\n\t\tif i >= ln {\n\t\t\treturn -1\n\t\t}\n\n\t\t// If inside string, skip it\n\t\tif data[i] == '\"' {\n\t\t\ti++\n\n\t\t\tse := stringEnd(data[i:])\n\t\t\tif se == -1 {\n\t\t\t\treturn -1\n\t\t\t}\n\n\t\t\tif ln > i+se &&\n\t\t\t\tdata[i+se] == ':' && // if string is a Key, and key level match\n\t\t\t\tkeyLevel == level-1 && // If key nesting level match current object nested level\n\n\t\t\t\t// Checks to speedup key comparsion\n\t\t\t\tlen(keys[level-1]) == se-1 && // if it have same length\n\t\t\t\tdata[i] == keys[level-1][0] { // If first character same\n\t\t\t\tif bytes.Equal([]byte(keys[level-1]), data[i:i+se-1]) {\n\t\t\t\t\tkeyLevel++\n\t\t\t\t\t// If we found all keys in path\n\t\t\t\t\tif keyLevel == lk {\n\t\t\t\t\t\treturn i + se + 1\n\t\t\t\t\t}\n\t\t\t\t}\n\t\t\t}\n\n\t\t\ti += se - 1\n\t\t} else if data[i] == '{' {\n\t\t\tlevel++\n\t\t} else if data[i] == '}' {\n\t\t\tlevel--\n\t\t} else if data[i] == '[' {\n\t\t\t// Do not search for keys inside arrays\n\t\t\taOff := trailingBracket(data[i:], '[', ']')\n\t\t\ti += aOff\n\t\t}\n\n\t\ti++\n\t}\n\n\treturn -1\n}\n\n// Data types available in valid JSON data.\nconst (\n\tNotExist = iota\n\tString\n\tNumber\n\tObject\n\tArray\n\tBoolean\n\tNull\n)\n\n/*\nGet - Receives data structure, and key path to extract value from.\n\nReturns:\n`value` - Pointer to original data structure containing key value, or just empty slice if nothing found or error\n`dataType` -    Can be: `NotExist`, `String`, `Number`, `Object`, `Array`, `Boolean` or `Null`\n`offset` - Offset from provided data structure where key value ends. Used mostly internally, for example for `ArrayEach` helper.\n`err` - If key not found or any other parsing issue it should return error. If key not found it also sets `dataType` to `NotExist`\n\nAccept multiple keys to specify path to JSON value (in case of quering nested structures).\nIf no keys provided it will try to extract closest JSON value (simple ones or object/array), useful for reading streams or arrays, see `ArrayEach` implementation.\n*/\nfunc Get(data []byte, keys ...string) (value []byte, dataType int, offset int, err error) {\n\tdefer func() {\n\t\tif r := recover(); r != nil {\n\t\t\terr = fmt.Errorf(\"Unhandler JSON parsing error: %v, %s\", r, string(d.Stack()))\n\t\t}\n\t}()\n\n\tif len(keys) > 0 {\n\t\tif offset = searchKeys(data, keys...); offset == -1 {\n\t\t\treturn []byte{}, NotExist, -1, errors.New(\"Key path not found\")\n\t\t}\n\t}\n\n\t// Go to closest value\n\tnO := nextValue(data[offset:])\n\n\tif nO == -1 {\n\t\treturn []byte{}, NotExist, -1, errors.New(\"Malformed JSON error\")\n\t}\n\n\toffset += nO\n\n\tendOffset := offset\n\n\t// if string value\n\tif data[offset] == '\"' {\n\t\tdataType = String\n\t\tif idx := stringEnd(data[offset+1:]); idx != -1 {\n\t\t\tendOffset += idx + 1\n\t\t} else {\n\t\t\treturn []byte{}, dataType, offset, errors.New(\"Value is string, but can't find closing '\\\"' symbol\")\n\t\t}\n\t} else if data[offset] == '[' { // if array value\n\t\tdataType = Array\n\t\t// break label, for stopping nested loops\n\t\tendOffset = trailingBracket(data[offset:], '[', ']')\n\n\t\tif endOffset == -1 {\n\t\t\treturn []byte{}, dataType, offset, errors.New(\"Value is array, but can't find closing ']' symbol\")\n\t\t}\n\n\t\tendOffset += offset\n\t} else if data[offset] == '{' { // if object value\n\t\tdataType = Object\n\t\t// break label, for stopping nested loops\n\t\tendOffset = trailingBracket(data[offset:], '{', '}')\n\n\t\tif endOffset == -1 {\n\t\t\treturn []byte{}, dataType, offset, errors.New(\"Value looks like object, but can't find closing '}' symbol\")\n\t\t}\n\n\t\tendOffset += offset\n\t} else {\n\t\t// Number, Boolean or None\n\t\tend := bytes.IndexFunc(data[endOffset:], func(c rune) bool {\n\t\t\treturn c == ' ' || c == '\\n' || c == ',' || c == '}' || c == ']'\n\t\t})\n\n\t\tif data[offset] == 't' || data[offset] == 'f' { // true or false\n\t\t\tdataType = Boolean\n\t\t} else if data[offset] == 'u' || data[offset] == 'n' { // undefined or null\n\t\t\tdataType = Null\n\t\t} else {\n\t\t\tdataType = Number\n\t\t}\n\n\t\tif end == -1 {\n\t\t\treturn []byte{}, dataType, offset, errors.New(\"Value looks like Number/Boolean/None, but can't find its end: ',' or '}' symbol\")\n\t\t}\n\n\t\tendOffset += end\n\t}\n\n\tvalue = data[offset:endOffset]\n\n\t// Strip quotes from string values\n\tif dataType == String {\n\t\tvalue = value[1 : len(value)-1]\n\t}\n\n\tif dataType == Null {\n\t\tvalue = []byte{}\n\t}\n\n\treturn value, dataType, endOffset, nil\n}\n\n// ArrayEach is used when iterating arrays, accepts a callback function with the same return arguments as `Get`.\n// Expects to receive array data structure (you need to `Get` it first). See example above.\n// Underneath it just calls `Get` without arguments until it can't find next item.\nfunc ArrayEach(data []byte, cb func(value []byte, dataType int, offset int, err error), keys ...string) {\n\tif len(data) == 0 {\n\t\treturn\n\t}\n\n\toffset := 1\n\n\tif len(keys) > 0 {\n\t\tif offset = searchKeys(data, keys...); offset == -1 {\n\t\t\treturn\n\t\t}\n\n\t\t// Go to closest value\n\t\tnO := nextValue(data[offset:])\n\n\t\tif nO == -1 {\n\t\t\treturn\n\t\t}\n\n\t\toffset += nO\n\n\t\tif data[offset] != '[' {\n\t\t\treturn\n\t\t}\n\n\t\toffset++\n\t}\n\n\tfor true {\n\t\tv, t, o, e := Get(data[offset:])\n\n\t\tif o == 0 {\n\t\t\tbreak\n\t\t}\n\n\t\tif t != NotExist {\n\t\t\tcb(v, t, o, e)\n\t\t}\n\n\t\tif e != nil {\n\t\t\tbreak\n\t\t}\n\n\t\toffset += o\n\t}\n}\n\n// GetNumber returns the value retrieved by `Get`, cast to a float64 if possible.\n// The offset is the same as in `Get`.\n// If key data type do not match, it will return an error.\nfunc GetNumber(data []byte, keys ...string) (val float64, offset int, err error) {\n\tv, t, offset, e := Get(data, keys...)\n\n\tif e != nil {\n\t\treturn 0, offset, e\n\t}\n\n\tif t != Number {\n\t\treturn 0, offset, fmt.Errorf(\"Value is not a number: %s\", string(v))\n\t}\n\n\tval, err = strconv.ParseFloat(string(v), 64)\n\treturn\n}\n\n// GetBoolean returns the value retrieved by `Get`, cast to a bool if possible.\n// The offset is the same as in `Get`.\n// If key data type do not match, it will return error.\nfunc GetBoolean(data []byte, keys ...string) (val bool, offset int, err error) {\n\tv, t, offset, e := Get(data, keys...)\n\n\tif e != nil {\n\t\treturn false, offset, e\n\t}\n\n\tif t != Boolean {\n\t\treturn false, offset, fmt.Errorf(\"Value is not a boolean: %s\", string(v))\n\t}\n\n\tif v[0] == 't' {\n\t\tval = true\n\t} else {\n\t\tval = false\n\t}\n\n\treturn\n}\n",
+        "rank": 0,
+        "truncated": false
+      },
+      {
+        "id": "78994979422fef7adf806542",
+        "revision": "ef91137af9bcdb644d96d8e5a5cedf7d4c30bcd7",
+        "path": "parser.go",
+        "start_byte": 0,
+        "text": "package jsonparser\n\nimport (\n\t\"bytes\"\n\t\"errors\"\n\t\"fmt\"\n\td \"runtime/debug\"\n\t\"strconv\"\n)\n\n// Find position of next character which is not ' ', ',', '}' or ']'\nfunc nextValue(data []byte) (offset int) {\n\tfor true {\n\t\tif len(data) == offset {\n\t\t\treturn -1\n\t\t}\n\n\t\tif data[offset] != ' ' && data[offset] != '\\n' && data[offset] != ',' && data[offset] != '}' && data[offset] != ']' {\n\t\t\treturn\n\t\t}\n\n\t\toffset++\n\t}\n\n\treturn -1\n}\n\n// Tries to find the end of string\n// Support if string contains escaped quote symbols.\nfunc stringEnd(data []byte) int {\n\ti := 0\n\n\tfor true {\n\t\tsIdx := bytes.IndexByte(data[i:], '\"')\n\n\t\tif sIdx == -1 {\n\t\t\treturn -1\n\t\t}\n\n\t\ti += sIdx + 1\n\n\t\t// If it just escaped \\\", continue\n\t\tif i > 2 && data[i-2] == '\\\\' {\n\t\t\tcontinue\n\t\t}\n\n\t\tbreak\n\t}\n\n\treturn i\n}\n\n// Find end of the data structure, array or object.\n// For array openSym and closeSym will be '[' and ']', for object '{' and '}'\n// Know about nested structures\nfunc trailingBracket(data []byte, openSym byte, closeSym byte) int {\n\tlevel := 0\n\ti := 0\n\tln := len(data)\n\n\tfor true {\n\t\tif i >= ln {\n\t\t\treturn -1\n\t\t}\n\n\t\tc := data[i]\n\n\t\t// If inside string, skip it\n\t\tif c == '\"' {\n\t\t\t//sFrom := i\n\t\t\ti++\n\n\t\t\tse := stringEnd(data[i:])\n\t\t\tif se == -1 {\n\t\t\t\treturn -1\n\t\t\t}\n\t\t\ti += se - 1\n\t\t}\n\n\t\tif c == openSym {\n\t\t\tlevel++\n\t\t} else if c == closeSym {\n\t\t\tlevel--\n\t\t}\n\n\t\ti++\n\n\t\tif level == 0 {\n\t\t\tbreak\n\t\t}\n\t}\n\n\treturn i\n}\n\n// Data types available in valid JSON data.\nconst (\n\tNotExist = iota\n\tString\n\tNumber\n\tObject\n\tArray\n\tBoolean\n\tNull\n)\n\n/*\nGet - Receives data structure, and key path to extract value from.\n\nReturns:\n`value` - Pointer to original data structure containing key value, or just empty slice if nothing found or error\n`dataType` -    Can be: `NotExist`, `String`, `Number`, `Object`, `Array`, `Boolean` or `Null`\n`offset` - Offset from provided data structure where key value ends. Used mostly internally, for example for `ArrayEach` helper.\n`err` - If key not found or any other parsing issue it should return error. If key not found it also sets `dataType` to `NotExist`\n\nAccept multiple keys to specify path to JSON value (in case of quering nested structures).\nIf no keys provided it will try to extract closest JSON value (simple ones or object/array), useful for reading streams or arrays, see `ArrayEach` implementation.\n*/\nfunc Get(data []byte, keys ...string) (value []byte, dataType int, offset int, err error) {\n\tdefer func() {\n\t\tif r := recover(); r != nil {\n\t\t\terr = fmt.Errorf(\"Unhandler JSON parsing error: %v, %s\", r, string(d.Stack()))\n\t\t}\n\t}()\n\n\tln := len(data)\n\n\tif len(keys) > 0 {\n\t\tfor ki, k := range keys {\n\t\t\tlk := len(k)\n\n\t\t\tif ki > 0 {\n\t\t\t\t// Only objects can have nested keys\n\t\t\t\tif data[offset] == '{' {\n\t\t\t\t\t// Limiting scope for the next key search\n\t\t\t\t\tendOffset := trailingBracket(data[offset:], '{', '}')\n\t\t\t\t\tdata = data[offset : offset+endOffset]\n\t\t\t\t\toffset = 0\n\t\t\t\t} else {\n\t\t\t\t\treturn []byte{}, NotExist, -1, errors.New(\"Key path not found\")\n\t\t\t\t}\n\t\t\t}\n\n\t\t\tfor true {\n\t\t\t\tif idx := bytes.Index(data[offset:], []byte(k)); idx != -1 && (ln-(offset+idx+lk+2)) > 0 {\n\t\t\t\t\toffset += idx\n\n\t\t\t\t\tif data[offset+lk] == '\"' && data[offset-2] != '\\\\' && data[offset-1] == '\"' && data[offset+lk+1] == ':' {\n\t\t\t\t\t\toffset += lk + 2\n\t\t\t\t\t\tnO := nextValue(data[offset:])\n\n\t\t\t\t\t\tif nO == -1 {\n\t\t\t\t\t\t\treturn []byte{}, NotExist, -1, errors.New(\"Malformed JSON error\")\n\t\t\t\t\t\t}\n\n\t\t\t\t\t\toffset += nO\n\n\t\t\t\t\t\tbreak\n\t\t\t\t\t} else {\n\t\t\t\t\t\toffset++\n\t\t\t\t\t}\n\t\t\t\t} else {\n\t\t\t\t\treturn []byte{}, NotExist, -1, errors.New(\"Key path not found\")\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t} else {\n\t\tnO := nextValue(data[offset:])\n\n\t\tif nO == -1 {\n\t\t\treturn []byte{}, NotExist, -1, errors.New(\"Malformed JSON error\")\n\t\t}\n\n\t\toffset = nO\n\t}\n\n\tendOffset := offset\n\n\t// if string value\n\tif data[offset] == '\"' {\n\t\tdataType = String\n\t\tif idx := stringEnd(data[offset+1:]); idx != -1 {\n\t\t\tendOffset += idx + 1\n\t\t} else {\n\t\t\treturn []byte{}, dataType, offset, errors.New(\"Value is string, but can't find closing '\\\"' symbol\")\n\t\t}\n\t} else if data[offset] == '[' { // if array value\n\t\tdataType = Array\n\t\t// break label, for stopping nested loops\n\t\tendOffset = trailingBracket(data[offset:], '[', ']')\n\n\t\tif endOffset == -1 {\n\t\t\treturn []byte{}, dataType, offset, errors.New(\"Value is array, but can't find closing ']' symbol\")\n\t\t}\n\n\t\tendOffset += offset\n\t} else if data[offset] == '{' { // if object value\n\t\tdataType = Object\n\t\t// break label, for stopping nested loops\n\t\tendOffset = trailingBracket(data[offset:], '{', '}')\n\n\t\tif endOffset == -1 {\n\t\t\treturn []byte{}, dataType, offset, errors.New(\"Value looks like object, but can't find closing '}' symbol\")\n\t\t}\n\n\t\tendOffset += offset\n\t} else {\n\t\t// Number, Boolean or None\n\t\tend := bytes.IndexFunc(data[endOffset:], func(c rune) bool {\n\t\t\treturn c == ' ' || c == '\\n' || c == ',' || c == '}' || c == ']'\n\t\t})\n\n\t\tif data[offset] == 't' || data[offset] == 'f' { // true or false\n\t\t\tdataType = Boolean\n\t\t} else if data[offset] == 'u' || data[offset] == 'n' { // undefined or null\n\t\t\tdataType = Null\n\t\t} else {\n\t\t\tdataType = Number\n\t\t}\n\n\t\tif end == -1 {\n\t\t\treturn []byte{}, dataType, offset, errors.New(\"Value looks like Number/Boolean/None, but can't find its end: ',' or '}' symbol\")\n\t\t}\n\n\t\tendOffset += end\n\t}\n\n\tvalue = data[offset:endOffset]\n\n\t// Strip quotes from string values\n\tif dataType == String {\n\t\tvalue = value[1 : len(value)-1]\n\t}\n\n\tif dataType == Null {\n\t\tvalue = []byte{}\n\t}\n\n\treturn value, dataType, endOffset, nil\n}\n\n// ArrayEach is used when iterating arrays, accepts a callback function with the same return arguments as `Get`.\n// Expects to receive array data structure (you need to `Get` it first). See example above.\n// Underneath it just calls `Get` without arguments until it can't find next item.\nfunc ArrayEach(data []byte, cb func(value []byte, dataType int, offset int, err error)) {\n\tif len(data) == 0 {\n\t\treturn\n\t}\n\n\toffset := 1\n\tfor true {\n\t\tv, t, o, e := Get(data[offset:])\n\n\t\tif t != NotExist {\n\t\t\tcb(v, t, o, e)\n\t\t}\n\n\t\tif e != nil {\n\t\t\tbreak\n\t\t}\n\n\t\toffset += o\n\t}\n}\n\n// GetNumber returns the value retrieved by `Get`, cast to a float64 if possible.\n// The offset is the same as in `Get`.\n// If key data type do not match, it will return an error.\nfunc GetNumber(data []byte, keys ...string) (val float64, offset int, err error) {\n\tv, t, offset, e := Get(data, keys...)\n\n\tif e != nil {\n\t\treturn 0, offset, e\n\t}\n\n\tif t != Number {\n\t\treturn 0, offset, fmt.Errorf(\"Value is not a number: %s\", string(v))\n\t}\n\n\tval, err = strconv.ParseFloat(string(v), 64)\n\treturn\n}\n\n// GetBoolean returns the value retrieved by `Get`, cast to a bool if possible.\n// The offset is the same as in `Get`.\n// If key data type do not match, it will return error.\nfunc GetBoolean(data []byte, keys ...string) (val bool, offset int, err error) {\n\tv, t, offset, e := Get(data, keys...)\n\n\tif e != nil {\n\t\treturn false, offset, e\n\t}\n\n\tif t != Boolean {\n\t\treturn false, offset, fmt.Errorf(\"Value is not a boolean: %s\", string(v))\n\t}\n\n\tif v[0] == 't' {\n\t\tval = true\n\t} else {\n\t\tval = false\n\t}\n\n\treturn\n}\n",
+        "rank": 0,
+        "truncated": false
+      }
+    ],
+    "selected": [
+      {
+        "id": "ea3e1875d3376081277dabf3",
+        "revision": "ef91137af9bcdb644d96d8e5a5cedf7d4c30bcd7",
+        "path": "parser.go",
+        "start_byte": 2312,
+        "text": "func Get(data []byte, keys ...string) (value []byte, dataType int, offset int, err error) {\n\tdefer func() {\n\t\tif r := recover(); r != nil {\n\t\t\terr = fmt.Errorf(\"Unhandler JSON parsing error: %v, %s\", r, string(d.Stack()))\n\t\t}\n\t}()\n\n\tln := len(data)\n\n\tif len(keys) > 0 {\n\t\tfor ki, k := range keys {\n\t\t\tlk := len(k)\n\n\t\t\tif ki > 0 {\n\t\t\t\t// Only objects can have nested keys\n\t\t\t\tif data[offset] == '{' {\n\t\t\t\t\t// Limiting scope for the next key search\n\t\t\t\t\tendOffset := trailingBracket(data[offset:], '{', '}')\n\t\t\t\t\tdata = data[offset : offset+endOffset]\n\t\t\t\t\toffset = 0\n\t\t\t\t} else {\n\t\t\t\t\treturn []byte{}, NotExist, -1, errors.New(\"Key path not found\")\n\t\t\t\t}\n\t\t\t}\n\n\t\t\tfor true {\n\t\t\t\tif idx := bytes.Index(data[offset:], []byte(k)); idx != -1 && (ln-(offset+idx+lk+2)) > 0 {\n\t\t\t\t\toffset += idx\n\n\t\t\t\t\tif data[offset+lk] == '\"' && data[offset-2] != '\\\\' && data[offset-1] == '\"' && data[offset+lk+1] == ':' {\n\t\t\t\t\t\toffset += lk + 2\n\t\t\t\t\t\tnO := nextValue(data[offset:])\n\n\t\t\t\t\t\tif nO == -1 {\n\t\t\t\t\t\t\treturn []byte{}, NotExist, -1, errors.New(\"Malformed JSON error\")\n\t\t\t\t\t\t}\n\n\t\t\t\t\t\toffset += nO\n\n\t\t\t\t\t\tbreak\n\t\t\t\t\t} else {\n\t\t\t\t\t\toffset++\n\t\t\t\t\t}\n\t\t\t\t} else {\n\t\t\t\t\treturn []byte{}, NotExist, -1, errors.New(\"Key path not found\")\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t} else {\n\t\tnO := nextValue(data[offset:])\n\n\t\tif nO == -1 {\n\t\t\treturn []byte{}, NotExist, -1, errors.New(\"Malformed JSON error\")\n\t\t}\n\n\t\toffset = nO\n\t}\n\n\tendOffset := offset\n\n\t// if string value\n\tif data[offset] == '\"' {\n\t\tdataType = String\n\t\tif idx := stringEnd(data[offset+1:]); idx != -1 {\n\t\t\tendOffset += idx + 1\n\t\t} else {\n\t\t\treturn []byte{}, dataType, offset, errors.New(\"Value is string, but can't find closing '\\\"' symbol\")\n\t\t}\n\t} else if data[offset] == '[' { // if array value\n\t\tdataType = Array\n\t\t// break label, for stopping nested loops\n\t\tendOffset = trailingBracket(data[offset:], '[', ']')\n\n\t\tif endOffset == -1 {\n\t\t\treturn []byte{}, dataType, offset, errors.New(\"Value is array, but can't find closing ']' symbol\")\n\t\t}\n\n\t\tendOffset += offset\n\t} else if data[offset] == '{' { // if object value\n\t\tdataType = Object\n\t\t// break label, for stopping nested loops\n\t\tendOffset = trailingBracket(data[offset:], '{', '}')\n\n\t\tif endOffset == -1 {\n\t\t\treturn []byte{}, dataType, offset, errors.New(\"Value looks like object, but can't find closing '}' symbol\")\n\t\t}\n\n\t\tendOffset += offset\n\t} else {\n\t\t// Number, Boolean or None\n\t\tend := bytes.IndexFunc(data[endOffset:], func(c rune) bool {\n\t\t\treturn c == ' ' || c == '\\n' || c == ',' || c == '}' || c == ']'\n\t\t})\n\n\t\tif data[offset] == 't' || data[offset] == 'f' { // true or false\n\t\t\tdataType = Boolean\n\t\t} else if data[offset] == 'u' || data[offset] == 'n' { // undefined or null\n\t\t\tdataType = Null\n\t\t} else {\n\t\t\tdataType = Number\n\t\t}\n\n\t\tif end == -1 {\n\t\t\treturn []byte{}, dataType, offset, errors.New(\"Value looks like Number/Boolean/None, but can't find its end: ',' or '}' symbol\")\n\t\t}\n\n\t\tendOffset += end\n\t}\n\n\tvalue = data[offset:endOffset]\n\n\t// Strip quotes from string values\n\tif dataType == String {\n\t\tvalue = value[1 : len(value)-1]\n\t}\n\n\tif dataType == Null {\n\t\tvalue = []byte{}\n\t}\n\n\treturn value, dataType, endOffset, nil\n}",
+        "rank": 0,
+        "truncated": false
+      },
+      {
+        "id": "2166a2d642cdc7549c07d4c7",
+        "revision": "f2c2b8b2735d22420811aa89a96701839920b79a",
+        "path": "parser.go",
+        "start_byte": 3317,
+        "text": "func Get(data []byte, keys ...string) (value []byte, dataType int, offset int, err error) {\n\tdefer func() {\n\t\tif r := recover(); r != nil {\n\t\t\terr = fmt.Errorf(\"Unhandler JSON parsing error: %v, %s\", r, string(d.Stack()))\n\t\t}\n\t}()\n\n\tif len(keys) > 0 {\n\t\tif offset = searchKeys(data, keys...); offset == -1 {\n\t\t\treturn []byte{}, NotExist, -1, errors.New(\"Key path not found\")\n\t\t}\n\t}\n\n\t// Go to closest value\n\tnO := nextValue(data[offset:])\n\n\tif nO == -1 {\n\t\treturn []byte{}, NotExist, -1, errors.New(\"Malformed JSON error\")\n\t}\n\n\toffset += nO\n\n\tendOffset := offset\n\n\t// if string value\n\tif data[offset] == '\"' {\n\t\tdataType = String\n\t\tif idx := stringEnd(data[offset+1:]); idx != -1 {\n\t\t\tendOffset += idx + 1\n\t\t} else {\n\t\t\treturn []byte{}, dataType, offset, errors.New(\"Value is string, but can't find closing '\\\"' symbol\")\n\t\t}\n\t} else if data[offset] == '[' { // if array value\n\t\tdataType = Array\n\t\t// break label, for stopping nested loops\n\t\tendOffset = trailingBracket(data[offset:], '[', ']')\n\n\t\tif endOffset == -1 {\n\t\t\treturn []byte{}, dataType, offset, errors.New(\"Value is array, but can't find closing ']' symbol\")\n\t\t}\n\n\t\tendOffset += offset\n\t} else if data[offset] == '{' { // if object value\n\t\tdataType = Object\n\t\t// break label, for stopping nested loops\n\t\tendOffset = trailingBracket(data[offset:], '{', '}')\n\n\t\tif endOffset == -1 {\n\t\t\treturn []byte{}, dataType, offset, errors.New(\"Value looks like object, but can't find closing '}' symbol\")\n\t\t}\n\n\t\tendOffset += offset\n\t} else {\n\t\t// Number, Boolean or None\n\t\tend := bytes.IndexFunc(data[endOffset:], func(c rune) bool {\n\t\t\treturn c == ' ' || c == '\\n' || c == ',' || c == '}' || c == ']'\n\t\t})\n\n\t\tif data[offset] == 't' || data[offset] == 'f' { // true or false\n\t\t\tdataType = Boolean\n\t\t} else if data[offset] == 'u' || data[offset] == 'n' { // undefined or null\n\t\t\tdataType = Null\n\t\t} else {\n\t\t\tdataType = Number\n\t\t}\n\n\t\tif end == -1 {\n\t\t\treturn []byte{}, dataType, offset, errors.New(\"Value looks like Number/Boolean/None, but can't find its end: ',' or '}' symbol\")\n\t\t}\n\n\t\tendOffset += end\n\t}\n\n\tvalue = data[offset:endOffset]\n\n\t// Strip quotes from string values\n\tif dataType == String {\n\t\tvalue = value[1 : len(value)-1]\n\t}\n\n\tif dataType == Null {\n\t\tvalue = []byte{}\n\t}\n\n\treturn value, dataType, endOffset, nil\n}",
+        "rank": 0,
+        "truncated": false
+      },
+      {
+        "id": "3ffde884cd779eb290f9cb5d",
+        "revision": "ef91137af9bcdb644d96d8e5a5cedf7d4c30bcd7",
+        "path": "benchmark/benchmark_ffjson.go",
+        "start_byte": 599,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "31b8efb8935be324e8a4e5ef",
+        "revision": "ef91137af9bcdb644d96d8e5a5cedf7d4c30bcd7",
+        "path": "benchmark/benchmark_ffjson.go",
+        "start_byte": 1128,
+        "text": "var err error = nil",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "ff69c26e0de44b2cfa75a666",
+        "revision": "ef91137af9bcdb644d96d8e5a5cedf7d4c30bcd7",
+        "path": "benchmark/benchmark_ffjson.go",
+        "start_byte": 4706,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "9253a3d1f3ca9879d1708719",
+        "revision": "ef91137af9bcdb644d96d8e5a5cedf7d4c30bcd7",
+        "path": "benchmark/benchmark_ffjson.go",
+        "start_byte": 5283,
+        "text": "var err error = nil",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "450de0eeda2be119f11f1c5a",
+        "revision": "ef91137af9bcdb644d96d8e5a5cedf7d4c30bcd7",
+        "path": "benchmark/benchmark_ffjson.go",
+        "start_byte": 8965,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "2aea0a2d2acf9dd61a047793",
+        "revision": "ef91137af9bcdb644d96d8e5a5cedf7d4c30bcd7",
+        "path": "benchmark/benchmark_ffjson.go",
+        "start_byte": 9826,
+        "text": "var err error = nil",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "08230dfe8841c10c1a23ae00",
+        "revision": "ef91137af9bcdb644d96d8e5a5cedf7d4c30bcd7",
+        "path": "benchmark/benchmark_ffjson.go",
+        "start_byte": 14512,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "035d7f018faa8d39c59ab980",
+        "revision": "ef91137af9bcdb644d96d8e5a5cedf7d4c30bcd7",
+        "path": "benchmark/benchmark_ffjson.go",
+        "start_byte": 15054,
+        "text": "var err error = nil",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "408e55984f705301a62d8a69",
+        "revision": "ef91137af9bcdb644d96d8e5a5cedf7d4c30bcd7",
+        "path": "benchmark/benchmark_ffjson.go",
+        "start_byte": 18659,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "f7b5461b2e7d9029038f31b7",
+        "revision": "ef91137af9bcdb644d96d8e5a5cedf7d4c30bcd7",
+        "path": "benchmark/benchmark_ffjson.go",
+        "start_byte": 19848,
+        "text": "var err error = nil",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "e9287d15980d9b2ef435a7b2",
+        "revision": "ef91137af9bcdb644d96d8e5a5cedf7d4c30bcd7",
+        "path": "benchmark/benchmark_ffjson.go",
+        "start_byte": 25199,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "13fbfeffbeda153070baf3eb",
+        "revision": "ef91137af9bcdb644d96d8e5a5cedf7d4c30bcd7",
+        "path": "benchmark/benchmark_ffjson.go",
+        "start_byte": 25866,
+        "text": "var err error = nil",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "d9f8ff6cc7b01b30cdadce3f",
+        "revision": "ef91137af9bcdb644d96d8e5a5cedf7d4c30bcd7",
+        "path": "benchmark/benchmark_ffjson.go",
+        "start_byte": 30280,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "2d213205e26ae9fc2eeb256b",
+        "revision": "ef91137af9bcdb644d96d8e5a5cedf7d4c30bcd7",
+        "path": "benchmark/benchmark_ffjson.go",
+        "start_byte": 31340,
+        "text": "var err error = nil",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "21e55c941d25765a87d17318",
+        "revision": "ef91137af9bcdb644d96d8e5a5cedf7d4c30bcd7",
+        "path": "benchmark/benchmark_ffjson.go",
+        "start_byte": 36919,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "aa6a1ff40261b86b954d6033",
+        "revision": "ef91137af9bcdb644d96d8e5a5cedf7d4c30bcd7",
+        "path": "benchmark/benchmark_ffjson.go",
+        "start_byte": 37461,
+        "text": "var err error = nil",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "54f47b4f290afdeb7b57a801",
+        "revision": "ef91137af9bcdb644d96d8e5a5cedf7d4c30bcd7",
+        "path": "benchmark/benchmark_ffjson.go",
+        "start_byte": 41067,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "265f95e22c84c7066fb70646",
+        "revision": "ef91137af9bcdb644d96d8e5a5cedf7d4c30bcd7",
+        "path": "benchmark/benchmark_ffjson.go",
+        "start_byte": 42201,
+        "text": "var err error = nil",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "e72fa812812a69746c20282a",
+        "revision": "ef91137af9bcdb644d96d8e5a5cedf7d4c30bcd7",
+        "path": "benchmark/benchmark_ffjson.go",
+        "start_byte": 47754,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "c8ff1e4febec7afe63bcbbbe",
+        "revision": "ef91137af9bcdb644d96d8e5a5cedf7d4c30bcd7",
+        "path": "benchmark/benchmark_ffjson.go",
+        "start_byte": 48682,
+        "text": "var err error = nil",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "356616e5005f8a421e1bb949",
+        "revision": "ef91137af9bcdb644d96d8e5a5cedf7d4c30bcd7",
+        "path": "benchmark/benchmark_ffjson.go",
+        "start_byte": 52381,
+        "text": "var k string",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "e0666c20c63f1fce4ddbcfe7",
+        "revision": "ef91137af9bcdb644d96d8e5a5cedf7d4c30bcd7",
+        "path": "benchmark/benchmark_ffjson.go",
+        "start_byte": 54768,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "479be25fd6a5d95b359ed5cb",
+        "revision": "ef91137af9bcdb644d96d8e5a5cedf7d4c30bcd7",
+        "path": "benchmark/benchmark_ffjson.go",
+        "start_byte": 56485,
+        "text": "var err error = nil",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "48a33ecb4c52ae5e4c486a70",
+        "revision": "ef91137af9bcdb644d96d8e5a5cedf7d4c30bcd7",
+        "path": "parser.go",
+        "start_byte": 157,
+        "text": "func nextValue(data []byte) (offset int) {\n\tfor true {\n\t\tif len(data) == offset {\n\t\t\treturn -1\n\t\t}\n\n\t\tif data[offset] != ' ' && data[offset] != '\\n' && data[offset] != ',' && data[offset] != '}' && data[offset] != ']' {\n\t\t\treturn\n\t\t}\n\n\t\toffset++\n\t}\n\n\treturn -1\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "42395a682a0ddc24751cbc16",
+        "revision": "ef91137af9bcdb644d96d8e5a5cedf7d4c30bcd7",
+        "path": "parser.go",
+        "start_byte": 509,
+        "text": "func stringEnd(data []byte) int {\n\ti := 0\n\n\tfor true {\n\t\tsIdx := bytes.IndexByte(data[i:], '\"')\n\n\t\tif sIdx == -1 {\n\t\t\treturn -1\n\t\t}\n\n\t\ti += sIdx + 1\n\n\t\t// If it just escaped \\\", continue\n\t\tif i > 2 && data[i-2] == '\\\\' {\n\t\t\tcontinue\n\t\t}\n\n\t\tbreak\n\t}\n\n\treturn i\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "2b84c43817c647ee1db214fa",
+        "revision": "ef91137af9bcdb644d96d8e5a5cedf7d4c30bcd7",
+        "path": "parser.go",
+        "start_byte": 934,
+        "text": "func trailingBracket(data []byte, openSym byte, closeSym byte) int {\n\tlevel := 0\n\ti := 0\n\tln := len(data)\n\n\tfor true {\n\t\tif i >= ln {\n\t\t\treturn -1\n\t\t}\n\n\t\tc := data[i]\n\n\t\t// If inside string, skip it\n\t\tif c == '\"' {\n\t\t\t//sFrom := i\n\t\t\ti++\n\n\t\t\tse := stringEnd(data[i:])\n\t\t\tif se == -1 {\n\t\t\t\treturn -1\n\t\t\t}\n\t\t\ti += se - 1\n\t\t}\n\n\t\tif c == openSym {\n\t\t\tlevel++\n\t\t} else if c == closeSym {\n\t\t\tlevel--\n\t\t}\n\n\t\ti++\n\n\t\tif level == 0 {\n\t\t\tbreak\n\t\t}\n\t}\n\n\treturn i\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "4ca76a05c4efd15f0544c6a7",
+        "revision": "ef91137af9bcdb644d96d8e5a5cedf7d4c30bcd7",
+        "path": "parser.go",
+        "start_byte": 1432,
+        "text": "const (\n\tNotExist = iota\n\tString\n\tNumber\n\tObject\n\tArray\n\tBoolean\n\tNull\n)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "0f1283b3df87262e203cfb21",
+        "revision": "f2c2b8b2735d22420811aa89a96701839920b79a",
+        "path": "benchmark/benchmark_ffjson.go",
+        "start_byte": 599,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "ecc926bc6a9c57b2d90bba45",
+        "revision": "f2c2b8b2735d22420811aa89a96701839920b79a",
+        "path": "benchmark/benchmark_ffjson.go",
+        "start_byte": 1128,
+        "text": "var err error = nil",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "5e5161a47a08ae9f4adc56fe",
+        "revision": "f2c2b8b2735d22420811aa89a96701839920b79a",
+        "path": "benchmark/benchmark_ffjson.go",
+        "start_byte": 4706,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "3f0762b3bf606fb1eca9371a",
+        "revision": "f2c2b8b2735d22420811aa89a96701839920b79a",
+        "path": "benchmark/benchmark_ffjson.go",
+        "start_byte": 5283,
+        "text": "var err error = nil",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "4f4bc588af118059e64b79fc",
+        "revision": "f2c2b8b2735d22420811aa89a96701839920b79a",
+        "path": "benchmark/benchmark_ffjson.go",
+        "start_byte": 8965,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "c04f1084c05a081b4602c235",
+        "revision": "f2c2b8b2735d22420811aa89a96701839920b79a",
+        "path": "benchmark/benchmark_ffjson.go",
+        "start_byte": 9826,
+        "text": "var err error = nil",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "71833dd87dbb13674b5a0ba5",
+        "revision": "f2c2b8b2735d22420811aa89a96701839920b79a",
+        "path": "benchmark/benchmark_ffjson.go",
+        "start_byte": 14512,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "2c64c07abad308365078edd7",
+        "revision": "f2c2b8b2735d22420811aa89a96701839920b79a",
+        "path": "benchmark/benchmark_ffjson.go",
+        "start_byte": 15054,
+        "text": "var err error = nil",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "fbc51285d99a2cd5bcc7ac33",
+        "revision": "f2c2b8b2735d22420811aa89a96701839920b79a",
+        "path": "benchmark/benchmark_ffjson.go",
+        "start_byte": 18659,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "e9431c589e0b61ee1a5dd9d8",
+        "revision": "f2c2b8b2735d22420811aa89a96701839920b79a",
+        "path": "benchmark/benchmark_ffjson.go",
+        "start_byte": 19848,
+        "text": "var err error = nil",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "796b585c5ed996996cb5d1ce",
+        "revision": "f2c2b8b2735d22420811aa89a96701839920b79a",
+        "path": "benchmark/benchmark_ffjson.go",
+        "start_byte": 25199,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "6fc07ce3bb215f2eae0774dc",
+        "revision": "f2c2b8b2735d22420811aa89a96701839920b79a",
+        "path": "benchmark/benchmark_ffjson.go",
+        "start_byte": 25866,
+        "text": "var err error = nil",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "776f230641799bb19d48f80b",
+        "revision": "f2c2b8b2735d22420811aa89a96701839920b79a",
+        "path": "benchmark/benchmark_ffjson.go",
+        "start_byte": 30280,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "a1afe1cfe7ed564c6699c636",
+        "revision": "f2c2b8b2735d22420811aa89a96701839920b79a",
+        "path": "benchmark/benchmark_ffjson.go",
+        "start_byte": 31340,
+        "text": "var err error = nil",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "d92bc9ad7f30a38ec017a46f",
+        "revision": "f2c2b8b2735d22420811aa89a96701839920b79a",
+        "path": "benchmark/benchmark_ffjson.go",
+        "start_byte": 36919,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "6cff946163e3e17dd3edb65a",
+        "revision": "f2c2b8b2735d22420811aa89a96701839920b79a",
+        "path": "benchmark/benchmark_ffjson.go",
+        "start_byte": 37461,
+        "text": "var err error = nil",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "111dbee1deb9717c26ab5ced",
+        "revision": "f2c2b8b2735d22420811aa89a96701839920b79a",
+        "path": "benchmark/benchmark_ffjson.go",
+        "start_byte": 41067,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "255cb1f0d75d7602d80cddbb",
+        "revision": "f2c2b8b2735d22420811aa89a96701839920b79a",
+        "path": "benchmark/benchmark_ffjson.go",
+        "start_byte": 42201,
+        "text": "var err error = nil",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "412bb98a5bbee47d7a5b81e3",
+        "revision": "f2c2b8b2735d22420811aa89a96701839920b79a",
+        "path": "benchmark/benchmark_ffjson.go",
+        "start_byte": 47754,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "ce02505da0a29554e133b8c1",
+        "revision": "f2c2b8b2735d22420811aa89a96701839920b79a",
+        "path": "benchmark/benchmark_ffjson.go",
+        "start_byte": 48682,
+        "text": "var err error = nil",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "339771fd700b4647d396a063",
+        "revision": "f2c2b8b2735d22420811aa89a96701839920b79a",
+        "path": "benchmark/benchmark_ffjson.go",
+        "start_byte": 54768,
+        "text": "var err error",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "c062ce6e13030a72207d3d75",
+        "revision": "f2c2b8b2735d22420811aa89a96701839920b79a",
+        "path": "benchmark/benchmark_ffjson.go",
+        "start_byte": 56485,
+        "text": "var err error = nil",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "602b5439068813aded4d33fe",
+        "revision": "f2c2b8b2735d22420811aa89a96701839920b79a",
+        "path": "parser.go",
+        "start_byte": 157,
+        "text": "func nextValue(data []byte) (offset int) {\n\tfor true {\n\t\tif len(data) == offset {\n\t\t\treturn -1\n\t\t}\n\n\t\tif data[offset] != ' ' && data[offset] != '\\n' && data[offset] != ',' {\n\t\t\treturn\n\t\t}\n\n\t\toffset++\n\t}\n\n\treturn -1\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "f0dd6c044bab52d7f4ef9e9f",
+        "revision": "f2c2b8b2735d22420811aa89a96701839920b79a",
+        "path": "parser.go",
+        "start_byte": 463,
+        "text": "func stringEnd(data []byte) int {\n\ti := 0\n\n\tfor len(data) > i {\n\t\tif data[i] != '\"' {\n\t\t\ti++\n\t\t\tcontinue\n\t\t}\n\n\t\t// If it just escaped \\\", continue\n\t\tif i >= 1 && data[i-1] == '\\\\' {\n\t\t\ti++\n\t\t\tcontinue\n\t\t} else {\n\t\t\treturn i + 1\n\t\t}\n\t}\n\n\treturn -1\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "ce4942f8fcf35e76d9702f8b",
+        "revision": "f2c2b8b2735d22420811aa89a96701839920b79a",
+        "path": "parser.go",
+        "start_byte": 875,
+        "text": "func trailingBracket(data []byte, openSym byte, closeSym byte) int {\n\tlevel := 0\n\ti := 0\n\tln := len(data)\n\n\tfor true {\n\t\tif i >= ln {\n\t\t\treturn -1\n\t\t}\n\n\t\tc := data[i]\n\n\t\t// If inside string, skip it\n\t\tif c == '\"' {\n\t\t\t//sFrom := i\n\t\t\ti++\n\n\t\t\tse := stringEnd(data[i:])\n\t\t\tif se == -1 {\n\t\t\t\treturn -1\n\t\t\t}\n\t\t\ti += se - 1\n\t\t}\n\n\t\tif c == openSym {\n\t\t\tlevel++\n\t\t} else if c == closeSym {\n\t\t\tlevel--\n\t\t}\n\n\t\ti++\n\n\t\tif level == 0 {\n\t\t\tbreak\n\t\t}\n\t}\n\n\treturn i\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "cf6c8617c7e5e8f6ef06d5f7",
+        "revision": "f2c2b8b2735d22420811aa89a96701839920b79a",
+        "path": "parser.go",
+        "start_byte": 1329,
+        "text": "func searchKeys(data []byte, keys ...string) int {\n\tkeyLevel := 0\n\tlevel := 0\n\ti := 0\n\tln := len(data)\n\tlk := len(keys)\n\n\tfor true {\n\t\tif i >= ln {\n\t\t\treturn -1\n\t\t}\n\n\t\t// If inside string, skip it\n\t\tif data[i] == '\"' {\n\t\t\ti++\n\n\t\t\tse := stringEnd(data[i:])\n\t\t\tif se == -1 {\n\t\t\t\treturn -1\n\t\t\t}\n\n\t\t\tif ln > i+se &&\n\t\t\t\tdata[i+se] == ':' && // if string is a Key, and key level match\n\t\t\t\tkeyLevel == level-1 && // If key nesting level match current object nested level\n\n\t\t\t\t// Checks to speedup key comparsion\n\t\t\t\tlen(keys[level-1]) == se-1 && // if it have same length\n\t\t\t\tdata[i] == keys[level-1][0] { // If first character same\n\t\t\t\tif bytes.Equal([]byte(keys[level-1]), data[i:i+se-1]) {\n\t\t\t\t\tkeyLevel++\n\t\t\t\t\t// If we found all keys in path\n\t\t\t\t\tif keyLevel == lk {\n\t\t\t\t\t\treturn i + se + 1\n\t\t\t\t\t}\n\t\t\t\t}\n\t\t\t}\n\n\t\t\ti += se - 1\n\t\t} else if data[i] == '{' {\n\t\t\tlevel++\n\t\t} else if data[i] == '}' {\n\t\t\tlevel--\n\t\t} else if data[i] == '[' {\n\t\t\t// Do not search for keys inside arrays\n\t\t\taOff := trailingBracket(data[i:], '[', ']')\n\t\t\ti += aOff\n\t\t}\n\n\t\ti++\n\t}\n\n\treturn -1\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "15be42300d3402f43ce36486",
+        "revision": "f2c2b8b2735d22420811aa89a96701839920b79a",
+        "path": "parser.go",
+        "start_byte": 2437,
+        "text": "const (\n\tNotExist = iota\n\tString\n\tNumber\n\tObject\n\tArray\n\tBoolean\n\tNull\n)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "770ef954bf576a6a8b5f65b3",
+        "revision": "ef91137af9bcdb644d96d8e5a5cedf7d4c30bcd7",
+        "path": "benchmark/benchmark_codecgen.go",
+        "start_byte": 732,
+        "text": "var (\n\tcodecSelferBitsize6212                         = uint8(reflect.TypeOf(uint(0)).Bits())\n\tcodecSelferOnlyMapOrArrayEncodeToStructErr6212 = errors.New(`only encoded map or array can be decoded into a struct`)\n)",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "6a09c17afb691b4da2a7ac45",
+        "revision": "ef91137af9bcdb644d96d8e5a5cedf7d4c30bcd7",
+        "path": "benchmark/benchmark_codecgen.go",
+        "start_byte": 979,
+        "text": "func init() {\n\tif codec1978.GenVersion != 5 {\n\t\t_, file, _, _ := runtime.Caller(0)\n\t\terr := fmt.Errorf(\"codecgen version mismatch: current: %v, need %v. Re-generate file: %v\",\n\t\t\t5, codec1978.GenVersion, file)\n\t\tpanic(err)\n\t}\n\tif false { // reference the types, but skip this branch at build/run time\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "4ce60fd007007b23154a3836",
+        "revision": "ef91137af9bcdb644d96d8e5a5cedf7d4c30bcd7",
+        "path": "benchmark/benchmark_codecgen.go",
+        "start_byte": 1286,
+        "text": "func (x *SmallPayload) CodecEncodeSelf(e *codec1978.Encoder) {\n\tvar h codecSelfer6212\n\tz, r := codec1978.GenHelperEncoder(e)\n\t_, _, _ = h, z, r\n\tif x == nil {\n\t\tr.EncodeNil()\n\t} else {\n\t\tyym1 := z.EncBinary()\n\t\t_ = yym1\n\t\tif false {\n\t\t} else if z.HasExtensions() && z.EncExt(x) {\n\t\t} else if !yym1 && z.IsJSONHandle() {\n\t\t\tz.EncJSONMarshal(x)\n\t\t} else {\n\t\t\tyysep2 := !z.EncBinary()\n\t\t\tyy2arr2 := z.EncBasicHandle().StructToArray\n\t\t\tvar yyq2 [9]bool\n\t\t\t_, _, _ = yysep2, yyq2, yy2arr2\n\t\t\tconst yyr2 bool = false\n\t\t\tvar yynn2 int\n\t\t\tif yyr2 || yy2arr2 {\n\t\t\t\tr.EncodeArrayStart(9)\n\t\t\t} else {\n\t\t\t\tyynn2 = 9\n\t\t\t\tfor _, b := range yyq2 {\n\t\t\t\t\tif b {\n\t\t\t\t\t\tyynn2++\n\t\t\t\t\t}\n\t\t\t\t}\n\t\t\t\tr.EncodeMapStart(yynn2)\n\t\t\t\tyynn2 = 0\n\t\t\t}\n\t\t\tif yyr2 || yy2arr2 {\n\t\t\t\tz.EncSendContainerState(codecSelfer_containerArrayElem6212)\n\t\t\t\tyym4 := z.EncBinary()\n\t\t\t\t_ = yym4\n\t\t\t\tif false {\n\t\t\t\t} else {\n\t\t\t\t\tr.EncodeInt(int64(x.St))\n\t\t\t\t}\n\t\t\t} else {\n\t\t\t\tz.EncSendContainerState(codecSelfer_containerMapKey6212)\n\t\t\t\tr.EncodeString(codecSelferC_UTF86212, string(\"St\"))\n\t\t\t\tz.EncSendContainerState(codecSelfer_containerMapValue6212)\n\t\t\t\tyym5 := z.EncBinary()\n\t\t\t\t_ = yym5\n\t\t\t\tif false {\n\t\t\t\t} else {\n\t\t\t\t\tr.EncodeInt(int64(x.St))\n\t\t\t\t}\n\t\t\t}\n\t\t\tif yyr2 || yy2arr2 {\n\t\t\t\tz.EncSendContainerState(codecSelfer_containerArrayElem6212)\n\t\t\t\tyym7 := z.EncBinary()\n\t\t\t\t_ = yym7\n\t\t\t\tif false {\n\t\t\t\t} else {\n\t\t\t\t\tr.EncodeInt(int64(x.Sid))\n\t\t\t\t}\n\t\t\t} else {\n\t\t\t\tz.EncSendContainerState(codecSelfer_containerMapKey6212)\n\t\t\t\tr.EncodeString(codecSelferC_UTF86212, string(\"Sid\"))\n\t\t\t\tz.EncSendContainerState(codecSelfer_containerMapValue6212)\n\t\t\t\tyym8 := z.EncBinary()\n\t\t\t\t_ = yym8\n\t\t\t\tif false {\n\t\t\t\t} else {\n\t\t\t\t\tr.EncodeInt(int64(x.Sid))\n\t\t\t\t}\n\t\t\t}\n\t\t\tif yyr2 || yy2arr2 {\n\t\t\t\tz.EncSendContainerState(codecSelfer_containerArrayElem6212)\n\t\t\t\tyym10 := z.EncBinary()\n\t\t\t\t_ = yym10\n\t\t\t\tif false {\n\t\t\t\t} else {\n\t\t\t\t\tr.EncodeString(codecSelferC_UTF86212, string(x.Tt))\n\t\t\t\t}\n\t\t\t} else {\n\t\t\t\tz.EncSendContainerState(codecSelfer_containerMapKey6212)\n\t\t\t\tr.EncodeString(codecSelferC_UTF86212, string(\"Tt\"))\n\t\t\t\tz.EncSendContainerState(codecSelfer_containerMapValue6212)\n\t\t\t\tyym11 := z.EncBinary()\n\t\t\t\t_ = yym11\n\t\t\t\tif false {\n\t\t\t\t} else {\n\t\t\t\t\tr.EncodeString(codecSelferC_UTF86212, string(x.Tt))\n\t\t\t\t}\n\t\t\t}\n\t\t\tif yyr2 || yy2arr2 {\n\t\t\t\tz.EncSendContainerState(codecSelfer_containerArrayElem6212)\n\t\t\t\tyym13 := z.EncBinary()\n\t\t\t\t_ = yym13\n\t\t\t\tif false {\n\t\t\t\t} else {\n\t\t\t\t\tr.EncodeInt(int64(x.Gr))\n\t\t\t\t}\n\t\t\t} else {\n\t\t\t\tz.EncSendContainerState(codecSelfer_containerMapKey6212)\n\t\t\t\tr.EncodeString(codecSelferC_UTF86212, string(\"Gr\"))\n\t\t\t\tz.EncSendContainerState(codecSelfer_containerMapValue6212)\n\t\t\t\tyym14 := z.EncBinary()\n\t\t\t\t_ = yym14\n\t\t\t\tif false {\n\t\t\t\t} else {\n\t\t\t\t\tr.EncodeInt(int64(x.Gr))\n\t\t\t\t}\n\t\t\t}\n\t\t\tif yyr2 || yy2arr2 {\n\t\t\t\tz.EncSendContainerState(codecSelfer_containerArrayElem6212)\n\t\t\t\tyym16 := z.EncBinary()\n\t\t\t\t_ = yym16\n\t\t\t\tif false {\n\t\t\t\t} else {\n\t\t\t\t\tr.EncodeString(codecSelferC_UTF86212, string(x.Uuid))\n\t\t\t\t}\n\t\t\t} else {\n\t\t\t\tz.EncSendContainerState(codecSelfer_containerMapKey6212)\n\t\t\t\tr.EncodeString(codecSelferC_UTF86212, string(\"Uuid\"))\n\t\t\t\tz.EncSendContainerState(codecSelfer_containerMapValue6212)\n\t\t\t\tyym17 := z.EncBinary()\n\t\t\t\t_ = yym17\n\t\t\t\tif false {\n\t\t\t\t} else {\n\t\t\t\t\tr.EncodeString(codecSelferC_UTF86212, string(x.Uuid))\n\t\t\t\t}\n\t\t\t}\n\t\t\tif yyr2 || yy2arr2 {\n\t\t\t\tz.EncSendContainerState(codecSelfer_containerArrayElem6212)\n\t\t\t\tyym19 := z.EncBinary()\n\t\t\t\t_ = yym19\n\t\t\t\tif false {\n\t\t\t\t} else {\n\t\t\t\t\tr.EncodeString(codecSelferC_UTF86212, string(x.Ip))\n\t\t\t\t}\n\t\t\t} else {\n\t\t\t\tz.EncSendContainerState(codecSelfer_containerMapKey6212)\n\t\t\t\tr.EncodeString(codecSelferC_UTF86212, string(\"Ip\"))\n\t\t\t\tz.EncSendContainerState(codecSelfer_containerMapValue6212)\n\t\t\t\tyym20 := z.EncBinary()\n\t\t\t\t_ = yym20\n\t\t\t\tif false {\n\t\t\t\t} else {\n\t\t\t\t\tr.EncodeString(codecSelferC_UTF86212, string(x.Ip))\n\t\t\t\t}\n\t\t\t}\n\t\t\tif yyr2 || yy2arr2 {\n\t\t\t\tz.EncSendContainerState(codecSelfer_containerArrayElem6212)\n\t\t\t\tyym22 := z.EncBinary()\n\t\t\t\t_ = yym22\n\t\t\t\tif false {\n\t\t\t\t} else {\n\t\t\t\t\tr.EncodeString(codecSelferC_UTF86212, string(x.Ua))\n\t\t\t\t}\n\t\t\t} else {\n\t\t\t\tz.EncSendContainerState(codecSelfer_containerMapKey6212)\n\t\t\t\tr.EncodeString(codecSelferC_UTF86212, string(\"Ua\"))\n\t\t\t\tz.EncSendContainerState(codecSelfer_containerMapValue6212)\n\t\t\t\tyym23 := z.EncBinary()\n\t\t\t\t_ = yym23\n\t\t\t\tif false {\n\t\t\t\t} else {\n\t\t\t\t\tr.EncodeString(codecSelferC_UTF86212, string(x.Ua))\n\t\t\t\t}\n\t\t\t}\n\t\t\tif yyr2 || yy2arr2 {\n\t\t\t\tz.EncSendContainerState(codecSelfer_containerArrayElem6212)\n\t\t\t\tyym25 := z.EncBinary()\n\t\t\t\t_ = yym25\n\t\t\t\tif false {\n\t\t\t\t} else {\n\t\t\t\t\tr.EncodeInt(int64(x.Tz))\n\t\t\t\t}\n\t\t\t} else {\n\t\t\t\tz.EncSendContainerState(codecSelfer_containerMapKey6212)\n\t\t\t\tr.EncodeString(codecSelferC_UTF86212, string(\"Tz\"))\n\t\t\t\tz.EncSendContainerState(codecSelfer_containerMapValue6212)\n\t\t\t\tyym26 := z.EncBinary()\n\t\t\t\t_ = yym26\n\t\t\t\tif false {\n\t\t\t\t} else {\n\t\t\t\t\tr.EncodeInt(int64(x.Tz))\n\t\t\t\t}\n\t\t\t}\n\t\t\tif yyr2 || yy2arr2 {\n\t\t\t\tz.EncSendContainerState(codecSelfer_containerArrayElem6212)\n\t\t\t\tyym28 := z.EncBinary()\n\t\t\t\t_ = yym28\n\t\t\t\tif false {\n\t\t\t\t} else {\n\t\t\t\t\tr.EncodeInt(int64(x.V))\n\t\t\t\t}\n\t\t\t} else {\n\t\t\t\tz.EncSendContainerState(codecSelfer_containerMapKey6212)\n\t\t\t\tr.EncodeString(codecSelferC_UTF86212, string(\"V\"))\n\t\t\t\tz.EncSendContainerState(codecSelfer_containerMapValue6212)\n\t\t\t\tyym29 := z.EncBinary()\n\t\t\t\t_ = yym29\n\t\t\t\tif false {\n\t\t\t\t} else {\n\t\t\t\t\tr.EncodeInt(int64(x.V))\n\t\t\t\t}\n\t\t\t}\n\t\t\tif yyr2 || yy2arr2 {\n\t\t\t\tz.EncSendContainerState(codecSelfer_containerArrayEnd6212)\n\t\t\t} else {\n\t\t\t\tz.EncSendContainerState(codecSelfer_containerMapEnd6212)\n\t\t\t}\n\t\t}\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "260839b5727e2050a84f2696",
+        "revision": "ef91137af9bcdb644d96d8e5a5cedf7d4c30bcd7",
+        "path": "benchmark/benchmark_codecgen.go",
+        "start_byte": 1718,
+        "text": "var yyq2 [9]bool",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "776b47886484d3d82d803aa1",
+        "revision": "ef91137af9bcdb644d96d8e5a5cedf7d4c30bcd7",
+        "path": "benchmark/benchmark_codecgen.go",
+        "start_byte": 1773,
+        "text": "const yyr2 bool = false",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "ebf1ff610a7035ac13b27f6b",
+        "revision": "ef91137af9bcdb644d96d8e5a5cedf7d4c30bcd7",
+        "path": "benchmark/benchmark_codecgen.go",
+        "start_byte": 1800,
+        "text": "var yynn2 int",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "696cf11fd234a5edab8fb412",
+        "revision": "ef91137af9bcdb644d96d8e5a5cedf7d4c30bcd7",
+        "path": "benchmark/benchmark_codecgen.go",
+        "start_byte": 6849,
+        "text": "func (x *SmallPayload) CodecDecodeSelf(d *codec1978.Decoder) {\n\tvar h codecSelfer6212\n\tz, r := codec1978.GenHelperDecoder(d)\n\t_, _, _ = h, z, r\n\tyym1 := z.DecBinary()\n\t_ = yym1\n\tif false {\n\t} else if z.HasExtensions() && z.DecExt(x) {\n\t} else if !yym1 && z.IsJSONHandle() {\n\t\tz.DecJSONUnmarshal(x)\n\t} else {\n\t\tyyct2 := r.ContainerType()\n\t\tif yyct2 == codecSelferValueTypeMap6212 {\n\t\t\tyyl2 := r.ReadMapStart()\n\t\t\tif yyl2 == 0 {\n\t\t\t\tz.DecSendContainerState(codecSelfer_containerMapEnd6212)\n\t\t\t} else {\n\t\t\t\tx.codecDecodeSelfFromMap(yyl2, d)\n\t\t\t}\n\t\t} else if yyct2 == codecSelferValueTypeArray6212 {\n\t\t\tyyl2 := r.ReadArrayStart()\n\t\t\tif yyl2 == 0 {\n\t\t\t\tz.DecSendContainerState(codecSelfer_containerArrayEnd6212)\n\t\t\t} else {\n\t\t\t\tx.codecDecodeSelfFromArray(yyl2, d)\n\t\t\t}\n\t\t} else {\n\t\t\tpanic(codecSelferOnlyMapOrArrayEncodeToStructErr6212)\n\t\t}\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "31cf83ec340a9afb2e9a2b3a",
+        "revision": "ef91137af9bcdb644d96d8e5a5cedf7d4c30bcd7",
+        "path": "benchmark/benchmark_codecgen.go",
+        "start_byte": 7691,
+        "text": "func (x *SmallPayload) codecDecodeSelfFromMap(l int, d *codec1978.Decoder) {\n\tvar h codecSelfer6212\n\tz, r := codec1978.GenHelperDecoder(d)\n\t_, _, _ = h, z, r\n\tvar yys3Slc = z.DecScratchBuffer() // default slice to decode into\n\t_ = yys3Slc\n\tvar yyhl3 bool = l >= 0\n\tfor yyj3 := 0; ; yyj3++ {\n\t\tif yyhl3 {\n\t\t\tif yyj3 >= l {\n\t\t\t\tbreak\n\t\t\t}\n\t\t} else {\n\t\t\tif r.CheckBreak() {\n\t\t\t\tbreak\n\t\t\t}\n\t\t}\n\t\tz.DecSendContainerState(codecSelfer_containerMapKey6212)\n\t\tyys3Slc = r.DecodeBytes(yys3Slc, true, true)\n\t\tyys3 := string(yys3Slc)\n\t\tz.DecSendContainerState(codecSelfer_containerMapValue6212)\n\t\tswitch yys3 {\n\t\tcase \"St\":\n\t\t\tif r.TryDecodeAsNil() {\n\t\t\t\tx.St = 0\n\t\t\t} else {\n\t\t\t\tyyv4 := &x.St\n\t\t\t\tyym5 := z.DecBinary()\n\t\t\t\t_ = yym5\n\t\t\t\tif false {\n\t\t\t\t} else {\n\t\t\t\t\t*((*int)(yyv4)) = int(r.DecodeInt(codecSelferBitsize6212))\n\t\t\t\t}\n\t\t\t}\n\t\tcase \"Sid\":\n\t\t\tif r.TryDecodeAsNil() {\n\t\t\t\tx.Sid = 0\n\t\t\t} else {\n\t\t\t\tyyv6 := &x.Sid\n\t\t\t\tyym7 := z.DecBinary()\n\t\t\t\t_ = yym7\n\t\t\t\tif false {\n\t\t\t\t} else {\n\t\t\t\t\t*((*int)(yyv6)) = int(r.DecodeInt(codecSelferBitsize6212))\n\t\t\t\t}\n\t\t\t}\n\t\tcase \"Tt\":\n\t\t\tif r.TryDecodeAsNil() {\n\t\t\t\tx.Tt = \"\"\n\t\t\t} else {\n\t\t\t\tyyv8 := &x.Tt\n\t\t\t\tyym9 := z.DecBinary()\n\t\t\t\t_ = yym9\n\t\t\t\tif false {\n\t\t\t\t} else {\n\t\t\t\t\t*((*string)(yyv8)) = r.DecodeString()\n\t\t\t\t}\n\t\t\t}\n\t\tcase \"Gr\":\n\t\t\tif r.TryDecodeAsNil() {\n\t\t\t\tx.Gr = 0\n\t\t\t} else {\n\t\t\t\tyyv10 := &x.Gr\n\t\t\t\tyym11 := z.DecBinary()\n\t\t\t\t_ = yym11\n\t\t\t\tif false {\n\t\t\t\t} else {\n\t\t\t\t\t*((*int)(yyv10)) = int(r.DecodeInt(codecSelferBitsize6212))\n\t\t\t\t}\n\t\t\t}\n\t\tcase \"Uuid\":\n\t\t\tif r.TryDecodeAsNil() {\n\t\t\t\tx.Uuid = \"\"\n\t\t\t} else {\n\t\t\t\tyyv12 := &x.Uuid\n\t\t\t\tyym13 := z.DecBinary()\n\t\t\t\t_ = yym13\n\t\t\t\tif false {\n\t\t\t\t} else {\n\t\t\t\t\t*((*string)(yyv12)) = r.DecodeString()\n\t\t\t\t}\n\t\t\t}\n\t\tcase \"Ip\":\n\t\t\tif r.TryDecodeAsNil() {\n\t\t\t\tx.Ip = \"\"\n\t\t\t} else {\n\t\t\t\tyyv14 := &x.Ip\n\t\t\t\tyym15 := z.DecBinary()\n\t\t\t\t_ = yym15\n\t\t\t\tif false {\n\t\t\t\t} else {\n\t\t\t\t\t*((*string)(yyv14)) = r.DecodeString()\n\t\t\t\t}\n\t\t\t}\n\t\tcase \"Ua\":\n\t\t\tif r.TryDecodeAsNil() {\n\t\t\t\tx.Ua = \"\"\n\t\t\t} else {\n\t\t\t\tyyv16 := &x.Ua\n\t\t\t\tyym17 := z.DecBinary()\n\t\t\t\t_ = yym17\n\t\t\t\tif false {\n\t\t\t\t} else {\n\t\t\t\t\t*((*string)(yyv16)) = r.DecodeString()\n\t\t\t\t}\n\t\t\t}\n\t\tcase \"Tz\":\n\t\t\tif r.TryDecodeAsNil() {\n\t\t\t\tx.Tz = 0\n\t\t\t} else {\n\t\t\t\tyyv18 := &x.Tz\n\t\t\t\tyym19 := z.DecBinary()\n\t\t\t\t_ = yym19\n\t\t\t\tif false {\n\t\t\t\t} else {\n\t\t\t\t\t*((*int)(yyv18)) = int(r.DecodeInt(codecSelferBitsize6212))\n\t\t\t\t}\n\t\t\t}\n\t\tcase \"V\":\n\t\t\tif r.TryDecodeAsNil() {\n\t\t\t\tx.V = 0\n\t\t\t} else {\n\t\t\t\tyyv20 := &x.V\n\t\t\t\tyym21 := z.DecBinary()\n\t\t\t\t_ = yym21\n\t\t\t\tif false {\n\t\t\t\t} else {\n\t\t\t\t\t*((*int)(yyv20)) = int(r.DecodeInt(codecSelferBitsize6212))\n\t\t\t\t}\n\t\t\t}\n\t\tdefault:\n\t\t\tz.DecStructFieldNotFound(-1, yys3)\n\t\t} // end switch yys3\n\t} // end for yyj3\n\tz.DecSendContainerState(codecSelfer_containerMapEnd6212)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "133506a2d0f5ec99104c5e40",
+        "revision": "ef91137af9bcdb644d96d8e5a5cedf7d4c30bcd7",
+        "path": "benchmark/benchmark_codecgen.go",
+        "start_byte": 7931,
+        "text": "var yyhl3 bool = l >= 0",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "6d4823df0fac465642760f3d",
+        "revision": "ef91137af9bcdb644d96d8e5a5cedf7d4c30bcd7",
+        "path": "benchmark/benchmark_codecgen.go",
+        "start_byte": 10417,
+        "text": "func (x *SmallPayload) codecDecodeSelfFromArray(l int, d *codec1978.Decoder) {\n\tvar h codecSelfer6212\n\tz, r := codec1978.GenHelperDecoder(d)\n\t_, _, _ = h, z, r\n\tvar yyj22 int\n\tvar yyb22 bool\n\tvar yyhl22 bool = l >= 0\n\tyyj22++\n\tif yyhl22 {\n\t\tyyb22 = yyj22 > l\n\t} else {\n\t\tyyb22 = r.CheckBreak()\n\t}\n\tif yyb22 {\n\t\tz.DecSendContainerState(codecSelfer_containerArrayEnd6212)\n\t\treturn\n\t}\n\tz.DecSendContainerState(codecSelfer_containerArrayElem6212)\n\tif r.TryDecodeAsNil() {\n\t\tx.St = 0\n\t} else {\n\t\tyyv23 := &x.St\n\t\tyym24 := z.DecBinary()\n\t\t_ = yym24\n\t\tif false {\n\t\t} else {\n\t\t\t*((*int)(yyv23)) = int(r.DecodeInt(codecSelferBitsize6212))\n\t\t}\n\t}\n\tyyj22++\n\tif yyhl22 {\n\t\tyyb22 = yyj22 > l\n\t} else {\n\t\tyyb22 = r.CheckBreak()\n\t}\n\tif yyb22 {\n\t\tz.DecSendContainerState(codecSelfer_containerArrayEnd6212)\n\t\treturn\n\t}\n\tz.DecSendContainerState(codecSelfer_containerArrayElem6212)\n\tif r.TryDecodeAsNil() {\n\t\tx.Sid = 0\n\t} else {\n\t\tyyv25 := &x.Sid\n\t\tyym26 := z.DecBinary()\n\t\t_ = yym26\n\t\tif false {\n\t\t} else {\n\t\t\t*((*int)(yyv25)) = int(r.DecodeInt(codecSelferBitsize6212))\n\t\t}\n\t}\n\tyyj22++\n\tif yyhl22 {\n\t\tyyb22 = yyj22 > l\n\t} else {\n\t\tyyb22 = r.CheckBreak()\n\t}\n\tif yyb22 {\n\t\tz.DecSendContainerState(codecSelfer_containerArrayEnd6212)\n\t\treturn\n\t}\n\tz.DecSendContainerState(codecSelfer_containerArrayElem6212)\n\tif r.TryDecodeAsNil() {\n\t\tx.Tt = \"\"\n\t} else {\n\t\tyyv27 := &x.Tt\n\t\tyym28 := z.DecBinary()\n\t\t_ = yym28\n\t\tif false {\n\t\t} else {\n\t\t\t*((*string)(yyv27)) = r.DecodeString()\n\t\t}\n\t}\n\tyyj22++\n\tif yyhl22 {\n\t\tyyb22 = yyj22 > l\n\t} else {\n\t\tyyb22 = r.CheckBreak()\n\t}\n\tif yyb22 {\n\t\tz.DecSendContainerState(codecSelfer_containerArrayEnd6212)\n\t\treturn\n\t}\n\tz.DecSendContainerState(codecSelfer_containerArrayElem6212)\n\tif r.TryDecodeAsNil() {\n\t\tx.Gr = 0\n\t} else {\n\t\tyyv29 := &x.Gr\n\t\tyym30 := z.DecBinary()\n\t\t_ = yym30\n\t\tif false {\n\t\t} else {\n\t\t\t*((*int)(yyv29)) = int(r.DecodeInt(codecSelferBitsize6212))\n\t\t}\n\t}\n\tyyj22++\n\tif yyhl22 {\n\t\tyyb22 = yyj22 > l\n\t} else {\n\t\tyyb22 = r.CheckBreak()\n\t}\n\tif yyb22 {\n\t\tz.DecSendContainerState(codecSelfer_containerArrayEnd6212)\n\t\treturn\n\t}\n\tz.DecSendContainerState(codecSelfer_containerArrayElem6212)\n\tif r.TryDecodeAsNil() {\n\t\tx.Uuid = \"\"\n\t} else {\n\t\tyyv31 := &x.Uuid\n\t\tyym32 := z.DecBinary()\n\t\t_ = yym32\n\t\tif false {\n\t\t} else {\n\t\t\t*((*string)(yyv31)) = r.DecodeString()\n\t\t}\n\t}\n\tyyj22++\n\tif yyhl22 {\n\t\tyyb22 = yyj22 > l\n\t} else {\n\t\tyyb22 = r.CheckBreak()\n\t}\n\tif yyb22 {\n\t\tz.DecSendContainerState(codecSelfer_containerArrayEnd6212)\n\t\treturn\n\t}\n\tz.DecSendContainerState(codecSelfer_containerArrayElem6212)\n\tif r.TryDecodeAsNil() {\n\t\tx.Ip = \"\"\n\t} else {\n\t\tyyv33 := &x.Ip\n\t\tyym34 := z.DecBinary()\n\t\t_ = yym34\n\t\tif false {\n\t\t} else {\n\t\t\t*((*string)(yyv33)) = r.DecodeString()\n\t\t}\n\t}\n\tyyj22++\n\tif yyhl22 {\n\t\tyyb22 = yyj22 > l\n\t} else {\n\t\tyyb22 = r.CheckBreak()\n\t}\n\tif yyb22 {\n\t\tz.DecSendContainerState(codecSelfer_containerArrayEnd6212)\n\t\treturn\n\t}\n\tz.DecSendContainerState(codecSelfer_containerArrayElem6212)\n\tif r.TryDecodeAsNil() {\n\t\tx.Ua = \"\"\n\t} else {\n\t\tyyv35 := &x.Ua\n\t\tyym36 := z.DecBinary()\n\t\t_ = yym36\n\t\tif false {\n\t\t} else {\n\t\t\t*((*string)(yyv35)) = r.DecodeString()\n\t\t}\n\t}\n\tyyj22++\n\tif yyhl22 {\n\t\tyyb22 = yyj22 > l\n\t} else {\n\t\tyyb22 = r.CheckBreak()\n\t}\n\tif yyb22 {\n\t\tz.DecSendContainerState(codecSelfer_containerArrayEnd6212)\n\t\treturn\n\t}\n\tz.DecSendContainerState(codecSelfer_containerArrayElem6212)\n\tif r.TryDecodeAsNil() {\n\t\tx.Tz = 0\n\t} else {\n\t\tyyv37 := &x.Tz\n\t\tyym38 := z.DecBinary()\n\t\t_ = yym38\n\t\tif false {\n\t\t} else {\n\t\t\t*((*int)(yyv37)) = int(r.DecodeInt(codecSelferBitsize6212))\n\t\t}\n\t}\n\tyyj22++\n\tif yyhl22 {\n\t\tyyb22 = yyj22 > l\n\t} else {\n\t\tyyb22 = r.CheckBreak()\n\t}\n\tif yyb22 {\n\t\tz.DecSendContainerState(codecSelfer_containerArrayEnd6212)\n\t\treturn\n\t}\n\tz.DecSendContainerState(codecSelfer_containerArrayElem6212)\n\tif r.TryDecodeAsNil() {\n\t\tx.V = 0\n\t} else {\n\t\tyyv39 := &x.V\n\t\tyym40 := z.DecBinary()\n\t\t_ = yym40\n\t\tif false {\n\t\t} else {\n\t\t\t*((*int)(yyv39)) = int(r.DecodeInt(codecSelferBitsize6212))\n\t\t}\n\t}\n\tfor {\n\t\tyyj22++\n\t\tif yyhl22 {\n\t\t\tyyb22 = yyj22 > l\n\t\t} else {\n\t\t\tyyb22 = r.CheckBreak()\n\t\t}\n\t\tif yyb22 {\n\t\t\tbreak\n\t\t}\n\t\tz.DecSendContainerState(codecSelfer_containerArrayElem6212)\n\t\tz.DecStructFieldNotFound(yyj22-1, \"\")\n\t}\n\tz.DecSendContainerState(codecSelfer_containerArrayEnd6212)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "86dcb5fde239ab34b65d93f1",
+        "revision": "ef91137af9bcdb644d96d8e5a5cedf7d4c30bcd7",
+        "path": "benchmark/benchmark_codecgen.go",
+        "start_byte": 10578,
+        "text": "var yyj22 int",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "d5acdaa149e6ca250d0785cb",
+        "revision": "ef91137af9bcdb644d96d8e5a5cedf7d4c30bcd7",
+        "path": "benchmark/benchmark_codecgen.go",
+        "start_byte": 10593,
+        "text": "var yyb22 bool",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "ae3be68086c7194cbcc322e8",
+        "revision": "ef91137af9bcdb644d96d8e5a5cedf7d4c30bcd7",
+        "path": "benchmark/benchmark_codecgen.go",
+        "start_byte": 10609,
+        "text": "var yyhl22 bool = l >= 0",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "4636741df5a545f7fa2c0e34",
+        "revision": "ef91137af9bcdb644d96d8e5a5cedf7d4c30bcd7",
+        "path": "benchmark/benchmark_codecgen.go",
+        "start_byte": 14625,
+        "text": "func (x *CBAvatar) CodecEncodeSelf(e *codec1978.Encoder) {\n\tvar h codecSelfer6212\n\tz, r := codec1978.GenHelperEncoder(e)\n\t_, _, _ = h, z, r\n\tif x == nil {\n\t\tr.EncodeNil()\n\t} else {\n\t\tyym1 := z.EncBinary()\n\t\t_ = yym1\n\t\tif false {\n\t\t} else if z.HasExtensions() && z.EncExt(x) {\n\t\t} else if !yym1 && z.IsJSONHandle() {\n\t\t\tz.EncJSONMarshal(x)\n\t\t} else {\n\t\t\tyysep2 := !z.EncBinary()\n\t\t\tyy2arr2 := z.EncBasicHandle().StructToArray\n\t\t\tvar yyq2 [1]bool\n\t\t\t_, _, _ = yysep2, yyq2, yy2arr2\n\t\t\tconst yyr2 bool = false\n\t\t\tvar yynn2 int\n\t\t\tif yyr2 || yy2arr2 {\n\t\t\t\tr.EncodeArrayStart(1)\n\t\t\t} else {\n\t\t\t\tyynn2 = 1\n\t\t\t\tfor _, b := range yyq2 {\n\t\t\t\t\tif b {\n\t\t\t\t\t\tyynn2++\n\t\t\t\t\t}\n\t\t\t\t}\n\t\t\t\tr.EncodeMapStart(yynn2)\n\t\t\t\tyynn2 = 0\n\t\t\t}\n\t\t\tif yyr2 || yy2arr2 {\n\t\t\t\tz.EncSendContainerState(codecSelfer_containerArrayElem6212)\n\t\t\t\tyym4 := z.EncBinary()\n\t\t\t\t_ = yym4\n\t\t\t\tif false {\n\t\t\t\t} else {\n\t\t\t\t\tr.EncodeString(codecSelferC_UTF86212, string(x.Url))\n\t\t\t\t}\n\t\t\t} else {\n\t\t\t\tz.EncSendContainerState(codecSelfer_containerMapKey6212)\n\t\t\t\tr.EncodeString(codecSelferC_UTF86212, string(\"Url\"))\n\t\t\t\tz.EncSendContainerState(codecSelfer_containerMapValue6212)\n\t\t\t\tyym5 := z.EncBinary()\n\t\t\t\t_ = yym5\n\t\t\t\tif false {\n\t\t\t\t} else {\n\t\t\t\t\tr.EncodeString(codecSelferC_UTF86212, string(x.Url))\n\t\t\t\t}\n\t\t\t}\n\t\t\tif yyr2 || yy2arr2 {\n\t\t\t\tz.EncSendContainerState(codecSelfer_containerArrayEnd6212)\n\t\t\t} else {\n\t\t\t\tz.EncSendContainerState(codecSelfer_containerMapEnd6212)\n\t\t\t}\n\t\t}\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "48ceed9a8e9fe4ede3c8a57f",
+        "revision": "ef91137af9bcdb644d96d8e5a5cedf7d4c30bcd7",
+        "path": "benchmark/benchmark_codecgen.go",
+        "start_byte": 15053,
+        "text": "var yyq2 [1]bool",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "97f49202fe08727e552bfe2a",
+        "revision": "ef91137af9bcdb644d96d8e5a5cedf7d4c30bcd7",
+        "path": "benchmark/benchmark_codecgen.go",
+        "start_byte": 15108,
+        "text": "const yyr2 bool = false",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "cfe9e9087417889045c2a7cd",
+        "revision": "ef91137af9bcdb644d96d8e5a5cedf7d4c30bcd7",
+        "path": "benchmark/benchmark_codecgen.go",
+        "start_byte": 15135,
+        "text": "var yynn2 int",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "b87e9ab5fff7c82751aa7083",
+        "revision": "ef91137af9bcdb644d96d8e5a5cedf7d4c30bcd7",
+        "path": "benchmark/benchmark_codecgen.go",
+        "start_byte": 16063,
+        "text": "func (x *CBAvatar) CodecDecodeSelf(d *codec1978.Decoder) {\n\tvar h codecSelfer6212\n\tz, r := codec1978.GenHelperDecoder(d)\n\t_, _, _ = h, z, r\n\tyym1 := z.DecBinary()\n\t_ = yym1\n\tif false {\n\t} else if z.HasExtensions() && z.DecExt(x) {\n\t} else if !yym1 && z.IsJSONHandle() {\n\t\tz.DecJSONUnmarshal(x)\n\t} else {\n\t\tyyct2 := r.ContainerType()\n\t\tif yyct2 == codecSelferValueTypeMap6212 {\n\t\t\tyyl2 := r.ReadMapStart()\n\t\t\tif yyl2 == 0 {\n\t\t\t\tz.DecSendContainerState(codecSelfer_containerMapEnd6212)\n\t\t\t} else {\n\t\t\t\tx.codecDecodeSelfFromMap(yyl2, d)\n\t\t\t}\n\t\t} else if yyct2 == codecSelferValueTypeArray6212 {\n\t\t\tyyl2 := r.ReadArrayStart()\n\t\t\tif yyl2 == 0 {\n\t\t\t\tz.DecSendContainerState(codecSelfer_containerArrayEnd6212)\n\t\t\t} else {\n\t\t\t\tx.codecDecodeSelfFromArray(yyl2, d)\n\t\t\t}\n\t\t} else {\n\t\t\tpanic(codecSelferOnlyMapOrArrayEncodeToStructErr6212)\n\t\t}\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "bd6c42bdbe75b87c39065188",
+        "revision": "ef91137af9bcdb644d96d8e5a5cedf7d4c30bcd7",
+        "path": "benchmark/benchmark_codecgen.go",
+        "start_byte": 16901,
+        "text": "func (x *CBAvatar) codecDecodeSelfFromMap(l int, d *codec1978.Decoder) {\n\tvar h codecSelfer6212\n\tz, r := codec1978.GenHelperDecoder(d)\n\t_, _, _ = h, z, r\n\tvar yys3Slc = z.DecScratchBuffer() // default slice to decode into\n\t_ = yys3Slc\n\tvar yyhl3 bool = l >= 0\n\tfor yyj3 := 0; ; yyj3++ {\n\t\tif yyhl3 {\n\t\t\tif yyj3 >= l {\n\t\t\t\tbreak\n\t\t\t}\n\t\t} else {\n\t\t\tif r.CheckBreak() {\n\t\t\t\tbreak\n\t\t\t}\n\t\t}\n\t\tz.DecSendContainerState(codecSelfer_containerMapKey6212)\n\t\tyys3Slc = r.DecodeBytes(yys3Slc, true, true)\n\t\tyys3 := string(yys3Slc)\n\t\tz.DecSendContainerState(codecSelfer_containerMapValue6212)\n\t\tswitch yys3 {\n\t\tcase \"Url\":\n\t\t\tif r.TryDecodeAsNil() {\n\t\t\t\tx.Url = \"\"\n\t\t\t} else {\n\t\t\t\tyyv4 := &x.Url\n\t\t\t\tyym5 := z.DecBinary()\n\t\t\t\t_ = yym5\n\t\t\t\tif false {\n\t\t\t\t} else {\n\t\t\t\t\t*((*string)(yyv4)) = r.DecodeString()\n\t\t\t\t}\n\t\t\t}\n\t\tdefault:\n\t\t\tz.DecStructFieldNotFound(-1, yys3)\n\t\t} // end switch yys3\n\t} // end for yyj3\n\tz.DecSendContainerState(codecSelfer_containerMapEnd6212)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "cb10931ef9cf9808eb077f17",
+        "revision": "ef91137af9bcdb644d96d8e5a5cedf7d4c30bcd7",
+        "path": "benchmark/benchmark_codecgen.go",
+        "start_byte": 17137,
+        "text": "var yyhl3 bool = l >= 0",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "e9e77d2d0a88ffbc537fd550",
+        "revision": "ef91137af9bcdb644d96d8e5a5cedf7d4c30bcd7",
+        "path": "benchmark/benchmark_codecgen.go",
+        "start_byte": 17856,
+        "text": "func (x *CBAvatar) codecDecodeSelfFromArray(l int, d *codec1978.Decoder) {\n\tvar h codecSelfer6212\n\tz, r := codec1978.GenHelperDecoder(d)\n\t_, _, _ = h, z, r\n\tvar yyj6 int\n\tvar yyb6 bool\n\tvar yyhl6 bool = l >= 0\n\tyyj6++\n\tif yyhl6 {\n\t\tyyb6 = yyj6 > l\n\t} else {\n\t\tyyb6 = r.CheckBreak()\n\t}\n\tif yyb6 {\n\t\tz.DecSendContainerState(codecSelfer_containerArrayEnd6212)\n\t\treturn\n\t}\n\tz.DecSendContainerState(codecSelfer_containerArrayElem6212)\n\tif r.TryDecodeAsNil() {\n\t\tx.Url = \"\"\n\t} else {\n\t\tyyv7 := &x.Url\n\t\tyym8 := z.DecBinary()\n\t\t_ = yym8\n\t\tif false {\n\t\t} else {\n\t\t\t*((*string)(yyv7)) = r.DecodeString()\n\t\t}\n\t}\n\tfor {\n\t\tyyj6++\n\t\tif yyhl6 {\n\t\t\tyyb6 = yyj6 > l\n\t\t} else {\n\t\t\tyyb6 = r.CheckBreak()\n\t\t}\n\t\tif yyb6 {\n\t\t\tbreak\n\t\t}\n\t\tz.DecSendContainerState(codecSelfer_containerArrayElem6212)\n\t\tz.DecStructFieldNotFound(yyj6-1, \"\")\n\t}\n\tz.DecSendContainerState(codecSelfer_containerArrayEnd6212)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "a4aca7e56bc483a1f402db4a",
+        "revision": "ef91137af9bcdb644d96d8e5a5cedf7d4c30bcd7",
+        "path": "benchmark/benchmark_codecgen.go",
+        "start_byte": 18013,
+        "text": "var yyj6 int",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "c4d4b5526717f83ba6f5a528",
+        "revision": "ef91137af9bcdb644d96d8e5a5cedf7d4c30bcd7",
+        "path": "benchmark/benchmark_codecgen.go",
+        "start_byte": 18027,
+        "text": "var yyb6 bool",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "7422a38296aa25b9af103b33",
+        "revision": "ef91137af9bcdb644d96d8e5a5cedf7d4c30bcd7",
+        "path": "benchmark/benchmark_codecgen.go",
+        "start_byte": 18042,
+        "text": "var yyhl6 bool = l >= 0",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "611528024fe1cecda284bf4a",
+        "revision": "ef91137af9bcdb644d96d8e5a5cedf7d4c30bcd7",
+        "path": "benchmark/benchmark_codecgen.go",
+        "start_byte": 18738,
+        "text": "func (x *CBGravatar) CodecEncodeSelf(e *codec1978.Encoder) {\n\tvar h codecSelfer6212\n\tz, r := codec1978.GenHelperEncoder(e)\n\t_, _, _ = h, z, r\n\tif x == nil {\n\t\tr.EncodeNil()\n\t} else {\n\t\tyym1 := z.EncBinary()\n\t\t_ = yym1\n\t\tif false {\n\t\t} else if z.HasExtensions() && z.EncExt(x) {\n\t\t} else if !yym1 && z.IsJSONHandle() {\n\t\t\tz.EncJSONMarshal(x)\n\t\t} else {\n\t\t\tyysep2 := !z.EncBinary()\n\t\t\tyy2arr2 := z.EncBasicHandle().StructToArray\n\t\t\tvar yyq2 [1]bool\n\t\t\t_, _, _ = yysep2, yyq2, yy2arr2\n\t\t\tconst yyr2 bool = false\n\t\t\tvar yynn2 int\n\t\t\tif yyr2 || yy2arr2 {\n\t\t\t\tr.EncodeArrayStart(1)\n\t\t\t} else {\n\t\t\t\tyynn2 = 1\n\t\t\t\tfor _, b := range yyq2 {\n\t\t\t\t\tif b {\n\t\t\t\t\t\tyynn2++\n\t\t\t\t\t}\n\t\t\t\t}\n\t\t\t\tr.EncodeMapStart(yynn2)\n\t\t\t\tyynn2 = 0\n\t\t\t}\n\t\t\tif yyr2 || yy2arr2 {\n\t\t\t\tz.EncSendContainerState(codecSelfer_containerArrayElem6212)\n\t\t\t\tif x.Avatars == nil {\n\t\t\t\t\tr.EncodeNil()\n\t\t\t\t} else {\n\t\t\t\t\tyym4 := z.EncBinary()\n\t\t\t\t\t_ = yym4\n\t\t\t\t\tif false {\n\t\t\t\t\t} else {\n\t\t\t\t\t\th.encSlicePtrtoCBAvatar(([]*CBAvatar)(x.Avatars), e)\n\t\t\t\t\t}\n\t\t\t\t}\n\t\t\t} else {\n\t\t\t\tz.EncSendContainerState(codecSelfer_containerMapKey6212)\n\t\t\t\tr.EncodeString(codecSelferC_UTF86212, string(\"Avatars\"))\n\t\t\t\tz.EncSendContainerState(codecSelfer_containerMapValue6212)\n\t\t\t\tif x.Avatars == nil {\n\t\t\t\t\tr.EncodeNil()\n\t\t\t\t} else {\n\t\t\t\t\tyym5 := z.EncBinary()\n\t\t\t\t\t_ = yym5\n\t\t\t\t\tif false {\n\t\t\t\t\t} else {\n\t\t\t\t\t\th.encSlicePtrtoCBAvatar(([]*CBAvatar)(x.Avatars), e)\n\t\t\t\t\t}\n\t\t\t\t}\n\t\t\t}\n\t\t\tif yyr2 || yy2arr2 {\n\t\t\t\tz.EncSendContainerState(codecSelfer_containerArrayEnd6212)\n\t\t\t} else {\n\t\t\t\tz.EncSendContainerState(codecSelfer_containerMapEnd6212)\n\t\t\t}\n\t\t}\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "514714b0195409419199f7a0",
+        "revision": "ef91137af9bcdb644d96d8e5a5cedf7d4c30bcd7",
+        "path": "benchmark/benchmark_codecgen.go",
+        "start_byte": 19168,
+        "text": "var yyq2 [1]bool",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "3c1e133fc11b4f98bf0d0dac",
+        "revision": "ef91137af9bcdb644d96d8e5a5cedf7d4c30bcd7",
+        "path": "benchmark/benchmark_codecgen.go",
+        "start_byte": 19223,
+        "text": "const yyr2 bool = false",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "f4e607a07b03689212a820ca",
+        "revision": "ef91137af9bcdb644d96d8e5a5cedf7d4c30bcd7",
+        "path": "benchmark/benchmark_codecgen.go",
+        "start_byte": 19250,
+        "text": "var yynn2 int",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "b376b365eab00af9c5c1b71f",
+        "revision": "ef91137af9bcdb644d96d8e5a5cedf7d4c30bcd7",
+        "path": "benchmark/benchmark_codecgen.go",
+        "start_byte": 20322,
+        "text": "func (x *CBGravatar) CodecDecodeSelf(d *codec1978.Decoder) {\n\tvar h codecSelfer6212\n\tz, r := codec1978.GenHelperDecoder(d)\n\t_, _, _ = h, z, r\n\tyym1 := z.DecBinary()\n\t_ = yym1\n\tif false {\n\t} else if z.HasExtensions() && z.DecExt(x) {\n\t} else if !yym1 && z.IsJSONHandle() {\n\t\tz.DecJSONUnmarshal(x)\n\t} else {\n\t\tyyct2 := r.ContainerType()\n\t\tif yyct2 == codecSelferValueTypeMap6212 {\n\t\t\tyyl2 := r.ReadMapStart()\n\t\t\tif yyl2 == 0 {\n\t\t\t\tz.DecSendContainerState(codecSelfer_containerMapEnd6212)\n\t\t\t} else {\n\t\t\t\tx.codecDecodeSelfFromMap(yyl2, d)\n\t\t\t}\n\t\t} else if yyct2 == codecSelferValueTypeArray6212 {\n\t\t\tyyl2 := r.ReadArrayStart()\n\t\t\tif yyl2 == 0 {\n\t\t\t\tz.DecSendContainerState(codecSelfer_containerArrayEnd6212)\n\t\t\t} else {\n\t\t\t\tx.codecDecodeSelfFromArray(yyl2, d)\n\t\t\t}\n\t\t} else {\n\t\t\tpanic(codecSelferOnlyMapOrArrayEncodeToStructErr6212)\n\t\t}\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "c5432e6273967cc9aa094388",
+        "revision": "ef91137af9bcdb644d96d8e5a5cedf7d4c30bcd7",
+        "path": "benchmark/benchmark_codecgen.go",
+        "start_byte": 21162,
+        "text": "func (x *CBGravatar) codecDecodeSelfFromMap(l int, d *codec1978.Decoder) {\n\tvar h codecSelfer6212\n\tz, r := codec1978.GenHelperDecoder(d)\n\t_, _, _ = h, z, r\n\tvar yys3Slc = z.DecScratchBuffer() // default slice to decode into\n\t_ = yys3Slc\n\tvar yyhl3 bool = l >= 0\n\tfor yyj3 := 0; ; yyj3++ {\n\t\tif yyhl3 {\n\t\t\tif yyj3 >= l {\n\t\t\t\tbreak\n\t\t\t}\n\t\t} else {\n\t\t\tif r.CheckBreak() {\n\t\t\t\tbreak\n\t\t\t}\n\t\t}\n\t\tz.DecSendContainerState(codecSelfer_containerMapKey6212)\n\t\tyys3Slc = r.DecodeBytes(yys3Slc, true, true)\n\t\tyys3 := string(yys3Slc)\n\t\tz.DecSendContainerState(codecSelfer_containerMapValue6212)\n\t\tswitch yys3 {\n\t\tcase \"Avatars\":\n\t\t\tif r.TryDecodeAsNil() {\n\t\t\t\tx.Avatars = nil\n\t\t\t} else {\n\t\t\t\tyyv4 := &x.Avatars\n\t\t\t\tyym5 := z.DecBinary()\n\t\t\t\t_ = yym5\n\t\t\t\tif false {\n\t\t\t\t} else {\n\t\t\t\t\th.decSlicePtrtoCBAvatar((*[]*CBAvatar)(yyv4), d)\n\t\t\t\t}\n\t\t\t}\n\t\tdefault:\n\t\t\tz.DecStructFieldNotFound(-1, yys3)\n\t\t} // end switch yys3\n\t} // end for yyj3\n\tz.DecSendContainerState(codecSelfer_containerMapEnd6212)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "5d24009fec8d59dfa00884f0",
+        "revision": "ef91137af9bcdb644d96d8e5a5cedf7d4c30bcd7",
+        "path": "benchmark/benchmark_codecgen.go",
+        "start_byte": 21400,
+        "text": "var yyhl3 bool = l >= 0",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "3ebc63a4ab15250e2ea548b8",
+        "revision": "ef91137af9bcdb644d96d8e5a5cedf7d4c30bcd7",
+        "path": "benchmark/benchmark_codecgen.go",
+        "start_byte": 22143,
+        "text": "func (x *CBGravatar) codecDecodeSelfFromArray(l int, d *codec1978.Decoder) {\n\tvar h codecSelfer6212\n\tz, r := codec1978.GenHelperDecoder(d)\n\t_, _, _ = h, z, r\n\tvar yyj6 int\n\tvar yyb6 bool\n\tvar yyhl6 bool = l >= 0\n\tyyj6++\n\tif yyhl6 {\n\t\tyyb6 = yyj6 > l\n\t} else {\n\t\tyyb6 = r.CheckBreak()\n\t}\n\tif yyb6 {\n\t\tz.DecSendContainerState(codecSelfer_containerArrayEnd6212)\n\t\treturn\n\t}\n\tz.DecSendContainerState(codecSelfer_containerArrayElem6212)\n\tif r.TryDecodeAsNil() {\n\t\tx.Avatars = nil\n\t} else {\n\t\tyyv7 := &x.Avatars\n\t\tyym8 := z.DecBinary()\n\t\t_ = yym8\n\t\tif false {\n\t\t} else {\n\t\t\th.decSlicePtrtoCBAvatar((*[]*CBAvatar)(yyv7), d)\n\t\t}\n\t}\n\tfor {\n\t\tyyj6++\n\t\tif yyhl6 {\n\t\t\tyyb6 = yyj6 > l\n\t\t} else {\n\t\t\tyyb6 = r.CheckBreak()\n\t\t}\n\t\tif yyb6 {\n\t\t\tbreak\n\t\t}\n\t\tz.DecSendContainerState(codecSelfer_containerArrayElem6212)\n\t\tz.DecStructFieldNotFound(yyj6-1, \"\")\n\t}\n\tz.DecSendContainerState(codecSelfer_containerArrayEnd6212)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "0d0cf426eb85ebd4b4f4c0c6",
+        "revision": "ef91137af9bcdb644d96d8e5a5cedf7d4c30bcd7",
+        "path": "benchmark/benchmark_codecgen.go",
+        "start_byte": 22302,
+        "text": "var yyj6 int",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "5a664d1567a6fb20c23ad663",
+        "revision": "ef91137af9bcdb644d96d8e5a5cedf7d4c30bcd7",
+        "path": "benchmark/benchmark_codecgen.go",
+        "start_byte": 22316,
+        "text": "var yyb6 bool",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "396acca7cb6405214fbc16e9",
+        "revision": "ef91137af9bcdb644d96d8e5a5cedf7d4c30bcd7",
+        "path": "benchmark/benchmark_codecgen.go",
+        "start_byte": 22331,
+        "text": "var yyhl6 bool = l >= 0",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "242f0e9e386e46630d83f2fb",
+        "revision": "ef91137af9bcdb644d96d8e5a5cedf7d4c30bcd7",
+        "path": "benchmark/benchmark_codecgen.go",
+        "start_byte": 23047,
+        "text": "func (x *CBGithub) CodecEncodeSelf(e *codec1978.Encoder) {\n\tvar h codecSelfer6212\n\tz, r := codec1978.GenHelperEncoder(e)\n\t_, _, _ = h, z, r\n\tif x == nil {\n\t\tr.EncodeNil()\n\t} else {\n\t\tyym1 := z.EncBinary()\n\t\t_ = yym1\n\t\tif false {\n\t\t} else if z.HasExtensions() && z.EncExt(x) {\n\t\t} else if !yym1 && z.IsJSONHandle() {\n\t\t\tz.EncJSONMarshal(x)\n\t\t} else {\n\t\t\tyysep2 := !z.EncBinary()\n\t\t\tyy2arr2 := z.EncBasicHandle().StructToArray\n\t\t\tvar yyq2 [1]bool\n\t\t\t_, _, _ = yysep2, yyq2, yy2arr2\n\t\t\tconst yyr2 bool = false\n\t\t\tvar yynn2 int\n\t\t\tif yyr2 || yy2arr2 {\n\t\t\t\tr.EncodeArrayStart(1)\n\t\t\t} else {\n\t\t\t\tyynn2 = 1\n\t\t\t\tfor _, b := range yyq2 {\n\t\t\t\t\tif b {\n\t\t\t\t\t\tyynn2++\n\t\t\t\t\t}\n\t\t\t\t}\n\t\t\t\tr.EncodeMapStart(yynn2)\n\t\t\t\tyynn2 = 0\n\t\t\t}\n\t\t\tif yyr2 || yy2arr2 {\n\t\t\t\tz.EncSendContainerState(codecSelfer_containerArrayElem6212)\n\t\t\t\tyym4 := z.EncBinary()\n\t\t\t\t_ = yym4\n\t\t\t\tif false {\n\t\t\t\t} else {\n\t\t\t\t\tr.EncodeInt(int64(x.Followers))\n\t\t\t\t}\n\t\t\t} else {\n\t\t\t\tz.EncSend",
+        "rank": 2,
+        "truncated": true
+      }
+    ]
+  },
+  "retrieval": {
+    "unresolved": [
+      {
+        "side": "ours",
+        "identifier": "Get",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "data",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "byte",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "keys",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "string",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "value",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "dataType",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "int",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "offset",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "err",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "benchmark/benchmark_ffjson.go",
+            "start": 599
+          },
+          {
+            "path": "benchmark/benchmark_ffjson.go",
+            "start": 1128
+          },
+          {
+            "path": "benchmark/benchmark_ffjson.go",
+            "start": 4706
+          },
+          {
+            "path": "benchmark/benchmark_ffjson.go",
+            "start": 5283
+          },
+          {
+            "path": "benchmark/benchmark_ffjson.go",
+            "start": 8965
+          },
+          {
+            "path": "benchmark/benchmark_ffjson.go",
+            "start": 9826
+          },
+          {
+            "path": "benchmark/benchmark_ffjson.go",
+            "start": 14512
+          },
+          {
+            "path": "benchmark/benchmark_ffjson.go",
+            "start": 15054
+          },
+          {
+            "path": "benchmark/benchmark_ffjson.go",
+            "start": 18659
+          },
+          {
+            "path": "benchmark/benchmark_ffjson.go",
+            "start": 19848
+          },
+          {
+            "path": "benchmark/benchmark_ffjson.go",
+            "start": 25199
+          },
+          {
+            "path": "benchmark/benchmark_ffjson.go",
+            "start": 25866
+          },
+          {
+            "path": "benchmark/benchmark_ffjson.go",
+            "start": 30280
+          },
+          {
+            "path": "benchmark/benchmark_ffjson.go",
+            "start": 31340
+          },
+          {
+            "path": "benchmark/benchmark_ffjson.go",
+            "start": 36919
+          },
+          {
+            "path": "benchmark/benchmark_ffjson.go",
+            "start": 37461
+          },
+          {
+            "path": "benchmark/benchmark_ffjson.go",
+            "start": 41067
+          },
+          {
+            "path": "benchmark/benchmark_ffjson.go",
+            "start": 42201
+          },
+          {
+            "path": "benchmark/benchmark_ffjson.go",
+            "start": 47754
+          },
+          {
+            "path": "benchmark/benchmark_ffjson.go",
+            "start": 48682
+          },
+          {
+            "path": "benchmark/benchmark_ffjson.go",
+            "start": 54768
+          },
+          {
+            "path": "benchmark/benchmark_ffjson.go",
+            "start": 56485
+          }
+        ]
+      },
+      {
+        "side": "ours",
+        "identifier": "error",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "r",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "recover",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "fmt",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Errorf",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "d",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Stack",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "len",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "errors",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "New",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "nO",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "endOffset",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "String",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "idx",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Array",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Object",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "end",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "bytes",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "IndexFunc",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "c",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "rune",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "bool",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Boolean",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Null",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Number",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Get",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "data",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "byte",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "keys",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "string",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "value",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "dataType",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "int",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "offset",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "err",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "benchmark/benchmark_ffjson.go",
+            "start": 599
+          },
+          {
+            "path": "benchmark/benchmark_ffjson.go",
+            "start": 1128
+          },
+          {
+            "path": "benchmark/benchmark_ffjson.go",
+            "start": 4706
+          },
+          {
+            "path": "benchmark/benchmark_ffjson.go",
+            "start": 5283
+          },
+          {
+            "path": "benchmark/benchmark_ffjson.go",
+            "start": 8965
+          },
+          {
+            "path": "benchmark/benchmark_ffjson.go",
+            "start": 9826
+          },
+          {
+            "path": "benchmark/benchmark_ffjson.go",
+            "start": 14512
+          },
+          {
+            "path": "benchmark/benchmark_ffjson.go",
+            "start": 15054
+          },
+          {
+            "path": "benchmark/benchmark_ffjson.go",
+            "start": 18659
+          },
+          {
+            "path": "benchmark/benchmark_ffjson.go",
+            "start": 19848
+          },
+          {
+            "path": "benchmark/benchmark_ffjson.go",
+            "start": 25199
+          },
+          {
+            "path": "benchmark/benchmark_ffjson.go",
+            "start": 25866
+          },
+          {
+            "path": "benchmark/benchmark_ffjson.go",
+            "start": 30280
+          },
+          {
+            "path": "benchmark/benchmark_ffjson.go",
+            "start": 31340
+          },
+          {
+            "path": "benchmark/benchmark_ffjson.go",
+            "start": 36919
+          },
+          {
+            "path": "benchmark/benchmark_ffjson.go",
+            "start": 37461
+          },
+          {
+            "path": "benchmark/benchmark_ffjson.go",
+            "start": 41067
+          },
+          {
+            "path": "benchmark/benchmark_ffjson.go",
+            "start": 42201
+          },
+          {
+            "path": "benchmark/benchmark_ffjson.go",
+            "start": 47754
+          },
+          {
+            "path": "benchmark/benchmark_ffjson.go",
+            "start": 48682
+          },
+          {
+            "path": "benchmark/benchmark_ffjson.go",
+            "start": 54768
+          },
+          {
+            "path": "benchmark/benchmark_ffjson.go",
+            "start": 56485
+          }
+        ]
+      },
+      {
+        "side": "theirs",
+        "identifier": "error",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "r",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "recover",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "fmt",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Errorf",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "d",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Stack",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "ln",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "len",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "ki",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "lk",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "endOffset",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "errors",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "New",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "idx",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "bytes",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Index",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "nO",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "String",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Array",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Object",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "end",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "IndexFunc",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "c",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "rune",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "bool",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Boolean",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Null",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Number",
+        "reason": "no-unique-declaration-established"
+      }
+    ],
+    "method": "syntax-ranges-and-identifier-candidates/3",
+    "budget_bytes": 32768,
+    "libraries": {
+      "C": "cbbd4827ee02cd5c018ab41f10d8404ff8741159054b352d9a6d763c506ba3c7",
+      "Go": "1612f8fd958ba1ec981bf4b91e2ff399f1e54d26a9da68e5b60b0d7cd00616fc"
+    }
+  }
+}

@@ -1,0 +1,663 @@
+{
+  "id": "b5bce269c9f7f412c58f2914d2e8efc2f20db251c96a3151388816ccc6cc3f86",
+  "source_protocol_sha256": "86ffe38086e217acf6e1a4aa4162e226862463d1bde3160478f9a6f4d2b968ce",
+  "repair_module_sha256": "b6a7cf123b0ac50001e1498cdf64964b8ac56e8e6a68cbbc6dcc01c8517b4a20",
+  "contexts": {
+    "local-context": [
+      {
+        "id": "5ca5450fb201da71e0a72619",
+        "revision": "1fb52b3bce854a25e1bcfb25c8e16862ad400e9d",
+        "path": "flag.go",
+        "start_byte": 0,
+        "text": "package cli\n\nimport (\n\t\"encoding/json\"\n\t\"flag\"\n\t\"fmt\"\n\t\"os\"\n\t\"runtime\"\n\t\"strconv\"\n\t\"strings\"\n\t\"time\"\n)\n\nvar (\n\tslPfx = fmt.Sprintf(\"sl:::%d:::\", time.Now().UTC().UnixNano())\n)\n\n// This flag enables bash-completion for all commands and subcommands\nvar BashCompletionFlag = BoolFlag{\n\tName: \"generate-bash-completion\",\n}\n\n// This flag prints the version for the application\nvar VersionFlag = BoolFlag{\n\tName:  \"version, v\",\n\tUsage: \"print the version\",\n}\n\n// This flag prints the help for all commands and subcommands\n// Set to the zero value (BoolFlag{}) to disable flag -- keeps subcommand\n// unless HideHelp is set to true)\nvar HelpFlag = BoolFlag{\n\tName:  \"help, h\",\n\tUsage: \"show help\",\n}\n\n// Serializeder is used to circumvent the limitations of flag.FlagSet.Set\ntype Serializeder interface {\n\tSerialized() string\n}\n\n// Flag is a common interface related to parsing flags in cli.\n// For more advanced flag parsing techniques, it is recommended that\n// this interface be implemented.\ntype Flag interface {\n\tfmt.Stringer\n\t// Apply Flag settings to the given flag set\n\tApply(*flag.FlagSet)\n\tGetName() string\n}\n\nfunc flagSet(name string, flags []Flag) *flag.FlagSet {\n\tset := flag.NewFlagSet(name, flag.ContinueOnError)\n\n\tfor _, f := range flags {\n\t\tf.Apply(set)\n\t}\n\treturn set\n}\n\nfunc eachName(longName string, fn func(string)) {\n\tparts := strings.Split(longName, \",\")\n\tfor _, name := range parts {\n\t\tname = strings.Trim(name, \" \")\n\t\tfn(name)\n\t}\n}\n\n// Generic is a generic parseable type identified by a specific flag\ntype Generic interface {\n\tSet(value string) error\n\tString() string\n}\n\n// GenericFlag is the flag type for types implementing Generic\ntype GenericFlag struct {\n\tName   string\n\tValue  Generic\n\tUsage  string\n\tEnvVar string\n}\n\n// String returns the string representation of the generic flag to display the\n// help text to the user (uses the String() method of the generic flag to show\n// the value)\nfunc (f GenericFlag) String() string {\n\tplaceholder, usage := unquoteUsage(f.Usage)\n\treturn withEnvHint(f.EnvVar, fmt.Sprintf(\"%s %v\\t%v\", prefixedNames(f.Name, placeholder), f.FormatValueHelp(), usage))\n}\n\nfunc (f GenericFlag) FormatValueHelp() string {\n\tif f.Value == nil {\n\t\treturn \"\"\n\t}\n\ts := f.Value.String()\n\tif len(s) == 0 {\n\t\treturn \"\"\n\t}\n\treturn fmt.Sprintf(\"\\\"%s\\\"\", s)\n}\n\n// Apply takes the flagset and calls Set on the generic flag with the value\n// provided by the user for parsing by the flag\nfunc (f GenericFlag) Apply(set *flag.FlagSet) {\n\tval := f.Value\n\tif f.EnvVar != \"\" {\n\t\tfor _, envVar := range strings.Split(f.EnvVar, \",\") {\n\t\t\tenvVar = strings.TrimSpace(envVar)\n\t\t\tif envVal := os.Getenv(envVar); envVal != \"\" {\n\t\t\t\tval.Set(envVal)\n\t\t\t\tbreak\n\t\t\t}\n\t\t}\n\t}\n\n\teachName(f.Name, func(name string) {\n\t\tset.Var(f.Value, name, f.Usage)\n\t})\n}\n\nfunc (f GenericFlag) GetName() string {\n\treturn f.Name\n}\n\n// StringSlice wraps a []string to satisfy flag.Value\ntype StringSlice struct {\n\tslice      []string\n\thasBeenSet bool\n}\n\n// NewStringSlice creates a *StringSlice with default values\nfunc NewStringSlice(defaults ...string) *StringSlice {\n\treturn &StringSlice{slice: append([]string{}, defaults...)}\n}\n\n// Set appends the string value to the list of values\nfunc (f *StringSlice) Set(value string) error {\n\tif !f.hasBeenSet {\n\t\tf.slice = []string{}\n\t\tf.hasBeenSet = true\n\t}\n\n\tif strings.HasPrefix(value, slPfx) {\n\t\t// Deserializing assumes overwrite\n\t\t_ = json.Unmarshal([]byte(strings.Replace(value, slPfx, \"\", 1)), &f.slice)\n\t\tf.hasBeenSet = true\n\t\treturn nil\n\t}\n\n\tf.slice = append(f.slice, value)\n\treturn nil\n}\n\n// String returns a readable representation of this value (for usage defaults)\nfunc (f *StringSlice) String() string {\n\treturn fmt.Sprintf(\"%s\", f.slice)\n}\n\n// Serialized allows StringSlice to fulfill Serializeder\nfunc (f *StringSlice) Serialized() string {\n\tjsonBytes, _ := json.Marshal(f.slice)\n\treturn fmt.Sprintf(\"%s%s\", slPfx, string(jsonBytes))\n}\n\n// Value returns the slice of strings set by this flag\nfunc (f *StringSlice) Value() []string {\n\treturn f.slice\n}\n\n// StringSliceFlag is a string flag that can be specified multiple times on the\n// command-line\ntype StringSliceFlag struct {\n\tName   string\n\tValue  *StringSlice\n\tUsage  string\n\tEnvVar string\n}\n\n// String returns the usage\nfunc (f StringSliceFlag) String() string {\n\tfirstName := strings.Trim(strings.Split(f.Name, \",\")[0], \" \")\n\tpref := prefixFor(firstName)\n\tplaceholder, usage := unquoteUsage(f.Usage)\n\treturn withEnvHint(f.EnvVar, fmt.Sprintf(\"%s [%v]\\t%v\", prefixedNames(f.Name, placeholder), pref+firstName+\" option \"+pref+firstName+\" option\", usage))\n}\n\n// Apply populates the flag given the flag set and environment\nfunc (f StringSliceFlag) Apply(set *flag.FlagSet) {\n\tif f.EnvVar != \"\" {\n\t\tfor _, envVar := range strings.Split(f.EnvVar, \",\") {\n\t\t\tenvVar = strings.TrimSpace(envVar)\n\t\t\tif envVal := os.Getenv(envVar); envVal != \"\" {\n\t\t\t\tnewVal := NewStringSlice()\n\t\t\t\tfor _, s := range strings.Split(envVal, \",\") {\n\t\t\t\t\ts = strings.TrimSpace(s)\n\t\t\t\t\tnewVal.Set(s)\n\t\t\t\t}\n\t\t\t\tf.Value = newVal\n\t\t\t\tbreak\n\t\t\t}\n\t\t}\n\t}\n\n\tif f.Value == nil {\n\t\tf.Value = NewStringSlice()\n\t}\n\n\teachName(f.Name, func(name string) {\n\t\tset.Var(f.Value, name, f.Usage)\n\t})\n}\n\nfunc (f StringSliceFlag) GetName() string {\n\treturn f.Name\n}\n\n// IntSlice wraps an []int to satisfy flag.Value\ntype IntSlice struct {\n\tslice      []int\n\thasBeenSet bool\n}\n\n// NewIntSlice makes an *IntSlice with default values\nfunc NewIntSlice(defaults ...int) *IntSlice {\n\treturn &IntSlice{slice: append([]int{}, defaults...)}\n}\n\n// SetInt directly adds an integer to the list of values\nfunc (i *IntSlice) SetInt(value int) {\n\tif !i.hasBeenSet {\n\t\ti.slice = []int{}\n\t\ti.hasBeenSet = true\n\t}\n\n\ti.slice = append(i.slice, value)\n}\n\n// Set parses the value into an integer and appends it to the list of values\nfunc (i *IntSlice) Set(value string) error {\n\tif !i.hasBeenSet {\n\t\ti.slice = []int{}\n\t\ti.hasBeenSet = true\n\t}\n\n\tif strings.HasPrefix(value, slPfx) {\n\t\t// Deserializing assumes overwrite\n\t\t_ = json.Unmarshal([]byte(strings.Replace(value, slPfx, \"\", 1)), &i.slice)\n\t\ti.hasBeenSet = true\n\t\treturn nil\n\t}\n\n\ttmp, err := strconv.Atoi(value)\n\tif err != nil {\n\t\treturn err\n\t} else {\n\t\ti.slice = append(i.slice, tmp)\n\t}\n\treturn nil\n}\n\n// String returns a readable representation of this value (for usage defaults)\nfunc (i *IntSlice) String() string {\n\treturn fmt.Sprintf(\"%v\", i.slice)\n}\n\n// Serialized allows IntSlice to fulfill Serializeder\nfunc (i *IntSlice) Serialized() string {\n\tjsonBytes, _ := json.Marshal(i.slice)\n\treturn fmt.Sprintf(\"%s%s\", slPfx, string(jsonBytes))\n}\n\n// Value returns the slice of ints set by this flag\nfunc (i *IntSlice) Value() []int {\n\treturn i.slice\n}\n\n// IntSliceFlag is an int flag that can be specified multiple times on the\n// command-line\ntype IntSliceFlag struct {\n\tName   string\n\tValue  *IntSlice\n\tUsage  string\n\tEnvVar string\n}\n\n// String returns the usage\nfunc (f IntSliceFlag) String() string {\n\tfirstName := strings.Trim(strings.Split(f.Name, \",\")[0], \" \")\n\tpref := prefixFor(firstName)\n\tplaceholder, usage := unquoteUsage(f.Usage)\n\treturn withEnvHint(f.EnvVar, fmt.Sprintf(\"%s [%v]\\t%v\", prefixedNames(f.Name, placeholder), pref+firstName+\" option \"+pref+firstName+\" option\", usage))\n}\n\n// Apply populates the flag given the flag set and environment\nfunc (f IntSliceFlag) Apply(set *flag.FlagSet) {\n\tif f.EnvVar != \"\" {\n\t\tfor _, envVar := range strings.Split(f.EnvVar, \",\") {\n\t\t\tenvVar = strings.TrimSpace(envVar)\n\t\t\tif envVal := os.Getenv(envVar); envVal != \"\" {\n\t\t\t\tnewVal := NewIntSlice()\n\t\t\t\tfor _, s := range strings.Split(envVal, \",\") {\n\t\t\t\t\ts = strings.TrimSpace(s)\n\t\t\t\t\terr := newVal.Set(s)\n\t\t\t\t\tif err != nil {\n\t\t\t\t\t\tfmt.Fprintf(os.Stderr, err.Error())\n\t\t\t\t\t}\n\t\t\t\t}\n\t\t\t\tf.Value = newVal\n\t\t\t\tbreak\n\t\t\t}\n\t\t}\n\t}\n\n\tif f.Value == nil {\n\t\tf.Value = NewIntSlice()\n\t}\n\n\teachName(f.Name, func(name string) {\n\t\tset.Var(f.Value, name, f.Usage)\n\t})\n}\n\nfunc (f IntSliceFlag) GetName() string {\n\treturn f.Name\n}\n\n// BoolFlag is a switch that defaults to false\ntype BoolFlag struct {\n\tName        string\n\tUsage       string\n\tEnvVar      string\n\tDestination *bool\n}\n\n// String returns a readable representation of this value (for usage defaults)\nfunc (f BoolFlag) String() string {\n\tplaceholder, usage := unquoteUsage(f.Usage)\n\treturn withEnvHint(f.EnvVar, fmt.Sprintf(\"%s\\t%v\", prefixedNames(f.Name, placeholder), usage))\n}\n\n// Apply populates the flag given the flag set and environment\nfunc (f BoolFlag) Apply(set *flag.FlagSet) {\n\tval := false\n\tif f.EnvVar != \"\" {\n\t\tfor _, envVar := range strings.Split(f.EnvVar, \",\") {\n\t\t\tenvVar = strings.TrimSpace(envVar)\n\t\t\tif envVal := os.Getenv(envVar); envVal != \"\" {\n\t\t\t\tenvValBool, err := strconv.ParseBool(envVal)\n\t\t\t\tif err == nil {\n\t\t\t\t\tval = envValBool\n\t\t\t\t}\n\t\t\t\tbreak\n\t\t\t}\n\t\t}\n\t}\n\n\teachName(f.Name, func(name string) {\n\t\tif f.Destination != nil {\n\t\t\tset.BoolVar(f.Destination, name, val, f.Usage)\n\t\t\treturn\n\t\t}\n\t\tset.Bool(name, val, f.Usage)\n\t})\n}\n\nfunc (f BoolFlag) GetName() string {\n\treturn f.Name\n}\n\n// BoolTFlag this represents a boolean flag that is true by default, but can\n// still be set to false by --some-flag=false\ntype BoolTFlag struct {\n\tName        string\n\tUsage       string\n\tEnvVar      string\n\tDestination *bool\n}\n\n// String returns a readable representation of this value (for usage defaults)\nfunc (f BoolTFlag) String() string {\n\tplaceholder, usage := unquoteUsage(f.Usage)\n\treturn withEnvHint(f.EnvVar, fmt.Sprintf(\"%s\\t%v\", prefixedNames(f.Name, placeholder), usage))\n}\n\n// Apply populates the flag given the flag set and environment\nfunc (f BoolTFlag) Apply(set *flag.FlagSet) {\n\tval := true\n\tif f.EnvVar != \"\" {\n\t\tfor _, envVar := range strings.Split(f.EnvVar, \",\") {\n\t\t\tenvVar = strings.TrimSpace(envVar)\n\t\t\tif envVal := os.Getenv(envVar); envVal != \"\" {\n\t\t\t\tenvValBool, err := strconv.ParseBool(envVal)\n\t\t\t\tif err == nil {\n\t\t\t\t\tval = envValBool\n\t\t\t\t\tbreak\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t}\n\n\teachName(f.Name, func(name string) {\n\t\tif f.Destination != nil {\n\t\t\tset.BoolVar(f.Destination, name, val, f.Usage)\n\t\t\treturn\n\t\t}\n\t\tset.Bool(name, val, f.Usage)\n\t})\n}\n\nfunc (f BoolTFlag) GetName() string {\n\treturn f.Name\n}\n\n// StringFlag represents a flag that takes as string value\ntype StringFlag struct {\n\tName        string\n\tValue       string\n\tUsage       string\n\tEnvVar      string\n\tDestination *string\n}\n\n// String returns the usage\nfunc (f StringFlag) String() string {\n\tplaceholder, usage := unquoteUsage(f.Usage)\n\treturn withEnvHint(f.EnvVar, fmt.Sprintf(\"%s %v\\t%v\", prefixedNames(f.Name, placeholder), f.FormatValueHelp(), usage))\n}\n\nfunc (f StringFlag) FormatValueHelp() string {\n\ts := f.Value\n\tif len(s) == 0 {\n\t\treturn \"\"\n\t}\n\treturn fmt.Sprintf(\"\\\"%s\\\"\", s)\n}\n\n// Apply populates the flag given the flag set and environment\nfunc (f StringFlag) Apply(set *flag.FlagSet) {\n\tif f.EnvVar != \"\" {\n\t\tfor _, envVar := range strings.Split(f.EnvVar, \",\") {\n\t\t\tenvVar = strings.TrimSpace(envVar)\n\t\t\tif envVal := os.Getenv(envVar); envVal != \"\" {\n\t\t\t\tf.Value = envVal\n\t\t\t\tbreak\n\t\t\t}\n\t\t}\n\t}\n\n\teachName(f.Name, func(name string) {\n\t\tif f.Destination != nil {\n\t\t\tset.StringVar(f.Destination, name, f.Value, f.Usage)\n\t\t\treturn\n\t\t}\n\t\tset.String(name, f.Value, f.Usage)\n\t})\n}\n\nfunc (f StringFlag) GetName() string {\n\treturn f.Name\n}\n\n// IntFlag is a flag that takes an integer\n// Errors if the value provided cannot be parsed\ntype IntFlag struct {\n\tName        string\n\tValue       int\n\tUsage       string\n\tEnvVar      string\n\tDestination *int\n}\n\n// String returns the usage\nfunc (f IntFlag) String() string {\n\tplaceholder, usage := unquoteUsage(f.Usage)\n\treturn withEnvHint(f.EnvVar, fmt.Sprintf(\"%s \\\"%v\\\"\\t%v\", prefixedNames(f.Name, placeholder), f.Value, usage))\n}\n\n// Apply populates the flag given the flag set and environment\nfunc (f IntFlag) Apply(set *flag.FlagSet) {\n\tif f.EnvVar != \"\" {\n\t\tfor _, envVar := range strings.Split(f.EnvVar, \",\") {\n\t\t\tenvVar = strings.TrimSpace(envVar)\n\t\t\tif envVal := os.Getenv(envVar); envVal != \"\" {\n\t\t\t\tenvValInt, err := strconv.ParseInt(envVal, 0, 64)\n\t\t\t\tif err == nil {\n\t\t\t\t\tf.Value = int(envValInt)\n\t\t\t\t\tbreak\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t}\n\n\teachName(f.Name, func(name string) {\n\t\tif f.Destination != nil {\n\t\t\tset.IntVar(f.Destination, name, f.Value, f.Usage)\n\t\t\treturn\n\t\t}\n\t\tset.Int(name, f.Value, f.Usage)\n\t})\n}\n\nfunc (f IntFlag) GetName() string {\n\treturn f.Name\n}\n\n// DurationFlag is a flag that takes a duration specified in Go's duration\n// format: https://golang.org/pkg/time/#ParseDuration\ntype DurationFlag struct {\n\tName        string\n\tValue       time.Duration\n\tUsage       string\n\tEnvVar      string\n\tDestination *time.Duration\n}\n\n// String returns a readable representation of this value (for usage defaults)\nfunc (f DurationFlag) String() string {\n\tplaceholder, usage := unquoteUsage(f.Usage)\n\treturn withEnvHint(f.EnvVar, fmt.Sprintf(\"%s \\\"%v\\\"\\t%v\", prefixedNames(f.Name, placeholder), f.Value, usage))\n}\n\n// Apply populates the flag given the flag set and environment\nfunc (f DurationFlag) Apply(set *flag.FlagSet) {\n\tif f.EnvVar != \"\" {\n\t\tfor _, envVar := range strings.Split(f.EnvVar, \",\") {\n\t\t\tenvVar = strings.TrimSpace(envVar)\n\t\t\tif envVal := os.Getenv(envVar); envVal != \"\" {\n\t\t\t\tenvValDuration, err := time.ParseDuration(envVal)\n\t\t\t\tif err == nil {\n\t\t\t\t\tf.Value = envValDuration\n\t\t\t\t\tbreak\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t}\n\n\teachName(f.Name, func(name string) {\n\t\tif f.Destination != nil {\n\t\t\tset.DurationVar(f.Destination, name, f.Value, f.Usage)\n\t\t\treturn\n\t\t}\n\t\tset.Duration(name, f.Value, f.Usage)\n\t})\n}\n\nfunc (f DurationFlag) GetName() string {\n\treturn f.Name\n}\n\n// Float64Flag is a flag that takes an float value\n// Errors if the value provided cannot be parsed\ntype Float64Flag struct {\n\tName        string\n\tValue       float64\n\tUsage       string\n\tEnvVar      string\n\tDestination *float64\n}\n\n// String returns the usage\nfunc (f Float64Flag) String() string {\n\tplaceholder, usage := unquoteUsage(f.Usage)\n\treturn withEnvHint(f.EnvVar, fmt.Sprintf(\"%s \\\"%v\\\"\\t%v\", prefixedNames(f.Name, placeholder), f.Value, usage))\n}\n\n// Apply populates the flag given the flag set and environment\nfunc (f Float64Flag) Apply(set *flag.FlagSet) {\n\tif f.EnvVar != \"\" {\n\t\tfor _, envVar := range strings.Split(f.EnvVar, \",\") {\n\t\t\tenvVar = strings.TrimSpace(envVar)\n\t\t\tif envVal := os.Getenv(envVar); envVal != \"\" {\n\t\t\t\tenvValFloat, err := strconv.ParseFloat(envVal, 10)\n\t\t\t\tif err == nil {\n\t\t\t\t\tf.Value = float64(envValFloat)\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t}\n\n\teachName(f.Name, func(name string) {\n\t\tif f.Destination != nil {\n\t\t\tset.Float64Var(f.Destination, name, f.Value, f.Usage)\n\t\t\treturn\n\t\t}\n\t\tset.Float64(name, f.Value, f.Usage)\n\t})\n}\n\nfunc (f Float64Flag) GetName() string {\n\treturn f.Name\n}\n\nfunc prefixFor(name string) (prefix string) {\n\tif len(name) == 1 {\n\t\tprefix = \"-\"\n\t} else {\n\t\tprefix = \"--\"\n\t}\n\n\treturn\n}\n\n// Returns the placeholder, if any, and the unquoted usage string.\nfunc unquoteUsage(usage string) (string, string) {\n\tfor i := 0; i < len(usage); i++ {\n\t\tif usage[i] == '`' {\n\t\t\tfor j := i + 1; j < len(usage); j++ {\n\t\t\t\tif usage[j] == '`' {\n\t\t\t\t\tname := usage[i+1 : j]\n\t\t\t\t\tusage = usage[:i] + name + usage[j+1:]\n\t\t\t\t\treturn name, usage\n\t\t\t\t}\n\t\t\t}\n\t\t\tbreak\n\t\t}\n\t}\n\treturn \"\", usage\n}\n\nfunc prefixedNames(fullName, placeholder string) string {\n\tvar prefixed string\n\tparts := strings.Split(fullName, \",\")\n\tfor i, name := range parts {\n\t\tname = strings.Trim(name, \" \")\n\t\tprefixed += prefixFor(name) + name\n\t\tif placeholder != \"\" {\n\t\t\tprefixed += \" \" + placeholder\n\t\t}\n\t\tif i < len(parts)-1 {\n\t\t\tprefixed += \", \"\n\t\t}\n\t}\n\treturn prefixed\n}\n\nfunc withEnvHint(envVar, str string) string {\n\tenvText := \"\"\n\tif envVar != \"\" {\n\t\tprefix := \"$\"\n\t\tsuffix := \"\"\n\t\tsep := \", $\"\n\t\tif runtime.GOOS == \"windows\" {\n\t\t\tprefix = \"%\"\n\t\t\tsuffix = \"%\"\n\t\t\tsep = \"%, %\"\n\t\t}\n\t\tenvText = fmt.Sprintf(\" [%s%s%s]\", prefix, strings.Join(strings.Split(envVar, \",\"), sep), suffix)\n\t}\n\treturn str + envText\n}\n",
+        "rank": 0,
+        "truncated": false
+      },
+      {
+        "id": "8c2cf20abcc484f0f67edbdf",
+        "revision": "839f07bfe4819fa1434fa907d0804ce6ec45a5df",
+        "path": "flag.go",
+        "start_byte": 0,
+        "text": "package cli\n\nimport (\n\t\"flag\"\n\t\"fmt\"\n\t\"os\"\n\t\"reflect\"\n\t\"runtime\"\n\t\"strconv\"\n\t\"strings\"\n\t\"time\"\n)\n\nconst defaultPlaceholder = \"value\"\n\n// This flag enables bash-completion for all commands and subcommands\nvar BashCompletionFlag = BoolFlag{\n\tName:   \"generate-bash-completion\",\n\tHidden: true,\n}\n\n// This flag prints the version for the application\nvar VersionFlag = BoolFlag{\n\tName:  \"version, v\",\n\tUsage: \"print the version\",\n}\n\n// This flag prints the help for all commands and subcommands\n// Set to the zero value (BoolFlag{}) to disable flag -- keeps subcommand\n// unless HideHelp is set to true)\nvar HelpFlag = BoolFlag{\n\tName:  \"help, h\",\n\tUsage: \"show help\",\n}\n\nvar FlagStringer FlagStringFunc = stringifyFlag\n\n// Flag is a common interface related to parsing flags in cli.\n// For more advanced flag parsing techniques, it is recommended that\n// this interface be implemented.\ntype Flag interface {\n\tfmt.Stringer\n\t// Apply Flag settings to the given flag set\n\tApply(*flag.FlagSet)\n\tGetName() string\n}\n\nfunc flagSet(name string, flags []Flag) *flag.FlagSet {\n\tset := flag.NewFlagSet(name, flag.ContinueOnError)\n\n\tfor _, f := range flags {\n\t\tf.Apply(set)\n\t}\n\treturn set\n}\n\nfunc eachName(longName string, fn func(string)) {\n\tparts := strings.Split(longName, \",\")\n\tfor _, name := range parts {\n\t\tname = strings.Trim(name, \" \")\n\t\tfn(name)\n\t}\n}\n\n// Generic is a generic parseable type identified by a specific flag\ntype Generic interface {\n\tSet(value string) error\n\tString() string\n}\n\n// GenericFlag is the flag type for types implementing Generic\ntype GenericFlag struct {\n\tName   string\n\tValue  Generic\n\tUsage  string\n\tEnvVar string\n\tHidden bool\n}\n\n// String returns the string representation of the generic flag to display the\n// help text to the user (uses the String() method of the generic flag to show\n// the value)\nfunc (f GenericFlag) String() string {\n\treturn FlagStringer(f)\n}\n\n// Apply takes the flagset and calls Set on the generic flag with the value\n// provided by the user for parsing by the flag\nfunc (f GenericFlag) Apply(set *flag.FlagSet) {\n\tval := f.Value\n\tif f.EnvVar != \"\" {\n\t\tfor _, envVar := range strings.Split(f.EnvVar, \",\") {\n\t\t\tenvVar = strings.TrimSpace(envVar)\n\t\t\tif envVal := os.Getenv(envVar); envVal != \"\" {\n\t\t\t\tval.Set(envVal)\n\t\t\t\tbreak\n\t\t\t}\n\t\t}\n\t}\n\n\teachName(f.Name, func(name string) {\n\t\tset.Var(f.Value, name, f.Usage)\n\t})\n}\n\nfunc (f GenericFlag) GetName() string {\n\treturn f.Name\n}\n\n// StringSlice is an opaque type for []string to satisfy flag.Value\ntype StringSlice []string\n\n// Set appends the string value to the list of values\nfunc (f *StringSlice) Set(value string) error {\n\t*f = append(*f, value)\n\treturn nil\n}\n\n// String returns a readable representation of this value (for usage defaults)\nfunc (f *StringSlice) String() string {\n\treturn fmt.Sprintf(\"%s\", *f)\n}\n\n// Value returns the slice of strings set by this flag\nfunc (f *StringSlice) Value() []string {\n\treturn *f\n}\n\n// StringSlice is a string flag that can be specified multiple times on the\n// command-line\ntype StringSliceFlag struct {\n\tName   string\n\tValue  *StringSlice\n\tUsage  string\n\tEnvVar string\n\tHidden bool\n}\n\n// String returns the usage\nfunc (f StringSliceFlag) String() string {\n\treturn FlagStringer(f)\n}\n\n// Apply populates the flag given the flag set and environment\nfunc (f StringSliceFlag) Apply(set *flag.FlagSet) {\n\tif f.EnvVar != \"\" {\n\t\tfor _, envVar := range strings.Split(f.EnvVar, \",\") {\n\t\t\tenvVar = strings.TrimSpace(envVar)\n\t\t\tif envVal := os.Getenv(envVar); envVal != \"\" {\n\t\t\t\tnewVal := &StringSlice{}\n\t\t\t\tfor _, s := range strings.Split(envVal, \",\") {\n\t\t\t\t\ts = strings.TrimSpace(s)\n\t\t\t\t\tnewVal.Set(s)\n\t\t\t\t}\n\t\t\t\tf.Value = newVal\n\t\t\t\tbreak\n\t\t\t}\n\t\t}\n\t}\n\n\teachName(f.Name, func(name string) {\n\t\tif f.Value == nil {\n\t\t\tf.Value = &StringSlice{}\n\t\t}\n\t\tset.Var(f.Value, name, f.Usage)\n\t})\n}\n\nfunc (f StringSliceFlag) GetName() string {\n\treturn f.Name\n}\n\n// StringSlice is an opaque type for []int to satisfy flag.Value\ntype IntSlice []int\n\n// Set parses the value into an integer and appends it to the list of values\nfunc (f *IntSlice) Set(value string) error {\n\ttmp, err := strconv.Atoi(value)\n\tif err != nil {\n\t\treturn err\n\t} else {\n\t\t*f = append(*f, tmp)\n\t}\n\treturn nil\n}\n\n// String returns a readable representation of this value (for usage defaults)\nfunc (f *IntSlice) String() string {\n\treturn fmt.Sprintf(\"%d\", *f)\n}\n\n// Value returns the slice of ints set by this flag\nfunc (f *IntSlice) Value() []int {\n\treturn *f\n}\n\n// IntSliceFlag is an int flag that can be specified multiple times on the\n// command-line\ntype IntSliceFlag struct {\n\tName   string\n\tValue  *IntSlice\n\tUsage  string\n\tEnvVar string\n\tHidden bool\n}\n\n// String returns the usage\nfunc (f IntSliceFlag) String() string {\n\treturn FlagStringer(f)\n}\n\n// Apply populates the flag given the flag set and environment\nfunc (f IntSliceFlag) Apply(set *flag.FlagSet) {\n\tif f.EnvVar != \"\" {\n\t\tfor _, envVar := range strings.Split(f.EnvVar, \",\") {\n\t\t\tenvVar = strings.TrimSpace(envVar)\n\t\t\tif envVal := os.Getenv(envVar); envVal != \"\" {\n\t\t\t\tnewVal := &IntSlice{}\n\t\t\t\tfor _, s := range strings.Split(envVal, \",\") {\n\t\t\t\t\ts = strings.TrimSpace(s)\n\t\t\t\t\terr := newVal.Set(s)\n\t\t\t\t\tif err != nil {\n\t\t\t\t\t\tfmt.Fprintf(os.Stderr, err.Error())\n\t\t\t\t\t}\n\t\t\t\t}\n\t\t\t\tf.Value = newVal\n\t\t\t\tbreak\n\t\t\t}\n\t\t}\n\t}\n\n\teachName(f.Name, func(name string) {\n\t\tif f.Value == nil {\n\t\t\tf.Value = &IntSlice{}\n\t\t}\n\t\tset.Var(f.Value, name, f.Usage)\n\t})\n}\n\nfunc (f IntSliceFlag) GetName() string {\n\treturn f.Name\n}\n\n// BoolFlag is a switch that defaults to false\ntype BoolFlag struct {\n\tName        string\n\tUsage       string\n\tEnvVar      string\n\tDestination *bool\n\tHidden      bool\n}\n\n// String returns a readable representation of this value (for usage defaults)\nfunc (f BoolFlag) String() string {\n\treturn FlagStringer(f)\n}\n\n// Apply populates the flag given the flag set and environment\nfunc (f BoolFlag) Apply(set *flag.FlagSet) {\n\tval := false\n\tif f.EnvVar != \"\" {\n\t\tfor _, envVar := range strings.Split(f.EnvVar, \",\") {\n\t\t\tenvVar = strings.TrimSpace(envVar)\n\t\t\tif envVal := os.Getenv(envVar); envVal != \"\" {\n\t\t\t\tenvValBool, err := strconv.ParseBool(envVal)\n\t\t\t\tif err == nil {\n\t\t\t\t\tval = envValBool\n\t\t\t\t}\n\t\t\t\tbreak\n\t\t\t}\n\t\t}\n\t}\n\n\teachName(f.Name, func(name string) {\n\t\tif f.Destination != nil {\n\t\t\tset.BoolVar(f.Destination, name, val, f.Usage)\n\t\t\treturn\n\t\t}\n\t\tset.Bool(name, val, f.Usage)\n\t})\n}\n\nfunc (f BoolFlag) GetName() string {\n\treturn f.Name\n}\n\n// BoolTFlag this represents a boolean flag that is true by default, but can\n// still be set to false by --some-flag=false\ntype BoolTFlag struct {\n\tName        string\n\tUsage       string\n\tEnvVar      string\n\tDestination *bool\n\tHidden      bool\n}\n\n// String returns a readable representation of this value (for usage defaults)\nfunc (f BoolTFlag) String() string {\n\treturn FlagStringer(f)\n}\n\n// Apply populates the flag given the flag set and environment\nfunc (f BoolTFlag) Apply(set *flag.FlagSet) {\n\tval := true\n\tif f.EnvVar != \"\" {\n\t\tfor _, envVar := range strings.Split(f.EnvVar, \",\") {\n\t\t\tenvVar = strings.TrimSpace(envVar)\n\t\t\tif envVal := os.Getenv(envVar); envVal != \"\" {\n\t\t\t\tenvValBool, err := strconv.ParseBool(envVal)\n\t\t\t\tif err == nil {\n\t\t\t\t\tval = envValBool\n\t\t\t\t\tbreak\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t}\n\n\teachName(f.Name, func(name string) {\n\t\tif f.Destination != nil {\n\t\t\tset.BoolVar(f.Destination, name, val, f.Usage)\n\t\t\treturn\n\t\t}\n\t\tset.Bool(name, val, f.Usage)\n\t})\n}\n\nfunc (f BoolTFlag) GetName() string {\n\treturn f.Name\n}\n\n// StringFlag represents a flag that takes as string value\ntype StringFlag struct {\n\tName        string\n\tValue       string\n\tUsage       string\n\tEnvVar      string\n\tDestination *string\n\tHidden      bool\n}\n\n// String returns the usage\nfunc (f StringFlag) String() string {\n\treturn FlagStringer(f)\n}\n\n// Apply populates the flag given the flag set and environment\nfunc (f StringFlag) Apply(set *flag.FlagSet) {\n\tif f.EnvVar != \"\" {\n\t\tfor _, envVar := range strings.Split(f.EnvVar, \",\") {\n\t\t\tenvVar = strings.TrimSpace(envVar)\n\t\t\tif envVal := os.Getenv(envVar); envVal != \"\" {\n\t\t\t\tf.Value = envVal\n\t\t\t\tbreak\n\t\t\t}\n\t\t}\n\t}\n\n\teachName(f.Name, func(name string) {\n\t\tif f.Destination != nil {\n\t\t\tset.StringVar(f.Destination, name, f.Value, f.Usage)\n\t\t\treturn\n\t\t}\n\t\tset.String(name, f.Value, f.Usage)\n\t})\n}\n\nfunc (f StringFlag) GetName() string {\n\treturn f.Name\n}\n\n// IntFlag is a flag that takes an integer\n// Errors if the value provided cannot be parsed\ntype IntFlag struct {\n\tName        string\n\tValue       int\n\tUsage       string\n\tEnvVar      string\n\tDestination *int\n\tHidden      bool\n}\n\n// String returns the usage\nfunc (f IntFlag) String() string {\n\treturn FlagStringer(f)\n}\n\n// Apply populates the flag given the flag set and environment\nfunc (f IntFlag) Apply(set *flag.FlagSet) {\n\tif f.EnvVar != \"\" {\n\t\tfor _, envVar := range strings.Split(f.EnvVar, \",\") {\n\t\t\tenvVar = strings.TrimSpace(envVar)\n\t\t\tif envVal := os.Getenv(envVar); envVal != \"\" {\n\t\t\t\tenvValInt, err := strconv.ParseInt(envVal, 0, 64)\n\t\t\t\tif err == nil {\n\t\t\t\t\tf.Value = int(envValInt)\n\t\t\t\t\tbreak\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t}\n\n\teachName(f.Name, func(name string) {\n\t\tif f.Destination != nil {\n\t\t\tset.IntVar(f.Destination, name, f.Value, f.Usage)\n\t\t\treturn\n\t\t}\n\t\tset.Int(name, f.Value, f.Usage)\n\t})\n}\n\nfunc (f IntFlag) GetName() string {\n\treturn f.Name\n}\n\n// DurationFlag is a flag that takes a duration specified in Go's duration\n// format: https://golang.org/pkg/time/#ParseDuration\ntype DurationFlag struct {\n\tName        string\n\tValue       time.Duration\n\tUsage       string\n\tEnvVar      string\n\tDestination *time.Duration\n\tHidden      bool\n}\n\n// String returns a readable representation of this value (for usage defaults)\nfunc (f DurationFlag) String() string {\n\treturn FlagStringer(f)\n}\n\n// Apply populates the flag given the flag set and environment\nfunc (f DurationFlag) Apply(set *flag.FlagSet) {\n\tif f.EnvVar != \"\" {\n\t\tfor _, envVar := range strings.Split(f.EnvVar, \",\") {\n\t\t\tenvVar = strings.TrimSpace(envVar)\n\t\t\tif envVal := os.Getenv(envVar); envVal != \"\" {\n\t\t\t\tenvValDuration, err := time.ParseDuration(envVal)\n\t\t\t\tif err == nil {\n\t\t\t\t\tf.Value = envValDuration\n\t\t\t\t\tbreak\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t}\n\n\teachName(f.Name, func(name string) {\n\t\tif f.Destination != nil {\n\t\t\tset.DurationVar(f.Destination, name, f.Value, f.Usage)\n\t\t\treturn\n\t\t}\n\t\tset.Duration(name, f.Value, f.Usage)\n\t})\n}\n\nfunc (f DurationFlag) GetName() string {\n\treturn f.Name\n}\n\n// Float64Flag is a flag that takes an float value\n// Errors if the value provided cannot be parsed\ntype Float64Flag struct {\n\tName        string\n\tValue       float64\n\tUsage       string\n\tEnvVar      string\n\tDestination *float64\n\tHidden      bool\n}\n\n// String returns the usage\nfunc (f Float64Flag) String() string {\n\treturn FlagStringer(f)\n}\n\n// Apply populates the flag given the flag set and environment\nfunc (f Float64Flag) Apply(set *flag.FlagSet) {\n\tif f.EnvVar != \"\" {\n\t\tfor _, envVar := range strings.Split(f.EnvVar, \",\") {\n\t\t\tenvVar = strings.TrimSpace(envVar)\n\t\t\tif envVal := os.Getenv(envVar); envVal != \"\" {\n\t\t\t\tenvValFloat, err := strconv.ParseFloat(envVal, 10)\n\t\t\t\tif err == nil {\n\t\t\t\t\tf.Value = float64(envValFloat)\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t}\n\n\teachName(f.Name, func(name string) {\n\t\tif f.Destination != nil {\n\t\t\tset.Float64Var(f.Destination, name, f.Value, f.Usage)\n\t\t\treturn\n\t\t}\n\t\tset.Float64(name, f.Value, f.Usage)\n\t})\n}\n\nfunc (f Float64Flag) GetName() string {\n\treturn f.Name\n}\n\nfunc visibleFlags(fl []Flag) []Flag {\n\tvisible := []Flag{}\n\tfor _, flag := range fl {\n\t\tif !reflect.ValueOf(flag).FieldByName(\"Hidden\").Bool() {\n\t\t\tvisible = append(visible, flag)\n\t\t}\n\t}\n\treturn visible\n}\n\nfunc prefixFor(name string) (prefix string) {\n\tif len(name) == 1 {\n\t\tprefix = \"-\"\n\t} else {\n\t\tprefix = \"--\"\n\t}\n\n\treturn\n}\n\n// Returns the placeholder, if any, and the unquoted usage string.\nfunc unquoteUsage(usage string) (string, string) {\n\tfor i := 0; i < len(usage); i++ {\n\t\tif usage[i] == '`' {\n\t\t\tfor j := i + 1; j < len(usage); j++ {\n\t\t\t\tif usage[j] == '`' {\n\t\t\t\t\tname := usage[i+1 : j]\n\t\t\t\t\tusage = usage[:i] + name + usage[j+1:]\n\t\t\t\t\treturn name, usage\n\t\t\t\t}\n\t\t\t}\n\t\t\tbreak\n\t\t}\n\t}\n\treturn \"\", usage\n}\n\nfunc prefixedNames(fullName, placeholder string) string {\n\tvar prefixed string\n\tparts := strings.Split(fullName, \",\")\n\tfor i, name := range parts {\n\t\tname = strings.Trim(name, \" \")\n\t\tprefixed += prefixFor(name) + name\n\t\tif placeholder != \"\" {\n\t\t\tprefixed += \" \" + placeholder\n\t\t}\n\t\tif i < len(parts)-1 {\n\t\t\tprefixed += \", \"\n\t\t}\n\t}\n\treturn prefixed\n}\n\nfunc withEnvHint(envVar, str string) string {\n\tenvText := \"\"\n\tif envVar != \"\" {\n\t\tprefix := \"$\"\n\t\tsuffix := \"\"\n\t\tsep := \", $\"\n\t\tif runtime.GOOS == \"windows\" {\n\t\t\tprefix = \"%\"\n\t\t\tsuffix = \"%\"\n\t\t\tsep = \"%, %\"\n\t\t}\n\t\tenvText = fmt.Sprintf(\" [%s%s%s]\", prefix, strings.Join(strings.Split(envVar, \",\"), sep), suffix)\n\t}\n\treturn str + envText\n}\n\nfunc stringifyFlag(f Flag) string {\n\tfv := reflect.ValueOf(f)\n\n\tswitch f.(type) {\n\tcase IntSliceFlag:\n\t\treturn withEnvHint(fv.FieldByName(\"EnvVar\").String(),\n\t\t\tstringifyIntSliceFlag(f.(IntSliceFlag)))\n\tcase StringSliceFlag:\n\t\treturn withEnvHint(fv.FieldByName(\"EnvVar\").String(),\n\t\t\tstringifyStringSliceFlag(f.(StringSliceFlag)))\n\t}\n\n\tplaceholder, usage := unquoteUsage(fv.FieldByName(\"Usage\").String())\n\n\tneedsPlaceholder := false\n\tdefaultValueString := \"\"\n\tval := fv.FieldByName(\"Value\")\n\n\tif val.IsValid() {\n\t\tneedsPlaceholder = true\n\t\tdefaultValueString = fmt.Sprintf(\" (default: %v)\", val.Interface())\n\n\t\tif val.Kind() == reflect.String && val.String() != \"\" {\n\t\t\tdefaultValueString = fmt.Sprintf(\" (default: %q)\", val.String())\n\t\t}\n\t}\n\n\tif defaultValueString == \" (default: )\" {\n\t\tdefaultValueString = \"\"\n\t}\n\n\tif needsPlaceholder && placeholder == \"\" {\n\t\tplaceholder = defaultPlaceholder\n\t}\n\n\tusageWithDefault := strings.TrimSpace(fmt.Sprintf(\"%s%s\", usage, defaultValueString))\n\n\treturn withEnvHint(fv.FieldByName(\"EnvVar\").String(),\n\t\tfmt.Sprintf(\"%s\\t%s\", prefixedNames(fv.FieldByName(\"Name\").String(), placeholder), usageWithDefault))\n}\n\nfunc stringifyIntSliceFlag(f IntSliceFlag) string {\n\tdefaultVals := []string{}\n\tif f.Value != nil && len(f.Value.Value()) > 0 {\n\t\tfor _, i := range f.Value.Value() {\n\t\t\tdefaultVals = append(defaultVals, fmt.Sprintf(\"%d\", i))\n\t\t}\n\t}\n\n\treturn stringifySliceFlag(f.Usage, f.Name, defaultVals)\n}\n\nfunc stringifyStringSliceFlag(f StringSliceFlag) string {\n\tdefaultVals := []string{}\n\tif f.Value != nil && len(f.Value.Value()) > 0 {\n\t\tfor _, s := range f.Value.Value() {\n\t\t\tif len(s) > 0 {\n\t\t\t\tdefaultVals = append(defaultVals, fmt.Sprintf(\"%q\", s))\n\t\t\t}\n\t\t}\n\t}\n\n\treturn stringifySliceFlag(f.Usage, f.Name, defaultVals)\n}\n\nfunc stringifySliceFlag(usage, name string, defaultVals []string) string {\n\tplaceholder, usage := unquoteUsage(usage)\n\tif placeholder == \"\" {\n\t\tplaceholder = defaultPlaceholder\n\t}\n\n\tdefaultVal := \"\"\n\tif len(defaultVals) > 0 {\n\t\tdefaultVal = fmt.Sprintf(\" (default: %s)\", strings.Join(defaultVals, \", \"))\n\t}\n\n\tusageWithDefault := strings.TrimSpace(fmt.Sprintf(\"%s%s\", usage, defaultVal))\n\treturn fmt.Sprintf(\"%s\\t%s\", prefixedNames(name, placeholder), usageWithDefault)\n}\n",
+        "rank": 0,
+        "truncated": false
+      }
+    ],
+    "selected": [
+      {
+        "id": "05c3286a3f559b43536ef796",
+        "revision": "1fb52b3bce854a25e1bcfb25c8e16862ad400e9d",
+        "path": "flag.go",
+        "start_byte": 104,
+        "text": "var (\n\tslPfx = fmt.Sprintf(\"sl:::%d:::\", time.Now().UTC().UnixNano())\n)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "6b6a8a0355c4cd76d0eb6291",
+        "revision": "839f07bfe4819fa1434fa907d0804ce6ec45a5df",
+        "path": "flag.go",
+        "start_byte": 98,
+        "text": "const defaultPlaceholder = \"value\"",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "bfc7a4d9a0fa4428f0764f5f",
+        "revision": "1fb52b3bce854a25e1bcfb25c8e16862ad400e9d",
+        "path": "altsrc/flag.go",
+        "start_byte": 1224,
+        "text": "func InitInputSource(flags []cli.Flag, createInputSource func() (InputSourceContext, error)) cli.BeforeFunc {\n\treturn func(context *cli.Context) error {\n\t\tinputSource, err := createInputSource()\n\t\tif err != nil {\n\t\t\treturn fmt.Errorf(\"Unable to create input source: inner error: \\n'%v'\", err.Error())\n\t\t}\n\n\t\treturn ApplyInputSourceValues(context, inputSource, flags)\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "60dc7e960310dbd2e05a49ec",
+        "revision": "1fb52b3bce854a25e1bcfb25c8e16862ad400e9d",
+        "path": "altsrc/flag.go",
+        "start_byte": 1954,
+        "text": "func InitInputSourceWithContext(flags []cli.Flag, createInputSource func(context *cli.Context) (InputSourceContext, error)) cli.BeforeFunc {\n\treturn func(context *cli.Context) error {\n\t\tinputSource, err := createInputSource(context)\n\t\tif err != nil {\n\t\t\treturn fmt.Errorf(\"Unable to create input source with context: inner error: \\n'%v'\", err.Error())\n\t\t}\n\n\t\treturn ApplyInputSourceValues(context, inputSource, flags)\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "a9c3ba4a58c3f67d41cd6fd7",
+        "revision": "1fb52b3bce854a25e1bcfb25c8e16862ad400e9d",
+        "path": "altsrc/flag.go",
+        "start_byte": 11794,
+        "text": "func float64ToString(f float64) string {\n\treturn fmt.Sprintf(\"%v\", f)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "d0dee9f663041ff9064215fe",
+        "revision": "1fb52b3bce854a25e1bcfb25c8e16862ad400e9d",
+        "path": "altsrc/input_source_context.go",
+        "start_byte": 171,
+        "text": "type InputSourceContext interface {\n\tInt(name string) (int, error)\n\tDuration(name string) (time.Duration, error)\n\tFloat64(name string) (float64, error)\n\tString(name string) (string, error)\n\tStringSlice(name string) ([]string, error)\n\tIntSlice(name string) ([]int, error)\n\tGeneric(name string) (cli.Generic, error)\n\tBool(name string) (bool, error)\n\tBoolT(name string) (bool, error)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "8fcd95d20a9ef7afcdee5909",
+        "revision": "1fb52b3bce854a25e1bcfb25c8e16862ad400e9d",
+        "path": "altsrc/map_input_source.go",
+        "start_byte": 697,
+        "text": "func (fsm *MapInputSource) Duration(name string) (time.Duration, error) {\n\totherGenericValue, exists := fsm.valueMap[name]\n\tif exists {\n\t\totherValue, isType := otherGenericValue.(time.Duration)\n\t\tif !isType {\n\t\t\treturn 0, incorrectTypeForFlagError(name, \"duration\", otherGenericValue)\n\t\t}\n\t\treturn otherValue, nil\n\t}\n\n\treturn 0, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "6e12ee07cc567f39da5cd57e",
+        "revision": "1fb52b3bce854a25e1bcfb25c8e16862ad400e9d",
+        "path": "altsrc/map_input_source.go",
+        "start_byte": 3829,
+        "text": "func incorrectTypeForFlagError(name, expectedTypeName string, value interface{}) error {\n\tvalueType := reflect.TypeOf(value)\n\tvalueTypeName := \"\"\n\tif valueType != nil {\n\t\tvalueTypeName = valueType.Name()\n\t}\n\n\treturn fmt.Errorf(\"Mismatched type for flag '%s'. Expected '%s' but actual is '%s'\", name, expectedTypeName, valueTypeName)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "499891360892c4c1cd5480f8",
+        "revision": "1fb52b3bce854a25e1bcfb25c8e16862ad400e9d",
+        "path": "altsrc/yaml_file_loader.go",
+        "start_byte": 413,
+        "text": "func NewYamlSourceFromFile(file string) (InputSourceContext, error) {\n\tysc := &yamlSourceContext{FilePath: file}\n\tvar results map[string]interface{}\n\terr := readCommandYaml(ysc.FilePath, &results)\n\tif err != nil {\n\t\treturn nil, fmt.Errorf(\"Unable to load Yaml file '%s': inner error: \\n'%v'\", ysc.FilePath, err.Error())\n\t}\n\n\treturn &MapInputSource{valueMap: results}, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "fb0a3af0e66e7b4b5b4b227f",
+        "revision": "1fb52b3bce854a25e1bcfb25c8e16862ad400e9d",
+        "path": "altsrc/yaml_file_loader.go",
+        "start_byte": 1400,
+        "text": "func loadDataFrom(filePath string) ([]byte, error) {\n\tu, err := url.Parse(filePath)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\n\tif u.Host != \"\" { // i have a host, now do i support the scheme?\n\t\tswitch u.Scheme {\n\t\tcase \"http\", \"https\":\n\t\t\tres, err := http.Get(filePath)\n\t\t\tif err != nil {\n\t\t\t\treturn nil, err\n\t\t\t}\n\t\t\treturn ioutil.ReadAll(res.Body)\n\t\tdefault:\n\t\t\treturn nil, fmt.Errorf(\"scheme of %s is unsupported\", filePath)\n\t\t}\n\t} else if u.Path != \"\" { // i dont have a host, but I have a path. I am a local file.\n\t\tif _, notFoundFileErr := os.Stat(filePath); notFoundFileErr != nil {\n\t\t\treturn nil, fmt.Errorf(\"Cannot read from file: '%s' because it does not exist.\", filePath)\n\t\t}\n\t\treturn ioutil.ReadFile(filePath)\n\t} else {\n\t\treturn nil, fmt.Errorf(\"unable to determine how to load from path %s\", filePath)\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "6910a915441b699c67c010b6",
+        "revision": "1fb52b3bce854a25e1bcfb25c8e16862ad400e9d",
+        "path": "app.go",
+        "start_byte": 101,
+        "text": "var (\n\tappActionDeprecationURL = \"https://github.com/codegangsta/cli/blob/master/CHANGELOG.md#deprecated-cli-app-action-signature\"\n\n\tcontactSysadmin = \"This is an error in the application.  Please contact the distributor of this application if this is not you.\"\n\n\terrNonFuncAction = NewExitError(\"ERROR invalid Action type.  \"+\n\t\tfmt.Sprintf(\"Must be a func of type `cli.ActionFunc`.  %s\", contactSysadmin)+\n\t\tfmt.Sprintf(\"See %s\", appActionDeprecationURL), 2)\n\terrInvalidActionSignature = NewExitError(\"ERROR invalid Action signature.  \"+\n\t\tfmt.Sprintf(\"Must be `cli.ActionFunc`.  %s\", contactSysadmin)+\n\t\tfmt.Sprintf(\"See %s\", appActionDeprecationURL), 2)\n)",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "47a04fda5793022f2af6a46c",
+        "revision": "1fb52b3bce854a25e1bcfb25c8e16862ad400e9d",
+        "path": "app.go",
+        "start_byte": 888,
+        "text": "type App struct {\n\t// The name of the program. Defaults to path.Base(os.Args[0])\n\tName string\n\t// Full name of command for help, defaults to Name\n\tHelpName string\n\t// Description of the program.\n\tUsage string\n\t// Text to override the USAGE section of help\n\tUsageText string\n\t// Description of the program argument format.\n\tArgsUsage string\n\t// Version of the program\n\tVersion string\n\t// List of commands to execute\n\tCommands []Command\n\t// List of flags to parse\n\tFlags []Flag\n\t// Boolean to enable bash completion commands\n\tEnableBashCompletion bool\n\t// Boolean to hide built-in help command\n\tHideHelp bool\n\t// Boolean to hide built-in version flag and the VERSION section of help\n\tHideVersion bool\n\t// Populate on app startup, only gettable throught method Categories()\n\tcategories CommandCategories\n\t// An action to execute when the bash-completion flag is set\n\tBashComplete BashCompleteFunc\n\t// An action to execute before any subcommands are run, but after the context is ready\n\t// If a non-nil error is returned, no subcommands are run\n\tBefore BeforeFunc\n\t// An action to execute after any subcommands are run, but after the subcommand has finished\n\t// It is run even if Action() panics\n\tAfter AfterFunc\n\t// The action to execute when no subcommands are specified\n\tAction interface{}\n\t// TODO: replace `Action: interface{}` with `Action: ActionFunc` once some kind\n\t// of deprecation period has passed, maybe?\n\n\t// Execute this function if the proper command cannot be found\n\tCommandNotFound CommandNotFoundFunc\n\t// Execute this function if an usage error occurs\n\tOnUsageError OnUsageErrorFunc\n\t// Compilation date\n\tCompiled time.Time\n\t// List of all authors who contributed\n\tAuthors []Author\n\t// Copyright of the binary if any\n\tCopyright string\n\t// Name of Author (Note: Use App.Authors, this is deprecated)\n\tAuthor string\n\t// Email of Author (Note: Use App.Authors, this is deprecated)\n\tEmail string\n\t// Writer writer to write output to\n\tWriter io.Writer\n\t// Other custom info\n\tMetadata map[string]interface{}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "fdec8fd250d71f17c14742c5",
+        "revision": "1fb52b3bce854a25e1bcfb25c8e16862ad400e9d",
+        "path": "app.go",
+        "start_byte": 3012,
+        "text": "func compileTime() time.Time {\n\tinfo, err := os.Stat(os.Args[0])\n\tif err != nil {\n\t\treturn time.Now()\n\t}\n\treturn info.ModTime()\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "b268b0b219a4a3ffd7a6b180",
+        "revision": "1fb52b3bce854a25e1bcfb25c8e16862ad400e9d",
+        "path": "app.go",
+        "start_byte": 3691,
+        "text": "func (a *App) Run(arguments []string) (err error) {\n\tif a.Author != \"\" || a.Email != \"\" {\n\t\ta.Authors = append(a.Authors, Author{Name: a.Author, Email: a.Email})\n\t}\n\n\tnewCmds := []Command{}\n\tfor _, c := range a.Commands {\n\t\tif c.HelpName == \"\" {\n\t\t\tc.HelpName = fmt.Sprintf(\"%s %s\", a.HelpName, c.Name)\n\t\t}\n\t\tnewCmds = append(newCmds, c)\n\t}\n\ta.Commands = newCmds\n\n\ta.categories = CommandCategories{}\n\tfor _, command := range a.Commands {\n\t\ta.categories = a.categories.AddCommand(command.Category, command)\n\t}\n\tsort.Sort(a.categories)\n\n\t// append help to commands\n\tif a.Command(helpCommand.Name) == nil && !a.HideHelp {\n\t\ta.Commands = append(a.Commands, helpCommand)\n\t\tif (HelpFlag != BoolFlag{}) {\n\t\t\ta.appendFlag(HelpFlag)\n\t\t}\n\t}\n\n\t//append version/help flags\n\tif a.EnableBashCompletion {\n\t\ta.appendFlag(BashCompletionFlag)\n\t}\n\n\tif !a.HideVersion {\n\t\ta.appendFlag(VersionFlag)\n\t}\n\n\t// parse flags\n\tset := flagSet(a.Name, a.Flags)\n\tset.SetOutput(ioutil.Discard)\n\terr = set.Parse(arguments[1:])\n\tnerr := normalizeFlags(a.Flags, set)\n\tcontext := NewContext(a, set, nil)\n\tif nerr != nil {\n\t\tfmt.Fprintln(a.Writer, nerr)\n\t\tShowAppHelp(context)\n\t\treturn nerr\n\t}\n\n\tif checkCompletions(context) {\n\t\treturn nil\n\t}\n\n\tif err != nil {\n\t\tif a.OnUsageError != nil {\n\t\t\terr := a.OnUsageError(context, err, false)\n\t\t\tif err != nil {\n\t\t\t\tHandleExitCoder(err)\n\t\t\t}\n\t\t\treturn err\n\t\t} else {\n\t\t\tfmt.Fprintf(a.Writer, \"%s\\n\\n\", \"Incorrect Usage.\")\n\t\t\tShowAppHelp(context)\n\t\t\treturn err\n\t\t}\n\t}\n\n\tif !a.HideHelp && checkHelp(context) {\n\t\tShowAppHelp(context)\n\t\treturn nil\n\t}\n\n\tif !a.HideVersion && checkVersion(context) {\n\t\tShowVersion(context)\n\t\treturn nil\n\t}\n\n\tif a.After != nil {\n\t\tdefer func() {\n\t\t\tif afterErr := a.After(context); afterErr != nil {\n\t\t\t\tif err != nil {\n\t\t\t\t\terr = NewMultiError(err, afterErr)\n\t\t\t\t} else {\n\t\t\t\t\terr = afterErr\n\t\t\t\t}\n\t\t\t}\n\t\t}()\n\t}\n\n\tif a.Before != nil {\n\t\tbeforeErr := a.Before(context)\n\t\tif beforeErr != nil {\n\t\t\tfmt.Fprintf(a.Writer, \"%v\\n\\n\", beforeErr)\n\t\t\tShowAppHelp(context)\n\t\t\tHandleExitCoder(beforeErr)\n\t\t\terr = beforeErr\n\t\t\treturn err\n\t\t}\n\t}\n\n\targs := context.Args()\n\tif args.Present() {\n\t\tname := args.First()\n\t\tc := a.Command(name)\n\t\tif c != nil {\n\t\t\treturn c.Run(context)\n\t\t}\n\t}\n\n\t// Run default Action\n\terr = HandleAction(a.Action, context)\n\n\tif err != nil {\n\t\tHandleExitCoder(err)\n\t}\n\treturn err\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "c3c40654af74f945ef9eceaa",
+        "revision": "1fb52b3bce854a25e1bcfb25c8e16862ad400e9d",
+        "path": "app.go",
+        "start_byte": 6120,
+        "text": "func (a *App) RunAndExitOnError() {\n\tfmt.Fprintln(os.Stderr,\n\t\t\"DEPRECATED cli.App.RunAndExitOnError.  \"+\n\t\t\t\"See https://github.com/codegangsta/cli/blob/master/CHANGELOG.md#deprecated-cli-app-runandexitonerror\")\n\tif err := a.Run(os.Args); err != nil {\n\t\tfmt.Fprintln(os.Stderr, err)\n\t\tos.Exit(1)\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "cd841bb5de5e2ff97500fdb4",
+        "revision": "1fb52b3bce854a25e1bcfb25c8e16862ad400e9d",
+        "path": "app.go",
+        "start_byte": 6521,
+        "text": "func (a *App) RunAsSubcommand(ctx *Context) (err error) {\n\t// append help to commands\n\tif len(a.Commands) > 0 {\n\t\tif a.Command(helpCommand.Name) == nil && !a.HideHelp {\n\t\t\ta.Commands = append(a.Commands, helpCommand)\n\t\t\tif (HelpFlag != BoolFlag{}) {\n\t\t\t\ta.appendFlag(HelpFlag)\n\t\t\t}\n\t\t}\n\t}\n\n\tnewCmds := []Command{}\n\tfor _, c := range a.Commands {\n\t\tif c.HelpName == \"\" {\n\t\t\tc.HelpName = fmt.Sprintf(\"%s %s\", a.HelpName, c.Name)\n\t\t}\n\t\tnewCmds = append(newCmds, c)\n\t}\n\ta.Commands = newCmds\n\n\t// append flags\n\tif a.EnableBashCompletion {\n\t\ta.appendFlag(BashCompletionFlag)\n\t}\n\n\t// parse flags\n\tset := flagSet(a.Name, a.Flags)\n\tset.SetOutput(ioutil.Discard)\n\terr = set.Parse(ctx.Args().Tail())\n\tnerr := normalizeFlags(a.Flags, set)\n\tcontext := NewContext(a, set, ctx)\n\n\tif nerr != nil {\n\t\tfmt.Fprintln(a.Writer, nerr)\n\t\tfmt.Fprintln(a.Writer)\n\t\tif len(a.Commands) > 0 {\n\t\t\tShowSubcommandHelp(context)\n\t\t} else {\n\t\t\tShowCommandHelp(ctx, context.Args().First())\n\t\t}\n\t\treturn nerr\n\t}\n\n\tif checkCompletions(context) {\n\t\treturn nil\n\t}\n\n\tif err != nil {\n\t\tif a.OnUsageError != nil {\n\t\t\terr = a.OnUsageError(context, err, true)\n\t\t\tHandleExitCoder(err)\n\t\t\treturn err\n\t\t} else {\n\t\t\tfmt.Fprintf(a.Writer, \"%s\\n\\n\", \"Incorrect Usage.\")\n\t\t\tShowSubcommandHelp(context)\n\t\t\treturn err\n\t\t}\n\t}\n\n\tif len(a.Commands) > 0 {\n\t\tif checkSubcommandHelp(context) {\n\t\t\treturn nil\n\t\t}\n\t} else {\n\t\tif checkCommandHelp(ctx, context.Args().First()) {\n\t\t\treturn nil\n\t\t}\n\t}\n\n\tif a.After != nil {\n\t\tdefer func() {\n\t\t\tafterErr := a.After(context)\n\t\t\tif afterErr != nil {\n\t\t\t\tHandleExitCoder(err)\n\t\t\t\tif err != nil {\n\t\t\t\t\terr = NewMultiError(err, afterErr)\n\t\t\t\t} else {\n\t\t\t\t\terr = afterErr\n\t\t\t\t}\n\t\t\t}\n\t\t}()\n\t}\n\n\tif a.Before != nil {\n\t\tbeforeErr := a.Before(context)\n\t\tif beforeErr != nil {\n\t\t\tHandleExitCoder(beforeErr)\n\t\t\terr = beforeErr\n\t\t\treturn err\n\t\t}\n\t}\n\n\targs := context.Args()\n\tif args.Present() {\n\t\tname := args.First()\n\t\tc := a.Command(name)\n\t\tif c != nil {\n\t\t\treturn c.Run(context)\n\t\t}\n\t}\n\n\t// Run default Action\n\terr = HandleAction(a.Action, context)\n\n\tif err != nil {\n\t\tHandleExitCoder(err)\n\t}\n\treturn err\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "e063a0ae3d1ecaf5c24007f5",
+        "revision": "1fb52b3bce854a25e1bcfb25c8e16862ad400e9d",
+        "path": "app.go",
+        "start_byte": 9466,
+        "text": "func (a Author) String() string {\n\te := \"\"\n\tif a.Email != \"\" {\n\t\te = \"<\" + a.Email + \"> \"\n\t}\n\n\treturn fmt.Sprintf(\"%v %v\", a.Name, e)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "3b5c9ad0c73ddb405d9b7267",
+        "revision": "1fb52b3bce854a25e1bcfb25c8e16862ad400e9d",
+        "path": "app.go",
+        "start_byte": 9876,
+        "text": "func HandleAction(action interface{}, context *Context) (err error) {\n\tdefer func() {\n\t\tif r := recover(); r != nil {\n\t\t\tswitch r.(type) {\n\t\t\tcase error:\n\t\t\t\terr = r.(error)\n\t\t\tdefault:\n\t\t\t\terr = NewExitError(fmt.Sprintf(\"ERROR unknown Action error: %v. See %s\", r, appActionDeprecationURL), 2)\n\t\t\t}\n\t\t}\n\t}()\n\n\tif reflect.TypeOf(action).Kind() != reflect.Func {\n\t\treturn errNonFuncAction\n\t}\n\n\tvals := reflect.ValueOf(action).Call([]reflect.Value{reflect.ValueOf(context)})\n\n\tif len(vals) == 0 {\n\t\tfmt.Fprintln(os.Stderr,\n\t\t\t\"DEPRECATED Action signature.  Must be `cli.ActionFunc`\")\n\t\treturn nil\n\t}\n\n\tif len(vals) > 1 {\n\t\treturn errInvalidActionSignature\n\t}\n\n\tif retErr, ok := reflect.ValueOf(vals[0]).Interface().(error); ok {\n\t\treturn retErr\n\t}\n\n\treturn err\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "3c3389e8ca8173d83360a824",
+        "revision": "1fb52b3bce854a25e1bcfb25c8e16862ad400e9d",
+        "path": "command.go",
+        "start_byte": 2109,
+        "text": "func (c Command) Run(ctx *Context) (err error) {\n\tif len(c.Subcommands) > 0 {\n\t\treturn c.startApp(ctx)\n\t}\n\n\tif !c.HideHelp && (HelpFlag != BoolFlag{}) {\n\t\t// append help to flags\n\t\tc.Flags = append(\n\t\t\tc.Flags,\n\t\t\tHelpFlag,\n\t\t)\n\t}\n\n\tif ctx.App.EnableBashCompletion {\n\t\tc.Flags = append(c.Flags, BashCompletionFlag)\n\t}\n\n\tset := flagSet(c.Name, c.Flags)\n\tset.SetOutput(ioutil.Discard)\n\n\tif !c.SkipFlagParsing {\n\t\tfirstFlagIndex := -1\n\t\tterminatorIndex := -1\n\t\tfor index, arg := range ctx.Args() {\n\t\t\tif arg == \"--\" {\n\t\t\t\tterminatorIndex = index\n\t\t\t\tbreak\n\t\t\t} else if arg == \"-\" {\n\t\t\t\t// Do nothing. A dash alone is not really a flag.\n\t\t\t\tcontinue\n\t\t\t} else if strings.HasPrefix(arg, \"-\") && firstFlagIndex == -1 {\n\t\t\t\tfirstFlagIndex = index\n\t\t\t}\n\t\t}\n\n\t\tif firstFlagIndex > -1 {\n\t\t\targs := ctx.Args()\n\t\t\tregularArgs := make([]string, len(args[1:firstFlagIndex]))\n\t\t\tcopy(regularArgs, args[1:firstFlagIndex])\n\n\t\t\tvar flagArgs []string\n\t\t\tif terminatorIndex > -1 {\n\t\t\t\tflagArgs = args[firstFlagIndex:terminatorIndex]\n\t\t\t\tregularArgs = append(regularArgs, args[terminatorIndex:]...)\n\t\t\t} else {\n\t\t\t\tflagArgs = args[firstFlagIndex:]\n\t\t\t}\n\n\t\t\terr = set.Parse(append(flagArgs, regularArgs...))\n\t\t} else {\n\t\t\terr = set.Parse(ctx.Args().Tail())\n\t\t}\n\t} else {\n\t\tif c.SkipFlagParsing {\n\t\t\terr = set.Parse(append([]string{\"--\"}, ctx.Args().Tail()...))\n\t\t}\n\t}\n\n\tif err != nil {\n\t\tif c.OnUsageError != nil {\n\t\t\terr := c.OnUsageError(ctx, err, false)\n\t\t\tHandleExitCoder(err)\n\t\t\treturn err\n\t\t} else {\n\t\t\tfmt.Fprintln(ctx.App.Writer, \"Incorrect Usage.\")\n\t\t\tfmt.Fprintln(ctx.App.Writer)\n\t\t\tShowCommandHelp(ctx, c.Name)\n\t\t\treturn err\n\t\t}\n\t}\n\n\tnerr := normalizeFlags(c.Flags, set)\n\tif nerr != nil {\n\t\tfmt.Fprintln(ctx.App.Writer, nerr)\n\t\tfmt.Fprintln(ctx.App.Writer)\n\t\tShowCommandHelp(ctx, c.Name)\n\t\treturn nerr\n\t}\n\n\tcontext := NewContext(ctx.App, set, ctx)\n\n\tif checkCommandCompletions(context, c.Name) {\n\t\treturn nil\n\t}\n\n\tif checkCommandHelp(context, c.Name) {\n\t\treturn nil\n\t}\n\n\tif c.After != nil {\n\t\tdefer func() {\n\t\t\tafterErr := c.After(context)\n\t\t\tif afterErr != nil {\n\t\t\t\tHandleExitCoder(err)\n\t\t\t\tif err != nil {\n\t\t\t\t\terr = NewMultiError(err, afterErr)\n\t\t\t\t} else {\n\t\t\t\t\terr = afterErr\n\t\t\t\t}\n\t\t\t}\n\t\t}()\n\t}\n\n\tif c.Before != nil {\n\t\terr = c.Before(context)\n\t\tif err != nil {\n\t\t\tfmt.Fprintln(ctx.App.Writer, err)\n\t\t\tfmt.Fprintln(ctx.App.Writer)\n\t\t\tShowCommandHelp(ctx, c.Name)\n\t\t\tHandleExitCoder(err)\n\t\t\treturn err\n\t\t}\n\t}\n\n\tcontext.Command = c\n\terr = HandleAction(c.Action, context)\n\n\tif err != nil {\n\t\tHandleExitCoder(err)\n\t}\n\treturn err\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "08652e1fcc99953d0ebc5885",
+        "revision": "1fb52b3bce854a25e1bcfb25c8e16862ad400e9d",
+        "path": "command.go",
+        "start_byte": 5005,
+        "text": "func (c Command) startApp(ctx *Context) error {\n\tapp := NewApp()\n\tapp.Metadata = ctx.App.Metadata\n\t// set the name and usage\n\tapp.Name = fmt.Sprintf(\"%s %s\", ctx.App.Name, c.Name)\n\tif c.HelpName == \"\" {\n\t\tapp.HelpName = c.HelpName\n\t} else {\n\t\tapp.HelpName = app.Name\n\t}\n\n\tif c.Description != \"\" {\n\t\tapp.Usage = c.Description\n\t} else {\n\t\tapp.Usage = c.Usage\n\t}\n\n\t// set CommandNotFound\n\tapp.CommandNotFound = ctx.App.CommandNotFound\n\n\t// set the flags and commands\n\tapp.Commands = c.Subcommands\n\tapp.Flags = c.Flags\n\tapp.HideHelp = c.HideHelp\n\n\tapp.Version = ctx.App.Version\n\tapp.HideVersion = ctx.App.HideVersion\n\tapp.Compiled = ctx.App.Compiled\n\tapp.Author = ctx.App.Author\n\tapp.Email = ctx.App.Email\n\tapp.Writer = ctx.App.Writer\n\n\tapp.categories = CommandCategories{}\n\tfor _, command := range c.Subcommands {\n\t\tapp.categories = app.categories.AddCommand(command.Category, command)\n\t}\n\n\tsort.Sort(app.categories)\n\n\t// bash completion\n\tapp.EnableBashCompletion = ctx.App.EnableBashCompletion\n\tif c.BashComplete != nil {\n\t\tapp.BashComplete = c.BashComplete\n\t}\n\n\t// set the actions\n\tapp.Before = c.Before\n\tapp.After = c.After\n\tif c.Action != nil {\n\t\tapp.Action = c.Action\n\t} else {\n\t\tapp.Action = helpSubcommand.Action\n\t}\n\n\tfor index, cc := range app.Commands {\n\t\tapp.Commands[index].commandNamePath = []string{c.Name, cc.Name}\n\t}\n\n\treturn app.RunAsSubcommand(ctx)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "1719a7096e553fb789e13f9c",
+        "revision": "1fb52b3bce854a25e1bcfb25c8e16862ad400e9d",
+        "path": "context.go",
+        "start_byte": 919,
+        "text": "func (c *Context) Duration(name string) time.Duration {\n\treturn lookupDuration(name, c.flagSet)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "434ac2707635b4dd26aecd47",
+        "revision": "1fb52b3bce854a25e1bcfb25c8e16862ad400e9d",
+        "path": "context.go",
+        "start_byte": 2823,
+        "text": "func (c *Context) GlobalDuration(name string) time.Duration {\n\tif fs := lookupGlobalFlagSet(name, c); fs != nil {\n\t\treturn lookupDuration(name, fs)\n\t}\n\treturn 0\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "19cb0baf37b91fd7723ff23f",
+        "revision": "1fb52b3bce854a25e1bcfb25c8e16862ad400e9d",
+        "path": "context.go",
+        "start_byte": 7651,
+        "text": "func lookupDuration(name string, set *flag.FlagSet) time.Duration {\n\tf := set.Lookup(name)\n\tif f != nil {\n\t\tval, err := time.ParseDuration(f.Value.String())\n\t\tif err == nil {\n\t\t\treturn val\n\t\t}\n\t}\n\n\treturn 0\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "db32da50fc82825909ecab90",
+        "revision": "1fb52b3bce854a25e1bcfb25c8e16862ad400e9d",
+        "path": "errors.go",
+        "start_byte": 1354,
+        "text": "func HandleExitCoder(err error) {\n\tif exitErr, ok := err.(ExitCoder); ok {\n\t\tif err.Error() != \"\" {\n\t\t\tfmt.Fprintln(os.Stderr, err)\n\t\t}\n\t\tos.Exit(exitErr.ExitCode())\n\t}\n\n\tif multiErr, ok := err.(MultiError); ok {\n\t\tfor _, merr := range multiErr.Errors {\n\t\t\tHandleExitCoder(merr)\n\t\t}\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "36067143b2c7af69aa133e54",
+        "revision": "1fb52b3bce854a25e1bcfb25c8e16862ad400e9d",
+        "path": "flag.go",
+        "start_byte": 987,
+        "text": "type Flag interface {\n\tfmt.Stringer\n\t// Apply Flag settings to the given flag set\n\tApply(*flag.FlagSet)\n\tGetName() string\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "535cb2227087bc599f0a96a7",
+        "revision": "1fb52b3bce854a25e1bcfb25c8e16862ad400e9d",
+        "path": "flag.go",
+        "start_byte": 1914,
+        "text": "func (f GenericFlag) String() string {\n\tplaceholder, usage := unquoteUsage(f.Usage)\n\treturn withEnvHint(f.EnvVar, fmt.Sprintf(\"%s %v\\t%v\", prefixedNames(f.Name, placeholder), f.FormatValueHelp(), usage))\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "e9137854945d8b4dfa2a464b",
+        "revision": "1fb52b3bce854a25e1bcfb25c8e16862ad400e9d",
+        "path": "flag.go",
+        "start_byte": 2121,
+        "text": "func (f GenericFlag) FormatValueHelp() string {\n\tif f.Value == nil {\n\t\treturn \"\"\n\t}\n\ts := f.Value.String()\n\tif len(s) == 0 {\n\t\treturn \"\"\n\t}\n\treturn fmt.Sprintf(\"\\\"%s\\\"\", s)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "10fcad24402e30abd54438b9",
+        "revision": "1fb52b3bce854a25e1bcfb25c8e16862ad400e9d",
+        "path": "flag.go",
+        "start_byte": 3185,
+        "text": "func (f *StringSlice) Set(value string) error {\n\tif !f.hasBeenSet {\n\t\tf.slice = []string{}\n\t\tf.hasBeenSet = true\n\t}\n\n\tif strings.HasPrefix(value, slPfx) {\n\t\t// Deserializing assumes overwrite\n\t\t_ = json.Unmarshal([]byte(strings.Replace(value, slPfx, \"\", 1)), &f.slice)\n\t\tf.hasBeenSet = true\n\t\treturn nil\n\t}\n\n\tf.slice = append(f.slice, value)\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "25f1d3be63d97f344684a69a",
+        "revision": "1fb52b3bce854a25e1bcfb25c8e16862ad400e9d",
+        "path": "flag.go",
+        "start_byte": 3621,
+        "text": "func (f *StringSlice) String() string {\n\treturn fmt.Sprintf(\"%s\", f.slice)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "9db9831d288159999b2d12dc",
+        "revision": "1fb52b3bce854a25e1bcfb25c8e16862ad400e9d",
+        "path": "flag.go",
+        "start_byte": 3756,
+        "text": "func (f *StringSlice) Serialized() string {\n\tjsonBytes, _ := json.Marshal(f.slice)\n\treturn fmt.Sprintf(\"%s%s\", slPfx, string(jsonBytes))\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "d030f1e5b5a7972c4c0e3ca9",
+        "revision": "1fb52b3bce854a25e1bcfb25c8e16862ad400e9d",
+        "path": "flag.go",
+        "start_byte": 4234,
+        "text": "func (f StringSliceFlag) String() string {\n\tfirstName := strings.Trim(strings.Split(f.Name, \",\")[0], \" \")\n\tpref := prefixFor(firstName)\n\tplaceholder, usage := unquoteUsage(f.Usage)\n\treturn withEnvHint(f.EnvVar, fmt.Sprintf(\"%s [%v]\\t%v\", prefixedNames(f.Name, placeholder), pref+firstName+\" option \"+pref+firstName+\" option\", usage))\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "1bc717448dedc3e564f25770",
+        "revision": "1fb52b3bce854a25e1bcfb25c8e16862ad400e9d",
+        "path": "flag.go",
+        "start_byte": 5771,
+        "text": "func (i *IntSlice) Set(value string) error {\n\tif !i.hasBeenSet {\n\t\ti.slice = []int{}\n\t\ti.hasBeenSet = true\n\t}\n\n\tif strings.HasPrefix(value, slPfx) {\n\t\t// Deserializing assumes overwrite\n\t\t_ = json.Unmarshal([]byte(strings.Replace(value, slPfx, \"\", 1)), &i.slice)\n\t\ti.hasBeenSet = true\n\t\treturn nil\n\t}\n\n\ttmp, err := strconv.Atoi(value)\n\tif err != nil {\n\t\treturn err\n\t} else {\n\t\ti.slice = append(i.slice, tmp)\n\t}\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "37108cf6260183c4d43f0c44",
+        "revision": "1fb52b3bce854a25e1bcfb25c8e16862ad400e9d",
+        "path": "flag.go",
+        "start_byte": 6276,
+        "text": "func (i *IntSlice) String() string {\n\treturn fmt.Sprintf(\"%v\", i.slice)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "ebf086161018a1f04486f35c",
+        "revision": "1fb52b3bce854a25e1bcfb25c8e16862ad400e9d",
+        "path": "flag.go",
+        "start_byte": 6405,
+        "text": "func (i *IntSlice) Serialized() string {\n\tjsonBytes, _ := json.Marshal(i.slice)\n\treturn fmt.Sprintf(\"%s%s\", slPfx, string(jsonBytes))\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "31962ab6fed5917aa60dc04b",
+        "revision": "1fb52b3bce854a25e1bcfb25c8e16862ad400e9d",
+        "path": "flag.go",
+        "start_byte": 6860,
+        "text": "func (f IntSliceFlag) String() string {\n\tfirstName := strings.Trim(strings.Split(f.Name, \",\")[0], \" \")\n\tpref := prefixFor(firstName)\n\tplaceholder, usage := unquoteUsage(f.Usage)\n\treturn withEnvHint(f.EnvVar, fmt.Sprintf(\"%s [%v]\\t%v\", prefixedNames(f.Name, placeholder), pref+firstName+\" option \"+pref+firstName+\" option\", usage))\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "e85840475b702eba72c3ce02",
+        "revision": "1fb52b3bce854a25e1bcfb25c8e16862ad400e9d",
+        "path": "flag.go",
+        "start_byte": 7257,
+        "text": "func (f IntSliceFlag) Apply(set *flag.FlagSet) {\n\tif f.EnvVar != \"\" {\n\t\tfor _, envVar := range strings.Split(f.EnvVar, \",\") {\n\t\t\tenvVar = strings.TrimSpace(envVar)\n\t\t\tif envVal := os.Getenv(envVar); envVal != \"\" {\n\t\t\t\tnewVal := NewIntSlice()\n\t\t\t\tfor _, s := range strings.Split(envVal, \",\") {\n\t\t\t\t\ts = strings.TrimSpace(s)\n\t\t\t\t\terr := newVal.Set(s)\n\t\t\t\t\tif err != nil {\n\t\t\t\t\t\tfmt.Fprintf(os.Stderr, err.Error())\n\t\t\t\t\t}\n\t\t\t\t}\n\t\t\t\tf.Value = newVal\n\t\t\t\tbreak\n\t\t\t}\n\t\t}\n\t}\n\n\tif f.Value == nil {\n\t\tf.Value = NewIntSlice()\n\t}\n\n\teachName(f.Name, func(name string) {\n\t\tset.Var(f.Value, name, f.Usage)\n\t})\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "813a07484f76a324ca649aff",
+        "revision": "1fb52b3bce854a25e1bcfb25c8e16862ad400e9d",
+        "path": "flag.go",
+        "start_byte": 8146,
+        "text": "func (f BoolFlag) String() string {\n\tplaceholder, usage := unquoteUsage(f.Usage)\n\treturn withEnvHint(f.EnvVar, fmt.Sprintf(\"%s\\t%v\", prefixedNames(f.Name, placeholder), usage))\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "91767e3678d40213926520ad",
+        "revision": "1fb52b3bce854a25e1bcfb25c8e16862ad400e9d",
+        "path": "flag.go",
+        "start_byte": 9264,
+        "text": "func (f BoolTFlag) String() string {\n\tplaceholder, usage := unquoteUsage(f.Usage)\n\treturn withEnvHint(f.EnvVar, fmt.Sprintf(\"%s\\t%v\", prefixedNames(f.Name, placeholder), usage))\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "f26720c887b292a7dcb84c7c",
+        "revision": "1fb52b3bce854a25e1bcfb25c8e16862ad400e9d",
+        "path": "flag.go",
+        "start_byte": 10293,
+        "text": "func (f StringFlag) String() string {\n\tplaceholder, usage := unquoteUsage(f.Usage)\n\treturn withEnvHint(f.EnvVar, fmt.Sprintf(\"%s %v\\t%v\", prefixedNames(f.Name, placeholder), f.FormatValueHelp(), usage))\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "efc997879ee60c333438b292",
+        "revision": "1fb52b3bce854a25e1bcfb25c8e16862ad400e9d",
+        "path": "flag.go",
+        "start_byte": 10499,
+        "text": "func (f StringFlag) FormatValueHelp() string {\n\ts := f.Value\n\tif len(s) == 0 {\n\t\treturn \"\"\n\t}\n\treturn fmt.Sprintf(\"\\\"%s\\\"\", s)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "507d01d161acd9394e1fe7c3",
+        "revision": "1fb52b3bce854a25e1bcfb25c8e16862ad400e9d",
+        "path": "flag.go",
+        "start_byte": 11425,
+        "text": "func (f IntFlag) String() string {\n\tplaceholder, usage := unquoteUsage(f.Usage)\n\treturn withEnvHint(f.EnvVar, fmt.Sprintf(\"%s \\\"%v\\\"\\t%v\", prefixedNames(f.Name, placeholder), f.Value, usage))\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "ae05aff4ac47a757c70af937",
+        "revision": "1fb52b3bce854a25e1bcfb25c8e16862ad400e9d",
+        "path": "flag.go",
+        "start_byte": 12383,
+        "text": "type DurationFlag struct {\n\tName        string\n\tValue       time.Duration\n\tUsage       string\n\tEnvVar      string\n\tDestination *time.Duration\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "99796ae33108feca046ae769",
+        "revision": "1fb52b3bce854a25e1bcfb25c8e16862ad400e9d",
+        "path": "flag.go",
+        "start_byte": 12607,
+        "text": "func (f DurationFlag) String() string {\n\tplaceholder, usage := unquoteUsage(f.Usage)\n\treturn withEnvHint(f.EnvVar, fmt.Sprintf(\"%s \\\"%v\\\"\\t%v\", prefixedNames(f.Name, placeholder), f.Value, usage))\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "39e0dbf7862976a0708fc562",
+        "revision": "1fb52b3bce854a25e1bcfb25c8e16862ad400e9d",
+        "path": "flag.go",
+        "start_byte": 12870,
+        "text": "func (f DurationFlag) Apply(set *flag.FlagSet) {\n\tif f.EnvVar != \"\" {\n\t\tfor _, envVar := range strings.Split(f.EnvVar, \",\") {\n\t\t\tenvVar = strings.TrimSpace(envVar)\n\t\t\tif envVal := os.Getenv(envVar); envVal != \"\" {\n\t\t\t\tenvValDuration, err := time.ParseDuration(envVal)\n\t\t\t\tif err == nil {\n\t\t\t\t\tf.Value = envValDuration\n\t\t\t\t\tbreak\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t}\n\n\teachName(f.Name, func(name string) {\n\t\tif f.Destination != nil {\n\t\t\tset.DurationVar(f.Destination, name, f.Value, f.Usage)\n\t\t\treturn\n\t\t}\n\t\tset.Duration(name, f.Value, f.Usage)\n\t})\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "f5355358dabab2188e4dcbb7",
+        "revision": "1fb52b3bce854a25e1bcfb25c8e16862ad400e9d",
+        "path": "flag.go",
+        "start_byte": 13721,
+        "text": "func (f Float64Flag) String() string {\n\tplaceholder, usage := unquoteUsage(f.Usage)\n\treturn withEnvHint(f.EnvVar, fmt.Sprintf(\"%s \\\"%v\\\"\\t%v\", prefixedNames(f.Name, placeholder), f.Value, usage))\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "63c122ce6680256f558fc72b",
+        "revision": "1fb52b3bce854a25e1bcfb25c8e16862ad400e9d",
+        "path": "flag.go",
+        "start_byte": 15426,
+        "text": "func withEnvHint(envVar, str string) string {\n\tenvText := \"\"\n\tif envVar != \"\" {\n\t\tprefix := \"$\"\n\t\tsuffix := \"\"\n\t\tsep := \", $\"\n\t\tif runtime.GOOS == \"windows\" {\n\t\t\tprefix = \"%\"\n\t\t\tsuffix = \"%\"\n\t\t\tsep = \"%, %\"\n\t\t}\n\t\tenvText = fmt.Sprintf(\" [%s%s%s]\", prefix, strings.Join(strings.Split(envVar, \",\"), sep), suffix)\n\t}\n\treturn str + envText\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "476086fff8574624eb525b0c",
+        "revision": "1fb52b3bce854a25e1bcfb25c8e16862ad400e9d",
+        "path": "help.go",
+        "start_byte": 3170,
+        "text": "func DefaultAppComplete(c *Context) {\n\tfor _, command := range c.App.Commands {\n\t\tfor _, name := range command.Names() {\n\t\t\tfmt.Fprintln(c.App.Writer, name)\n\t\t}\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "cd287a72379b8fdcbfba8e83",
+        "revision": "1fb52b3bce854a25e1bcfb25c8e16862ad400e9d",
+        "path": "help.go",
+        "start_byte": 3374,
+        "text": "func ShowCommandHelp(ctx *Context, command string) {\n\t// show the subcommand help for a command with subcommands\n\tif command == \"\" {\n\t\tHelpPrinter(ctx.App.Writer, SubcommandHelpTemplate, ctx.App)\n\t\treturn\n\t}\n\n\tfor _, c := range ctx.App.Commands {\n\t\tif c.HasName(command) {\n\t\t\tHelpPrinter(ctx.App.Writer, CommandHelpTemplate, c)\n\t\t\treturn\n\t\t}\n\t}\n\n\tif ctx.App.CommandNotFound != nil {\n\t\tctx.App.CommandNotFound(ctx, command)\n\t} else {\n\t\tfmt.Fprintf(ctx.App.Writer, \"No help topic for '%v'\\n\", command)\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "ef7bf5b693925e90e05a70fb",
+        "revision": "1fb52b3bce854a25e1bcfb25c8e16862ad400e9d",
+        "path": "help.go",
+        "start_byte": 4090,
+        "text": "func printVersion(c *Context) {\n\tfmt.Fprintf(c.App.Writer, \"%v version %v\\n\", c.App.Name, c.App.Version)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "27dadd017a813c151b648b51",
+        "revision": "839f07bfe4819fa1434fa907d0804ce6ec45a5df",
+        "path": "flag.go",
+        "start_byte": 12718,
+        "text": "func stringifyFlag(f Flag) string {\n\tfv := reflect.ValueOf(f)\n\n\tswitch f.(type) {\n\tcase IntSliceFlag:\n\t\treturn withEnvHint(fv.FieldByName(\"EnvVar\").String(),\n\t\t\tstringifyIntSliceFlag(f.(IntSliceFlag)))\n\tcase StringSliceFlag:\n\t\treturn withEnvHint(fv.FieldByName(\"EnvVar\").String(),\n\t\t\tstringifyStringSliceFlag(f.(StringSliceFlag)))\n\t}\n\n\tplaceholder, usage := unquoteUsage(fv.FieldByName(\"Usage\").String())\n\n\tneedsPlaceholder := false\n\tdefaultValueString := \"\"\n\tval := fv.FieldByName(\"Value\")\n\n\tif val.IsValid() {\n\t\tneedsPlaceholder = true\n\t\tdefaultValueString = fmt.Sprintf(\" (default: %v)\", val.Interface())\n\n\t\tif val.Kind() == reflect.String && val.String() != \"\" {\n\t\t\tdefaultValueString = fmt.Sprintf(\" (default: %q)\", val.String())\n\t\t}\n\t}\n\n\tif defaultValueString == \" (default: )\" {\n\t\tdefaultValueString = \"\"\n\t}\n\n\tif needsPlaceholder && placeholder == \"\" {\n\t\tplaceholder = defaultPlaceholder\n\t}\n\n\tusageWithDefault := strings.TrimSpace(fmt.Sprintf(\"%s%s\", usage, defaultValueString))\n\n\treturn withEnvHint(fv.FieldByName(\"EnvVar\").String(),\n\t\tfmt.Sprintf(\"%s\\t%s\", prefixedNames(fv.FieldByName(\"Name\").String(), placeholder), usageWithDefault))\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "f882dab06cc08efcf3954326",
+        "revision": "839f07bfe4819fa1434fa907d0804ce6ec45a5df",
+        "path": "flag.go",
+        "start_byte": 14484,
+        "text": "func stringifySliceFlag(usage, name string, defaultVals []string) string {\n\tplaceholder, usage := unquoteUsage(usage)\n\tif placeholder == \"\" {\n\t\tplaceholder = defaultPlaceholder\n\t}\n\n\tdefaultVal := \"\"\n\tif len(defaultVals) > 0 {\n\t\tdefaultVal = fmt.Sprintf(\" (default: %s)\", strings.Join(defaultVals, \", \"))\n\t}\n\n\tusageWithDefault := strings.TrimSpace(fmt.Sprintf(\"%s%s\", usage, defaultVal))\n\treturn fmt.Sprintf(\"%s\\t%s\", prefixedNames(name, placeholder), usageWithDefault)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "1ca3df91cdeb688110f106a4",
+        "revision": "1fb52b3bce854a25e1bcfb25c8e16862ad400e9d",
+        "path": "altsrc/flag_test.go",
+        "start_byte": 6660,
+        "text": "func TestDurationApplyInputSourceMethodSet(t *testing.T) {\n\tc := runTest(t, testApplyInputSource{\n\t\tFlag:     NewDurationFlag(cli.DurationFlag{Name: \"test\"}),\n\t\tFlagName: \"test\",\n\t\tMapValue: time.Duration(30 * time.Second),\n\t})\n\texpect(t, time.Duration(30*time.Second), c.Duration(\"test\"))\n}",
+        "rank": 3,
+        "truncated": false
+      },
+      {
+        "id": "6fe807ae375c1512169bc9c1",
+        "revision": "1fb52b3bce854a25e1bcfb25c8e16862ad400e9d",
+        "path": "altsrc/flag_test.go",
+        "start_byte": 6953,
+        "text": "func TestDurationApplyInputSourceMethodContextSet(t *testing.T) {\n\tc := runTest(t, testApplyInputSource{\n\t\tFlag:               NewDurationFlag(cli.DurationFlag{Name: \"test\"}),\n\t\tFlagName:           \"test\",\n\t\tMapValue:           time.Duration(30 * time.Second),\n\t\tContextValueString: time.Duration(15 * time.Second).String(),\n\t})\n\texpect(t, time.Duration(15*time.Second), c.Duration(\"test\"))\n}",
+        "rank": 3,
+        "truncated": false
+      },
+      {
+        "id": "fa25ce04f3340808d218997c",
+        "revision": "1fb52b3bce854a25e1bcfb25c8e16862ad400e9d",
+        "path": "altsrc/flag_test.go",
+        "start_byte": 7347,
+        "text": "func TestDurationApplyInputSourceMethodEnvVarSet(t *testing.T) {\n\tc := runTest(t, testApplyInputSource{\n\t\tFlag:        NewDurationFlag(cli.DurationFlag{Name: \"test\", EnvVar: \"TEST\"}),\n\t\tFlagName:    \"test\",\n\t\tMapValue:    time.Duration(30 * time.Second),\n\t\tEnvVarName:  \"TEST\",\n\t\tEnvVarValue: time.Duration(15 * time.Second).String(),\n\t})\n\texpect(t, time.Duration(15*time.Second), c.Duration(\"test\"))\n}",
+        "rank": 3,
+        "truncated": false
+      },
+      {
+        "id": "cda56b9ad5e0582037c5e7fb",
+        "revision": "1fb52b3bce854a25e1bcfb25c8e16862ad400e9d",
+        "path": "altsrc/flag_test.go",
+        "start_byte": 7986,
+        "text": "func TestFloat64ApplyInputSourceMethodContextSet(t *testing.T) {\n\tc := runTest(t, testApplyInputSource{\n\t\tFlag:               NewFloat64Flag(cli.Float64Flag{Name: \"test\"}),\n\t\tFlagName:           \"test\",\n\t\tMapValue:           1.3,\n\t\tContextValueString: fmt.Sprintf(\"%v\", 1.4),\n\t})\n\texpect(t, 1.4, c.Float64(\"test\"))\n}",
+        "rank": 3,
+        "truncated": false
+      },
+      {
+        "id": "4f252326a7d838abc0ed66f1",
+        "revision": "1fb52b3bce854a25e1bcfb25c8e16862ad400e9d",
+        "path": "altsrc/flag_test.go",
+        "start_byte": 8304,
+        "text": "func TestFloat64ApplyInputSourceMethodEnvVarSet(t *testing.T) {\n\tc := runTest(t, testApplyInputSource{\n\t\tFlag:        NewFloat64Flag(cli.Float64Flag{Name: \"test\", EnvVar: \"TEST\"}),\n\t\tFlagName:    \"test\",\n\t\tMapValue:    1.3,\n\t\tEnvVarName:  \"TEST\",\n\t\tEnvVarValue: fmt.Sprintf(\"%v\", 1.4),\n\t})\n\texpect(t, 1.4, c.Float64(\"test\"))\n}",
+        "rank": 3,
+        "truncated": false
+      },
+      {
+        "id": "c99e471850f664f384c059d6",
+        "revision": "1fb52b3bce854a25e1bcfb25c8e16862ad400e9d",
+        "path": "altsrc/flag_test.go",
+        "start_byte": 9341,
+        "text": "func (p *Parser) Set(value string) error {\n\tparts := strings.Split(value, \",\")\n\tif len(parts) != 2 {\n\t\treturn fmt.Errorf(\"invalid format\")\n\t}\n\n\t(*p)[0] = parts[0]\n\t(*p)[1] = parts[1]\n\n\treturn nil\n}",
+        "rank": 3,
+        "truncated": false
+      },
+      {
+        "id": "e82c51c4953778961edcf0ef",
+        "revision": "1fb52b3bce854a25e1bcfb25c8e16862ad400e9d",
+        "path": "altsrc/flag_test.go",
+        "start_byte": 9540,
+        "text": "func (p *Parser) String() string {\n\treturn fmt.Sprintf(\"%s,%s\", p[0], p[1])\n}",
+        "rank": 3,
+        "truncated": false
+      },
+      {
+        "id": "6cf0763e5a1b0cdc22ad610a",
+        "revision": "1fb52b3bce854a25e1bcfb25c8e16862ad400e9d",
+        "path": "app_test.go",
+        "start_byte": 234,
+        "text": "func ExampleApp_Run() {\n\t// set args for examples sake\n\tos.Args = []string{\"greet\", \"--name\", \"Jeremy\"}\n\n\tapp := NewApp()\n\tapp.Name = \"greet\"\n\tapp.Flags = []Flag{\n\t\tStringFlag{Name: \"name\", Value: \"bob\", Usage: \"a name to say\"},\n\t}\n\tapp.Action = func(c *Context) error {\n\t\tfmt.Printf(\"Hello %v\\n\", c.String(\"name\"))\n\t\treturn nil\n\t}\n\tapp.UsageText = \"app [first_arg] [second_arg]\"\n\tapp.Author = \"Harrison\"\n\tapp.Email = \"harrison@lolwut.com\"\n\tapp.Authors = []Author{Author{Name: \"Oliver Allen\", Email: \"oliver@toyshop.com\"}}\n\tapp.Run(os.Args)\n\t// Output:\n\t// Hello Jeremy\n}",
+        "rank": 3,
+        "truncated": false
+      },
+      {
+        "id": "6f9c9e99485851d83348cfe3",
+        "revision": "1fb52b3bce854a25e1bcfb25c8e16862ad400e9d",
+        "path": "app_test.go",
+        "start_byte": 807,
+        "text": "func ExampleApp_Run_subcommand() {\n\t// set args for examples sake\n\tos.Args = []string{\"say\", \"hi\", \"english\", \"--name\", \"Jeremy\"}\n\tapp := NewApp()\n\tapp.Name = \"say\"\n\tapp.Commands = []Command{\n\t\t{\n\t\t\tName:        \"hello\",\n\t\t\tAliases:     []string{\"hi\"},\n\t\t\tUsage:       \"use it to see a description\",\n\t\t\tDescription: \"This is how we describe hello the function\",\n\t\t\tSubcommands: []Command{\n\t\t\t\t{\n\t\t\t\t\tName:        \"english\",\n\t\t\t\t\tAliases:     []string{\"en\"},\n\t\t\t\t\tUsage:       \"sends a greeting in english\",\n\t\t\t\t\tDescription: \"greets someone in english\",\n\t\t\t\t\tFlags: []Flag{\n\t\t\t\t\t\tStringFlag{\n\t\t\t\t\t\t\tName:  \"name\",\n\t\t\t\t\t\t\tValue: \"Bob\",\n\t\t\t\t\t\t\tUsage: \"Name of the person to greet\",\n\t\t\t\t\t\t},\n\t\t\t\t\t},\n\t\t\t\t\tAction: func(c *Context) error {\n\t\t\t\t\t\tfmt.Println(\"Hello,\", c.String(\"name\"))\n\t\t\t\t\t\treturn nil\n\t\t\t\t\t},\n\t\t\t\t},\n\t\t\t},\n\t\t},\n\t}\n\n\tapp.Run(os.Args)\n\t// Output:\n\t// Hello, Jeremy\n}",
+        "rank": 3,
+        "truncated": false
+      },
+      {
+        "id": "ace0f74ce46f6da56fc1ea8a",
+        "revision": "1fb52b3bce854a25e1bcfb25c8e16862ad400e9d",
+        "path": "app_test.go",
+        "start_byte": 1686,
+        "text": "func ExampleApp_Run_help() {\n\t// set args for examples sake\n\tos.Args = []string{\"greet\", \"h\", \"describeit\"}\n\n\tapp := NewApp()\n\tapp.Name = \"greet\"\n\tapp.Flags = []Flag{\n\t\tStringFlag{Name: \"name\", Value: \"bob\", Usage: \"a name to say\"},\n\t}\n\tapp.Commands = []Command{\n\t\t{\n\t\t\tName:        \"describeit\",\n\t\t\tAliases:     []string{\"d\"},\n\t\t\tUsage:       \"use it to see a description\",\n\t\t\tDescription: \"This is how we describe describeit the function\",\n\t\t\tAction: func(c *Context) error {\n\t\t\t\tfmt.Printf(\"i like to describe things\")\n\t\t\t\treturn nil\n\t\t\t},\n\t\t},\n\t}\n\tapp.Run(os.Args)\n\t// Output:\n\t// NAME:\n\t//    greet describeit - use it to see a description\n\t//\n\t// USAGE:\n\t//    greet describeit [arguments...]\n\t//\n\t// DESCRIPTION:\n\t//    This is how we describe describeit the function\n}",
+        "rank": 3,
+        "truncated": false
+      },
+      {
+        "id": "2deb03642b083be7b4a6b303",
+        "revision": "1fb52b3bce854a25e1bcfb25c8e16862ad400e9d",
+        "path": "app_test.go",
+        "start_byte": 2464,
+        "text": "func ExampleApp_Run_bashComplete() {\n\t// set args for examples sake\n\tos.Args = []string{\"greet\", \"--generate-bash-completion\"}\n\n\tapp := NewApp()\n\tapp.Name = \"greet\"\n\tapp.EnableBashCompletion = true\n\tapp.Commands = []Command{\n\t\t{\n\t\t\tName:        \"describeit\",\n\t\t\tAliases:     []string{\"d\"},\n\t\t\tUsage:       \"use it to see a description\",\n\t\t\tDescription: \"This is how we describe describeit the function\",\n\t\t\tAction: func(c *Context) error {\n\t\t\t\tfmt.Printf(\"i like to describe things\")\n\t\t\t\treturn nil\n\t\t\t},\n\t\t}, {\n\t\t\tName:        \"next\",\n\t\t\tUsage:       \"next example\",\n\t\t\tDescription: \"more stuff to see when generating bash completion\",\n\t\t\tAction: func(c *Context) error {\n\t\t\t\tfmt.Printf(\"the next example\")\n\t\t\t\treturn nil\n\t\t\t},\n\t\t},\n\t}\n\n\tapp.Run(os.Args)\n\t// Output:\n\t// describeit\n\t// d\n\t// next\n\t// help\n\t// h\n}",
+        "rank": 3,
+        "truncated": false
+      },
+      {
+        "id": "d0515bdd49127b8211b0e7ae",
+        "revision": "1fb52b3bce854a25e1bcfb25c8e16862ad400e9d",
+        "path": "app_test.go",
+        "start_byte": 9909,
+        "text": "func TestApp_BeforeFunc(t *testing.T) {\n\tcounts := &opCounts{}\n\tbeforeError := fmt.Errorf(\"fail\")\n\tvar err error\n\n\tapp := NewApp()\n\n\tapp.Before = func(c *Context) error {\n\t\tcounts.Total++\n\t\tcounts.Before = counts.Total\n\t\ts := c.String(\"opt\")\n\t\tif s == \"fail\" {\n\t\t\treturn beforeError\n\t\t}\n\n\t\treturn nil\n\t}\n\n\tapp.Commands = []Command{\n\t\tCommand{\n\t\t\tName: \"sub\",\n\t\t\tAction: func(c *Context) error {\n\t\t\t\tcounts.Total++\n\t\t\t\tcounts.SubCommand = counts.Total\n\t\t\t\treturn nil\n\t\t\t},\n\t\t},\n\t}\n\n\tapp.Flags = []Flag{\n\t\tStringFlag{Name: \"opt\"},\n\t}\n\n\t// run with the Before() func succeeding\n\terr = app.Run([]string{\"command\", \"--opt\", \"succeed\", \"sub\"})\n\n\tif err != nil {\n\t\tt.Fatalf(\"Run error: %s\", err)\n\t}\n\n\tif counts.Before != 1 {\n\t\tt.Errorf(\"Before() not executed when expected\")\n\t}\n\n\tif counts.SubCommand != 2 {\n\t\tt.Errorf(\"Subcommand not executed when expected\")\n\t}\n\n\t// reset\n\tcounts = &opCounts{}\n\n\t// run with the Before() func failing\n\terr = app.Run([]string{\"command\", \"--opt\", \"fail\", \"sub\"})\n\n\t// should be the same error produced by the Before func\n\tif err != beforeError {\n\t\tt.Errorf(\"Run error expected, but not received\")\n\t}\n\n\tif counts.Before != 1 {\n\t\tt.Errorf(\"Before() not executed when expected\")\n\t}\n\n\tif counts.SubCommand != 0 {\n\t\tt.Errorf(\"Subcommand executed when NOT expected\")\n\t}\n\n\t// reset\n\tcounts = &opCounts{}\n\n\tafterError := errors.New(\"fail again\")\n\tapp.After = func(_ *Context) error {\n\t\treturn afterError\n\t}\n\n\t// run with the Before() func failing, wrapped by After()\n\terr = app.Run([]string{\"command\", \"--opt\", \"fail\", \"sub\"})\n\n\t// should be the same error produced by the Before func\n\tif _, ok := err.(MultiError); !ok {\n\t\tt.Errorf(\"MultiError expected, but not received\")\n\t}\n\n\tif counts.Before != 1 {\n\t\tt.Errorf(\"Before() not executed when expected\")\n\t}\n\n\tif counts.SubCommand != 0 {\n\t\tt.Errorf(\"Subcommand executed when NOT expected\")\n\t}\n}",
+        "rank": 3,
+        "truncated": false
+      },
+      {
+        "id": "d6f8bfd42ac205ba136abf56",
+        "revision": "1fb52b3bce854a25e1bcfb25c8e16862ad400e9d",
+        "path": "app_test.go",
+        "start_byte": 11771,
+        "text": "func TestApp_AfterFunc(t *testing.T) {\n\tcounts := &opCounts{}\n\tafterError := fmt.Errorf(\"fail\")\n\tvar err error\n\n\tapp := NewApp()\n\n\tapp.After = func(c *Context) error {\n\t\tcounts.Total++\n\t\tcounts.After = counts.Total\n\t\ts := c.String(\"opt\")\n\t\tif s == \"fail\" {\n\t\t\treturn afterError\n\t\t}\n\n\t\treturn nil\n\t}\n\n\tapp.Commands = []Command{\n\t\tCommand{\n\t\t\tName: \"sub\",\n\t\t\tAction: func(c *Context) error {\n\t\t\t\tcounts.Total++\n\t\t\t\tcounts.SubCommand = counts.Total\n\t\t\t\treturn nil\n\t\t\t},\n\t\t},\n\t}\n\n\tapp.Flags = []Flag{\n\t\tStringFlag{Name: \"opt\"},\n\t}\n\n\t// run with the After() func succeeding\n\terr = app.Run([]string{\"command\", \"--opt\", \"succeed\", \"sub\"})\n\n\tif err != nil {\n\t\tt.Fatalf(\"Run error: %s\", err)\n\t}\n\n\tif counts.After != 2 {\n\t\tt.Errorf(\"After() not executed when expected\")\n\t}\n\n\tif counts.SubCommand != 1 {\n\t\tt.Errorf(\"Subcommand not executed when expected\")\n\t}\n\n\t// reset\n\tcounts = &opCounts{}\n\n\t// run with the Before() func failing\n\terr = app.Run([]string{\"command\", \"--opt\", \"fail\", \"sub\"})\n\n\t// should be the same error produced by the Before func\n\tif err != afterError {\n\t\tt.Errorf(\"Run error expected, but not received\")\n\t}\n\n\tif counts.After != 2 {\n\t\tt.Errorf(\"After() not executed when expected\")\n\t}\n\n\tif counts.SubCommand != 1 {\n\t\tt.Errorf(\"Subcommand not executed when expected\")\n\t}\n}",
+        "rank": 3,
+        "truncated": false
+      },
+      {
+        "id": "bf3e2a1b0567f80c9eb33cc7",
+        "revision": "1fb52b3bce854a25e1bcfb25c8e16862ad400e9d",
+        "path": "app_test.go",
+        "start_byte": 24350,
+        "text": "func TestApp_Run_DoesNotOverwriteErrorFromBefore(t *testing.T) {\n\tapp := NewApp()\n\tapp.Action = func(c *Context) error { return nil }\n\tapp.Before = func(c *Context) error { return fmt.Errorf(\"before error\") }\n\tapp.After = func(c *Context) error { return fmt.Errorf(\"after error\") }\n\n\terr := app.Run([]string{\"foo\"})\n\tif err == nil {\n\t\tt.Fatalf(\"expected to receive error from Run, got none\")\n\t}\n\n\tif !strings.Contains(err.Error(), \"before error\") {\n\t\tt.Errorf(\"expected text of error from Before method, but got none in \\\"%v\\\"\", err)\n\t}\n\tif !strings.Contains(err.Error(), \"after error\") {\n\t\tt.Errorf(\"expected text of error from After method, but got none in \\\"%v\\\"\", err)\n\t}\n}",
+        "rank": 3,
+        "truncated": false
+      },
+      {
+        "id": "f2a077e40a414f60f5c55cfc",
+        "revision": "1fb52b3bce854a25e1bcfb25c8e16862ad400e9d",
+        "path": "app_test.go",
+        "start_byte": 25029,
+        "text": "func TestAp",
+        "rank": 3,
+        "truncated": true
+      }
+    ]
+  },
+  "retrieval": {
+    "unresolved": [
+      {
+        "side": "ours",
+        "identifier": "fmt",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Sprintf",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "time",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Now",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "UTC",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "UnixNano",
+        "reason": "no-unique-declaration-established"
+      }
+    ],
+    "method": "syntax-ranges-and-identifier-candidates/3",
+    "budget_bytes": 32768,
+    "libraries": {
+      "C": "cbbd4827ee02cd5c018ab41f10d8404ff8741159054b352d9a6d763c506ba3c7",
+      "Go": "1612f8fd958ba1ec981bf4b91e2ff399f1e54d26a9da68e5b60b0d7cd00616fc"
+    }
+  }
+}

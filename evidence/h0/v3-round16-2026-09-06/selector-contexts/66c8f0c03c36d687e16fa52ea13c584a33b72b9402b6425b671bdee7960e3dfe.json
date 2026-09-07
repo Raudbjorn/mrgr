@@ -1,0 +1,1092 @@
+{
+  "id": "66c8f0c03c36d687e16fa52ea13c584a33b72b9402b6425b671bdee7960e3dfe",
+  "source_protocol_sha256": "86ffe38086e217acf6e1a4aa4162e226862463d1bde3160478f9a6f4d2b968ce",
+  "repair_module_sha256": "b6a7cf123b0ac50001e1498cdf64964b8ac56e8e6a68cbbc6dcc01c8517b4a20",
+  "contexts": {
+    "local-context": [
+      {
+        "id": "25d3ade8fb754e5951ce0e75",
+        "revision": "3ded2fb772a7039bf23c2b69dca2fa600b2e1f8b",
+        "path": "pkg/eval/mods/file/file.go",
+        "start_byte": 0,
+        "text": "package file\n\nimport (\n\t\"os\"\n\n\t\"src.elv.sh/pkg/eval\"\n\t\"src.elv.sh/pkg/eval/vals\"\n)\n\nvar Ns = eval.NsBuilder{}.AddGoFns(\"file:\", fns).Ns()\n\nvar fns = map[string]interface{}{\n\t\"close\": close,\n\t\"open\":  open,\n\t\"pipe\":  pipe,\n}\n\n//elvdoc:fn open\n//\n// ```elvish\n// file:open $filename\n// ```\n//\n// Opens a file. Currently, `open` only supports opening a file for reading.\n// File must be closed with `close` explicitly. Example:\n//\n// ```elvish-transcript\n// ~> cat a.txt\n// This is\n// a file.\n// ~> use file\n// ~> f = (file:open a.txt)\n// ~> cat < $f\n// This is\n// a file.\n// ~> close $f\n// ```\n//\n// @cf close\n\nfunc open(name string) (vals.File, error) {\n\treturn os.Open(name)\n}\n\n//elvdoc:fn close\n//\n// ```elvish\n// ~> file:close $file\n// ```\n//\n// Closes a file opened with `open`.\n//\n// @cf open\n\nfunc close(f vals.File) error {\n\treturn f.Close()\n}\n\n//elvdoc:fn pipe\n//\n// ```elvish\n// file:pipe\n// ```\n//\n// Create a new pipe that can be used in redirections. A pipe contains a read-end and write-end.\n// Each pipe object is a [pseudo-map](#pseudo-map) with fields `r` (the read-end [file\n// object](./language.html#File)) and `w` (the write-end).\n\n// When redirecting command input from a pipe with `<`, the read-end is used. When redirecting\n// command output to a pipe with `>`, the write-end is used. Redirecting both input and output with\n// `<>` to a pipe is not supported.\n//\n// Pipes have an OS-dependent buffer, so writing to a pipe without an active reader\n// does not necessarily block. Pipes **must** be explicitly closed with `file:close`.\n//\n// Putting values into pipes will cause those values to be discarded.\n//\n// Examples (assuming the pipe has a large enough buffer):\n//\n// ```elvish-transcript\n// ~> p = (file:pipe)\n// ~> echo 'lorem ipsum' > $p\n// ~> head -n1 < $p\n// lorem ipsum\n// ~> put 'lorem ipsum' > $p\n// ~> file:close $p[w] # close the write-end\n// ~> head -n1 < $p # blocks unless the write-end is closed\n// ~> file:close $p[r] # close the read-end\n// ```\n//\n// @cf close\n\nfunc pipe() (vals.Pipe, error) {\n\tr, w, err := os.Pipe()\n\treturn vals.NewPipe(r, w), err\n}\n",
+        "rank": 0,
+        "truncated": false
+      },
+      {
+        "id": "7acbbfab968bc7dbcbd6ab12",
+        "revision": "ff9341eb9132d2a4fad898302bb4f0710d9812cd",
+        "path": "pkg/eval/mods/file/file.go",
+        "start_byte": 0,
+        "text": "package file\n\nimport (\n\t\"math/big\"\n\t\"os\"\n\t\"strconv\"\n\n\t\"src.elv.sh/pkg/eval\"\n\t\"src.elv.sh/pkg/eval/errs\"\n\t\"src.elv.sh/pkg/eval/vals\"\n)\n\nvar Ns = eval.NsBuilder{}.AddGoFns(\"file:\", fns).Ns()\n\nvar fns = map[string]interface{}{\n\t\"close\":    close,\n\t\"open\":     open,\n\t\"pipe\":     pipe,\n\t\"prclose\":  prclose,\n\t\"pwclose\":  pwclose,\n\t\"truncate\": truncate,\n}\n\n//elvdoc:fn open\n//\n// ```elvish\n// file:open $filename\n// ```\n//\n// Opens a file. Currently, `open` only supports opening a file for reading.\n// File must be closed with `close` explicitly. Example:\n//\n// ```elvish-transcript\n// ~> cat a.txt\n// This is\n// a file.\n// ~> use file\n// ~> f = (file:open a.txt)\n// ~> cat < $f\n// This is\n// a file.\n// ~> close $f\n// ```\n//\n// @cf close\n\nfunc open(name string) (vals.File, error) {\n\treturn os.Open(name)\n}\n\n//elvdoc:fn close\n//\n// ```elvish\n// ~> file:close $file\n// ```\n//\n// Closes a file opened with `open`.\n//\n// @cf open\n\nfunc close(f vals.File) error {\n\treturn f.Close()\n}\n\n//elvdoc:fn pipe\n//\n// ```elvish\n// file:pipe\n// ```\n//\n// Create a new Unix pipe that can be used in redirections.\n//\n// A pipe contains both the read FD and the write FD. When redirecting command\n// input to a pipe with `<`, the read FD is used. When redirecting command output\n// to a pipe with `>`, the write FD is used. It is not supported to redirect both\n// input and output with `<>` to a pipe.\n//\n// Pipes have an OS-dependent buffer, so writing to a pipe without an active reader\n// does not necessarily block. Pipes **must** be explicitly closed with `prclose`\n// and `pwclose`.\n//\n// Putting values into pipes will cause those values to be discarded.\n//\n// Examples (assuming the pipe has a large enough buffer):\n//\n// ```elvish-transcript\n// ~> p = (file:pipe)\n// ~> echo 'lorem ipsum' > $p\n// ~> head -n1 < $p\n// lorem ipsum\n// ~> put 'lorem ipsum' > $p\n// ~> head -n1 < $p\n// # blocks\n// # $p should be closed with prclose and pwclose afterwards\n// ```\n//\n// @cf prclose pwclose\n\nfunc pipe() (vals.Pipe, error) {\n\tr, w, err := os.Pipe()\n\treturn vals.NewPipe(r, w), err\n}\n\n//elvdoc:fn prclose\n//\n// ```elvish\n// file:prclose $pipe\n// ```\n//\n// Close the read end of a pipe.\n//\n// @cf pwclose pipe\n\nfunc prclose(p vals.Pipe) error {\n\treturn p.ReadEnd.Close()\n}\n\n//elvdoc:fn pwclose\n//\n// ```elvish\n// file:pwclose $pipe\n// ```\n//\n// Close the write end of a pipe.\n//\n// @cf prclose pipe\n\nfunc pwclose(p vals.Pipe) error {\n\treturn p.WriteEnd.Close()\n}\n\n//elvdoc:fn truncate\n//\n// ```elvish\n// file:truncate $filename $size\n// ```\n//\n// changes the size of the named file. If the file is a symbolic link, it\n// changes the size of the link's target. The size must be an integer between 0\n// and 2^64-1.\n\nfunc truncate(name string, rawSize vals.Num) error {\n\tvar size int64\n\tswitch rawSize := rawSize.(type) {\n\tcase int:\n\t\tsize = int64(rawSize)\n\tcase *big.Int:\n\t\tif rawSize.IsInt64() {\n\t\t\tsize = rawSize.Int64()\n\t\t} else {\n\t\t\treturn truncateSizeOutOfRange(rawSize.String())\n\t\t}\n\tdefault:\n\t\treturn errs.BadValue{\n\t\t\tWhat:  \"size argument to file:truncate\",\n\t\t\tValid: \"integer\", Actual: \"non-integer\",\n\t\t}\n\t}\n\tif size < 0 {\n\t\treturn truncateSizeOutOfRange(strconv.FormatInt(size, 10))\n\t}\n\treturn os.Truncate(name, size)\n}\n\nfunc truncateSizeOutOfRange(size string) error {\n\treturn errs.OutOfRange{\n\t\tWhat:      \"size argument to file:truncate\",\n\t\tValidLow:  \"0\",\n\t\tValidHigh: \"2^64-1\",\n\t\tActual:    size,\n\t}\n}\n",
+        "rank": 0,
+        "truncated": false
+      }
+    ],
+    "selected": [
+      {
+        "id": "34be039e36b2ca8ca4f373ac",
+        "revision": "3ded2fb772a7039bf23c2b69dca2fa600b2e1f8b",
+        "path": "pkg/eval/mods/file/file.go",
+        "start_byte": 139,
+        "text": "var fns = map[string]interface{}{\n\t\"close\": close,\n\t\"open\":  open,\n\t\"pipe\":  pipe,\n}",
+        "rank": 0,
+        "truncated": false
+      },
+      {
+        "id": "a8f8457894b3e8b8ca8901b8",
+        "revision": "ff9341eb9132d2a4fad898302bb4f0710d9812cd",
+        "path": "pkg/eval/mods/file/file.go",
+        "start_byte": 190,
+        "text": "var fns = map[string]interface{}{\n\t\"close\":    close,\n\t\"open\":     open,\n\t\"pipe\":     pipe,\n\t\"prclose\":  prclose,\n\t\"pwclose\":  pwclose,\n\t\"truncate\": truncate,\n}",
+        "rank": 0,
+        "truncated": false
+      },
+      {
+        "id": "94020d6059c6fbff35cbb8b2",
+        "revision": "3ded2fb772a7039bf23c2b69dca2fa600b2e1f8b",
+        "path": "pkg/eval/builtin_fn_io.go",
+        "start_byte": 18102,
+        "text": "func pipe() (vals.Pipe, error) {\n\tr, w, err := os.Pipe()\n\treturn vals.NewPipe(r, w), err\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "9911acfdc5c203b8b35c370d",
+        "revision": "3ded2fb772a7039bf23c2b69dca2fa600b2e1f8b",
+        "path": "pkg/eval/mods/file/file.go",
+        "start_byte": 609,
+        "text": "func open(name string) (vals.File, error) {\n\treturn os.Open(name)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "751dc36ccc93de1968e8dc81",
+        "revision": "3ded2fb772a7039bf23c2b69dca2fa600b2e1f8b",
+        "path": "pkg/eval/mods/file/file.go",
+        "start_byte": 798,
+        "text": "func close(f vals.File) error {\n\treturn f.Close()\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "e8fc658b10982277b79098d6",
+        "revision": "3ded2fb772a7039bf23c2b69dca2fa600b2e1f8b",
+        "path": "pkg/eval/mods/file/file.go",
+        "start_byte": 2006,
+        "text": "func pipe() (vals.Pipe, error) {\n\tr, w, err := os.Pipe()\n\treturn vals.NewPipe(r, w), err\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "a65aa76454fc66cd92bcec26",
+        "revision": "3ded2fb772a7039bf23c2b69dca2fa600b2e1f8b",
+        "path": "pkg/eval/mods/math/math.go",
+        "start_byte": 407,
+        "text": "var fns = map[string]interface{}{\n\t\"abs\":           abs,\n\t\"acos\":          math.Acos,\n\t\"acosh\":         math.Acosh,\n\t\"asin\":          math.Asin,\n\t\"asinh\":         math.Asinh,\n\t\"atan\":          math.Atan,\n\t\"atanh\":         math.Atanh,\n\t\"ceil\":          math.Ceil, // TODO: Make exactness-preserving\n\t\"cos\":           math.Cos,\n\t\"cosh\":          math.Cosh,\n\t\"floor\":         math.Floor, // TODO: Make exactness-preserving\n\t\"is-inf\":        isInf,\n\t\"is-nan\":        isNaN,\n\t\"log\":           math.Log,\n\t\"log10\":         math.Log10,\n\t\"log2\":          math.Log2,\n\t\"max\":           max,\n\t\"min\":           min,\n\t\"pow\":           math.Pow,         // TODO: Make exactness-preserving for integer exponents\n\t\"pow10\":         math.Pow10,       // TODO: Make exactness-preserving for integer exponents\n\t\"round\":         math.Round,       // TODO: Make exactness-preserving\n\t\"round-to-even\": math.RoundToEven, // TODO: Make exactness-preserving\n\t\"sin\":           math.Sin,\n\t\"sinh\":          math.Sinh,\n\t\"sqrt\":          math.Sqrt,\n\t\"tan\":           math.Tan,\n\t\"tanh\":          math.Tanh,\n\t\"trunc\":         math.Trunc, // TODO: Make exactness-preserving\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "79173b18915381e3061949bf",
+        "revision": "3ded2fb772a7039bf23c2b69dca2fa600b2e1f8b",
+        "path": "pkg/eval/mods/path/path.go",
+        "start_byte": 287,
+        "text": "var fns = map[string]interface{}{\n\t\"abs\":           filepath.Abs,\n\t\"base\":          filepath.Base,\n\t\"clean\":         filepath.Clean,\n\t\"dir\":           filepath.Dir,\n\t\"ext\":           filepath.Ext,\n\t\"eval-symlinks\": filepath.EvalSymlinks,\n\t\"is-abs\":        filepath.IsAbs,\n\t\"is-dir\":        isDir,\n\t\"is-regular\":    isRegular,\n\t\"temp-dir\":      tempDir,\n\t\"temp-file\":     tempFile,\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "8c68258f26a282915d417169",
+        "revision": "3ded2fb772a7039bf23c2b69dca2fa600b2e1f8b",
+        "path": "pkg/eval/mods/re/re.go",
+        "start_byte": 279,
+        "text": "var fns = map[string]interface{}{\n\t\"quote\":   regexp.QuoteMeta,\n\t\"match\":   match,\n\t\"find\":    find,\n\t\"replace\": replace,\n\t\"split\":   split,\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "1487b18279df032eb04eec1c",
+        "revision": "3ded2fb772a7039bf23c2b69dca2fa600b2e1f8b",
+        "path": "pkg/eval/mods/str/str.go",
+        "start_byte": 11584,
+        "text": "var fns = map[string]interface{}{\n\t\"compare\":      strings.Compare,\n\t\"contains\":     strings.Contains,\n\t\"contains-any\": strings.ContainsAny,\n\t\"count\":        strings.Count,\n\t\"equal-fold\":   strings.EqualFold,\n\t// TODO: Fields, FieldsFunc\n\t\"from-codepoints\": fromCodepoints,\n\t\"from-utf8-bytes\": fromUtf8Bytes,\n\t\"has-prefix\":      strings.HasPrefix,\n\t\"has-suffix\":      strings.HasSuffix,\n\t\"index\":           strings.Index,\n\t\"index-any\":       strings.IndexAny,\n\t// TODO: IndexFunc\n\t\"join\":       join,\n\t\"last-index\": strings.LastIndex,\n\t// TODO: LastIndexFunc, Map, Repeat\n\t\"replace\": replace,\n\t\"split\":   split,\n\t// TODO: SplitAfter\n\t\"title\":         strings.Title,\n\t\"to-codepoints\": toCodepoints,\n\t\"to-lower\":      strings.ToLower,\n\t\"to-title\":      strings.ToTitle,\n\t\"to-upper\":      strings.ToUpper,\n\t\"to-utf8-bytes\": toUtf8Bytes,\n\t// TODO: ToLowerSpecial, ToTitleSpecial, ToUpperSpecial\n\t\"trim\":       strings.Trim,\n\t\"trim-left\":  strings.TrimLeft,\n\t\"trim-right\": strings.TrimRight,\n\t// TODO: TrimLeft,Right}Func\n\t\"trim-space\":  strings.TrimSpace,\n\t\"trim-prefix\": strings.TrimPrefix,\n\t\"trim-suffix\": strings.TrimSuffix,\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "298719aed3e0ecb2451e1b2e",
+        "revision": "3ded2fb772a7039bf23c2b69dca2fa600b2e1f8b",
+        "path": "pkg/eval/port.go",
+        "start_byte": 456,
+        "text": "func (p *Port) close() {\n\tif p == nil {\n\t\treturn\n\t}\n\tif p.closeFile {\n\t\tp.File.Close()\n\t}\n\tif p.closeChan {\n\t\tclose(p.Chan)\n\t}\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "2d6b3310a8d2c8d16f8b21c5",
+        "revision": "3ded2fb772a7039bf23c2b69dca2fa600b2e1f8b",
+        "path": "pkg/prog/progtest/progtest.go",
+        "start_byte": 1861,
+        "text": "type pipe struct {\n\tr, w             *os.File\n\trClosed, wClosed bool\n\tsaved            string\n\toutput           chan []byte\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "46cfe353176288c55b859e06",
+        "revision": "3ded2fb772a7039bf23c2b69dca2fa600b2e1f8b",
+        "path": "pkg/prog/progtest/progtest.go",
+        "start_byte": 2521,
+        "text": "func (p *pipe) close() {\n\tif !p.wClosed {\n\t\tp.w.Close()\n\t\tp.wClosed = true\n\t\tif p.output != nil {\n\t\t\tp.saved = string(<-p.output)\n\t\t}\n\t}\n\tif !p.rClosed {\n\t\tp.r.Close()\n\t\tp.rClosed = true\n\t}\n\tif p.output != nil {\n\t\tclose(p.output)\n\t\tp.output = nil\n\t}\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "0b0941045f804877313fc286",
+        "revision": "ff9341eb9132d2a4fad898302bb4f0710d9812cd",
+        "path": "pkg/eval/builtin_fn_io.go",
+        "start_byte": 18102,
+        "text": "func pipe() (vals.Pipe, error) {\n\tr, w, err := os.Pipe()\n\treturn vals.NewPipe(r, w), err\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "538dba8d1aec9f369075839a",
+        "revision": "ff9341eb9132d2a4fad898302bb4f0710d9812cd",
+        "path": "pkg/eval/builtin_fn_io.go",
+        "start_byte": 18398,
+        "text": "func prclose(p vals.Pipe) error {\n\treturn p.ReadEnd.Close()\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "4a74f1e06ca1e20f8f696a8a",
+        "revision": "ff9341eb9132d2a4fad898302bb4f0710d9812cd",
+        "path": "pkg/eval/builtin_fn_io.go",
+        "start_byte": 18666,
+        "text": "func pwclose(p vals.Pipe) error {\n\treturn p.WriteEnd.Close()\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "25967edf6b8e17978f952204",
+        "revision": "ff9341eb9132d2a4fad898302bb4f0710d9812cd",
+        "path": "pkg/eval/mods/file/file.go",
+        "start_byte": 736,
+        "text": "func open(name string) (vals.File, error) {\n\treturn os.Open(name)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "51a04c0afe4b38a54dec16ec",
+        "revision": "ff9341eb9132d2a4fad898302bb4f0710d9812cd",
+        "path": "pkg/eval/mods/file/file.go",
+        "start_byte": 925,
+        "text": "func close(f vals.File) error {\n\treturn f.Close()\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "3e514b28aa63ba26d4f97150",
+        "revision": "ff9341eb9132d2a4fad898302bb4f0710d9812cd",
+        "path": "pkg/eval/mods/file/file.go",
+        "start_byte": 1973,
+        "text": "func pipe() (vals.Pipe, error) {\n\tr, w, err := os.Pipe()\n\treturn vals.NewPipe(r, w), err\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "c56d7e970b250664b0024423",
+        "revision": "ff9341eb9132d2a4fad898302bb4f0710d9812cd",
+        "path": "pkg/eval/mods/file/file.go",
+        "start_byte": 2190,
+        "text": "func prclose(p vals.Pipe) error {\n\treturn p.ReadEnd.Close()\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "213af622decb70dfc890cb14",
+        "revision": "ff9341eb9132d2a4fad898302bb4f0710d9812cd",
+        "path": "pkg/eval/mods/file/file.go",
+        "start_byte": 2379,
+        "text": "func pwclose(p vals.Pipe) error {\n\treturn p.WriteEnd.Close()\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "bacb10eeb9a33f19b194f1e7",
+        "revision": "ff9341eb9132d2a4fad898302bb4f0710d9812cd",
+        "path": "pkg/eval/mods/file/file.go",
+        "start_byte": 2693,
+        "text": "func truncate(name string, rawSize vals.Num) error {\n\tvar size int64\n\tswitch rawSize := rawSize.(type) {\n\tcase int:\n\t\tsize = int64(rawSize)\n\tcase *big.Int:\n\t\tif rawSize.IsInt64() {\n\t\t\tsize = rawSize.Int64()\n\t\t} else {\n\t\t\treturn truncateSizeOutOfRange(rawSize.String())\n\t\t}\n\tdefault:\n\t\treturn errs.BadValue{\n\t\t\tWhat:  \"size argument to file:truncate\",\n\t\t\tValid: \"integer\", Actual: \"non-integer\",\n\t\t}\n\t}\n\tif size < 0 {\n\t\treturn truncateSizeOutOfRange(strconv.FormatInt(size, 10))\n\t}\n\treturn os.Truncate(name, size)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "ce38fd1c8a2887cb9077c648",
+        "revision": "ff9341eb9132d2a4fad898302bb4f0710d9812cd",
+        "path": "pkg/eval/mods/math/math.go",
+        "start_byte": 407,
+        "text": "var fns = map[string]interface{}{\n\t\"abs\":           abs,\n\t\"acos\":          math.Acos,\n\t\"acosh\":         math.Acosh,\n\t\"asin\":          math.Asin,\n\t\"asinh\":         math.Asinh,\n\t\"atan\":          math.Atan,\n\t\"atanh\":         math.Atanh,\n\t\"ceil\":          math.Ceil, // TODO: Make exactness-preserving\n\t\"cos\":           math.Cos,\n\t\"cosh\":          math.Cosh,\n\t\"floor\":         math.Floor, // TODO: Make exactness-preserving\n\t\"is-inf\":        isInf,\n\t\"is-nan\":        isNaN,\n\t\"log\":           math.Log,\n\t\"log10\":         math.Log10,\n\t\"log2\":          math.Log2,\n\t\"max\":           max,\n\t\"min\":           min,\n\t\"pow\":           math.Pow,         // TODO: Make exactness-preserving for integer exponents\n\t\"pow10\":         math.Pow10,       // TODO: Make exactness-preserving for integer exponents\n\t\"round\":         math.Round,       // TODO: Make exactness-preserving\n\t\"round-to-even\": math.RoundToEven, // TODO: Make exactness-preserving\n\t\"sin\":           math.Sin,\n\t\"sinh\":          math.Sinh,\n\t\"sqrt\":          math.Sqrt,\n\t\"tan\":           math.Tan,\n\t\"tanh\":          math.Tanh,\n\t\"trunc\":         math.Trunc, // TODO: Make exactness-preserving\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "48d55e3e28d4c416dd0a6968",
+        "revision": "ff9341eb9132d2a4fad898302bb4f0710d9812cd",
+        "path": "pkg/eval/mods/path/path.go",
+        "start_byte": 287,
+        "text": "var fns = map[string]interface{}{\n\t\"abs\":           filepath.Abs,\n\t\"base\":          filepath.Base,\n\t\"clean\":         filepath.Clean,\n\t\"dir\":           filepath.Dir,\n\t\"ext\":           filepath.Ext,\n\t\"eval-symlinks\": filepath.EvalSymlinks,\n\t\"is-abs\":        filepath.IsAbs,\n\t\"is-dir\":        isDir,\n\t\"is-regular\":    isRegular,\n\t\"temp-dir\":      tempDir,\n\t\"temp-file\":     tempFile,\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "53a4f26b39d8254d90176b6f",
+        "revision": "ff9341eb9132d2a4fad898302bb4f0710d9812cd",
+        "path": "pkg/eval/mods/re/re.go",
+        "start_byte": 279,
+        "text": "var fns = map[string]interface{}{\n\t\"quote\":   regexp.QuoteMeta,\n\t\"match\":   match,\n\t\"find\":    find,\n\t\"replace\": replace,\n\t\"split\":   split,\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "a1d9012bafbd03126091aabd",
+        "revision": "ff9341eb9132d2a4fad898302bb4f0710d9812cd",
+        "path": "pkg/eval/mods/str/str.go",
+        "start_byte": 11584,
+        "text": "var fns = map[string]interface{}{\n\t\"compare\":      strings.Compare,\n\t\"contains\":     strings.Contains,\n\t\"contains-any\": strings.ContainsAny,\n\t\"count\":        strings.Count,\n\t\"equal-fold\":   strings.EqualFold,\n\t// TODO: Fields, FieldsFunc\n\t\"from-codepoints\": fromCodepoints,\n\t\"from-utf8-bytes\": fromUtf8Bytes,\n\t\"has-prefix\":      strings.HasPrefix,\n\t\"has-suffix\":      strings.HasSuffix,\n\t\"index\":           strings.Index,\n\t\"index-any\":       strings.IndexAny,\n\t// TODO: IndexFunc\n\t\"join\":       join,\n\t\"last-index\": strings.LastIndex,\n\t// TODO: LastIndexFunc, Map, Repeat\n\t\"replace\": replace,\n\t\"split\":   split,\n\t// TODO: SplitAfter\n\t\"title\":         strings.Title,\n\t\"to-codepoints\": toCodepoints,\n\t\"to-lower\":      strings.ToLower,\n\t\"to-title\":      strings.ToTitle,\n\t\"to-upper\":      strings.ToUpper,\n\t\"to-utf8-bytes\": toUtf8Bytes,\n\t// TODO: ToLowerSpecial, ToTitleSpecial, ToUpperSpecial\n\t\"trim\":       strings.Trim,\n\t\"trim-left\":  strings.TrimLeft,\n\t\"trim-right\": strings.TrimRight,\n\t// TODO: TrimLeft,Right}Func\n\t\"trim-space\":  strings.TrimSpace,\n\t\"trim-prefix\": strings.TrimPrefix,\n\t\"trim-suffix\": strings.TrimSuffix,\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "fe095882ff13d196cbf161b5",
+        "revision": "ff9341eb9132d2a4fad898302bb4f0710d9812cd",
+        "path": "pkg/eval/port.go",
+        "start_byte": 456,
+        "text": "func (p *Port) close() {\n\tif p == nil {\n\t\treturn\n\t}\n\tif p.closeFile {\n\t\tp.File.Close()\n\t}\n\tif p.closeChan {\n\t\tclose(p.Chan)\n\t}\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "6e4154f4ae8969084193b6d1",
+        "revision": "ff9341eb9132d2a4fad898302bb4f0710d9812cd",
+        "path": "pkg/prog/progtest/progtest.go",
+        "start_byte": 1861,
+        "text": "type pipe struct {\n\tr, w             *os.File\n\trClosed, wClosed bool\n\tsaved            string\n\toutput           chan []byte\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "91515730215e39a29dd1abe3",
+        "revision": "ff9341eb9132d2a4fad898302bb4f0710d9812cd",
+        "path": "pkg/prog/progtest/progtest.go",
+        "start_byte": 2521,
+        "text": "func (p *pipe) close() {\n\tif !p.wClosed {\n\t\tp.w.Close()\n\t\tp.wClosed = true\n\t\tif p.output != nil {\n\t\t\tp.saved = string(<-p.output)\n\t\t}\n\t}\n\tif !p.rClosed {\n\t\tp.r.Close()\n\t\tp.rClosed = true\n\t}\n\tif p.output != nil {\n\t\tclose(p.output)\n\t\tp.output = nil\n\t}\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "c02da7fcb4e54b69c9e74274",
+        "revision": "3ded2fb772a7039bf23c2b69dca2fa600b2e1f8b",
+        "path": "cmd/examples/e3bc/bc/bc.go",
+        "start_byte": 54,
+        "text": "type Bc interface {\n\tExec(string) error\n\tQuit()\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "9ad669cc80e44603e2a51559",
+        "revision": "3ded2fb772a7039bf23c2b69dca2fa600b2e1f8b",
+        "path": "cmd/examples/e3bc/bc/bc.go",
+        "start_byte": 519,
+        "text": "func (bc *bc) Exec(code string) error {\n\tbc.stdin.Write([]byte(code))\n\tbc.stdin.Write(inputSuffix)\n\tfor {\n\t\tb, err := readByte(bc.stdout)\n\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n\t\tif b == 0x04 {\n\t\t\tbreak\n\t\t}\n\t\tos.Stdout.Write([]byte{b})\n\t}\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "c68447c4c10b1ef29268c130",
+        "revision": "3ded2fb772a7039bf23c2b69dca2fa600b2e1f8b",
+        "path": "cmd/examples/e3bc/completion.go",
+        "start_byte": 48,
+        "text": "var items = []string{\n\t// Functions\n\t\"length(\", \"read(\", \"scale(\", \"sqrt(\",\n\t// Functions in math library\n\t\"s(\", \"c(\", \"a(\", \"l(\", \"e(\", \"j(\",\n\t// Statements\n\t\"print \", \"if \", \"while (\", \"for (\",\n\t\"break\", \"continue\", \"halt\", \"return\", \"return (\",\n\t// Pseudo statements\n\t\"limits\", \"quit\", \"warranty\",\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "5cf6ebb612b08614b8f57fff",
+        "revision": "3ded2fb772a7039bf23c2b69dca2fa600b2e1f8b",
+        "path": "cmd/examples/e3bc/main.go",
+        "start_byte": 517,
+        "text": "func (highlighter) Get(code string) (ui.Text, []error) {\n\tt := ui.Text{}\n\tfor _, r := range code {\n\t\tvar style ui.Styling\n\t\tif unicode.IsDigit(r) {\n\t\t\tstyle = ui.FgGreen\n\t\t}\n\t\tt = append(t, ui.T(string(r), style)...)\n\t}\n\treturn t, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "6f6f5e17b3fc091f11ee47f4",
+        "revision": "3ded2fb772a7039bf23c2b69dca2fa600b2e1f8b",
+        "path": "cmd/examples/widget/main.go",
+        "start_byte": 359,
+        "text": "func makeWidget() tk.Widget {\n\titems := tk.TestItems{Prefix: \"list item \"}\n\tw := tk.NewComboBox(tk.ComboBoxSpec{\n\t\tCodeArea: tk.CodeAreaSpec{\n\t\t\tPrompt: func() ui.Text {\n\t\t\t\treturn ui.Concat(ui.T(\" NUMBER \", ui.Bold, ui.BgMagenta), ui.T(\" \"))\n\t\t\t},\n\t\t},\n\t\tListBox: tk.ListBoxSpec{\n\t\t\tState:       tk.ListBoxState{Items: &items},\n\t\t\tPlaceholder: ui.T(\"(no items)\"),\n\t\t\tHorizontal:  *horizontal,\n\t\t},\n\t\tOnFilter: func(w tk.ComboBox, filter string) {\n\t\t\tif n, err := strconv.Atoi(filter); err == nil {\n\t\t\t\titems.NItems = n\n\t\t\t}\n\t\t},\n\t})\n\treturn w\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "44de6cb6244092ee029cad52",
+        "revision": "3ded2fb772a7039bf23c2b69dca2fa600b2e1f8b",
+        "path": "pkg/buildinfo/buildinfo.go",
+        "start_byte": 1008,
+        "text": "func (program) Run(fds [3]*os.File, f *prog.Flags, _ []string) error {\n\tfullVersion := Version + VersionSuffix\n\tif f.Version {\n\t\tfmt.Fprintln(fds[1], fullVersion)\n\t\treturn nil\n\t}\n\tif f.JSON {\n\t\tfmt.Fprintf(fds[1],\n\t\t\t`{\"version\":%s,\"goversion\":%s,\"reproducible\":%v}`+\"\\n\",\n\t\t\tquoteJSON(fullVersion), quoteJSON(runtime.Version()), Reproducible)\n\t} else {\n\t\tfmt.Fprintln(fds[1], \"Version:\", fullVersion)\n\t\tfmt.Fprintln(fds[1], \"Go version:\", runtime.Version())\n\t\tfmt.Fprintln(fds[1], \"Reproducible build:\", Reproducible)\n\t}\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "16a131edfbba087a99182cab",
+        "revision": "3ded2fb772a7039bf23c2b69dca2fa600b2e1f8b",
+        "path": "pkg/buildinfo/json.go",
+        "start_byte": 47,
+        "text": "func quoteJSON(s string) string {\n\tvar b bytes.Buffer\n\tb.WriteRune('\"')\n\tfor _, r := range s {\n\t\tif r == '\\\\' {\n\t\t\tb.WriteString(`\\\\`)\n\t\t} else if r == '\"' {\n\t\t\tb.WriteString(`\\\"`)\n\t\t} else if r < 0x20 {\n\t\t\tfmt.Fprintf(&b, `\\u%04x`, r)\n\t\t} else {\n\t\t\tb.WriteRune(r)\n\t\t}\n\t}\n\tb.WriteRune('\"')\n\treturn b.String()\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "f7779c4a520369e5c6e76801",
+        "revision": "3ded2fb772a7039bf23c2b69dca2fa600b2e1f8b",
+        "path": "pkg/cli/app_spec.go",
+        "start_byte": 140,
+        "text": "type AppSpec struct {\n\tTTY               TTY\n\tMaxHeight         func() int\n\tRPromptPersistent func() bool\n\tBeforeReadline    []func()\n\tAfterReadline     []func(string)\n\n\tHighlighter Highlighter\n\tPrompt      Prompt\n\tRPrompt     Prompt\n\n\tGlobalBindings   tk.Bindings\n\tCodeAreaBindings tk.Bindings\n\tAbbreviations    func(f func(abbr, full string))\n\tQuotePaste       func() bool\n\n\tSmallWordAbbreviations func(f func(abbr, full string))\n\n\tCodeAreaState tk.CodeAreaState\n\tState         State\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "5cc0a1d699570f83fe57503e",
+        "revision": "3ded2fb772a7039bf23c2b69dca2fa600b2e1f8b",
+        "path": "pkg/cli/app_spec.go",
+        "start_byte": 723,
+        "text": "type Highlighter interface {\n\t// Get returns the highlighted code and any static errors.\n\tGet(code string) (ui.Text, []error)\n\t// LateUpdates returns a channel for delivering late updates.\n\tLateUpdates() <-chan struct{}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "207a4933e6d72bb1b8c3f87c",
+        "revision": "3ded2fb772a7039bf23c2b69dca2fa600b2e1f8b",
+        "path": "pkg/cli/app_spec.go",
+        "start_byte": 1042,
+        "text": "func (dummyHighlighter) Get(code string) (ui.Text, []error) {\n\treturn ui.T(code), nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "bd6ad6b8da3130a9569231b1",
+        "revision": "3ded2fb772a7039bf23c2b69dca2fa600b2e1f8b",
+        "path": "pkg/cli/app.go",
+        "start_byte": 221,
+        "text": "type App interface {\n\t// ReadCode requests the App to read code from the terminal by running an\n\t// event loop. This function is not re-entrant.\n\tReadCode() (string, error)\n\n\t// MutateState mutates the state of the app.\n\tMutateState(f func(*State))\n\t// CopyState returns a copy of the a state.\n\tCopyState() State\n\t// CodeArea returns the codearea widget of the app.\n\tCodeArea() tk.CodeArea\n\t// SetAddon sets the current addon to the given widget. If there is an\n\t// existing addon, it is closed first. If the existing addon implements\n\t// interface{ Close(bool) }, the Close method is called with the accept\n\t// argument. To close the current addon without setting a new one, call\n\t// SetAddon(nil, accept).\n\tSetAddon(w tk.Widget, accept bool)\n\n\t// CommitEOF causes the main loop to exit with EOF. If this method is called\n\t// when an event is being handled, the main loop will exit after the handler\n\t// returns.\n\tCommitEOF()\n\t// CommitCode causes the main loop to exit with the current code content. If\n\t// this method is called when an event is being handled, the main loop will\n\t// exit after the handler returns.\n\tCommitCode()\n\n\t// Redraw requests a redraw. It never blocks and can be called regardless of\n\t// whether the App is active or not.\n\tRedraw()\n\t// RedrawFull requests a full redraw. It never blocks and can be called\n\t// regardless of whether the App is active or not.\n\tRedrawFull()\n\t// Notify adds a note and requests a redraw.\n\tNotify(note string)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "1517f4da35d641166102ca7f",
+        "revision": "3ded2fb772a7039bf23c2b69dca2fa600b2e1f8b",
+        "path": "pkg/cli/app.go",
+        "start_byte": 1689,
+        "text": "type app struct {\n\tloop    *loop\n\treqRead chan struct{}\n\n\tTTY               TTY\n\tMaxHeight         func() int\n\tRPromptPersistent func() bool\n\tBeforeReadline    []func()\n\tAfterReadline     []func(string)\n\tHighlighter       Highlighter\n\tPrompt            Prompt\n\tRPrompt           Prompt\n\tGlobalBindings    tk.Bindings\n\n\tStateMutex sync.RWMutex\n\tState      State\n\n\tcodeArea tk.CodeArea\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "1351f52ec57cbcac1f2979f1",
+        "revision": "3ded2fb772a7039bf23c2b69dca2fa600b2e1f8b",
+        "path": "pkg/cli/app.go",
+        "start_byte": 2121,
+        "text": "type State struct {\n\t// Notes that have been added since the last redraw.\n\tNotes []string\n\t// An addon widget. When non-nil, it is shown under the codearea widget and\n\t// terminal events are handled by it.\n\t//\n\t// The cursor is placed on the addon by default. If the addon widget\n\t// implements interface{ Focus() bool }, the Focus method is called to\n\t// determine that instead.\n\tAddon tk.Widget\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "e892c6e7eaa0726d664f4fdc",
+        "revision": "3ded2fb772a7039bf23c2b69dca2fa600b2e1f8b",
+        "path": "pkg/cli/app.go",
+        "start_byte": 5319,
+        "text": "func (a *app) redraw(flag redrawFlag) {\n\t// Get the dimensions available.\n\theight, width := a.TTY.Size()\n\tif maxHeight := a.MaxHeight(); maxHeight > 0 && maxHeight < height {\n\t\theight = maxHeight\n\t}\n\n\tvar notes []string\n\tvar addon tk.Renderer\n\ta.MutateState(func(s *State) {\n\t\tnotes, addon = s.Notes, s.Addon\n\t\ts.Notes = nil\n\t})\n\n\tbufNotes := renderNotes(notes, width)\n\tisFinalRedraw := flag&finalRedraw != 0\n\tif isFinalRedraw {\n\t\thideRPrompt := !a.RPromptPersistent()\n\t\tif hideRPrompt {\n\t\t\ta.codeArea.MutateState(func(s *tk.CodeAreaState) { s.HideRPrompt = true })\n\t\t}\n\t\tbufMain := renderApp(a.codeArea, nil /* addon */, width, height)\n\t\tif hideRPrompt {\n\t\t\ta.codeArea.MutateState(func(s *tk.CodeAreaState) { s.HideRPrompt = false })\n\t\t}\n\t\t// Insert a newline after the buffer and position the cursor there.\n\t\tbufMain.Extend(term.NewBuffer(width), true)\n\n\t\ta.TTY.UpdateBuffer(bufNotes, bufMain, flag&fullRedraw != 0)\n\t\ta.TTY.ResetBuffer()\n\t} else {\n\t\tbufMain := renderApp(a.codeArea, addon, width, height)\n\t\ta.TTY.UpdateBuffer(bufNotes, bufMain, flag&fullRedraw != 0)\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "32ebfdf570585aa4556c65c6",
+        "revision": "3ded2fb772a7039bf23c2b69dca2fa600b2e1f8b",
+        "path": "pkg/cli/app.go",
+        "start_byte": 5520,
+        "text": "var notes []string",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "a2608893f67dbe46ac5f0bf8",
+        "revision": "3ded2fb772a7039bf23c2b69dca2fa600b2e1f8b",
+        "path": "pkg/cli/app.go",
+        "start_byte": 6500,
+        "text": "func renderNotes(notes []string, width int) *term.Buffer {\n\tif len(notes) == 0 {\n\t\treturn nil\n\t}\n\tbb := term.NewBufferBuilder(width)\n\tfor i, note := range notes {\n\t\tif i > 0 {\n\t\t\tbb.Newline()\n\t\t}\n\t\tbb.Write(note)\n\t}\n\treturn bb.Buffer()\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "1cd375eebaa2c33b1489346f",
+        "revision": "3ded2fb772a7039bf23c2b69dca2fa600b2e1f8b",
+        "path": "pkg/cli/app.go",
+        "start_byte": 7216,
+        "text": "func (a *app) ReadCode() (string, error) {\n\tfor _, f := range a.BeforeReadline {\n\t\tf()\n\t}\n\tdefer func() {\n\t\tcontent := a.codeArea.CopyState().Buffer.Content\n\t\tfor _, f := range a.AfterReadline {\n\t\t\tf(content)\n\t\t}\n\t\ta.resetAllStates()\n\t}()\n\n\trestore, err := a.TTY.Setup()\n\tif err != nil {\n\t\treturn \"\", err\n\t}\n\tdefer restore()\n\n\tvar wg sync.WaitGroup\n\tdefer wg.Wait()\n\n\t// Relay input events.\n\ta.reqRead = make(chan struct{}, 1)\n\ta.reqRead <- struct{}{}\n\tdefer close(a.reqRead)\n\tdefer a.TTY.CloseReader()\n\twg.Add(1)\n\tgo func() {\n\t\tdefer wg.Done()\n\t\tfor range a.reqRead {\n\t\t\tevent, err := a.TTY.ReadEvent()\n\t\t\tif err == nil {\n\t\t\t\ta.loop.Input(event)\n\t\t\t} else if err == term.ErrStopped {\n\t\t\t\treturn\n\t\t\t} else if term.IsReadErrorRecoverable(err) {\n\t\t\t\ta.loop.Input(term.NonfatalErrorEvent{Err: err})\n\t\t\t} else {\n\t\t\t\ta.loop.Input(term.FatalErrorEvent{Err: err})\n\t\t\t\treturn\n\t\t\t}\n\t\t}\n\t}()\n\n\t// Relay signals.\n\tsigCh := a.TTY.NotifySignals()\n\tdefer a.TTY.StopSignals()\n\twg.Add(1)\n\tgo func() {\n\t\tfor sig := range sigCh {\n\t\t\ta.loop.Input(sig)\n\t\t}\n\t\twg.Done()\n\t}()\n\n\t// Relay late updates from prompt, rprompt and highlighter.\n\tstopRelayLateUpdates := make(chan struct{})\n\tdefer close(stopRelayLateUpdates)\n\trelayLateUpdates := func(ch <-chan struct{}) {\n\t\tif ch == nil {\n\t\t\treturn\n\t\t}\n\t\twg.Add(1)\n\t\tgo func() {\n\t\t\tdefer wg.Done()\n\t\t\tfor {\n\t\t\t\tselect {\n\t\t\t\tcase <-ch:\n\t\t\t\t\ta.Redraw()\n\t\t\t\tcase <-stopRelayLateUpdates:\n\t\t\t\t\treturn\n\t\t\t\t}\n\t\t\t}\n\t\t}()\n\t}\n\n\trelayLateUpdates(a.Prompt.LateUpdates())\n\trelayLateUpdates(a.RPrompt.LateUpdates())\n\trelayLateUpdates(a.Highlighter.LateUpdates())\n\n\t// Trigger an initial prompt update.\n\ta.triggerPrompts(true)\n\n\treturn a.loop.Run()\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "0b1b6c5600df97a263851e02",
+        "revision": "3ded2fb772a7039bf23c2b69dca2fa600b2e1f8b",
+        "path": "pkg/cli/app.go",
+        "start_byte": 9141,
+        "text": "func (a *app) Notify(note string) {\n\ta.MutateState(func(s *State) { s.Notes = append(s.Notes, note) })\n\ta.Redraw()\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "8a8f03019095cb6270da318b",
+        "revision": "3ded2fb772a7039bf23c2b69dca2fa600b2e1f8b",
+        "path": "pkg/cli/clitest/apptest.go",
+        "start_byte": 707,
+        "text": "type Fixture struct {\n\tApp    cli.App\n\tTTY    TTYCtrl\n\twidth  int\n\tcodeCh <-chan string\n\terrCh  <-chan error\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "67be905978077b3716a5e594",
+        "revision": "3ded2fb772a7039bf23c2b69dca2fa600b2e1f8b",
+        "path": "pkg/cli/clitest/apptest.go",
+        "start_byte": 929,
+        "text": "func Setup(fns ...func(*cli.AppSpec, TTYCtrl)) *Fixture {\n\ttty, ttyCtrl := NewFakeTTY()\n\tspec := cli.AppSpec{TTY: tty}\n\tfor _, fn := range fns {\n\t\tfn(&spec, ttyCtrl)\n\t}\n\tapp := cli.NewApp(spec)\n\tcodeCh, errCh := StartReadCode(app.ReadCode)\n\t_, width := tty.Size()\n\treturn &Fixture{app, ttyCtrl, width, codeCh, errCh}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "970d617baccc1b3e7c9622ab",
+        "revision": "3ded2fb772a7039bf23c2b69dca2fa600b2e1f8b",
+        "path": "pkg/cli/clitest/apptest.go",
+        "start_byte": 1787,
+        "text": "func (f *Fixture) Wait() (string, error) {\n\treturn <-f.codeCh, <-f.errCh\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "8b0d845f8bb39543300c56ca",
+        "revision": "3ded2fb772a7039bf23c2b69dca2fa600b2e1f8b",
+        "path": "pkg/cli/clitest/apptest.go",
+        "start_byte": 2963,
+        "text": "func StartReadCode(readCode func() (string, error)) (<-chan string, <-chan error) {\n\tcodeCh := make(chan string, 1)\n\terrCh := make(chan error, 1)\n\tgo func() {\n\t\tcode, err := readCode()\n\t\tcodeCh <- code\n\t\terrCh <- err\n\t\tclose(codeCh)\n\t\tclose(errCh)\n\t}()\n\treturn codeCh, errCh\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "4d79b769e9ed526cfb5c5ff2",
+        "revision": "3ded2fb772a7039bf23c2b69dca2fa600b2e1f8b",
+        "path": "pkg/cli/clitest/fake_tty.go",
+        "start_byte": 2552,
+        "text": "func (t *fakeTTY) CloseReader() {\n\tt.eventChMutex.Lock()\n\tdefer t.eventChMutex.Unlock()\n\tclose(t.eventCh)\n\tt.eventChClosed = true\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "0545b00e8175569194d85c2f",
+        "revision": "3ded2fb772a7039bf23c2b69dca2fa600b2e1f8b",
+        "path": "pkg/cli/clitest/fake_tty.go",
+        "start_byte": 3490,
+        "text": "func (t *fakeTTY) StopSignals() { close(t.sigCh) }",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "28b46bab3ecf83ca148ff9dc",
+        "revision": "3ded2fb772a7039bf23c2b69dca2fa600b2e1f8b",
+        "path": "pkg/cli/histutil/db_store.go",
+        "start_byte": 520,
+        "text": "func (s dbStore) Cursor(prefix string) Cursor {\n\treturn &dbStoreCursor{\n\t\ts.db, prefix, s.upper, store.Cmd{Seq: s.upper}, ErrEndOfHistory}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "cfdeaacaadd98fa997bfd0a9",
+        "revision": "3ded2fb772a7039bf23c2b69dca2fa600b2e1f8b",
+        "path": "pkg/cli/histutil/db_store.go",
+        "start_byte": 662,
+        "text": "type dbStoreCursor struct {\n\tdb     DB\n\tprefix string\n\tupper  int\n\tcmd    store.Cmd\n\terr    error\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "665030c44ea17f392c91112f",
+        "revision": "3ded2fb772a7039bf23c2b69dca2fa600b2e1f8b",
+        "path": "pkg/cli/histutil/db.go",
+        "start_byte": 114,
+        "text": "type DB interface {\n\tNextCmdSeq() (int, error)\n\tAddCmd(cmd string) (int, error)\n\tCmdsWithSeq(from, upto int) ([]store.Cmd, error)\n\tPrevCmd(upto int, prefix string) (store.Cmd, error)\n\tNextCmd(from int, prefix string) (store.Cmd, error)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "d3cc78d41e9ae7b89abb8ee1",
+        "revision": "3ded2fb772a7039bf23c2b69dca2fa600b2e1f8b",
+        "path": "pkg/cli/histutil/db.go",
+        "start_byte": 709,
+        "text": "func NewFaultyInMemoryDB(cmds ...string) FaultyInMemoryDB {\n\treturn &testDB{cmds: cmds}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "44dc8a86f8bd1a742868f48a",
+        "revision": "3ded2fb772a7039bf23c2b69dca2fa600b2e1f8b",
+        "path": "pkg/cli/histutil/db.go",
+        "start_byte": 839,
+        "text": "type testDB struct {\n\tcmds        []string\n\toneOffError error\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "c99261410193881c24e7e309",
+        "revision": "3ded2fb772a7039bf23c2b69dca2fa600b2e1f8b",
+        "path": "pkg/cli/histutil/db.go",
+        "start_byte": 1143,
+        "text": "func (s *testDB) AddCmd(cmd string) (int, error) {\n\tif s.oneOffError != nil {\n\t\treturn -1, s.error()\n\t}\n\ts.cmds = append(s.cmds, cmd)\n\treturn len(s.cmds) - 1, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "6a65b093f474bfd95107f030",
+        "revision": "3ded2fb772a7039bf23c2b69dca2fa600b2e1f8b",
+        "path": "pkg/cli/histutil/db.go",
+        "start_byte": 1659,
+        "text": "func (s *testDB) PrevCmd(upto int, prefix string) (store.Cmd, error) {\n\tif s.oneOffError != nil {\n\t\treturn store.Cmd{}, s.error()\n\t}\n\tif upto < 0 || upto > len(s.cmds) {\n\t\tupto = len(s.cmds)\n\t}\n\tfor i := upto - 1; i >= 0; i-- {\n\t\tif strings.HasPrefix(s.cmds[i], prefix) {\n\t\t\treturn store.Cmd{Text: s.cmds[i], Seq: i}, nil\n\t\t}\n\t}\n\treturn store.Cmd{}, store.ErrNoMatchingCmd\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "144cf0fc73a2ab708b10e5c4",
+        "revision": "3ded2fb772a7039bf23c2b69dca2fa600b2e1f8b",
+        "path": "pkg/cli/histutil/db.go",
+        "start_byte": 2035,
+        "text": "func (s *testDB) NextCmd(from int, prefix string) (store.Cmd, error) {\n\tif s.oneOffError != nil {\n\t\treturn store.Cmd{}, s.error()\n\t}\n\tif from < 0 {\n\t\tfrom = 0\n\t}\n\tfor i := from; i < len(s.cmds); i++ {\n\t\tif strings.HasPrefix(s.cmds[i], prefix) {\n\t\t\treturn store.Cmd{Text: s.cmds[i], Seq: i}, nil\n\t\t}\n\t}\n\treturn store.Cmd{}, store.ErrNoMatchingCmd\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "24e6bccb6ebeb0a7763f268c",
+        "revision": "3ded2fb772a7039bf23c2b69dca2fa600b2e1f8b",
+        "path": "pkg/cli/histutil/dedup_cursor.go",
+        "start_byte": 123,
+        "text": "func NewDedupCursor(c Cursor) Cursor {\n\treturn &dedupCursor{c, 0, nil, make(map[string]bool)}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "5dcc3c08c74393ea97554e63",
+        "revision": "3ded2fb772a7039bf23c2b69dca2fa600b2e1f8b",
+        "path": "pkg/cli/histutil/dedup_cursor.go",
+        "start_byte": 220,
+        "text": "type dedupCursor struct {\n\tc       Cursor\n\tcurrent int\n\tstack   []store.Cmd\n\tocc     map[string]bool\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "ffd4c7a0c71f1548b8ce1ac3",
+        "revision": "3ded2fb772a7039bf23c2b69dca2fa600b2e1f8b",
+        "path": "pkg/cli/histutil/hybrid_store.go",
+        "start_byte": 883,
+        "text": "func (s hybridStore) Cursor(prefix string) Cursor {\n\treturn &hybridStoreCursor{\n\t\ts.shared.Cursor(prefix), s.session.Cursor(prefix), false}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "fedbb6949fbbf596075959ea",
+        "revision": "3ded2fb772a7039bf23c2b69dca2fa600b2e1f8b",
+        "path": "pkg/cli/histutil/mem_store.go",
+        "start_byte": 136,
+        "text": "func NewMemStore(texts ...string) Store {\n\tcmds := make([]store.Cmd, len(texts))\n\tfor i, text := range texts {\n\t\tcmds[i] = store.Cmd{Text: text, Seq: i}\n\t}\n\treturn &memStore{cmds}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "44b8b086ed57e1f38ff8fc88",
+        "revision": "3ded2fb772a7039bf23c2b69dca2fa600b2e1f8b",
+        "path": "pkg/cli/histutil/mem_store.go",
+        "start_byte": 595,
+        "text": "func (s *memStore) Cursor(prefix string) Cursor {\n\treturn &memStoreCursor{s.cmds, prefix, len(s.cmds)}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "66138c2c3dc6939d25de21a0",
+        "revision": "3ded2fb772a7039bf23c2b69dca2fa600b2e1f8b",
+        "path": "pkg/cli/histutil/mem_store.go",
+        "start_byte": 701,
+        "text": "type memStoreCursor struct {\n\tcmds   []store.Cmd\n\tprefix string\n\tindex  int\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "e27f4b0b946cc765afcb481a",
+        "revision": "3ded2fb772a7039bf23c2b69dca2fa600b2e1f8b",
+        "path": "pkg/cli/histutil/store.go",
+        "start_byte": 118,
+        "text": "type Store interface {\n\t// AddCmd adds a new command history entry and returns its sequence number.\n\t// Depending on the implementation, the Store might respect cmd.Seq and\n\t// return it as is, or allocate another sequence number.\n\tAddCmd(cmd store.Cmd) (int, error)\n\t// AllCmds returns all commands kept in the store.\n\tAllCmds() ([]store.Cmd, error)\n\t// Cursor returns a cursor that iterating through commands with the given\n\t// prefix. The cursor is initially placed just after the last command in the\n\t// store.\n\tCursor(prefix string) Cursor\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "0966959f477e8f3507f31166",
+        "revision": "3ded2fb772a7039bf23c2b69dca2fa600b2e1f8b",
+        "path": "pkg/cli/loop.go",
+        "start_byte": 351,
+        "text": "type loopReturn struct {\n\tbuffer string\n\terr    error\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "89cba9c4ce37e19d3c97fb5f",
+        "revision": "3ded2fb772a7039bf23c2b69dca2fa600b2e1f8b",
+        "path": "pkg/cli/loop.go",
+        "start_byte": 2196,
+        "text": "func (lp *loop) Return(buffer string, err error) {\n\tselect {\n\tcase lp.returnCh <- loopReturn{buffer, err}:\n\tdefault:\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "ae7b3b17042fe24856368153",
+        "revision": "3ded2fb772a7039bf23c2b69dca2fa600b2e1f8b",
+        "path": "pkg/cli/loop.go",
+        "start_byte": 2780,
+        "text": "func (lp *loop) Run() (buffer string, err error) {\n\tfor {\n\t\tvar flag redrawFlag\n\t\tif lp.extractRedrawFull() {\n\t\t\tflag |= fullRedraw\n\t\t}\n\t\tlp.redrawCb(flag)\n\t\tselect {\n\t\tcase event := <-lp.inputCh:\n\t\t\t// Consume all events in the channel to minimize redraws.\n\t\tconsumeAllEvents:\n\t\t\tfor {\n\t\t\t\tlp.handleCb(event)\n\t\t\t\tselect {\n\t\t\t\tcase ret := <-lp.returnCh:\n\t\t\t\t\tlp.redrawCb(finalRedraw)\n\t\t\t\t\treturn ret.buffer, ret.err\n\t\t\t\tdefault:\n\t\t\t\t}\n\t\t\t\tselect {\n\t\t\t\tcase event = <-lp.inputCh:\n\t\t\t\t\t// Continue the loop of consuming all events.\n\t\t\t\tdefault:\n\t\t\t\t\tbreak consumeAllEvents\n\t\t\t\t}\n\t\t\t}\n\t\tcase ret := <-lp.returnCh:\n\t\t\tlp.redrawCb(finalRedraw)\n\t\t\treturn ret.buffer, ret.err\n\t\tcase <-lp.redrawCh:\n\t\t}\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "d3f331c166f6456d4f7a0604",
+        "revision": "3ded2fb772a7039bf23c2b69dca2fa600b2e1f8b",
+        "path": "pkg/cli/lscolors/feature.go",
+        "start_byte": 683,
+        "text": "func determineFeature(fname string, mh bool) (feature, error) {\n\tstat, err := os.Lstat(fname)\n\n\tif err != nil {\n\t\treturn featureInvalid, err\n\t}\n\n\tm := stat.Mode()\n\n\t// Symlink and OrphanedSymlink has highest precedence\n\tif is(m, os.ModeSymlink) {\n\t\t_, err := os.Stat(fname)\n\t\tif err != nil {\n\t\t\treturn featureOrphanedSymlink, nil\n\t\t}\n\t\treturn featureSymlink, nil\n\t}\n\n\t// featureMultiHardLink\n\tif mh && isMultiHardlink(stat) {\n\t\treturn featureMultiHardLink, nil\n\t}\n\n\t// type bits features\n\tswitch {\n\tcase is(m, os.ModeNamedPipe):\n\t\treturn featureNamedPipe, nil\n\tcase is(m, os.ModeSocket): // Never on Windows\n\t\treturn featureSocket, nil\n\tcase isDoor(stat):\n\t\treturn featureDoor, nil\n\tcase is(m, os.ModeCharDevice):\n\t\treturn featureCharDevice, nil\n\tcase is(m, os.ModeDevice):\n\t\t// There is no dedicated os.Mode* flag for block device. On all\n\t\t// supported Unix platforms, when os.ModeDevice is set but\n\t\t// os.ModeCharDevice is not, the file is a block device (i.e.\n\t\t// syscall.S_IFBLK is set). On Windows, this branch is unreachable.\n\t\t//\n\t\t// On Plan9, this in inaccurate.\n\t\treturn featureBlockDevice, nil\n\tcase is(m, os.ModeDir):\n\t\t// Perm bits features for directory\n\t\tperm := m.Perm()\n\t\tswitch {\n\t\tcase is(m, os.ModeSticky) && is(perm, worldWritable):\n\t\t\treturn featureWorldWritableStickyDirectory, nil\n\t\tcase is(perm, worldWritable):\n\t\t\treturn featureWorldWritableDirectory, nil\n\t\tcase is(m, os.ModeSticky):\n\t\t\treturn featureStickyDirectory, nil\n\t\tdefault:\n\t\t\treturn featureDirectory, nil\n\t\t}\n\t}\n\n\t// TODO(xiaq): Support featureCapacity\n\n\t// Perm bits features for regular files\n\tswitch {\n\tcase is(m, os.ModeSetuid):\n\t\treturn featureSetuid, nil\n\tcase is(m, os.ModeSetgid):\n\t\treturn featureSetgid, nil\n\tcase m&executable != 0:\n\t\treturn featureExecutable, nil\n\t}\n\n\t// Check extension\n\treturn featureRegular, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "ebf65cb4b8bba29693e2c906",
+        "revision": "3ded2fb772a7039bf23c2b69dca2fa600b2e1f8b",
+        "path": "pkg/cli/lscolors/lscolors.go",
+        "start_byte": 404,
+        "text": "type Colorist interface {\n\t// GetStyle returns the style for the named file.\n\tGetStyle(fname string) string\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "c0af6aa308a4dbc5c8841e4f",
+        "revision": "3ded2fb772a7039bf23c2b69dca2fa600b2e1f8b",
+        "path": "pkg/cli/lscolors/lscolors.go",
+        "start_byte": 515,
+        "text": "type colorist struct {\n\tstyleForFeature map[feature]string\n\tstyleForExt     map[string]string\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "f45223637a106ebe2baf4558",
+        "revision": "3ded2fb772a7039bf23c2b69dca2fa600b2e1f8b",
+        "path": "pkg/cli/lscolors/lscolors.go",
+        "start_byte": 2007,
+        "text": "var (\n\tlastColorist      *colorist\n\tlastColoristMutex sync.Mutex\n\tlastLsColors      string\n)",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "a0b3ddae69de63471b2ec035",
+        "revision": "3ded2fb772a7039bf23c2b69dca2fa600b2e1f8b",
+        "path": "pkg/cli/lscolors/lscolors.go",
+        "start_byte": 2383,
+        "text": "func getLsColors() string {\n\tlsColorString := os.Getenv(env.LS_COLORS)\n\tif len(lsColorString) == 0 {\n\t\treturn defaultLsColorString\n\t}\n\treturn lsColorString\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "639a4dfb375ce21c1e483c2d",
+        "revision": "3ded2fb772a7039bf23c2b69dca2fa600b2e1f8b",
+        "path": "pkg/cli/lscolors/lscolors.go",
+        "start_byte": 2542,
+        "text": "var featureForName = map[string]feature{\n\t\"rs\": featureRegular,\n\t\"di\": featureDirectory,\n\t\"ln\": featureSymlink,\n\t\"mh\": featureMultiHardLink,\n\t\"pi\": featureNamedPipe,\n\t\"so\": featureSocket,\n\t\"do\": featureDoor,\n\t\"bd\": featureBlockDevice,\n\t\"cd\": featureCharDevice,\n\t\"or\": featureOrphanedSymlink,\n\t\"su\": featureSetuid,\n\t\"sg\": featureSetgid,\n\t\"ca\": featureCapability,\n\t\"tw\": featureWorldWritableStickyDirectory,\n\t\"ow\": featureWorldWritableDirectory,\n\t\"st\": featureStickyDirectory,\n\t\"ex\": featureExecutable,\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "616144b7c94f476a99d6d1d3",
+        "revision": "3ded2fb772a7039bf23c2b69dca2fa600b2e1f8b",
+        "path": "pkg/cli/lscolors/lscolors.go",
+        "start_byte": 3158,
+        "text": "func parseLsColor(s string) *colorist {\n\tlc := &colorist{make(map[feature]string), make(map[string]string)}\n\tfor _, spec := range strings.Split(s, \":\") {\n\t\twords := strings.Split(spec, \"=\")\n\t\tif len(words) != 2 {\n\t\t\tcontinue\n\t\t}\n\t\tkey, value := words[0], words[1]\n\t\tfilterValues := []string{}\n\t\tfor _, splitValue := range strings.Split(value, \";\") {\n\t\t\tif strings.Count(splitValue, \"0\") == len(splitValue) {\n\t\t\t\tcontinue\n\t\t\t}\n\t\t\tfilterValues = append(filterValues, splitValue)\n\t\t}\n\t\tif len(filterValues) == 0 {\n\t\t\tcontinue\n\t\t}\n\t\tvalue = strings.Join(filterValues, \";\")\n\t\tif strings.HasPrefix(key, \"*.\") {\n\t\t\tlc.styleForExt[key[1:]] = value\n\t\t} else {\n\t\t\tfeature, ok := featureForName[key]\n\t\t\tif !ok {\n\t\t\t\tcontinue\n\t\t\t}\n\t\t\tlc.styleForFeature[feature] = value\n\t\t}\n\t}\n\treturn lc\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "f3f2b387f7cf1ab2670c8018",
+        "revision": "3ded2fb772a7039bf23c2b69dca2fa600b2e1f8b",
+        "path": "pkg/cli/lscolors/lscolors.go",
+        "start_byte": 3937,
+        "text": "func (lc *colorist) GetStyle(fname string) string {\n\tmh := strings.Trim(lc.styleForFeature[featureMultiHardLink], \"0\") != \"\"\n\t// TODO Handle error from determineFeature\n\tfeature, _ := determineFeature(fname, mh)\n\tif feature == featureRegular {\n\t\tif ext := path.Ext(fname); ext != \"\" {\n\t\t\tif style, ok := lc.styleForExt[ext]; ok {\n\t\t\t\treturn style\n\t\t\t}\n\t\t}\n\t}\n\treturn lc.styleForFeature[feature]\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "00de998dcac4eaf34050fe94",
+        "revision": "3ded2fb772a7039bf23c2b69dca2fa600b2e1f8b",
+        "path": "pkg/cli/mode/completion.go",
+        "start_byte": 367,
+        "text": "type CompletionSpec struct {\n\tBindings tk.Bindings\n\tName     string\n\tReplace  diag.Ranging\n\tItems    []CompletionItem\n\tFilter   FilterSpec\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "5a097b6c60414a428615879a",
+        "revision": "3ded2fb772a7039bf23c2b69dca2fa600b2e1f8b",
+        "path": "pkg/cli/mode/completion.go",
+        "start_byte": 584,
+        "text": "type CompletionItem struct {\n\t// Used in the UI and for filtering.\n\tToShow string\n\t// Style to use in the UI.\n\tShowStyle ui.Style\n\t// Used when inserting a candidate.\n\tToInsert string\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "00f1a5b43eb8d971c8ddf695",
+        "revision": "3ded2fb772a7039bf23c2b69dca2fa600b2e1f8b",
+        "path": "pkg/cli/mode/completion.go",
+        "start_byte": 928,
+        "text": "func NewCompletion(app cli.App, cfg CompletionSpec) (Completion, error) {\n\tif len(cfg.Items) == 0 {\n\t\treturn nil, errNoCandidates\n\t}\n\tw := tk.NewComboBox(tk.ComboBoxSpec{\n\t\tCodeArea: tk.CodeAreaSpec{\n\t\t\tPrompt:      modePrompt(\" COMPLETING \"+cfg.Name+\" \", true),\n\t\t\tHighlighter: cfg.Filter.Highlighter,\n\t\t},\n\t\tListBox: tk.ListBoxSpec{\n\t\t\tHorizontal: true,\n\t\t\tBindings:   cfg.Bindings,\n\t\t\tOnSelect: func(it tk.Items, i int) {\n\t\t\t\ttext := it.(completionItems)[i].ToInsert\n\t\t\t\tapp.CodeArea().MutateState(func(s *tk.CodeAreaState) {\n\t\t\t\t\ts.Pending = tk.PendingCode{\n\t\t\t\t\t\tFrom: cfg.Replace.From, To: cfg.Replace.To, Content: text}\n\t\t\t\t})\n\t\t\t},\n\t\t\tOnAccept: func(it tk.Items, i int) {\n\t\t\t\tapp.SetAddon(nil, true)\n\t\t\t},\n\t\t\tExtendStyle: true,\n\t\t},\n\t\tOnFilter: func(w tk.ComboBox, p string) {\n\t\t\tw.ListBox().Reset(filterCompletionItems(cfg.Items, cfg.Filter.makePredicate(p)), 0)\n\t\t},\n\t})\n\treturn completion{w, app.CodeArea()}, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "b7a54d79c3c7f5bb1032d89e",
+        "revision": "3ded2fb772a7039bf23c2b69dca2fa600b2e1f8b",
+        "path": "pkg/cli/mode/completion.go",
+        "start_byte": 2075,
+        "text": "func filterCompletionItems(all []CompletionItem, p func(string) bool) completionItems {\n\tvar filtered []CompletionItem\n\tfor _, candidate := range all {\n\t\tif p(candidate.ToShow) {\n\t\t\tfiltered = append(filtered, candidate)\n\t\t}\n\t}\n\treturn filtered\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "df0f4fc93db8935b86c224d9",
+        "revision": "3ded2fb772a7039bf23c2b69dca2fa600b2e1f8b",
+        "path": "pkg/cli/mode/filter_spec.go",
+        "start_byte": 134,
+        "text": "type FilterSpec struct {\n\t// Called with the filter text to get the filter predicate. If nil, the\n\t// predicate performs substring match.\n\tMaker func(string) func(string) bool\n\t// Highlighter for the filter. If nil, the filter will not be higlighted.\n\tHighlighter func(string) (ui.Text, []error)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "5f403d726fb80b8522f385a6",
+        "revision": "3ded2fb772a7039bf23c2b69dca2fa600b2e1f8b",
+        "path": "pkg/cli/mode/filter_spec.go",
+        "start_byte": 433,
+        "text": "func (f FilterSpec) makePredicate(p string) func(string) bool {\n\tif f.Maker == nil {\n\t\treturn func(s string) bool { return strings.Contains(s, p) }\n\t}\n\treturn f.Maker(p)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "bb7aef8f4023a75d9d62a4fe",
+        "revision": "3ded2fb772a7039bf23c2b69dca2fa600b2e1f8b",
+        "path": "pkg/cli/mode/histlist.go",
+        "start_byte": 723,
+        "text": "func NewHistlist(app cli.App, spec HistlistSpec) (Histlist, error) {\n\tif spec.AllCmds == nil {\n\t\treturn nil, errNoHistoryStore\n\t}\n\tif spec.Dedup == nil {\n\t\tspec.Dedup = func() bool { return true }\n\t}\n\n\tcmds, err := spec.AllCmds()\n\tif err != nil {\n\t\treturn nil, fmt.Errorf(\"db error: %v\", err.Error())\n\t}\n\tlast := map[string]int{}\n\tfor i, cmd := range cmds {\n\t\tlast[cmd.Text] = i\n\t}\n\tcmdItems := histlistItems{cmds, last}\n\n\tw := tk.NewComboBox(tk.ComboBoxSpec{\n\t\tCodeArea: tk.CodeAreaSpec{\n\t\t\tPrompt: func() ui.Text {\n\t\t\t\tcontent := \" HISTORY \"\n\t\t\t\tif spec.Dedup() {\n\t\t\t\t\tcontent += \"(dedup on) \"\n\t\t\t\t}\n\t\t\t\treturn modeLine(content, true)\n\t\t\t},\n\t\t\tHighlighter: spec.Filter.Highlighter,\n\t\t},\n\t\tListBox: tk.ListBoxSpec{\n\t\t\tBindings: spec.Bindings,\n\t\t\tOnAccept: func(it tk.Items, i int) {\n\t\t\t\ttext := it.(histlistItems).entries[i].Text\n\t\t\t\tapp.CodeArea().MutateState(func(s *tk.CodeAreaState) {\n\t\t\t\t\tbuf := &s.Buffer\n\t\t\t\t\tif buf.Content == \"\" {\n\t\t\t\t\t\tbuf.InsertAtDot(text)\n\t\t\t\t\t} else {\n\t\t\t\t\t\tbuf.InsertAtDot(\"\\n\" + text)\n\t\t\t\t\t}\n\t\t\t\t})\n\t\t\t\tapp.SetAddon(nil, false)\n\t\t\t},\n\t\t},\n\t\tOnFilter: func(w tk.ComboBox, p string) {\n\t\t\tit := cmdItems.filter(spec.Filter.makePredicate(p), spec.Dedup())\n\t\t\tw.ListBox().Reset(it, it.Len()-1)\n\t\t},\n\t})\n\treturn w, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "5ac11b39d234930da9f90ff1",
+        "revision": "3ded2fb772a7039bf23c2b69dca2fa600b2e1f8b",
+        "path": "pkg/cli/mode/histlist.go",
+        "start_byte": 1971,
+        "text": "type histlistItems struct {\n\tentries []store.Cmd\n\tlast    map[string]int\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "8e23dd0ba1f15df21bca8733",
+        "revision": "3ded2fb772a7039bf23c2b69dca2fa600b2e1f8b",
+        "path": "pkg/cli/mode/histlist.go",
+        "start_byte": 2047,
+        "text": "func (it histlistItems) filter(p func(string) bool, dedup bool) histlistItems {\n\tvar filtered []store.Cmd\n\tfor i, entry := range it.entries {\n\t\ttext := entry.Text\n\t\tif dedup && it.last[text] != i {\n\t\t\tcontinue\n\t\t}\n\t\tif p(text) {\n\t\t\tfiltered = append(filtered, entry)\n\t\t}\n\t}\n\treturn histlistItems{filtered, nil}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "6ed6c1413c9d641d13db3329",
+        "revision": "3ded2fb772a7039bf23c2b69dca2fa600b2e1f8b",
+        "path": "pkg/cli/mode/histwalk.go",
+        "start_byte": 417,
+        "text": "type HistwalkSpec struct {\n\t// Key bindings.\n\tBindings tk.Bindings\n\t// History store to walk.\n\tStore histutil.Store\n\t// Only walk through items with this prefix.\n\tPrefix string\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "5525c9d9572474dd31e43360",
+        "revision": "3ded2fb772a7039bf23c2b69dca2fa600b2e1f8b",
+        "path": "pkg/cli/mode/instant.go",
+        "start_byte": 321,
+        "text": "type InstantSpec struct {\n\t// Key bindings.\n\tBindings tk.Bindings\n\t// The function to execute code and returns the output.\n\tExecute func(code string) ([]string, error)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "81245f042db507dffe048094",
+        "revision": "3ded2fb772a7039bf23c2b69dca2fa600b2e1f8b",
+        "path": "pkg/cli/mode/instant.go",
+        "start_byte": 492,
+        "text": "type instant struct {\n\tInstantSpec\n\tapp      cli.App\n\ttextView tk.TextView\n\tlastCode string\n\tlastErr  error\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "74395c6748275d4a129ad863",
+        "revision": "3ded2fb772a7039bf23c2b69dca2fa600b2e1f8b",
+        "path": "pkg/cli/mode/lastcmd.go",
+        "start_byte": 387,
+        "text": "type LastcmdSpec struct {\n\t// Key bindings.\n\tBindings tk.Bindings\n\t// Store provides the source for the last command.\n\tStore LastcmdStore\n\t// Wordifier breaks a command into words.\n\tWordifier func(string) []string\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "e6eca0a3b71ec3c837123bd4",
+        "revision": "3ded2fb772a7039bf23c2b69dca2fa600b2e1f8b",
+        "path": "pkg/cli/mode/lastcmd.go",
+        "start_byte": 672,
+        "text": "type LastcmdStore interface {\n\tCursor(prefix string) histutil.Cursor\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "6e7ed4bf7317fdb53770e306",
+        "revision": "3ded2fb772a7039bf23c2b69dca2fa600b2e1f8b",
+        "path": "pkg/cli/mode/lastcmd.go",
+        "start_byte": 829,
+        "text": "func NewLastcmd(app cli.App, cfg LastcmdSpec) (Lastcmd, error) {\n\tif cfg.Store == nil {\n\t\treturn nil, errNoHistoryStore\n\t}\n\tc := cfg.Store.Cursor(\"\")\n\tc.Prev()\n\tcmd, err := c.Get()\n\tif err != nil {\n\t\treturn nil, fmt.Errorf(\"db error: %v\", err)\n\t}\n\twordifier := cfg.Wordifier\n\tif wordifier == nil {\n\t\twordifier = strings.Fields\n\t}\n\tcmdText := cmd.Text\n\twords := wordifier(cmdText)\n\tentries := make([]lastcmdEntry, len(words)+1)\n\tentries[0] = lastcmdEntry{content: cmdText}\n\tfor i, word := range words {\n\t\tentries[i+1] = lastcmdEntry{strconv.Itoa(i), strconv.Itoa(i - len(words)), word}\n\t}\n\n\taccept := func(text string) {\n\t\tapp.CodeArea().MutateState(func(s *tk.CodeAreaState) {\n\t\t\ts.Buffer.InsertAtDot(text)\n\t\t})\n\t\tapp.SetAddon(nil, false)\n\t}\n\tw := tk.NewComboBox(tk.ComboBoxSpec{\n\t\tCodeArea: tk.CodeAreaSpec{Prompt: modePrompt(\" LASTCMD \", true)},\n\t\tListBox: tk.ListBoxSpec{\n\t\t\tBindings: cfg.Bindings,\n\t\t\tOnAccept: func(it tk.Items, i int) {\n\t\t\t\taccept(it.(lastcmdItems).entries[i].content)\n\t\t\t},\n\t\t},\n\t\tOnFilter: func(w tk.ComboBox, p string) {\n\t\t\titems := filterLastcmdItems(entries, p)\n\t\t\tif len(items.entries) == 1 {\n\t\t\t\taccept(items.entries[0].content)\n\t\t\t} else {\n\t\t\t\tw.ListBox().Reset(items, 0)\n\t\t\t}\n\t\t},\n\t})\n\treturn w, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "a4d0e599b4db6ac8c1408f10",
+        "revision": "3ded2fb772a7039bf23c2b69dca2fa600b2e1f8b",
+        "path": "pkg/cli/mode/lastcmd.go",
+        "start_byte": 2135,
+        "text": "type lastcmdEntry struct {\n\tposIndex string\n\tnegIndex string\n\tcontent  string\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "c64bb79ab165235f4829b3d8",
+        "revision": "3ded2fb772a7039bf23c2b69dca2fa600b2e1f8b",
+        "path": "pkg/cli/mode/lastcmd.go",
+        "start_byte": 2216,
+        "text": "func filterLastcmdItems(allEntries []lastcmdEntry, p string) lastcmdItems {\n\tif p == \"\" {\n\t\treturn lastcmdItems{false, allEntries}\n\t}\n\tvar entries []lastcmdEntry\n\tnegFilter := strings.HasPrefix(p, \"-\")\n\tfor _, entry := range allEntries {\n\t\tif (negFilter && strings.HasPrefix(entry.negIndex, p)) ||\n\t\t\t(!negFilter && strings.HasPrefix(entry.posIndex, p)) {\n\t\t\tentries = append(entries, entry)\n\t\t}\n\t}\n\treturn lastcmdItems{negFilter, entries}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "04b8f8fe75e51cc8caa37934",
+        "revision": "3ded2fb772a7039bf23c2b69dca2fa600b2e1f8b",
+        "path": "pkg/cli/mode/listing.go",
+        "start_byte": 322,
+        "text": "type ListingSpec struct {\n\t// Key bindings.\n\tBindings tk.Bindings\n\t// Caption of the listing. If empty, defaults to \" LISTING \".\n\tCaption string\n\t// A function that takes the query string and returns a list of Item's and\n\t// the index of the Item to select. Required.\n\tGetItems func(query string) (items []ListingItem, selected int)\n\t// A function to call when the user has accepted the selected item. If the\n\t// return value is true, the listing will not be closed after accpeting.\n\t// If unspecified, the Accept function default to a function that does\n\t// nothing other than returning false.\n\tAccept func(string) bool\n\t// Whether to automatically accept when there is only one item.\n\tAutoAccept bool\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "24ed66b80086ac9e699b6a03",
+        "revision": "3ded2fb772a7039bf23c2b69dca2fa600b2e1f8b",
+        "path": "pkg/cli/mode/listing.go",
+        "start_byte": 1078,
+        "text": "type ListingItem struct {\n\t// Passed to the Accept callback in Config.\n\tToAccept string\n\t// How the item is shown.\n\tToShow ui.Text\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "8aab0eb90c8ea3944b1e6567",
+        "revision": "3ded2fb772a7039bf23c2b69dca2fa600b2e1f8b",
+        "path": "pkg/cli/mode/listing.go",
+        "start_byte": 1329,
+        "text": "func NewListing(app cli.App, spec ListingSpec) (Listing, error) {\n\tif spec.GetItems == nil {\n\t\treturn nil, errGetItemsMustBeSpecified\n\t}\n\tif spec.Accept == nil {\n\t\tspec.Accept = func(string) bool { return false }\n\t}\n\tif spec.Caption == \"\" {\n\t\tspec.Caption = \" LISTING \"\n\t}\n\taccept := func(s string) {\n\t\tretain := spec.Accept(s)\n\t\tif !retain {\n\t\t\tapp.SetAddon(nil, false)\n\t\t}\n\t}\n\tw := tk.NewComboBox(tk.ComboBoxSpec{\n\t\tCodeArea: tk.CodeAreaSpec{\n\t\t\tPrompt: modePrompt(spec.Caption, true),\n\t\t},\n\t\tListBox: tk.ListBoxSpec{\n\t\t\tBindings: spec.Bindings,\n\t\t\tOnAccept: func(it tk.Items, i int) {\n\t\t\t\taccept(it.(listingItems)[i].ToAccept)\n\t\t\t},\n\t\t\tExtendStyle: true,\n\t\t},\n\t\tOnFilter: func(w tk.ComboBox, q string) {\n\t\t\tit, selected := spec.GetItems(q)\n\t\t\tw.",
+        "rank": 2,
+        "truncated": true
+      }
+    ]
+  },
+  "retrieval": {
+    "unresolved": [
+      {
+        "side": "ours",
+        "identifier": "fns",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "pkg/eval/mods/math/math.go",
+            "start": 407
+          },
+          {
+            "path": "pkg/eval/mods/path/path.go",
+            "start": 287
+          },
+          {
+            "path": "pkg/eval/mods/re/re.go",
+            "start": 279
+          },
+          {
+            "path": "pkg/eval/mods/str/str.go",
+            "start": 11584
+          }
+        ]
+      },
+      {
+        "side": "ours",
+        "identifier": "string",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "close",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "pkg/eval/mods/file/file.go",
+            "start": 798
+          },
+          {
+            "path": "pkg/eval/port.go",
+            "start": 456
+          },
+          {
+            "path": "pkg/prog/progtest/progtest.go",
+            "start": 2521
+          }
+        ]
+      },
+      {
+        "side": "ours",
+        "identifier": "pipe",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "pkg/eval/builtin_fn_io.go",
+            "start": 18102
+          },
+          {
+            "path": "pkg/eval/mods/file/file.go",
+            "start": 2006
+          },
+          {
+            "path": "pkg/prog/progtest/progtest.go",
+            "start": 1861
+          }
+        ]
+      },
+      {
+        "side": "theirs",
+        "identifier": "fns",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "pkg/eval/mods/math/math.go",
+            "start": 407
+          },
+          {
+            "path": "pkg/eval/mods/path/path.go",
+            "start": 287
+          },
+          {
+            "path": "pkg/eval/mods/re/re.go",
+            "start": 279
+          },
+          {
+            "path": "pkg/eval/mods/str/str.go",
+            "start": 11584
+          }
+        ]
+      },
+      {
+        "side": "theirs",
+        "identifier": "string",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "close",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "pkg/eval/mods/file/file.go",
+            "start": 925
+          },
+          {
+            "path": "pkg/eval/port.go",
+            "start": 456
+          },
+          {
+            "path": "pkg/prog/progtest/progtest.go",
+            "start": 2521
+          }
+        ]
+      },
+      {
+        "side": "theirs",
+        "identifier": "pipe",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "pkg/eval/builtin_fn_io.go",
+            "start": 18102
+          },
+          {
+            "path": "pkg/eval/mods/file/file.go",
+            "start": 1973
+          },
+          {
+            "path": "pkg/prog/progtest/progtest.go",
+            "start": 1861
+          }
+        ]
+      },
+      {
+        "side": "theirs",
+        "identifier": "prclose",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "pkg/eval/builtin_fn_io.go",
+            "start": 18398
+          },
+          {
+            "path": "pkg/eval/mods/file/file.go",
+            "start": 2190
+          }
+        ]
+      },
+      {
+        "side": "theirs",
+        "identifier": "pwclose",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "pkg/eval/builtin_fn_io.go",
+            "start": 18666
+          },
+          {
+            "path": "pkg/eval/mods/file/file.go",
+            "start": 2379
+          }
+        ]
+      }
+    ],
+    "method": "syntax-ranges-and-identifier-candidates/3",
+    "budget_bytes": 32768,
+    "libraries": {
+      "C": "cbbd4827ee02cd5c018ab41f10d8404ff8741159054b352d9a6d763c506ba3c7",
+      "Go": "1612f8fd958ba1ec981bf4b91e2ff399f1e54d26a9da68e5b60b0d7cd00616fc"
+    }
+  }
+}

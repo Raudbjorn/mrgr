@@ -1,0 +1,1672 @@
+{
+  "id": "332a8948d81a55e71a211d3f053db0742bef857bec2179bcc76cc327e84ee929",
+  "source_protocol_sha256": "86ffe38086e217acf6e1a4aa4162e226862463d1bde3160478f9a6f4d2b968ce",
+  "repair_module_sha256": "b6a7cf123b0ac50001e1498cdf64964b8ac56e8e6a68cbbc6dcc01c8517b4a20",
+  "contexts": {
+    "local-context": [
+      {
+        "id": "79c34f48ca139398517c7923",
+        "revision": "98b10c7c563137416c3045f8b99d9f1442b7337b",
+        "path": "protocol/decode.go",
+        "start_byte": 0,
+        "text": "package protocol\n\nimport (\n\t\"bytes\"\n\t\"encoding/binary\"\n\t\"fmt\"\n\t\"hash/crc32\"\n\t\"io\"\n\t\"io/ioutil\"\n\t\"reflect\"\n\t\"sync\"\n\t\"sync/atomic\"\n)\n\ntype discarder interface {\n\tDiscard(int) (int, error)\n}\n\ntype decoder struct {\n\treader io.Reader\n\tremain int\n\tbuffer [8]byte\n\terr    error\n\ttable  *crc32.Table\n\tcrc32  uint32\n}\n\nfunc (d *decoder) Reset(r io.Reader, n int) {\n\td.reader = r\n\td.remain = n\n\td.buffer = [8]byte{}\n\td.err = nil\n\td.table = nil\n\td.crc32 = 0\n}\n\nfunc (d *decoder) Read(b []byte) (int, error) {\n\tif d.err != nil {\n\t\treturn 0, d.err\n\t}\n\tif d.remain == 0 {\n\t\treturn 0, io.EOF\n\t}\n\tif len(b) > d.remain {\n\t\tb = b[:d.remain]\n\t}\n\tn, err := d.reader.Read(b)\n\tif n > 0 && d.table != nil {\n\t\td.crc32 = crc32.Update(d.crc32, d.table, b[:n])\n\t}\n\td.remain -= n\n\treturn n, err\n}\n\nfunc (d *decoder) ReadByte() (byte, error) {\n\tc := d.readByte()\n\treturn c, d.err\n}\n\nfunc (d *decoder) done() bool {\n\treturn d.remain == 0 || d.err != nil\n}\n\nfunc (d *decoder) setCRC(table *crc32.Table) {\n\td.table, d.crc32 = table, 0\n}\n\nfunc (d *decoder) decodeBool(v value) {\n\tv.setBool(d.readBool())\n}\n\nfunc (d *decoder) decodeInt8(v value) {\n\tv.setInt8(d.readInt8())\n}\n\nfunc (d *decoder) decodeInt16(v value) {\n\tv.setInt16(d.readInt16())\n}\n\nfunc (d *decoder) decodeInt32(v value) {\n\tv.setInt32(d.readInt32())\n}\n\nfunc (d *decoder) decodeInt64(v value) {\n\tv.setInt64(d.readInt64())\n}\n\nfunc (d *decoder) decodeString(v value) {\n\tv.setString(d.readString())\n}\n\nfunc (d *decoder) decodeCompactString(v value) {\n\tv.setString(d.readCompactString())\n}\n\nfunc (d *decoder) decodeBytes(v value) {\n\tv.setBytes(d.readBytes())\n}\n\nfunc (d *decoder) decodeCompactBytes(v value) {\n\tv.setBytes(d.readCompactBytes())\n}\n\nfunc (d *decoder) decodeArray(v value, elemType reflect.Type, decodeElem decodeFunc) {\n\tif n := d.readInt32(); n < 0 {\n\t\tv.setArray(array{})\n\t} else {\n\t\ta := makeArray(elemType, int(n))\n\t\tfor i := 0; i < int(n) && d.remain > 0; i++ {\n\t\t\tdecodeElem(d, a.index(i))\n\t\t}\n\t\tv.setArray(a)\n\t}\n}\n\nfunc (d *decoder) decodeCompactArray(v value, elemType reflect.Type, decodeElem decodeFunc) {\n\tif n := d.readUnsignedVarInt(); n < 1 {\n\t\t// TODO: Distinguish between empty and null?\n\t\tv.setArray(array{})\n\t} else {\n\t\ta := makeArray(elemType, int(n-1))\n\t\tfor i := 0; i < int(n-1) && d.remain > 0; i++ {\n\t\t\tdecodeElem(d, a.index(i))\n\t\t}\n\t\tv.setArray(a)\n\t}\n}\n\nfunc (d *decoder) discardAll() {\n\td.discard(d.remain)\n}\n\nfunc (d *decoder) discard(n int) {\n\tif n > d.remain {\n\t\tn = d.remain\n\t}\n\tvar err error\n\tif r, _ := d.reader.(discarder); r != nil {\n\t\tn, err = r.Discard(n)\n\t\td.remain -= n\n\t} else {\n\t\t_, err = io.Copy(ioutil.Discard, d)\n\t}\n\td.setError(err)\n}\n\nfunc (d *decoder) read(n int) []byte {\n\tb := make([]byte, n)\n\tn, err := io.ReadFull(d, b)\n\tb = b[:n]\n\td.setError(err)\n\treturn b\n}\n\nfunc (d *decoder) writeTo(w io.Writer, n int) {\n\tlimit := d.remain\n\tif n < limit {\n\t\td.remain = n\n\t}\n\tc, err := io.Copy(w, d)\n\tif int(c) < n && err == nil {\n\t\terr = io.ErrUnexpectedEOF\n\t}\n\td.remain = limit - int(c)\n\td.setError(err)\n}\n\nfunc (d *decoder) setError(err error) {\n\tif d.err == nil && err != nil {\n\t\td.err = err\n\t\td.discardAll()\n\t}\n}\n\nfunc (d *decoder) readFull(b []byte) bool {\n\tn, err := io.ReadFull(d, b)\n\td.setError(err)\n\treturn n == len(b)\n}\n\nfunc (d *decoder) readByte() byte {\n\tif d.readFull(d.buffer[:1]) {\n\t\treturn d.buffer[0]\n\t}\n\treturn 0\n}\n\nfunc (d *decoder) readBool() bool {\n\treturn d.readByte() != 0\n}\n\nfunc (d *decoder) readInt8() int8 {\n\tif d.readFull(d.buffer[:1]) {\n\t\treturn readInt8(d.buffer[:1])\n\t}\n\treturn 0\n}\n\nfunc (d *decoder) readInt16() int16 {\n\tif d.readFull(d.buffer[:2]) {\n\t\treturn readInt16(d.buffer[:2])\n\t}\n\treturn 0\n}\n\nfunc (d *decoder) readInt32() int32 {\n\tif d.readFull(d.buffer[:4]) {\n\t\treturn readInt32(d.buffer[:4])\n\t}\n\treturn 0\n}\n\nfunc (d *decoder) readInt64() int64 {\n\tif d.readFull(d.buffer[:8]) {\n\t\treturn readInt64(d.buffer[:8])\n\t}\n\treturn 0\n}\n\nfunc (d *decoder) readString() string {\n\tif n := d.readInt16(); n < 0 {\n\t\treturn \"\"\n\t} else {\n\t\treturn bytesToString(d.read(int(n)))\n\t}\n}\n\nfunc (d *decoder) readVarString() string {\n\tif n := d.readVarInt(); n < 0 {\n\t\treturn \"\"\n\t} else {\n\t\treturn bytesToString(d.read(int(n)))\n\t}\n}\n\nfunc (d *decoder) readCompactString() string {\n\tif n := d.readUnsignedVarInt(); n < 1 {\n\t\t// TODO: Distinguish between empty and null?\n\t\treturn \"\"\n\t} else {\n\t\treturn bytesToString(d.read(int(n - 1)))\n\t}\n}\n\nfunc (d *decoder) readBytes() []byte {\n\tif n := d.readInt32(); n < 0 {\n\t\treturn nil\n\t} else {\n\t\treturn d.read(int(n))\n\t}\n}\n\nfunc (d *decoder) readBytesTo(w io.Writer) bool {\n\tif n := d.readInt32(); n < 0 {\n\t\treturn false\n\t} else {\n\t\td.writeTo(w, int(n))\n\t\treturn d.err == nil\n\t}\n}\n\nfunc (d *decoder) readVarBytes() []byte {\n\tif n := d.readVarInt(); n < 0 {\n\t\treturn nil\n\t} else {\n\t\treturn d.read(int(n))\n\t}\n}\n\nfunc (d *decoder) readVarBytesTo(w io.Writer) bool {\n\tif n := d.readVarInt(); n < 0 {\n\t\treturn false\n\t} else {\n\t\td.writeTo(w, int(n))\n\t\treturn d.err == nil\n\t}\n}\n\nfunc (d *decoder) readCompactBytes() []byte {\n\tif n := d.readUnsignedVarInt(); n < 1 {\n\t\treturn nil\n\t} else {\n\t\treturn d.read(int(n - 1))\n\t}\n}\n\nfunc (d *decoder) readCompactBytesTo(w io.Writer) bool {\n\tif n := d.readUnsignedVarInt(); n < 1 {\n\t\treturn false\n\t} else {\n\t\td.writeTo(w, int(n-1))\n\t\treturn d.err == nil\n\t}\n}\n\nfunc (d *decoder) readVarInt() int64 {\n\tn := 11 // varints are at most 11 bytes\n\n\tif n > d.remain {\n\t\tn = d.remain\n\t}\n\n\tx := uint64(0)\n\ts := uint(0)\n\n\tfor n > 0 {\n\t\tb := d.readByte()\n\n\t\tif (b & 0x80) == 0 {\n\t\t\tx |= uint64(b) << s\n\t\t\treturn int64(x>>1) ^ -(int64(x) & 1)\n\t\t}\n\n\t\tx |= uint64(b&0x7f) << s\n\t\ts += 7\n\t\tn--\n\t}\n\n\td.setError(fmt.Errorf(\"cannot decode varint from input stream\"))\n\treturn 0\n}\n\nfunc (d *decoder) readUnsignedVarInt() uint64 {\n\tn := 11 // varints are at most 11 bytes\n\n\tif n > d.remain {\n\t\tn = d.remain\n\t}\n\n\tx := uint64(0)\n\ts := uint(0)\n\n\tfor n > 0 {\n\t\tb := d.readByte()\n\n\t\tif (b & 0x80) == 0 {\n\t\t\tx |= uint64(b) << s\n\t\t\treturn x\n\t\t}\n\n\t\tx |= uint64(b&0x7f) << s\n\t\ts += 7\n\t\tn--\n\t}\n\n\td.setError(fmt.Errorf(\"cannot decode unsigned varint from input stream\"))\n\treturn 0\n}\n\ntype decodeFunc func(*decoder, value)\n\nvar (\n\t_ io.Reader     = (*decoder)(nil)\n\t_ io.ByteReader = (*decoder)(nil)\n\n\treaderFrom = reflect.TypeOf((*io.ReaderFrom)(nil)).Elem()\n)\n\nfunc decodeFuncOf(typ reflect.Type, version int16, flexible bool, tag structTag) decodeFunc {\n\tif reflect.PtrTo(typ).Implements(readerFrom) {\n\t\treturn readerDecodeFuncOf(typ)\n\t}\n\tswitch typ.Kind() {\n\tcase reflect.Bool:\n\t\treturn (*decoder).decodeBool\n\tcase reflect.Int8:\n\t\treturn (*decoder).decodeInt8\n\tcase reflect.Int16:\n\t\treturn (*decoder).decodeInt16\n\tcase reflect.Int32:\n\t\treturn (*decoder).decodeInt32\n\tcase reflect.Int64:\n\t\treturn (*decoder).decodeInt64\n\tcase reflect.String:\n\t\treturn stringDecodeFuncOf(flexible, tag)\n\tcase reflect.Struct:\n\t\treturn structDecodeFuncOf(typ, version, flexible)\n\tcase reflect.Slice:\n\t\tif typ.Elem().Kind() == reflect.Uint8 { // []byte\n\t\t\treturn bytesDecodeFuncOf(flexible, tag)\n\t\t}\n\t\treturn arrayDecodeFuncOf(typ, version, flexible, tag)\n\tdefault:\n\t\tpanic(\"unsupported type: \" + typ.String())\n\t}\n}\n\nfunc stringDecodeFuncOf(flexible bool, tag structTag) decodeFunc {\n\tif flexible {\n\t\t// In flexible messages, all strings are compact\n\t\treturn (*decoder).decodeCompactString\n\t} else {\n\t\treturn (*decoder).decodeString\n\t}\n}\n\nfunc bytesDecodeFuncOf(flexible bool, tag structTag) decodeFunc {\n\tif flexible {\n\t\t// In flexible messages, all arrays are compact\n\t\treturn (*decoder).decodeCompactBytes\n\t} else {\n\t\treturn (*decoder).decodeBytes\n\t}\n}\n\nfunc structDecodeFuncOf(typ reflect.Type, version int16, flexible bool) decodeFunc {\n\ttype field struct {\n\t\tdecode decodeFunc\n\t\tindex  index\n\t\ttagID  int\n\t}\n\n\tvar fields []field\n\ttaggedFields := map[int]*field{}\n\n\tforEachStructField(typ, func(typ reflect.Type, index index, tag string) {\n\t\tforEachStructTag(tag, func(tag structTag) bool {\n\t\t\tif tag.MinVersion <= version && version <= tag.MaxVersion {\n\t\t\t\tf := field{\n\t\t\t\t\tdecode: decodeFuncOf(typ, version, flexible, tag),\n\t\t\t\t\tindex:  index,\n\t\t\t\t\ttagID:  tag.TagID,\n\t\t\t\t}\n\n\t\t\t\tif tag.TagID < -1 {\n\t\t\t\t\tfields = append(fields, f)\n\t\t\t\t} else {\n\t\t\t\t\ttaggedFields[tag.TagID] = &f\n\t\t\t\t}\n\t\t\t\treturn false\n\t\t\t}\n\t\t\treturn true\n\t\t})\n\t})\n\n\treturn func(d *decoder, v value) {\n\t\tfor i := range fields {\n\t\t\tf := &fields[i]\n\t\t\tf.decode(d, v.fieldByIndex(f.index))\n\t\t}\n\n\t\tif flexible {\n\t\t\t// See https://cwiki.apache.org/confluence/display/KAFKA/KIP-482%3A+The+Kafka+Protocol+should+Support+Optional+Tagged+Fields\n\t\t\t// for details of tag buffers in \"flexible\" messages.\n\t\t\tnumFields := int(d.readUnsignedVarInt())\n\n\t\t\tfor i := 0; i < numFields; i++ {\n\t\t\t\ttagID := int(d.readUnsignedVarInt())\n\t\t\t\tsize := int(d.readUnsignedVarInt())\n\n\t\t\t\tf, ok := taggedFields[tagID]\n\t\t\t\tif ok {\n\t\t\t\t\tf.decode(d, v.fieldByIndex(f.index))\n\t\t\t\t} else {\n\t\t\t\t\td.read(size)\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t}\n}\n\nfunc arrayDecodeFuncOf(typ reflect.Type, version int16, flexible bool, tag structTag) decodeFunc {\n\telemType := typ.Elem()\n\telemFunc := decodeFuncOf(elemType, version, flexible, tag)\n\tif flexible {\n\t\t// In flexible messages, all arrays are compact\n\t\treturn func(d *decoder, v value) { d.decodeCompactArray(v, elemType, elemFunc) }\n\t}\n\n\treturn func(d *decoder, v value) { d.decodeArray(v, elemType, elemFunc) }\n}\n\nfunc readerDecodeFuncOf(typ reflect.Type) decodeFunc {\n\ttyp = reflect.PtrTo(typ)\n\treturn func(d *decoder, v value) {\n\t\tif d.err == nil {\n\t\t\t_, err := v.iface(typ).(io.ReaderFrom).ReadFrom(d)\n\t\t\tif err != nil {\n\t\t\t\td.setError(err)\n\t\t\t}\n\t\t}\n\t}\n}\n\nfunc readInt8(b []byte) int8 {\n\treturn int8(b[0])\n}\n\nfunc readInt16(b []byte) int16 {\n\treturn int16(binary.BigEndian.Uint16(b))\n}\n\nfunc readInt32(b []byte) int32 {\n\treturn int32(binary.BigEndian.Uint32(b))\n}\n\nfunc readInt64(b []byte) int64 {\n\treturn int64(binary.BigEndian.Uint64(b))\n}\n\nfunc Unmarshal(data []byte, version int16, value interface{}) error {\n\ttyp := elemTypeOf(value)\n\tcache, _ := unmarshalers.Load().(map[_type]decodeFunc)\n\tdecode := cache[typ]\n\n\tif decode == nil {\n\t\tdecode = decodeFuncOf(reflect.TypeOf(value).Elem(), version, false, structTag{\n\t\t\tMinVersion: -1,\n\t\t\tMaxVersion: -1,\n\t\t\tTagID:      -2,\n\t\t\tCompact:    true,\n\t\t\tNullable:   true,\n\t\t})\n\n\t\tnewCache := make(map[_type]decodeFunc, len(cache)+1)\n\t\tnewCache[typ] = decode\n\n\t\tfor typ, fun := range cache {\n\t\t\tnewCache[typ] = fun\n\t\t}\n\n\t\tunmarshalers.Store(newCache)\n\t}\n\n\td, _ := decoders.Get().(*decoder)\n\tif d == nil {\n\t\td = &decoder{reader: bytes.NewReader(nil)}\n\t}\n\n\td.remain = len(data)\n\tr, _ := d.reader.(*bytes.Reader)\n\tr.Reset(data)\n\n\tdefer func() {\n\t\tr.Reset(nil)\n\t\td.Reset(r, 0)\n\t\tdecoders.Put(d)\n\t}()\n\n\tdecode(d, valueOf(value))\n\treturn dontExpectEOF(d.err)\n}\n\nvar (\n\tdecoders     sync.Pool    // *decoder\n\tunmarshalers atomic.Value // map[_type]decodeFunc\n)\n",
+        "rank": 0,
+        "truncated": false
+      },
+      {
+        "id": "6b821120afe43a59488ff17b",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "protocol/decode.go",
+        "start_byte": 0,
+        "text": "package protocol\n\nimport (\n\t\"bytes\"\n\t\"encoding/binary\"\n\t\"fmt\"\n\t\"hash/crc32\"\n\t\"io\"\n\t\"io/ioutil\"\n\t\"reflect\"\n\t\"sync\"\n\t\"sync/atomic\"\n)\n\ntype discarder interface {\n\tDiscard(int) (int, error)\n}\n\ntype decoder struct {\n\treader io.Reader\n\tremain int\n\tbuffer [8]byte\n\terr    error\n\ttable  *crc32.Table\n\tcrc32  uint32\n}\n\nfunc (d *decoder) Reset(r io.Reader, n int) {\n\td.reader = r\n\td.remain = n\n\td.buffer = [8]byte{}\n\td.err = nil\n\td.table = nil\n\td.crc32 = 0\n}\n\nfunc (d *decoder) Read(b []byte) (int, error) {\n\tif d.err != nil {\n\t\treturn 0, d.err\n\t}\n\tif d.remain == 0 {\n\t\treturn 0, io.EOF\n\t}\n\tif len(b) > d.remain {\n\t\tb = b[:d.remain]\n\t}\n\tn, err := d.reader.Read(b)\n\tif n > 0 && d.table != nil {\n\t\td.crc32 = crc32.Update(d.crc32, d.table, b[:n])\n\t}\n\td.remain -= n\n\treturn n, err\n}\n\nfunc (d *decoder) ReadByte() (byte, error) {\n\tc := d.readByte()\n\treturn c, d.err\n}\n\nfunc (d *decoder) done() bool {\n\treturn d.remain == 0 || d.err != nil\n}\n\nfunc (d *decoder) setCRC(table *crc32.Table) {\n\td.table, d.crc32 = table, 0\n}\n\nfunc (d *decoder) decodeBool(v value) {\n\tv.setBool(d.readBool())\n}\n\nfunc (d *decoder) decodeInt8(v value) {\n\tv.setInt8(d.readInt8())\n}\n\nfunc (d *decoder) decodeInt16(v value) {\n\tv.setInt16(d.readInt16())\n}\n\nfunc (d *decoder) decodeInt32(v value) {\n\tv.setInt32(d.readInt32())\n}\n\nfunc (d *decoder) decodeInt64(v value) {\n\tv.setInt64(d.readInt64())\n}\n\nfunc (d *decoder) decodeString(v value) {\n\tv.setString(d.readString())\n}\n\nfunc (d *decoder) decodeCompactString(v value) {\n\tv.setString(d.readCompactString())\n}\n\nfunc (d *decoder) decodeBytes(v value) {\n\tv.setBytes(d.readBytes())\n}\n\nfunc (d *decoder) decodeCompactBytes(v value) {\n\tv.setBytes(d.readCompactBytes())\n}\n\nfunc (d *decoder) decodeArray(v value, elemType reflect.Type, decodeElem decodeFunc) {\n\tif n := d.readInt32(); n < 0 {\n\t\tv.setArray(array{})\n\t} else {\n\t\ta := makeArray(elemType, int(n))\n\t\tfor i := 0; i < int(n) && d.remain > 0; i++ {\n\t\t\tdecodeElem(d, a.index(i))\n\t\t}\n\t\tv.setArray(a)\n\t}\n}\n\nfunc (d *decoder) decodeCompactArray(v value, elemType reflect.Type, decodeElem decodeFunc) {\n\tif n := d.readUnsignedVarInt(); n < 1 {\n\t\tv.setArray(array{})\n\t} else {\n\t\ta := makeArray(elemType, int(n-1))\n\t\tfor i := 0; i < int(n-1) && d.remain > 0; i++ {\n\t\t\tdecodeElem(d, a.index(i))\n\t\t}\n\t\tv.setArray(a)\n\t}\n}\n\nfunc (d *decoder) discardAll() {\n\td.discard(d.remain)\n}\n\nfunc (d *decoder) discard(n int) {\n\tif n > d.remain {\n\t\tn = d.remain\n\t}\n\tvar err error\n\tif r, _ := d.reader.(discarder); r != nil {\n\t\tn, err = r.Discard(n)\n\t\td.remain -= n\n\t} else {\n\t\t_, err = io.Copy(ioutil.Discard, d)\n\t}\n\td.setError(err)\n}\n\nfunc (d *decoder) read(n int) []byte {\n\tb := make([]byte, n)\n\tn, err := io.ReadFull(d, b)\n\tb = b[:n]\n\td.setError(err)\n\treturn b\n}\n\nfunc (d *decoder) writeTo(w io.Writer, n int) {\n\tlimit := d.remain\n\tif n < limit {\n\t\td.remain = n\n\t}\n\tc, err := io.Copy(w, d)\n\tif int(c) < n && err == nil {\n\t\terr = io.ErrUnexpectedEOF\n\t}\n\td.remain = limit - int(c)\n\td.setError(err)\n}\n\nfunc (d *decoder) setError(err error) {\n\tif d.err == nil && err != nil {\n\t\td.err = err\n\t\td.discardAll()\n\t}\n}\n\nfunc (d *decoder) readFull(b []byte) bool {\n\tn, err := io.ReadFull(d, b)\n\td.setError(err)\n\treturn n == len(b)\n}\n\nfunc (d *decoder) readByte() byte {\n\tif d.readFull(d.buffer[:1]) {\n\t\treturn d.buffer[0]\n\t}\n\treturn 0\n}\n\nfunc (d *decoder) readBool() bool {\n\treturn d.readByte() != 0\n}\n\nfunc (d *decoder) readInt8() int8 {\n\tif d.readFull(d.buffer[:1]) {\n\t\treturn readInt8(d.buffer[:1])\n\t}\n\treturn 0\n}\n\nfunc (d *decoder) readInt16() int16 {\n\tif d.readFull(d.buffer[:2]) {\n\t\treturn readInt16(d.buffer[:2])\n\t}\n\treturn 0\n}\n\nfunc (d *decoder) readInt32() int32 {\n\tif d.readFull(d.buffer[:4]) {\n\t\treturn readInt32(d.buffer[:4])\n\t}\n\treturn 0\n}\n\nfunc (d *decoder) readInt64() int64 {\n\tif d.readFull(d.buffer[:8]) {\n\t\treturn readInt64(d.buffer[:8])\n\t}\n\treturn 0\n}\n\nfunc (d *decoder) readString() string {\n\tif n := d.readInt16(); n < 0 {\n\t\treturn \"\"\n\t} else {\n\t\treturn bytesToString(d.read(int(n)))\n\t}\n}\n\nfunc (d *decoder) readVarString() string {\n\tif n := d.readVarInt(); n < 0 {\n\t\treturn \"\"\n\t} else {\n\t\treturn bytesToString(d.read(int(n)))\n\t}\n}\n\nfunc (d *decoder) readCompactString() string {\n\tif n := d.readUnsignedVarInt(); n < 1 {\n\t\treturn \"\"\n\t} else {\n\t\treturn bytesToString(d.read(int(n - 1)))\n\t}\n}\n\nfunc (d *decoder) readBytes() []byte {\n\tif n := d.readInt32(); n < 0 {\n\t\treturn nil\n\t} else {\n\t\treturn d.read(int(n))\n\t}\n}\n\nfunc (d *decoder) readBytesTo(w io.Writer) bool {\n\tif n := d.readInt32(); n < 0 {\n\t\treturn false\n\t} else {\n\t\td.writeTo(w, int(n))\n\t\treturn d.err == nil\n\t}\n}\n\nfunc (d *decoder) readVarBytes() []byte {\n\tif n := d.readVarInt(); n < 0 {\n\t\treturn nil\n\t} else {\n\t\treturn d.read(int(n))\n\t}\n}\n\nfunc (d *decoder) readVarBytesTo(w io.Writer) bool {\n\tif n := d.readVarInt(); n < 0 {\n\t\treturn false\n\t} else {\n\t\td.writeTo(w, int(n))\n\t\treturn d.err == nil\n\t}\n}\n\nfunc (d *decoder) readCompactBytes() []byte {\n\tif n := d.readUnsignedVarInt(); n < 1 {\n\t\treturn nil\n\t} else {\n\t\treturn d.read(int(n - 1))\n\t}\n}\n\nfunc (d *decoder) readCompactBytesTo(w io.Writer) bool {\n\tif n := d.readUnsignedVarInt(); n < 1 {\n\t\treturn false\n\t} else {\n\t\td.writeTo(w, int(n-1))\n\t\treturn d.err == nil\n\t}\n}\n\nfunc (d *decoder) readVarInt() int64 {\n\tn := 11 // varints are at most 11 bytes\n\n\tif n > d.remain {\n\t\tn = d.remain\n\t}\n\n\tx := uint64(0)\n\ts := uint(0)\n\n\tfor n > 0 {\n\t\tb := d.readByte()\n\n\t\tif (b & 0x80) == 0 {\n\t\t\tx |= uint64(b) << s\n\t\t\treturn int64(x>>1) ^ -(int64(x) & 1)\n\t\t}\n\n\t\tx |= uint64(b&0x7f) << s\n\t\ts += 7\n\t\tn--\n\t}\n\n\td.setError(fmt.Errorf(\"cannot decode varint from input stream\"))\n\treturn 0\n}\n\nfunc (d *decoder) readUnsignedVarInt() uint64 {\n\tn := 11 // varints are at most 11 bytes\n\n\tif n > d.remain {\n\t\tn = d.remain\n\t}\n\n\tx := uint64(0)\n\ts := uint(0)\n\n\tfor n > 0 {\n\t\tb := d.readByte()\n\n\t\tif (b & 0x80) == 0 {\n\t\t\tx |= uint64(b) << s\n\t\t\treturn x\n\t\t}\n\n\t\tx |= uint64(b&0x7f) << s\n\t\ts += 7\n\t\tn--\n\t}\n\n\td.setError(fmt.Errorf(\"cannot decode unsigned varint from input stream\"))\n\treturn 0\n}\n\ntype decodeFunc func(*decoder, value)\n\nvar (\n\t_ io.Reader     = (*decoder)(nil)\n\t_ io.ByteReader = (*decoder)(nil)\n\n\treaderFrom = reflect.TypeOf((*io.ReaderFrom)(nil)).Elem()\n)\n\nfunc decodeFuncOf(typ reflect.Type, version int16, flexible bool, tag structTag) decodeFunc {\n\tif reflect.PtrTo(typ).Implements(readerFrom) {\n\t\treturn readerDecodeFuncOf(typ)\n\t}\n\tswitch typ.Kind() {\n\tcase reflect.Bool:\n\t\treturn (*decoder).decodeBool\n\tcase reflect.Int8:\n\t\treturn (*decoder).decodeInt8\n\tcase reflect.Int16:\n\t\treturn (*decoder).decodeInt16\n\tcase reflect.Int32:\n\t\treturn (*decoder).decodeInt32\n\tcase reflect.Int64:\n\t\treturn (*decoder).decodeInt64\n\tcase reflect.String:\n\t\treturn stringDecodeFuncOf(flexible, tag)\n\tcase reflect.Struct:\n\t\treturn structDecodeFuncOf(typ, version, flexible)\n\tcase reflect.Slice:\n\t\tif typ.Elem().Kind() == reflect.Uint8 { // []byte\n\t\t\treturn bytesDecodeFuncOf(flexible, tag)\n\t\t}\n\t\treturn arrayDecodeFuncOf(typ, version, flexible, tag)\n\tdefault:\n\t\tpanic(\"unsupported type: \" + typ.String())\n\t}\n}\n\nfunc stringDecodeFuncOf(flexible bool, tag structTag) decodeFunc {\n\tif flexible {\n\t\t// In flexible messages, all strings are compact\n\t\treturn (*decoder).decodeCompactString\n\t}\n\treturn (*decoder).decodeString\n}\n\nfunc bytesDecodeFuncOf(flexible bool, tag structTag) decodeFunc {\n\tif flexible {\n\t\t// In flexible messages, all arrays are compact\n\t\treturn (*decoder).decodeCompactBytes\n\t}\n\treturn (*decoder).decodeBytes\n}\n\nfunc structDecodeFuncOf(typ reflect.Type, version int16, flexible bool) decodeFunc {\n\ttype field struct {\n\t\tdecode decodeFunc\n\t\tindex  index\n\t\ttagID  int\n\t}\n\n\tvar fields []field\n\ttaggedFields := map[int]*field{}\n\n\tforEachStructField(typ, func(typ reflect.Type, index index, tag string) {\n\t\tforEachStructTag(tag, func(tag structTag) bool {\n\t\t\tif tag.MinVersion <= version && version <= tag.MaxVersion {\n\t\t\t\tf := field{\n\t\t\t\t\tdecode: decodeFuncOf(typ, version, flexible, tag),\n\t\t\t\t\tindex:  index,\n\t\t\t\t\ttagID:  tag.TagID,\n\t\t\t\t}\n\n\t\t\t\tif tag.TagID < -1 {\n\t\t\t\t\t// Normal required field\n\t\t\t\t\tfields = append(fields, f)\n\t\t\t\t} else {\n\t\t\t\t\t// Optional tagged field (flexible messages only)\n\t\t\t\t\ttaggedFields[tag.TagID] = &f\n\t\t\t\t}\n\t\t\t\treturn false\n\t\t\t}\n\t\t\treturn true\n\t\t})\n\t})\n\n\treturn func(d *decoder, v value) {\n\t\tfor i := range fields {\n\t\t\tf := &fields[i]\n\t\t\tf.decode(d, v.fieldByIndex(f.index))\n\t\t}\n\n\t\tif flexible {\n\t\t\t// See https://cwiki.apache.org/confluence/display/KAFKA/KIP-482%3A+The+Kafka+Protocol+should+Support+Optional+Tagged+Fields\n\t\t\t// for details of tag buffers in \"flexible\" messages.\n\t\t\tn := int(d.readUnsignedVarInt())\n\n\t\t\tfor i := 0; i < n; i++ {\n\t\t\t\ttagID := int(d.readUnsignedVarInt())\n\t\t\t\tsize := int(d.readUnsignedVarInt())\n\n\t\t\t\tf, ok := taggedFields[tagID]\n\t\t\t\tif ok {\n\t\t\t\t\tf.decode(d, v.fieldByIndex(f.index))\n\t\t\t\t} else {\n\t\t\t\t\td.read(size)\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t}\n}\n\nfunc arrayDecodeFuncOf(typ reflect.Type, version int16, flexible bool, tag structTag) decodeFunc {\n\telemType := typ.Elem()\n\telemFunc := decodeFuncOf(elemType, version, flexible, tag)\n\tif flexible {\n\t\t// In flexible messages, all arrays are compact\n\t\treturn func(d *decoder, v value) { d.decodeCompactArray(v, elemType, elemFunc) }\n\t}\n\n\treturn func(d *decoder, v value) { d.decodeArray(v, elemType, elemFunc) }\n}\n\nfunc readerDecodeFuncOf(typ reflect.Type) decodeFunc {\n\ttyp = reflect.PtrTo(typ)\n\treturn func(d *decoder, v value) {\n\t\tif d.err == nil {\n\t\t\t_, err := v.iface(typ).(io.ReaderFrom).ReadFrom(d)\n\t\t\tif err != nil {\n\t\t\t\td.setError(err)\n\t\t\t}\n\t\t}\n\t}\n}\n\nfunc readInt8(b []byte) int8 {\n\treturn int8(b[0])\n}\n\nfunc readInt16(b []byte) int16 {\n\treturn int16(binary.BigEndian.Uint16(b))\n}\n\nfunc readInt32(b []byte) int32 {\n\treturn int32(binary.BigEndian.Uint32(b))\n}\n\nfunc readInt64(b []byte) int64 {\n\treturn int64(binary.BigEndian.Uint64(b))\n}\n\nfunc Unmarshal(data []byte, version int16, value interface{}) error {\n\ttyp := elemTypeOf(value)\n\tcache, _ := unmarshalers.Load().(map[_type]decodeFunc)\n\tdecode := cache[typ]\n\n\tif decode == nil {\n\t\tdecode = decodeFuncOf(reflect.TypeOf(value).Elem(), version, false, structTag{\n\t\t\tMinVersion: -1,\n\t\t\tMaxVersion: -1,\n\t\t\tTagID:      -2,\n\t\t\tCompact:    true,\n\t\t\tNullable:   true,\n\t\t})\n\n\t\tnewCache := make(map[_type]decodeFunc, len(cache)+1)\n\t\tnewCache[typ] = decode\n\n\t\tfor typ, fun := range cache {\n\t\t\tnewCache[typ] = fun\n\t\t}\n\n\t\tunmarshalers.Store(newCache)\n\t}\n\n\td, _ := decoders.Get().(*decoder)\n\tif d == nil {\n\t\td = &decoder{reader: bytes.NewReader(nil)}\n\t}\n\n\td.remain = len(data)\n\tr, _ := d.reader.(*bytes.Reader)\n\tr.Reset(data)\n\n\tdefer func() {\n\t\tr.Reset(nil)\n\t\td.Reset(r, 0)\n\t\tdecoders.Put(d)\n\t}()\n\n\tdecode(d, valueOf(value))\n\treturn dontExpectEOF(d.err)\n}\n\nvar (\n\tdecoders     sync.Pool    // *decoder\n\tunmarshalers atomic.Value // map[_type]decodeFunc\n)\n",
+        "rank": 0,
+        "truncated": false
+      }
+    ],
+    "selected": [
+      {
+        "id": "3334ca7a13efb0dd84d2ad7f",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "compress/snappy/xerial.go",
+        "start_byte": 2594,
+        "text": "var n int",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "9376350e5ccef31242f5523a",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "compress/zstd/zstd.go",
+        "start_byte": 1373,
+        "text": "type decoder struct {\n\t*zstd.Decoder\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "4b338224b6409a89cfca6604",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "conn.go",
+        "start_byte": 24037,
+        "text": "var remain int",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "520eb1c534a917ef8912c14f",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "protocol/buffer.go",
+        "start_byte": 7501,
+        "text": "var n int",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "3ee16c749b93ada22d7d84de",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "protocol/buffer.go",
+        "start_byte": 10963,
+        "text": "var n int",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "4615e54e8b86512fae53bc80",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "protocol/decode.go",
+        "start_byte": 189,
+        "text": "type decoder struct {\n\treader io.Reader\n\tremain int\n\tbuffer [8]byte\n\terr    error\n\ttable  *crc32.Table\n\tcrc32  uint32\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "6f4060a22fb488c54473a354",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "protocol/decode.go",
+        "start_byte": 1962,
+        "text": "func (d *decoder) decodeCompactArray(v value, elemType reflect.Type, decodeElem decodeFunc) {\n\tif n := d.readUnsignedVarInt(); n < 1 {\n\t\tv.setArray(array{})\n\t} else {\n\t\ta := makeArray(elemType, int(n-1))\n\t\tfor i := 0; i < int(n-1) && d.remain > 0; i++ {\n\t\t\tdecodeElem(d, a.index(i))\n\t\t}\n\t\tv.setArray(a)\n\t}\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "2426211c7423d27ed85a254d",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "protocol/decode.go",
+        "start_byte": 5531,
+        "text": "func (d *decoder) readUnsignedVarInt() uint64 {\n\tn := 11 // varints are at most 11 bytes\n\n\tif n > d.remain {\n\t\tn = d.remain\n\t}\n\n\tx := uint64(0)\n\ts := uint(0)\n\n\tfor n > 0 {\n\t\tb := d.readByte()\n\n\t\tif (b & 0x80) == 0 {\n\t\t\tx |= uint64(b) << s\n\t\t\treturn x\n\t\t}\n\n\t\tx |= uint64(b&0x7f) << s\n\t\ts += 7\n\t\tn--\n\t}\n\n\td.setError(fmt.Errorf(\"cannot decode unsigned varint from input stream\"))\n\treturn 0\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "628ea69d93bc0f3bedf1bc25",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "protocol/decode.go",
+        "start_byte": 5921,
+        "text": "type decodeFunc func(*decoder, value)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "424c1c00522f8cf201c4f34f",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "protocol/record_batch.go",
+        "start_byte": 3479,
+        "text": "func (r *optimizedRecord) value() Bytes {\n\treturn makeBytes(r.valueRef)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "7df14b3fb61ba88a6792f526",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "protocol/reflect_unsafe.go",
+        "start_byte": 193,
+        "text": "type index uintptr",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "acc85820efcc53495668bf74",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "protocol/reflect_unsafe.go",
+        "start_byte": 530,
+        "text": "type value struct {\n\tptr unsafe.Pointer\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "2ae1eaa2bc80e7ebadaa7dda",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "protocol/reflect_unsafe.go",
+        "start_byte": 1410,
+        "text": "func (v value) array(t reflect.Type) array {\n\treturn array{\n\t\tsize: uintptr(t.Size()),\n\t\telem: ((*slice)(v.ptr)).ptr,\n\t\tlen:  ((*slice)(v.ptr)).len,\n\t}\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "bd688e9ef2d892fed72de5c3",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "protocol/reflect_unsafe.go",
+        "start_byte": 1977,
+        "text": "func (v value) setArray(a array) { *(*slice)(v.ptr) = slice{ptr: a.elem, len: a.len, cap: a.len} }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "b0a281f0fdb3d12ae521826b",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "protocol/reflect_unsafe.go",
+        "start_byte": 2189,
+        "text": "type array struct {\n\telem unsafe.Pointer\n\tsize uintptr\n\tlen  int\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "9c4c63fb8a7826d1101f3913",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "protocol/reflect_unsafe.go",
+        "start_byte": 2287,
+        "text": "func makeArray(t reflect.Type, n int) array {\n\tvar elem unsafe.Pointer\n\tvar size = uintptr(t.Size())\n\tif n == 0 {\n\t\telem = unsafe.Pointer(&emptyArray)\n\t} else {\n\t\telem = unsafe_NewArray(((*iface)(unsafe.Pointer(&t))).ptr, n)\n\t}\n\treturn array{elem: elem, size: size, len: n}\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "7e19fad06b44078f88d62b53",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "protocol/reflect_unsafe.go",
+        "start_byte": 2564,
+        "text": "func (a array) index(i int) value {\n\treturn value{ptr: unsafe.Pointer(uintptr(a.elem) + (uintptr(i) * a.size))}\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "04a9cb2aef7bea8c8cb1ac33",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "protocol/reflect.go",
+        "start_byte": 60,
+        "text": "type index []int",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "ab808767cb0fb274e7d57aa5",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "protocol/reflect.go",
+        "start_byte": 339,
+        "text": "type value struct {\n\tval reflect.Value\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "04c7bd6e00f311121583350e",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "protocol/reflect.go",
+        "start_byte": 1118,
+        "text": "func (v value) array(t reflect.Type) array { return array{val: v.val} }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "f6551f98f8f2d04205bd478f",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "protocol/reflect.go",
+        "start_byte": 1589,
+        "text": "func (v value) setArray(a array) {\n\tif a.val.IsValid() {\n\t\tv.val.Set(a.val)\n\t} else {\n\t\tv.val.Set(reflect.Zero(v.val.Type()))\n\t}\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "418ffd051595e99582db80e7",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "protocol/reflect.go",
+        "start_byte": 1811,
+        "text": "type array struct {\n\tval reflect.Value\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "bfa0dd114bc3ce594852e677",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "protocol/reflect.go",
+        "start_byte": 1853,
+        "text": "func makeArray(t reflect.Type, n int) array {\n\treturn array{val: reflect.MakeSlice(reflect.SliceOf(t), n, n)}\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "bae4134f6cf8bfc42bed728a",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "protocol/reflect.go",
+        "start_byte": 1966,
+        "text": "func (a array) index(i int) value { return value{val: a.val.Index(i)} }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "92847710f89a8c2b358a6f5d",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "read.go",
+        "start_byte": 3391,
+        "text": "var n int",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "b8fd8c7633066c1063eafeba",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "read.go",
+        "start_byte": 4574,
+        "text": "var value string",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "342b897029b5dd7f65c5c31b",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "read.go",
+        "start_byte": 5258,
+        "text": "var value int32",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "f13ff722e2989dfaa20c3b8b",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "read.go",
+        "start_byte": 7615,
+        "text": "var n int32",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "8fea40a5536d5d186f90d10b",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "read.go",
+        "start_byte": 9303,
+        "text": "var n int32",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "1019d84ba2088fb4998c73a0",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "read.go",
+        "start_byte": 11665,
+        "text": "var n int32",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "087eec2f58e9a09434e49b01",
+        "revision": "98b10c7c563137416c3045f8b99d9f1442b7337b",
+        "path": "compress/snappy/xerial.go",
+        "start_byte": 2594,
+        "text": "var n int",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "5120b0c1a701d4f4e06a7073",
+        "revision": "98b10c7c563137416c3045f8b99d9f1442b7337b",
+        "path": "compress/zstd/zstd.go",
+        "start_byte": 1373,
+        "text": "type decoder struct {\n\t*zstd.Decoder\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "49748b24fcf4729ef7c02ef2",
+        "revision": "98b10c7c563137416c3045f8b99d9f1442b7337b",
+        "path": "conn.go",
+        "start_byte": 24037,
+        "text": "var remain int",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "1f643b790a87270c6ae78059",
+        "revision": "98b10c7c563137416c3045f8b99d9f1442b7337b",
+        "path": "describegroups.go",
+        "start_byte": 10005,
+        "text": "var value int32",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "b775267b0ae88f5a455a9f2f",
+        "revision": "98b10c7c563137416c3045f8b99d9f1442b7337b",
+        "path": "protocol/buffer.go",
+        "start_byte": 7501,
+        "text": "var n int",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "58435a94d768e73b79e4eee2",
+        "revision": "98b10c7c563137416c3045f8b99d9f1442b7337b",
+        "path": "protocol/buffer.go",
+        "start_byte": 10963,
+        "text": "var n int",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "c10a8785c110fdb3cba7a7c6",
+        "revision": "98b10c7c563137416c3045f8b99d9f1442b7337b",
+        "path": "protocol/decode.go",
+        "start_byte": 189,
+        "text": "type decoder struct {\n\treader io.Reader\n\tremain int\n\tbuffer [8]byte\n\terr    error\n\ttable  *crc32.Table\n\tcrc32  uint32\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "5df0a004b4f3b771ef1ee6ea",
+        "revision": "98b10c7c563137416c3045f8b99d9f1442b7337b",
+        "path": "protocol/decode.go",
+        "start_byte": 1962,
+        "text": "func (d *decoder) decodeCompactArray(v value, elemType reflect.Type, decodeElem decodeFunc) {\n\tif n := d.readUnsignedVarInt(); n < 1 {\n\t\t// TODO: Distinguish between empty and null?\n\t\tv.setArray(array{})\n\t} else {\n\t\ta := makeArray(elemType, int(n-1))\n\t\tfor i := 0; i < int(n-1) && d.remain > 0; i++ {\n\t\t\tdecodeElem(d, a.index(i))\n\t\t}\n\t\tv.setArray(a)\n\t}\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "d1e2fda267b60c6b7de23b57",
+        "revision": "98b10c7c563137416c3045f8b99d9f1442b7337b",
+        "path": "protocol/decode.go",
+        "start_byte": 5625,
+        "text": "func (d *decoder) readUnsignedVarInt() uint64 {\n\tn := 11 // varints are at most 11 bytes\n\n\tif n > d.remain {\n\t\tn = d.remain\n\t}\n\n\tx := uint64(0)\n\ts := uint(0)\n\n\tfor n > 0 {\n\t\tb := d.readByte()\n\n\t\tif (b & 0x80) == 0 {\n\t\t\tx |= uint64(b) << s\n\t\t\treturn x\n\t\t}\n\n\t\tx |= uint64(b&0x7f) << s\n\t\ts += 7\n\t\tn--\n\t}\n\n\td.setError(fmt.Errorf(\"cannot decode unsigned varint from input stream\"))\n\treturn 0\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "1f9cef3c12f9930e438ebba9",
+        "revision": "98b10c7c563137416c3045f8b99d9f1442b7337b",
+        "path": "protocol/decode.go",
+        "start_byte": 6015,
+        "text": "type decodeFunc func(*decoder, value)",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "b081977f41f01c2a7f3f3753",
+        "revision": "98b10c7c563137416c3045f8b99d9f1442b7337b",
+        "path": "protocol/record_batch.go",
+        "start_byte": 3479,
+        "text": "func (r *optimizedRecord) value() Bytes {\n\treturn makeBytes(r.valueRef)\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "ca2e8d9b1c57ad70be484d4d",
+        "revision": "98b10c7c563137416c3045f8b99d9f1442b7337b",
+        "path": "protocol/reflect_unsafe.go",
+        "start_byte": 193,
+        "text": "type index uintptr",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "3e21b39ddd3790ae1db127de",
+        "revision": "98b10c7c563137416c3045f8b99d9f1442b7337b",
+        "path": "protocol/reflect_unsafe.go",
+        "start_byte": 530,
+        "text": "type value struct {\n\tptr unsafe.Pointer\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "9a09f060fdd63bf13df388c6",
+        "revision": "98b10c7c563137416c3045f8b99d9f1442b7337b",
+        "path": "protocol/reflect_unsafe.go",
+        "start_byte": 1410,
+        "text": "func (v value) array(t reflect.Type) array {\n\treturn array{\n\t\tsize: uintptr(t.Size()),\n\t\telem: ((*slice)(v.ptr)).ptr,\n\t\tlen:  ((*slice)(v.ptr)).len,\n\t}\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "590c56424dc777813e94ddc5",
+        "revision": "98b10c7c563137416c3045f8b99d9f1442b7337b",
+        "path": "protocol/reflect_unsafe.go",
+        "start_byte": 1977,
+        "text": "func (v value) setArray(a array) { *(*slice)(v.ptr) = slice{ptr: a.elem, len: a.len, cap: a.len} }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "661c32022b8a249da0212ace",
+        "revision": "98b10c7c563137416c3045f8b99d9f1442b7337b",
+        "path": "protocol/reflect_unsafe.go",
+        "start_byte": 2189,
+        "text": "type array struct {\n\telem unsafe.Pointer\n\tsize uintptr\n\tlen  int\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "1660039a011b478dbbbb2979",
+        "revision": "98b10c7c563137416c3045f8b99d9f1442b7337b",
+        "path": "protocol/reflect_unsafe.go",
+        "start_byte": 2287,
+        "text": "func makeArray(t reflect.Type, n int) array {\n\tvar elem unsafe.Pointer\n\tvar size = uintptr(t.Size())\n\tif n == 0 {\n\t\telem = unsafe.Pointer(&emptyArray)\n\t} else {\n\t\telem = unsafe_NewArray(((*iface)(unsafe.Pointer(&t))).ptr, n)\n\t}\n\treturn array{elem: elem, size: size, len: n}\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "f9ec01253b0dd5ce0e045f5c",
+        "revision": "98b10c7c563137416c3045f8b99d9f1442b7337b",
+        "path": "protocol/reflect_unsafe.go",
+        "start_byte": 2564,
+        "text": "func (a array) index(i int) value {\n\treturn value{ptr: unsafe.Pointer(uintptr(a.elem) + (uintptr(i) * a.size))}\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "eac0a2bbd241eeb208da38a6",
+        "revision": "98b10c7c563137416c3045f8b99d9f1442b7337b",
+        "path": "protocol/reflect.go",
+        "start_byte": 60,
+        "text": "type index []int",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "6510daa29be9e9c16e5c8667",
+        "revision": "98b10c7c563137416c3045f8b99d9f1442b7337b",
+        "path": "protocol/reflect.go",
+        "start_byte": 339,
+        "text": "type value struct {\n\tval reflect.Value\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "85ed8328ccbe48a38d436d78",
+        "revision": "98b10c7c563137416c3045f8b99d9f1442b7337b",
+        "path": "protocol/reflect.go",
+        "start_byte": 1118,
+        "text": "func (v value) array(t reflect.Type) array { return array{val: v.val} }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "ca7adc7afd7f2e4d7e30546f",
+        "revision": "98b10c7c563137416c3045f8b99d9f1442b7337b",
+        "path": "protocol/reflect.go",
+        "start_byte": 1589,
+        "text": "func (v value) setArray(a array) {\n\tif a.val.IsValid() {\n\t\tv.val.Set(a.val)\n\t} else {\n\t\tv.val.Set(reflect.Zero(v.val.Type()))\n\t}\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "4509ca80b731688b81ecc3f9",
+        "revision": "98b10c7c563137416c3045f8b99d9f1442b7337b",
+        "path": "protocol/reflect.go",
+        "start_byte": 1811,
+        "text": "type array struct {\n\tval reflect.Value\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "9d0849c0e872c4e8efeb40b6",
+        "revision": "98b10c7c563137416c3045f8b99d9f1442b7337b",
+        "path": "protocol/reflect.go",
+        "start_byte": 1853,
+        "text": "func makeArray(t reflect.Type, n int) array {\n\treturn array{val: reflect.MakeSlice(reflect.SliceOf(t), n, n)}\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "edcb9050f02be9daaaae306a",
+        "revision": "98b10c7c563137416c3045f8b99d9f1442b7337b",
+        "path": "protocol/reflect.go",
+        "start_byte": 1966,
+        "text": "func (a array) index(i int) value { return value{val: a.val.Index(i)} }",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "485c6f7fa1692fdff891f34d",
+        "revision": "98b10c7c563137416c3045f8b99d9f1442b7337b",
+        "path": "read.go",
+        "start_byte": 3391,
+        "text": "var n int",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "627d3364f34497c473c9e7e3",
+        "revision": "98b10c7c563137416c3045f8b99d9f1442b7337b",
+        "path": "read.go",
+        "start_byte": 4574,
+        "text": "var value string",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "6c0dc0a1f0c89305c4fad0d2",
+        "revision": "98b10c7c563137416c3045f8b99d9f1442b7337b",
+        "path": "read.go",
+        "start_byte": 5258,
+        "text": "var value int32",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "5ef97afc1a1a6372a66e0138",
+        "revision": "98b10c7c563137416c3045f8b99d9f1442b7337b",
+        "path": "read.go",
+        "start_byte": 7615,
+        "text": "var n int32",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "b301b64b78d2d7d1d6bd643e",
+        "revision": "98b10c7c563137416c3045f8b99d9f1442b7337b",
+        "path": "read.go",
+        "start_byte": 9303,
+        "text": "var n int32",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "1762bc0a5dce7378dbf69213",
+        "revision": "98b10c7c563137416c3045f8b99d9f1442b7337b",
+        "path": "read.go",
+        "start_byte": 11665,
+        "text": "var n int32",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "8250fc5d7e09defe7265132e",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "address.go",
+        "start_byte": 686,
+        "text": "func makeMultiAddr(network string, addresses []string) net.Addr {\n\tmulti := make(multiAddr, len(addresses))\n\tfor i, address := range addresses {\n\t\tmulti[i] = makeAddr(network, address)\n\t}\n\treturn multi\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "7d72ac2cd147f0c4df997935",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "address.go",
+        "start_byte": 955,
+        "text": "func (a *networkAddress) Network() string { return a.network }",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "27dd8c7f3e162dd8dc226194",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "address.go",
+        "start_byte": 1019,
+        "text": "func (a *networkAddress) String() string { return a.address }",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "c960588847346828c741bd13",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "address.go",
+        "start_byte": 1253,
+        "text": "func (m multiAddr) join(f func(net.Addr) string) string {\n\tswitch len(m) {\n\tcase 0:\n\t\treturn \"\"\n\tcase 1:\n\t\treturn f(m[0])\n\t}\n\ts := make([]string, len(m))\n\tfor i, a := range m {\n\t\ts[i] = f(a)\n\t}\n\treturn strings.Join(s, \",\")\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "933874f431a6768709da1db6",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "balancer.go",
+        "start_byte": 361,
+        "text": "type Balancer interface {\n\t// Balance receives a message and a set of available partitions and\n\t// returns the partition number that the message should be routed to.\n\t//\n\t// An application should refrain from using a balancer to manage multiple\n\t// sets of partitions (from different topics for examples), use one balancer\n\t// instance for each partition set, so the balancer can detect when the\n\t// partitions change and assume that the kafka topic has been rebalanced.\n\tBalance(msg Message, partitions ...int) (partition int)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "09f1ea5fff0f3595c9724fbb",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "balancer.go",
+        "start_byte": 1048,
+        "text": "type BalancerFunc func(Message, ...int) int",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "090f4246f04c16683f852fe6",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "balancer.go",
+        "start_byte": 1147,
+        "text": "func (f BalancerFunc) Balance(msg Message, partitions ...int) int {\n\treturn f(msg, partitions...)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "27d02afc4690dc4b1633c8fd",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "balancer.go",
+        "start_byte": 1554,
+        "text": "func (rr *RoundRobin) Balance(msg Message, partitions ...int) int {\n\treturn rr.balance(partitions)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "2a4ad0140cfa005d3d87e8dc",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "balancer.go",
+        "start_byte": 1656,
+        "text": "func (rr *RoundRobin) balance(partitions []int) int {\n\tlength := uint32(len(partitions))\n\toffset := atomic.AddUint32(&rr.offset, 1) - 1\n\treturn partitions[offset%length]\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "fc3de2f959c62be09b80b5ac",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "balancer.go",
+        "start_byte": 2237,
+        "text": "type leastBytesCounter struct {\n\tpartition int\n\tbytes     uint64\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "d5d79aeb66f5c30ba486d29e",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "balancer.go",
+        "start_byte": 2350,
+        "text": "func (lb *LeastBytes) Balance(msg Message, partitions ...int) int {\n\tlb.mutex.Lock()\n\tdefer lb.mutex.Unlock()\n\n\tfor _, p := range partitions {\n\t\tif c := lb.counterOf(p); c == nil {\n\t\t\tlb.counters = lb.makeCounters(partitions...)\n\t\t\tbreak\n\t\t}\n\t}\n\n\tminBytes := lb.counters[0].bytes\n\tminIndex := 0\n\n\tfor i, c := range lb.counters[1:] {\n\t\tif c.bytes < minBytes {\n\t\t\tminIndex = i + 1\n\t\t\tminBytes = c.bytes\n\t\t}\n\t}\n\n\tc := &lb.counters[minIndex]\n\tc.bytes += uint64(len(msg.Key)) + uint64(len(msg.Value))\n\treturn c.partition\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "1bd7aa009d7f03783aaf56ab",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "balancer.go",
+        "start_byte": 2869,
+        "text": "func (lb *LeastBytes) counterOf(partition int) *leastBytesCounter {\n\ti := sort.Search(len(lb.counters), func(i int) bool {\n\t\treturn lb.counters[i].partition >= partition\n\t})\n\tif i == len(lb.counters) || lb.counters[i].partition != partition {\n\t\treturn nil\n\t}\n\treturn &lb.counters[i]\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "8b803c21b1dafeca26842e39",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "balancer.go",
+        "start_byte": 3155,
+        "text": "func (lb *LeastBytes) makeCounters(partitions ...int) (counters []leastBytesCounter) {\n\tcounters = make([]leastBytesCounter, len(partitions))\n\n\tfor i, p := range partitions {\n\t\tcounters[i].partition = p\n\t}\n\n\tsort.Slice(counters, func(i int, j int) bool {\n\t\treturn counters[i].partition < counters[j].partition\n\t})\n\treturn\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "e70041aea745a2a53e32d8ce",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "balancer.go",
+        "start_byte": 4410,
+        "text": "func (h *Hash) Balance(msg Message, partitions ...int) int {\n\tif msg.Key == nil {\n\t\treturn h.rr.Balance(msg, partitions...)\n\t}\n\n\thasher := h.Hasher\n\tif hasher != nil {\n\t\th.lock.Lock()\n\t\tdefer h.lock.Unlock()\n\t} else {\n\t\thasher = fnv1aPool.Get().(hash.Hash32)\n\t\tdefer fnv1aPool.Put(hasher)\n\t}\n\n\thasher.Reset()\n\tif _, err := hasher.Write(msg.Key); err != nil {\n\t\tpanic(err)\n\t}\n\n\t// uses same algorithm that Sarama's hashPartitioner uses\n\t// note the type conversions here.  if the uint32 hash code is not cast to\n\t// an int32, we do not get the same result as sarama.\n\tpartition := int32(hasher.Sum32()) % int32(len(partitions))\n\tif partition < 0 {\n\t\tpartition = -partition\n\t}\n\n\treturn int(partition)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "7e8ee5540ccf6f29e63c57d3",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "balancer.go",
+        "start_byte": 5112,
+        "text": "type randomBalancer struct {\n\tmock int // mocked return value, used for testing\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "79f87e42b79b3b2ddd6439d4",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "balancer.go",
+        "start_byte": 5195,
+        "text": "func (b randomBalancer) Balance(msg Message, partitions ...int) (partition int) {\n\tif b.mock != 0 {\n\t\treturn b.mock\n\t}\n\treturn partitions[rand.Int()%len(partitions)]\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "87ee1e2c625e1bbf865aa2b9",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "balancer.go",
+        "start_byte": 6335,
+        "text": "func (b CRC32Balancer) Balance(msg Message, partitions ...int) (partition int) {\n\t// NOTE: the crc32 balancers in librdkafka don't differentiate between nil\n\t//       and empty keys.  both cases are treated as unset.\n\tif len(msg.Key) == 0 && !b.Consistent {\n\t\treturn b.random.Balance(msg, partitions...)\n\t}\n\n\tidx := crc32.ChecksumIEEE(msg.Key) % uint32(len(partitions))\n\treturn partitions[idx]\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "e0a7310d7915e29368c01cfd",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "balancer.go",
+        "start_byte": 8059,
+        "text": "func (b Murmur2Balancer) Balance(msg Message, partitions ...int) (partition int) {\n\t// NOTE: the murmur2 balancers in java and librdkafka treat a nil key as\n\t//       non-existent while treating an empty slice as a defined value.\n\tif msg.Key == nil && !b.Consistent {\n\t\treturn b.random.Balance(msg, partitions...)\n\t}\n\n\tidx := (murmur2(msg.Key) & 0x7fffffff) % uint32(len(partitions))\n\treturn partitions[idx]\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "5167880eee14f2626c7de3cb",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "balancer.go",
+        "start_byte": 8633,
+        "text": "func murmur2(data []byte) uint32 {\n\tlength := len(data)\n\tconst (\n\t\tseed uint32 = 0x9747b28c\n\t\t// 'm' and 'r' are mixing constants generated offline.\n\t\t// They're not really 'magic', they just happen to work well.\n\t\tm = 0x5bd1e995\n\t\tr = 24\n\t)\n\n\t// Initialize the hash to a random value\n\th := seed ^ uint32(length)\n\tlength4 := length / 4\n\n\tfor i := 0; i < length4; i++ {\n\t\ti4 := i * 4\n\t\tk := (uint32(data[i4+0]) & 0xff) + ((uint32(data[i4+1]) & 0xff) << 8) + ((uint32(data[i4+2]) & 0xff) << 16) + ((uint32(data[i4+3]) & 0xff) << 24)\n\t\tk *= m\n\t\tk ^= k >> r\n\t\tk *= m\n\t\th *= m\n\t\th ^= k\n\t}\n\n\t// Handle the last few bytes of the input array\n\textra := length % 4\n\tif extra >= 3 {\n\t\th ^= (uint32(data[(length & ^3)+2]) & 0xff) << 16\n\t}\n\tif extra >= 2 {\n\t\th ^= (uint32(data[(length & ^3)+1]) & 0xff) << 8\n\t}\n\tif extra >= 1 {\n\t\th ^= uint32(data[length & ^3]) & 0xff\n\t\th *= m\n\t}\n\n\th ^= h >> 13\n\th *= m\n\th ^= h >> 15\n\n\treturn h\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "3038790174da6f97510dc4f2",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "batch.go",
+        "start_byte": 475,
+        "text": "type Batch struct {\n\tmutex         sync.Mutex\n\tconn          *Conn\n\tlock          *sync.Mutex\n\tmsgs          *messageSetReader\n\tdeadline      time.Time\n\tthrottle      time.Duration\n\ttopic         string\n\tpartition     int\n\toffset        int64\n\thighWaterMark int64\n\terr           error\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "86a20266089d4fceec1b8448",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "batch.go",
+        "start_byte": 3172,
+        "text": "func (batch *Batch) Read(b []byte) (int, error) {\n\tn := 0\n\n\tbatch.mutex.Lock()\n\toffset := batch.offset\n\n\t_, _, _, err := batch.readMessage(\n\t\tfunc(r *bufio.Reader, size int, nbytes int) (int, error) {\n\t\t\tif nbytes < 0 {\n\t\t\t\treturn size, nil\n\t\t\t}\n\t\t\treturn discardN(r, size, nbytes)\n\t\t},\n\t\tfunc(r *bufio.Reader, size int, nbytes int) (int, error) {\n\t\t\tif nbytes < 0 {\n\t\t\t\treturn size, nil\n\t\t\t}\n\t\t\t// make sure there are enough bytes for the message value.  return\n\t\t\t// errShortRead if the message is truncated.\n\t\t\tif nbytes > size {\n\t\t\t\treturn size, errShortRead\n\t\t\t}\n\t\t\tn = nbytes // return value\n\t\t\tif nbytes > cap(b) {\n\t\t\t\tnbytes = cap(b)\n\t\t\t}\n\t\t\tif nbytes > len(b) {\n\t\t\t\tb = b[:nbytes]\n\t\t\t}\n\t\t\tnbytes, err := io.ReadFull(r, b[:nbytes])\n\t\t\tif err != nil {\n\t\t\t\treturn size - nbytes, err\n\t\t\t}\n\t\t\treturn discardN(r, size-nbytes, n-nbytes)\n\t\t},\n\t)\n\n\tif err == nil && n > len(b) {\n\t\tn, err = len(b), io.ErrShortBuffer\n\t\tbatch.err = io.ErrShortBuffer\n\t\tbatch.offset = offset // rollback\n\t}\n\n\tbatch.mutex.Unlock()\n\treturn n, err\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "ff520c4a8e82334c3d675bb4",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "batch.go",
+        "start_byte": 4453,
+        "text": "func (batch *Batch) ReadMessage() (Message, error) {\n\tmsg := Message{}\n\tbatch.mutex.Lock()\n\n\tvar offset, timestamp int64\n\tvar headers []Header\n\tvar err error\n\n\toffset, timestamp, headers, err = batch.readMessage(\n\t\tfunc(r *bufio.Reader, size int, nbytes int) (remain int, err error) {\n\t\t\tmsg.Key, remain, err = readNewBytes(r, size, nbytes)\n\t\t\treturn\n\t\t},\n\t\tfunc(r *bufio.Reader, size int, nbytes int) (remain int, err error) {\n\t\t\tmsg.Value, remain, err = readNewBytes(r, size, nbytes)\n\t\t\treturn\n\t\t},\n\t)\n\tfor batch.conn != nil && offset < batch.conn.offset {\n\t\tif err != nil {\n\t\t\tbreak\n\t\t}\n\t\toffset, timestamp, headers, err = batch.readMessage(\n\t\t\tfunc(r *bufio.Reader, size int, nbytes int) (remain int, err error) {\n\t\t\t\tmsg.Key, remain, err = readNewBytes(r, size, nbytes)\n\t\t\t\treturn\n\t\t\t},\n\t\t\tfunc(r *bufio.Reader, size int, nbytes int) (remain int, err error) {\n\t\t\t\tmsg.Value, remain, err = readNewBytes(r, size, nbytes)\n\t\t\t\treturn\n\t\t\t},\n\t\t)\n\t}\n\n\tbatch.mutex.Unlock()\n\tmsg.Topic = batch.topic\n\tmsg.Partition = batch.partition\n\tmsg.Offset = offset\n\tmsg.Time = makeTime(timestamp)\n\tmsg.Headers = headers\n\n\treturn msg, err\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "cab74ecd366ab26cf2f693ed",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "batch.go",
+        "start_byte": 5579,
+        "text": "func (batch *Batch) readMessage(\n\tkey func(*bufio.Reader, int, int) (int, error),\n\tval func(*bufio.Reader, int, int) (int, error),\n) (offset int64, timestamp int64, headers []Header, err error) {\n\tif err = batch.err; err != nil {\n\t\treturn\n\t}\n\n\toffset, timestamp, headers, err = batch.msgs.readMessage(batch.offset, key, val)\n\tswitch err {\n\tcase nil:\n\t\tbatch.offset = offset + 1\n\tcase errShortRead:\n\t\t// As an \"optimization\" kafka truncates the returned response after\n\t\t// producing MaxBytes, which could then cause the code to return\n\t\t// errShortRead.\n\t\terr = batch.msgs.discard()\n\t\tswitch {\n\t\tcase err != nil:\n\t\t\t// Since io.EOF is used by the batch to indicate that there is are\n\t\t\t// no more messages to consume, it is crucial that any io.EOF errors\n\t\t\t// on the underlying connection are repackaged.  Otherwise, the\n\t\t\t// caller can't tell the difference between a batch that was fully\n\t\t\t// consumed or a batch whose connection is in an error state.\n\t\t\tbatch.err = dontExpectEOF(err)\n\t\tcase batch.msgs.remaining() == 0:\n\t\t\t// Because we use the adjusted deadline we could end up returning\n\t\t\t// before the actual deadline occurred. This is necessary otherwise\n\t\t\t// timing out the connection for real could end up leaving it in an\n\t\t\t// unpredictable state, which would require closing it.\n\t\t\t// This design decision was made to maximize the chances of keeping\n\t\t\t// the connection open, the trade off being to lose precision on the\n\t\t\t// read deadline management.\n\t\t\terr = checkTimeoutErr(batch.deadline)\n\t\t\tbatch.err = err\n\t\t}\n\tdefault:\n\t\t// Since io.EOF is used by the batch to indicate that there is are\n\t\t// no more messages to consume, it is crucial that any io.EOF errors\n\t\t// on the underlying connection are repackaged.  Otherwise, the\n\t\t// caller can't tell the difference between a batch that was fully\n\t\t// consumed or a batch whose connection is in an error state.\n\t\tbatch.err = dontExpectEOF(err)\n\t}\n\n\treturn\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "23301a271757954d1c454065",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "client.go",
+        "start_byte": 1907,
+        "text": "func (c *Client) ConsumerOffsets(ctx context.Context, tg TopicAndGroup) (map[int]int64, error) {\n\tmetadata, err := c.Metadata(ctx, &MetadataRequest{\n\t\tTopics: []string{tg.Topic},\n\t})\n\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\n\ttopic := metadata.Topics[0]\n\tpartitions := make([]int, len(topic.Partitions))\n\n\tfor i := range topic.Partitions {\n\t\tpartitions[i] = topic.Partitions[i].ID\n\t}\n\n\toffsets, err := c.OffsetFetch(ctx, &OffsetFetchRequest{\n\t\tGroupID: tg.GroupId,\n\t\tTopics: map[string][]int{\n\t\t\ttg.Topic: partitions,\n\t\t},\n\t})\n\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\n\ttopicOffsets := offsets.Topics[topic.Name]\n\tpartitionOffsets := make(map[int]int64, len(topicOffsets))\n\n\tfor _, off := range topicOffsets {\n\t\tpartitionOffsets[off.Partition] = off.CommittedOffset\n\t}\n\n\treturn partitionOffsets, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "a5210db8f806b0fcef651e6c",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "client.go",
+        "start_byte": 3280,
+        "text": "func (c *Client) timeout(ctx context.Context, defaultTimeout time.Duration) time.Duration {\n\ttimeout := c.Timeout\n\n\tif deadline, ok := ctx.Deadline(); ok {\n\t\tif remain := time.Until(deadline); remain < timeout {\n\t\t\ttimeout = remain\n\t\t}\n\t}\n\n\tif timeout > 0 {\n\t\t// Half the timeout because it is communicated to kafka in multiple\n\t\t// requests (e.g. Fetch, Produce, etc...), this adds buffer to account\n\t\t// for network latency when waiting for the response from kafka.\n\t\treturn timeout / 2\n\t}\n\n\treturn defaultTimeout\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "190f70df3414354283f92f74",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "commit.go",
+        "start_byte": 145,
+        "text": "type commit struct {\n\ttopic     string\n\tpartition int\n\toffset    int64\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "b1b42de2b3f5ff449c31ddd8",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "commit.go",
+        "start_byte": 672,
+        "text": "func makeCommits(msgs ...Message) []commit {\n\tcommits := make([]commit, len(msgs))\n\n\tfor i, m := range msgs {\n\t\tcommits[i] = makeCommit(m)\n\t}\n\n\treturn commits\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "16d4377f429dfa0ed2536d12",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "compress/compress.go",
+        "start_byte": 427,
+        "text": "func (c Compression) Codec() Codec {\n\tif i := int(c); i >= 0 && i < len(Codecs) {\n\t\treturn Codecs[i]\n\t}\n\treturn nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "a0cfb5351efd00d09db6b9c2",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "compress/gzip/gzip.go",
+        "start_byte": 227,
+        "text": "type Codec struct {\n\t// The compression level to configure on writers created by this codec.\n\t// Acceptable values are defined in the standard gzip package.\n\t//\n\t// Default to gzip.DefaultCompressionLevel.\n\tLevel int\n\n\twriterPool sync.Pool\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "4ef5485398c6b27d7733530c",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "compress/gzip/gzip.go",
+        "start_byte": 1374,
+        "text": "func (c *Codec) level() int {\n\tif c.Level != 0 {\n\t\treturn c.Level\n\t}\n\treturn gzip.DefaultCompression\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "aef898128b249599a3caf8a2",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "compress/gzip/gzip.go",
+        "start_byte": 2343,
+        "text": "func (emptyReader) Read([]byte) (int, error) { return 0, io.EOF }",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "aaba2b0c08342f30ac6838ca",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "compress/gzip/gzip.go",
+        "start_byte": 2502,
+        "text": "func (r *errorReader) Read([]byte) (int, error) { return 0, r.err }",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "1aa414569c37597f866593f3",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "compress/gzip/gzip.go",
+        "start_byte": 2663,
+        "text": "func (w *errorWriter) Write([]byte) (int, error) { return 0, w.err }",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "41630ee9153c184612c410dd",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "compress/snappy/snappy.go",
+        "start_byte": 169,
+        "text": "type Framing int",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "f5eba844ad41387483a76956",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "compress/snappy/xerial.go",
+        "start_byte": 679,
+        "text": "func (x *xerialReader) Read(b []byte) (int, error) {\n\tfor {\n\t\tif x.offset < int64(len(x.output)) {\n\t\t\tn := copy(b, x.output[x.offset:])\n\t\t\tx.offset += int64(n)\n\t\t\treturn n, nil\n\t\t}\n\n\t\tn, err := x.readChunk(b)\n\t\tif err != nil {\n\t\t\treturn 0, err\n\t\t}\n\t\tif n > 0 {\n\t\t\treturn n, nil\n\t\t}\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "f9e89ce0bed2fe892f5d97e4",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "compress/snappy/xerial.go",
+        "start_byte": 967,
+        "text": "func (x *xerialReader) WriteTo(w io.Writer) (int64, error) {\n\twn := int64(0)\n\n\tfor {\n\t\tfor x.offset < int64(len(x.output)) {\n\t\t\tn, err := w.Write(x.output[x.offset:])\n\t\t\twn += int64(n)\n\t\t\tx.offset += int64(n)\n\t\t\tif err != nil {\n\t\t\t\treturn wn, err\n\t\t\t}\n\t\t}\n\n\t\tif _, err := x.readChunk(nil); err != nil {\n\t\t\tif err == io.EOF {\n\t\t\t\terr = nil\n\t\t\t}\n\t\t\treturn wn, err\n\t\t}\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "fea89fc2f012d6d5f7716516",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "compress/snappy/xerial.go",
+        "start_byte": 1339,
+        "text": "func (x *xerialReader) readChunk(dst []byte) (int, error) {\n\tx.output = x.output[:0]\n\tx.offset = 0\n\tprefix := 0\n\n\tif x.nbytes == 0 {\n\t\tn, err := x.readFull(x.header[:])\n\t\tif err != nil && n == 0 {\n\t\t\treturn 0, err\n\t\t}\n\t\tprefix = n\n\t}\n\n\tif isXerialHeader(x.header[:]) {\n\t\tif cap(x.input) < 4 {\n\t\t\tx.input = make([]byte, 4, defaultBufferSize)\n\t\t} else {\n\t\t\tx.input = x.input[:4]\n\t\t}\n\n\t\t_, err := x.readFull(x.input)\n\t\tif err != nil {\n\t\t\treturn 0, err\n\t\t}\n\n\t\tframe := int(binary.BigEndian.Uint32(x.input))\n\t\tif cap(x.input) < frame {\n\t\t\tx.input = make([]byte, frame, align(frame, defaultBufferSize))\n\t\t} else {\n\t\t\tx.input = x.input[:frame]\n\t\t}\n\n\t\tif _, err := x.readFull(x.input); err != nil {\n\t\t\treturn 0, err\n\t\t}\n\t} else {\n\t\tif cap(x.input) == 0 {\n\t\t\tx.input = make([]byte, 0, defaultBufferSize)\n\t\t} else {\n\t\t\tx.input = x.input[:0]\n\t\t}\n\n\t\tif prefix > 0 {\n\t\t\tx.input = append(x.input, x.header[:prefix]...)\n\t\t}\n\n\t\tfor {\n\t\t\tif len(x.input) == cap(x.input) {\n\t\t\t\tb := make([]byte, len(x.input), 2*cap(x.input))\n\t\t\t\tcopy(b, x.input)\n\t\t\t\tx.input = b\n\t\t\t}\n\n\t\t\tn, err := x.read(x.input[len(x.input):cap(x.input)])\n\t\t\tx.input = x.input[:len(x.input)+n]\n\t\t\tif err != nil {\n\t\t\t\tif err == io.EOF && len(x.input) > 0 {\n\t\t\t\t\tbreak\n\t\t\t\t}\n\t\t\t\treturn 0, err\n\t\t\t}\n\t\t}\n\t}\n\n\tvar n int\n\tvar err error\n\n\tif x.decode == nil {\n\t\tx.output, x.input, err = x.input, x.output, nil\n\t} else if n, err = snappy.DecodedLen(x.input); n <= len(dst) && err == nil {\n\t\t// If the output buffer is large enough to hold the decode value,\n\t\t// write it there directly instead of using the intermediary output\n\t\t// buffer.\n\t\t_, err = x.decode(dst, x.input)\n\t} else {\n\t\tvar b []byte\n\t\tn = 0\n\t\tb, err = x.decode(x.output[:cap(x.output)], x.input)\n\t\tif err == nil {\n\t\t\tx.output = b\n\t\t}\n\t}\n\n\treturn n, err\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "e27e0c1d6d7bb4c522fef2b5",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "compress/snappy/xerial.go",
+        "start_byte": 3103,
+        "text": "func (x *xerialReader) read(b []byte) (int, error) {\n\tn, err := x.reader.Read(b)\n\tx.nbytes += int64(n)\n\treturn n, err\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "c48893ec958d2e26e157cfc1",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "compress/snappy/xerial.go",
+        "start_byte": 3224,
+        "text": "func (x *xerialReader) readFull(b []byte) (int, error) {\n\tn, err := io.ReadFull(x.reader, b)\n\tx.nbytes += int64(n)\n\treturn n, err\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "e17fa6574d5d129e3bb65112",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "compress/snappy/xerial.go",
+        "start_byte": 3773,
+        "text": "func (x *xerialWriter) ReadFrom(r io.Reader) (int64, error) {\n\twn := int64(0)\n\n\tif cap(x.input) == 0 {\n\t\tx.input = make([]byte, 0, defaultBufferSize)\n\t}\n\n\tfor {\n\t\tif x.full() {\n\t\t\tx.grow()\n\t\t}\n\n\t\tn, err := r.Read(x.input[len(x.input):cap(x.input)])\n\t\twn += int64(n)\n\t\tx.input = x.input[:len(x.input)+n]\n\n\t\tif x.fullEnough() {\n\t\t\tif err := x.Flush(); err != nil {\n\t\t\t\treturn wn, err\n\t\t\t}\n\t\t}\n\n\t\tif err != nil {\n\t\t\tif err == io.EOF {\n\t\t\t\terr = nil\n\t\t\t}\n\t\t\treturn wn, err\n\t\t}\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "827535c2eb3d51f1751d582e",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "compress/snappy/xerial.go",
+        "start_byte": 4252,
+        "text": "func (x *xerialWriter) Write(b []byte) (int, error) {\n\twn := 0\n\n\tif cap(x.input) == 0 {\n\t\tx.input = make([]byte, 0, defaultBufferSize)\n\t}\n\n\tfor len(b) > 0 {\n\t\tif x.full() {\n\t\t\tx.grow()\n\t\t}\n\n\t\tn := copy(x.input[len(x.input):cap(x.input)], b)\n\t\tb = b[n:]\n\t\twn += n\n\t\tx.input = x.input[:len(x.input)+n]\n\n\t\tif x.fullEnough() {\n\t\t\tif err := x.Flush(); err != nil {\n\t\t\t\treturn wn, err\n\t\t\t}\n\t\t}\n\t}\n\n\treturn wn, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "96c9f43dd78d73fb103a584c",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "compress/snappy/xerial.go",
+        "start_byte": 5233,
+        "text": "func (x *xerialWriter) write(b []byte) (int, error) {\n\tn, err := x.writer.Write(b)\n\tx.nbytes += int64(n)\n\treturn n, err\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "096ec653703e16eccddad732",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "compress/snappy/xerial.go",
+        "start_byte": 5655,
+        "text": "func align(n, a int) int {\n\tif (n % a) == 0 {\n\t\treturn n\n\t}\n\treturn ((n / a) + 1) * a\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "f118d44710e6f8b89c236c11",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "compress/snappy/xerial.go",
+        "start_byte": 6080,
+        "text": "func writeXerialFrame(b []byte, n int) {\n\tbinary.BigEndian.PutUint32(b, uint32(n))\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "8222932016e35dc3da01576c",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "compress/zstd/zstd.go",
+        "start_byte": 279,
+        "text": "type Codec struct {\n\t// The compression level configured on writers created by the codec.\n\t//\n\t// Default to 3.\n\tLevel int\n\n\tencoderPool sync.Pool // *encoder\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "dd28fb308f92e25feb4d5733",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "compress/zstd/zstd.go",
+        "start_byte": 684,
+        "text": "func (c *Codec) NewReader(r io.Reader) io.ReadCloser {\n\tp := new(reader)\n\tif dec, _ := decoderPool.Get().(*decoder); dec == nil {\n\t\tz, err := zstd.NewReader(r)\n\t\tif err != nil {\n\t\t\tp.err = err\n\t\t} else {\n\t\t\tp.dec = &decoder{z}\n\t\t\t// We need a finalizer because the reader spawns goroutines\n\t\t\t// that will only be stopped if the Close method is called.\n\t\t\truntime.SetFinalizer(p.dec, (*decoder).finalize)\n\t\t}\n\t} else {\n\t\tp.dec = dec\n\t\tp.err = dec.Reset(r)\n\t}\n\treturn p\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "59dbab65145b5bfa64c2d217",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "compress/zstd/zstd.go",
+        "start_byte": 1156,
+        "text": "func (c *Codec) level() int {\n\tif c.Level != 0 {\n\t\treturn c.Level\n\t}\n\treturn 3\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "cd5243b09da7742c57883fc4",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "compress/zstd/zstd.go",
+        "start_byte": 1413,
+        "text": "func (d *decoder) finalize() {\n\td.Close()\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "cab56cc1e7da7131e6f9884f",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "compress/zstd/zstd.go",
+        "start_byte": 1458,
+        "text": "type reader struct {\n\tdec *decoder\n\terr error\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "1299b1128dd187c9d489a782",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "compress/zstd/zstd.go",
+        "start_byte": 1795,
+        "text": "func (r *reader) Read(p []byte) (int, error) {\n\tif r.err != nil {\n\t\treturn 0, r.err\n\t}\n\treturn r.dec.Read(p)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "82b421b7da8531a4a6559b84",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "compress/zstd/zstd.go",
+        "start_byte": 3312,
+        "text": "func (w *writer) Write(p []byte) (int, error) {\n\tif w.err != nil {\n\t\treturn 0, w.err\n\t}\n\tif w.enc == nil {\n\t\treturn 0, io.ErrClosedPipe\n\t}\n\treturn w.enc.Write(p)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "81c9e821fcb082b9112862a6",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "compress/zstd/zstd.go",
+        "start_byte": 3728,
+        "text": "func (devNull) Read([]byte) (int, error)  { return 0, io.EOF }",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "13ea4225a8b4b5b95bfa4245",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "compress/zstd/zstd.go",
+        "start_byte": 3791,
+        "text": "func (devNull) Write([]byte) (int, error) { return 0, nil }",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "bce1016a5294c3bbd6f1b6d3",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "conn.go",
+        "start_byte": 1410,
+        "text": "func (v apiVersionMap) negotiate(key apiKey, sortedSupportedVersions ...apiVersion) apiVersion {\n\tx := v[key]\n\n\tfor i := len(sortedSupportedVersions) - 1; i >= 0; i-- {\n\t\ts := sortedSupportedVersions[i]\n\n\t\tif apiVersion(x.MaxVersion) >= s {\n\t\t\treturn s\n\t\t}\n\t}\n\n\treturn -1\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "b52d850a1263a2b0a7ff433c",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "conn.go",
+        "start_byte": 1763,
+        "text": "type ConnConfig struct {\n\tClientID  string\n\tTopic     string\n\tPartition int\n\n\t// The transactional id to use for transactional delivery. Idempotent\n\t// deliver should be enabled if transactional id is configured.\n\t// For more details look at transactional.id description here: http://kafka.apache.org/documentation.html#producerconfigs\n\t// Empty string means that this connection can't be transactional.\n\tTransactionalID string\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "6d5b29aef847f920054dcca5",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "conn.go",
+        "start_byte": 2277,
+        "text": "type ReadBatchConfig struct {\n\tMinBytes int\n\tMaxBytes int\n\n\t// IsolationLevel controls the visibility of transactional records.\n\t// ReadUncommitted makes all records visible. With ReadCommitted only\n\t// non-transactional and committed records are visible.\n\tIsolationLevel IsolationLevel\n\n\t// MaxWait is the amount of time for the broker while waiting to hit the\n\t// min/max byte targets.  This setting is independent of any network-level\n\t// timeouts or deadlines.\n\t//\n\t// For backward compatibility, when this field is left zero, kafka-go will\n\t// infer the max wait from the connection's read deadline.\n\tMaxWait time.Duration\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "5021b1fd39207f918f26127f",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "conn.go",
+        "start_byte": 3389,
+        "text": "func NewConn(conn net.Conn, topic string, partition int) *Conn {\n\treturn NewConnWith(conn, ConnConfig{\n\t\tTopic:     topic,\n\t\tPartition: partition,\n\t})\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "8f60433f54b433f4f64174ea",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "conn.go",
+        "start_byte": 4960,
+        "text": "func (c *Conn) negotiateVersion(key apiKey, sortedSupportedVersions ...apiVersion) (apiVersion, error) {\n\tv, err := c.loadVersions()\n\tif err != nil {\n\t\treturn -1, err\n\t}\n\ta := v.negotiate(key, sortedSupportedVersions...)\n\tif a < 0 {\n\t\treturn -1, fmt.Errorf(\"no matching versions were found between the client and the broker for API key %d\", key)\n\t}\n\treturn a, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "599a0ecdbdb0dbe639d09dba",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "conn.go",
+        "start_byte": 5327,
+        "text": "func (c *Conn) loadVersions() (apiVersionMap, error) {\n\tv, _ := c.apiVersions.Load().(apiVersionMap)\n\tif v != nil {\n\t\treturn v, nil\n\t}\n\n\tbrokerVersions, err := c.ApiVersions()\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\n\tv = make(apiVersionMap, len(brokerVersions))\n\n\tfor _, a := range brokerVersions {\n\t\tv[apiKey(a.ApiKey)] = a\n\t}\n\n\tc.apiVersions.Store(v)\n\treturn v, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "70dcc91e88d5a347458b01e5",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "conn.go",
+        "start_byte": 5773,
+        "text": "func (c *Conn) Controller() (broker Broker, err error) {\n\terr = c.readOperation(\n\t\tfunc(deadline time.Time, id int32) error {\n\t\t\treturn c.writeRequest(metadata, v1, id, topicMetadataRequestV1([]string{}))\n\t\t},\n\t\tfunc(deadline time.Time, size int) error {\n\t\t\tvar res metadataResponseV1\n\n\t\t\tif err := c.readResponse(size, &res); err != nil {\n\t\t\t\treturn err\n\t\t\t}\n\t\t\tfor _, brokerMeta := range res.Brokers {\n\t\t\t\tif brokerMeta.NodeID == res.ControllerID {\n\t\t\t\t\tbroker = Broker{ID: int(brokerMeta.NodeID),\n\t\t\t\t\t\tPort: int(brokerMeta.Port),\n\t\t\t\t\t\tHost: brokerMeta.Host,\n\t\t\t\t\t\tRack: brokerMeta.Rack}\n\t\t\t\t\tbreak\n\t\t\t\t}\n\t\t\t}\n\t\t\treturn nil\n\t\t},\n\t)\n\treturn broker, err\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "4e27a4ebcbf19cc9a6ee76b8",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "conn.go",
+        "start_byte": 6492,
+        "text": "func (c *Conn) Brokers() ([]Broker, error) {\n\tvar brokers []Broker\n\terr := c.readOperation(\n\t\tfunc(deadline time.Time, id int32) error {\n\t\t\treturn c.writeRequest(metadata, v1, id, topicMetadataRequestV1([]string{}))\n\t\t},\n\t\tfunc(deadline time.Time, size int) error {\n\t\t\tvar res metadataResponseV1\n\n\t\t\tif err := c.readResponse(size, &res); err != nil {\n\t\t\t\treturn err\n\t\t\t}\n\n\t\t\tbrokers = make([]Broker, len(res.Brokers))\n\t\t\tfor i, brokerMeta := range res.Brokers {\n\t\t\t\tbrokers[i] = Broker{\n\t\t\t\t\tID:   int(brokerMeta.NodeID),\n\t\t\t\t\tPort: int(brokerMeta.Port),\n\t\t\t\t\tHost: brokerMeta.Host,\n\t\t\t\t\tRack: brokerMeta.Rack,\n\t\t\t\t}\n\t\t\t}\n\t\t\treturn nil\n\t\t},\n\t)\n\treturn brokers, err\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "a02361f8aec1b49cebe19fcc",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "conn.go",
+        "start_byte": 7471,
+        "text": "func (c *Conn) describeGroups(request describeGroupsRequestV0) (describeGroupsResponseV0, error) {\n\tvar response describeGroupsResponseV0\n\n\terr := c.readOperation(\n\t\tfunc(deadline time.Time, id int32) error {\n\t\t\treturn c.writeRequest(describeGroups, v0, id, request)\n\t\t},\n\t\tfunc(deadline time.Time, size int) error {\n\t\t\treturn expectZeroSize(func() (remain int, err error) {\n\t\t\t\treturn (&response).readFrom(&c.rbuf, size)\n\t\t\t}())\n\t\t},\n\t)\n\tif err != nil {\n\t\treturn describeGroupsResponseV0{}, err\n\t}\n\tfor _, group := range response.Groups {\n\t\tif group.ErrorCode != 0 {\n\t\t\treturn describeGroupsResponseV0{}, Error(group.ErrorCode)\n\t\t}\n\t}\n\n\treturn response, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "f35b4c5e4b6b105403727a87",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "conn.go",
+        "start_byte": 8290,
+        "text": "func (c *Conn) findCoordinator(request findCoordinatorRequestV0) (findCoordinatorResponseV0, error) {\n\tvar response findCoordinatorResponseV0\n\n\terr := c.readOperation(\n\t\tfunc(deadline time.Time, id int32) error {\n\t\t\treturn c.writeRequest(findCoordinator, v0, id, request)\n\n\t\t},\n\t\tfunc(deadline time.Time, size int) error {\n\t\t\treturn expectZeroSize(func() (remain int, err error) {\n\t\t\t\treturn (&response).readFrom(&c.rbuf, size)\n\t\t\t}())\n\t\t},\n\t)\n\tif err != nil {\n\t\treturn findCoordinatorResponseV0{}, err\n\t}\n\tif response.ErrorCode != 0 {\n\t\treturn findCoordinatorResponseV0{}, Error(response.ErrorCode)\n\t}\n\n\treturn response, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "bdc7d2fa210a597495daace4",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "conn.go",
+        "start_byte": 9057,
+        "text": "func (c *Conn) heartbeat(request heartbeatRequestV0) (heartbeatResponseV0, error) {\n\tvar response heartbeatResponseV0\n\n\terr := c.writeOperation(\n\t\tfunc(deadline time.Time, id int32) error {\n\t\t\treturn c.writeRequest(heartbeat, v0, id, request)\n\t\t},\n\t\tfunc(deadline time.Time, size int) error {\n\t\t\treturn expectZeroSize(func() (remain int, err error) {\n\t\t\t\treturn (&response).readFrom(&c.rbuf, size)\n\t\t\t}())\n\t\t},\n\t)\n\tif err != nil {\n\t\treturn heartbeatResponseV0{}, err\n\t}\n\tif response.ErrorCode != 0 {\n\t\treturn heartbeatResponseV0{}, Error(response.ErrorCode)\n\t}\n\n\treturn response, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "3baf5cfd9126198545213523",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "conn.go",
+        "start_byte": 9762,
+        "text": "func (c *Conn) joinGroup(request joinGroupRequestV1) (joinGroupResponseV1, error) {\n\tvar response joinGroupResponseV1\n\n\terr := c.writeOperation(\n\t\tfunc(deadline time.Time, id int32) error {\n\t\t\treturn c.writeRequest(joinGroup, v1, id, request)\n\t\t},\n\t\tfunc(deadline time.Time, size int) error {\n\t\t\treturn expectZeroSize(func() (remain int, err error) {\n\t\t\t\treturn (&response).readFrom(&c.rbuf, size)\n\t\t\t}())\n\t\t},\n\t)\n\tif err != nil {\n\t\treturn joinGroupResponseV1{}, err\n\t}\n\tif response.ErrorCode != 0 {\n\t\treturn joinGroupResponseV1{}, Error(response.ErrorCode)\n\t}\n\n\treturn response, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "43d95bc6235abede3fa5171d",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "conn.go",
+        "start_byte": 10479,
+        "text": "func (c *Conn) leaveGroup(request leaveGroupRequestV0) (leaveGroupResponseV0, error) {\n\tvar response leaveGroupResponseV0\n\n\terr := c.writeOperation(\n\t\tfunc(deadline time.Time, id int32) error {\n\t\t\treturn c.writeRequest(leaveGroup, v0, id, request)\n\t\t},\n\t\tfunc(deadline time.Time, size int) error {\n\t\t\treturn expectZeroSize(func() (remain int, err error) {\n\t\t\t\treturn (&response).readFrom(&c.rbuf, size)\n\t\t\t}())\n\t\t},\n\t)\n\tif err != nil {\n\t\treturn leaveGroupResponseV0{}, err\n\t}\n\tif response.ErrorCode != 0 {\n\t\treturn leaveGroupResponseV0{}, Error(response.ErrorCode)\n\t}\n\n\treturn response, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "a1991e86d9255533e6f237d1",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "conn.go",
+        "start_byte": 11189,
+        "text": "func (c *Conn) listGroups(request listGroupsRequestV1) (listGroupsResponseV1, error) {\n\tvar response listGroupsResponseV1\n\n\terr := c.readOperation(\n\t\tfunc(deadline time.Time, id int32) error {\n\t\t\treturn c.writeRequest(listGroups, v1, id, request)\n\t\t},\n\t\tfunc(deadline time.Time, size int) error {\n\t\t\treturn expectZeroSize(func() (remain int, err error) {\n\t\t\t\treturn (&response).readFrom(&c.rbuf, size)\n\t\t\t}())\n\t\t},\n\t)\n\tif err != nil {\n\t\treturn listGroupsResponseV1{}, err\n\t}\n\tif response.ErrorCode != 0 {\n\t\treturn listGroupsResponseV1{}, Error(response.ErrorCode)\n\t}\n\n\treturn response, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "6361d2f2a106bbdcff984311",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "conn.go",
+        "start_byte": 11918,
+        "text": "func (c *Conn) offsetCommit(request offsetCommitRequestV2) (offsetCommitResponseV2, error) {\n\tvar response offsetCommitResponseV2\n\n\terr := c.writeOperation(\n\t\tfunc(deadline time.Time, id int32) error {\n\t\t\treturn c.writeRequest(offsetCommit, v2, id, request)\n\t\t},\n\t\tfunc(deadline time.Time, size int) error {\n\t\t\treturn expectZeroSize(func() (remain int, err error) {\n\t\t\t\treturn (&response).readFrom(&c.rbuf, size)\n\t\t\t}())\n\t\t},\n\t)\n\tif err != nil {\n\t\treturn offsetCommitResponseV2{}, err\n\t}\n\tfor _, r := range response.Responses {\n\t\tfor _, pr := range r.PartitionResponses {\n\t\t\tif pr.ErrorCode != 0 {\n\t\t\t\treturn offsetCommitResponseV2{}, Error(pr.ErrorCode)\n\t\t\t}\n\t\t}\n\t}\n\n\treturn response, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "490aa15f8b0c2994be4fa965",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "conn.go",
+        "start_byte": 12820,
+        "text": "func (c *Conn) offsetFetch(request offsetFetchRequestV1) (offsetFetchResponseV1, error) {\n\tvar response offsetFetchResponseV1\n\n\terr := c.readOperation(\n\t\tfunc(deadline time.Time, id int32) error {\n\t\t\treturn c.writeRequest(offsetFetch, v1, id, request)\n\t\t},\n\t\tfunc(deadline time.Time, size int) error {\n\t\t\treturn expectZeroSize(func() (remain int, err error) {\n\t\t\t\treturn (&response).readFrom(&c.rbuf, size)\n\t\t\t}())\n\t\t},\n\t)\n\tif err != nil {\n\t\treturn offsetFetchResponseV1{}, err\n\t}\n\tfor _, r := range response.Responses {\n\t\tfor _, pr := range r.PartitionResponses {\n\t\t\tif pr.ErrorCode != 0 {\n\t\t\t\treturn offsetFetchResponseV1{}, Error(pr.ErrorCode)\n\t\t\t}\n\t\t}\n\t}\n\n\treturn response, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "1284427afe8cf51f1854fbbe",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "conn.go",
+        "start_byte": 13638,
+        "text": "func (c *Conn) syncGroup(request syncGroupRequestV0) (syncGroupResponseV0, error) {\n\tvar response syncGroupResponseV0\n\n\terr := c.readOperation(\n\t\tfunc(deadline time.Time, id int32) error {\n\t\t\treturn c.writeRequest(syncGroup, v0, id, request)\n\t\t},\n\t\tfunc(deadline time.Time, size int) error {\n\t\t\treturn expectZeroSize(func() (remain int, err error) {\n\t\t\t\treturn (&response).readFrom(&c.rbuf, size)\n\t\t\t}())\n\t\t},\n\t)\n\tif err != nil {\n\t\treturn syncGroupResponseV0{}, err\n\t}\n\tif response.ErrorCode != 0 {\n\t\treturn syncGroupResponseV0{}, Error(response.ErrorCode)\n\t}\n\n\treturn response, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "edd72ebba83a056366caa03a",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "conn.go",
+        "start_byte": 16099,
+        "text": "func (c *Conn) Offset() (offset int64, whence int) {\n\tc.mutex.Lock()\n\toffset = c.offset\n\tc.mutex.Unlock()\n\n\tswitch offset {\n\tcase FirstOffset:\n\t\toffset = 0\n\t\twhence = SeekStart\n\tcase LastOffset:\n\t\toffset = 0\n\t\twhence = SeekEnd\n\tdefault:\n\t\twhence = SeekAbsolute\n\t}\n\treturn\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "6466345fef8d712601f4c7c7",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "conn.go",
+        "start_byte": 17413,
+        "text": "func (c *Conn) Seek(offset int64, whence int) (int64, error) {\n\tseekDontCheck := (whence & SeekDontCheck) != 0\n\twhence &= ^SeekDontCheck\n\n\tswitch whence {\n\tcase SeekStart, SeekAbsolute, SeekEnd, SeekCurrent:\n\tdefault:\n\t\treturn 0, fmt.Errorf(\"whence must be one of 0, 1, 2, or 3. (whence = %d)\", whence)\n\t}\n\n\tif seekDontCheck {\n\t\tif whence == SeekAbsolute {\n\t\t\tc.mutex.Lock()\n\t\t\tc.offset = offset\n\t\t\tc.mutex.Unlock()\n\t\t\treturn offset, nil\n\t\t}\n\n\t\tif whence == SeekCurrent {\n\t\t\tc.mutex.Lock()\n\t\t\tc.offset += offset\n\t\t\toffset = c.offset\n\t\t\tc.mutex.Unlock()\n\t\t\treturn offset, nil\n\t\t}\n\t}\n\n\tif whence == SeekAbsolute {\n\t\tc.mutex.Lock()\n\t\tunchanged := offset == c.offset\n\t\tc.mutex.Unlock()\n\t\tif unchanged {\n\t\t\treturn offset, nil\n\t\t}\n\t}\n\n\tif whence == SeekCurrent {\n\t\tc.mutex.Lock()\n\t\toffset = c.offset + offset\n\t\tc.mutex.Unlock()\n\t}\n\n\tfirst, last, err := c.ReadOffsets()\n\tif err != nil {\n\t\treturn 0, err\n\t}\n\n\tswitch whence {\n\tcase SeekStart:\n\t\toffset = first + offset\n\tcase SeekEnd:\n\t\toffset = last - offset\n\t}\n\n\tif offset < first || offset > last {\n\t\treturn 0, OffsetOutOfRange\n\t}\n\n\tc.mutex.Lock()\n\tc.offset = offset\n\tc.mutex.Unlock()\n\treturn offset, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "48c2a627b4547a6bb615c680",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "conn.go",
+        "start_byte": 19389,
+        "text": "func (c *Conn) Read(b []byte) (int, error) {\n\tbatch := c.ReadBatch(1, len(b))\n\tn, err := batch.Read(b)\n\treturn n, coalesceErrors(silentEOF(err), batch.Close())\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "59f5c288a03b69b87277ddc1",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "conn.go",
+        "start_byte": 20353,
+        "text": "func (c *Conn) ReadMessage(maxBytes int) (Message, error) {\n\tbatch := c.ReadBatch(1, maxBytes)\n\tmsg, err := batch.ReadMessage()\n\treturn msg, coalesceErrors(silentEOF(err), batch.Close())\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "a08420822e2ac652021e59a6",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "conn.go",
+        "start_byte": 21310,
+        "text": "func (c *Conn) ReadBatch(minBytes, maxBytes int) *Batch {\n\treturn c.ReadBatchWith(ReadBatchConfig{\n\t\tMinBytes: minBytes,\n\t\tMaxBytes: maxBytes,\n\t})\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "a3ea4f89b60808065501ca2f",
+        "revision": "7baf3471a298f37d3f40eae2e1f25114a87ed52c",
+        "path": "conn.go",
+        "start_byte": 21619,
+        "text": "func (c *Conn) ReadBatchWith(cfg ",
+        "rank": 2,
+        "truncated": true
+      }
+    ]
+  },
+  "retrieval": {
+    "unresolved": [
+      {
+        "side": "ours",
+        "identifier": "d",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "decoder",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "compress/zstd/zstd.go",
+            "start": 1373
+          },
+          {
+            "path": "protocol/decode.go",
+            "start": 189
+          }
+        ]
+      },
+      {
+        "side": "ours",
+        "identifier": "v",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "value",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "describegroups.go",
+            "start": 10005
+          },
+          {
+            "path": "protocol/record_batch.go",
+            "start": 3479
+          },
+          {
+            "path": "protocol/reflect.go",
+            "start": 339
+          },
+          {
+            "path": "protocol/reflect_unsafe.go",
+            "start": 530
+          },
+          {
+            "path": "read.go",
+            "start": 4574
+          },
+          {
+            "path": "read.go",
+            "start": 5258
+          }
+        ]
+      },
+      {
+        "side": "ours",
+        "identifier": "elemType",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "reflect",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Type",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "decodeElem",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "n",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "compress/snappy/xerial.go",
+            "start": 2594
+          },
+          {
+            "path": "protocol/buffer.go",
+            "start": 7501
+          },
+          {
+            "path": "protocol/buffer.go",
+            "start": 10963
+          },
+          {
+            "path": "read.go",
+            "start": 3391
+          },
+          {
+            "path": "read.go",
+            "start": 7615
+          },
+          {
+            "path": "read.go",
+            "start": 9303
+          },
+          {
+            "path": "read.go",
+            "start": 11665
+          }
+        ]
+      },
+      {
+        "side": "ours",
+        "identifier": "setArray",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "protocol/reflect.go",
+            "start": 1589
+          },
+          {
+            "path": "protocol/reflect_unsafe.go",
+            "start": 1977
+          }
+        ]
+      },
+      {
+        "side": "ours",
+        "identifier": "array",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "protocol/reflect.go",
+            "start": 1118
+          },
+          {
+            "path": "protocol/reflect.go",
+            "start": 1811
+          },
+          {
+            "path": "protocol/reflect_unsafe.go",
+            "start": 1410
+          },
+          {
+            "path": "protocol/reflect_unsafe.go",
+            "start": 2189
+          }
+        ]
+      },
+      {
+        "side": "ours",
+        "identifier": "a",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "makeArray",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "protocol/reflect.go",
+            "start": 1853
+          },
+          {
+            "path": "protocol/reflect_unsafe.go",
+            "start": 2287
+          }
+        ]
+      },
+      {
+        "side": "ours",
+        "identifier": "int",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "i",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "index",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "protocol/reflect.go",
+            "start": 60
+          },
+          {
+            "path": "protocol/reflect.go",
+            "start": 1966
+          },
+          {
+            "path": "protocol/reflect_unsafe.go",
+            "start": 193
+          },
+          {
+            "path": "protocol/reflect_unsafe.go",
+            "start": 2564
+          }
+        ]
+      },
+      {
+        "side": "theirs",
+        "identifier": "d",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "decoder",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "compress/zstd/zstd.go",
+            "start": 1373
+          },
+          {
+            "path": "protocol/decode.go",
+            "start": 189
+          }
+        ]
+      },
+      {
+        "side": "theirs",
+        "identifier": "v",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "value",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "protocol/record_batch.go",
+            "start": 3479
+          },
+          {
+            "path": "protocol/reflect.go",
+            "start": 339
+          },
+          {
+            "path": "protocol/reflect_unsafe.go",
+            "start": 530
+          },
+          {
+            "path": "read.go",
+            "start": 4574
+          },
+          {
+            "path": "read.go",
+            "start": 5258
+          }
+        ]
+      },
+      {
+        "side": "theirs",
+        "identifier": "elemType",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "reflect",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Type",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "decodeElem",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "n",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "compress/snappy/xerial.go",
+            "start": 2594
+          },
+          {
+            "path": "protocol/buffer.go",
+            "start": 7501
+          },
+          {
+            "path": "protocol/buffer.go",
+            "start": 10963
+          },
+          {
+            "path": "read.go",
+            "start": 3391
+          },
+          {
+            "path": "read.go",
+            "start": 7615
+          },
+          {
+            "path": "read.go",
+            "start": 9303
+          },
+          {
+            "path": "read.go",
+            "start": 11665
+          }
+        ]
+      },
+      {
+        "side": "theirs",
+        "identifier": "setArray",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "protocol/reflect.go",
+            "start": 1589
+          },
+          {
+            "path": "protocol/reflect_unsafe.go",
+            "start": 1977
+          }
+        ]
+      },
+      {
+        "side": "theirs",
+        "identifier": "array",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "protocol/reflect.go",
+            "start": 1118
+          },
+          {
+            "path": "protocol/reflect.go",
+            "start": 1811
+          },
+          {
+            "path": "protocol/reflect_unsafe.go",
+            "start": 1410
+          },
+          {
+            "path": "protocol/reflect_unsafe.go",
+            "start": 2189
+          }
+        ]
+      },
+      {
+        "side": "theirs",
+        "identifier": "a",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "makeArray",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "protocol/reflect.go",
+            "start": 1853
+          },
+          {
+            "path": "protocol/reflect_unsafe.go",
+            "start": 2287
+          }
+        ]
+      },
+      {
+        "side": "theirs",
+        "identifier": "int",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "i",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "index",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "protocol/reflect.go",
+            "start": 60
+          },
+          {
+            "path": "protocol/reflect.go",
+            "start": 1966
+          },
+          {
+            "path": "protocol/reflect_unsafe.go",
+            "start": 193
+          },
+          {
+            "path": "protocol/reflect_unsafe.go",
+            "start": 2564
+          }
+        ]
+      }
+    ],
+    "method": "syntax-ranges-and-identifier-candidates/3",
+    "budget_bytes": 32768,
+    "libraries": {
+      "C": "cbbd4827ee02cd5c018ab41f10d8404ff8741159054b352d9a6d763c506ba3c7",
+      "Go": "1612f8fd958ba1ec981bf4b91e2ff399f1e54d26a9da68e5b60b0d7cd00616fc"
+    }
+  }
+}

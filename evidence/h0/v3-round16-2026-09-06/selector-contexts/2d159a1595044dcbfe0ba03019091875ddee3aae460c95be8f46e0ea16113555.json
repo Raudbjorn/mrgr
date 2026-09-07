@@ -1,0 +1,583 @@
+{
+  "id": "2d159a1595044dcbfe0ba03019091875ddee3aae460c95be8f46e0ea16113555",
+  "source_protocol_sha256": "86ffe38086e217acf6e1a4aa4162e226862463d1bde3160478f9a6f4d2b968ce",
+  "repair_module_sha256": "b6a7cf123b0ac50001e1498cdf64964b8ac56e8e6a68cbbc6dcc01c8517b4a20",
+  "contexts": {
+    "local-context": [
+      {
+        "id": "75f41459102c477f41193da8",
+        "revision": "0a51510745ad4882ebd4677ff5c9a18e9ea57660",
+        "path": "compiler/analysis/info.go",
+        "start_byte": 0,
+        "text": "package analysis\n\nimport (\n\t\"fmt\"\n\t\"go/ast\"\n\t\"go/token\"\n\t\"go/types\"\n\t\"strings\"\n\n\t\"github.com/gopherjs/gopherjs/compiler/astutil\"\n\t\"github.com/gopherjs/gopherjs/compiler/typesutil\"\n\t\"golang.org/x/exp/typeparams\"\n)\n\ntype continueStmt struct {\n\tforStmt      *ast.ForStmt\n\tanalyzeStack astPath\n}\n\nfunc newContinueStmt(forStmt *ast.ForStmt, stack astPath) continueStmt {\n\tcs := continueStmt{\n\t\tforStmt:      forStmt,\n\t\tanalyzeStack: stack.copy(),\n\t}\n\treturn cs\n}\n\n// astPath is a list of AST nodes where each previous node is a parent of the\n// next node.\ntype astPath []ast.Node\n\nfunc (src astPath) copy() astPath {\n\tdst := make(astPath, len(src))\n\tcopy(dst, src)\n\treturn dst\n}\n\nfunc (ap astPath) String() string {\n\ts := &strings.Builder{}\n\ts.WriteString(\"[\")\n\tfor i, n := range ap {\n\t\tif i > 0 {\n\t\t\ts.WriteString(\", \")\n\t\t}\n\t\tfmt.Fprintf(s, \"%T(%p)\", n, n)\n\t}\n\ts.WriteString(\"]\")\n\treturn s.String()\n}\n\ntype Info struct {\n\t*types.Info\n\tPkg           *types.Package\n\tHasPointer    map[*types.Var]bool\n\tFuncDeclInfos map[*types.Func]*FuncInfo\n\tFuncLitInfos  map[*ast.FuncLit]*FuncInfo\n\tInitFuncInfo  *FuncInfo // Context for package variable initialization.\n\n\tisImportedBlocking func(*types.Func) bool // For functions from other packages.\n\tallInfos           []*FuncInfo\n}\n\nfunc (info *Info) newFuncInfo(n ast.Node) *FuncInfo {\n\tfuncInfo := &FuncInfo{\n\t\tpkgInfo:            info,\n\t\tFlattened:          make(map[ast.Node]bool),\n\t\tBlocking:           make(map[ast.Node]bool),\n\t\tGotoLabel:          make(map[*types.Label]bool),\n\t\tlocalNamedCallees:  make(map[*types.Func][]astPath),\n\t\tliteralFuncCallees: make(map[*ast.FuncLit][]astPath),\n\t}\n\n\t// Register the function in the appropriate map.\n\tswitch n := n.(type) {\n\tcase *ast.FuncDecl:\n\t\tif n.Body == nil {\n\t\t\t// Function body comes from elsewhere (for example, from a go:linkname\n\t\t\t// directive), conservatively assume that it may be blocking.\n\t\t\t// TODO(nevkontakte): It is possible to improve accuracy of this detection.\n\t\t\t// Since GopherJS supports inly \"import-style\" go:linkname, at this stage\n\t\t\t// the compiler already determined whether the implementation function is\n\t\t\t// blocking, and we could check that.\n\t\t\tfuncInfo.Blocking[n] = true\n\t\t}\n\t\tinfo.FuncDeclInfos[info.Defs[n.Name].(*types.Func)] = funcInfo\n\tcase *ast.FuncLit:\n\t\tinfo.FuncLitInfos[n] = funcInfo\n\t}\n\n\t// And add it to the list of all functions.\n\tinfo.allInfos = append(info.allInfos, funcInfo)\n\n\treturn funcInfo\n}\n\nfunc (info *Info) IsBlocking(fun *types.Func) bool {\n\tif info.FuncDeclInfos[fun] == nil {\n\t\tpanic(\"nil info\")\n\t}\n\treturn len(info.FuncDeclInfos[fun].Blocking) > 0\n}\n\nfunc AnalyzePkg(files []*ast.File, fileSet *token.FileSet, typesInfo *types.Info, typesPkg *types.Package, isBlocking func(*types.Func) bool) *Info {\n\tinfo := &Info{\n\t\tInfo:               typesInfo,\n\t\tPkg:                typesPkg,\n\t\tHasPointer:         make(map[*types.Var]bool),\n\t\tisImportedBlocking: isBlocking,\n\t\tFuncDeclInfos:      make(map[*types.Func]*FuncInfo),\n\t\tFuncLitInfos:       make(map[*ast.FuncLit]*FuncInfo),\n\t}\n\tinfo.InitFuncInfo = info.newFuncInfo(nil)\n\n\t// Traverse the full AST of the package and collect information about existing\n\t// functions.\n\tfor _, file := range files {\n\t\tast.Walk(info.InitFuncInfo, file)\n\t}\n\n\tfor _, funcInfo := range info.allInfos {\n\t\tif !funcInfo.HasDefer {\n\t\t\tcontinue\n\t\t}\n\t\t// Conservatively assume that if a function has a deferred call, it might be\n\t\t// blocking, and therefore all return statements need to be treated as\n\t\t// blocking.\n\t\t// TODO(nevkontakte): This could be improved by detecting whether a deferred\n\t\t// call is actually blocking. Doing so might reduce generated code size a\n\t\t// bit.\n\t\tfor _, returnStmt := range funcInfo.returnStmts {\n\t\t\tfuncInfo.markBlocking(returnStmt)\n\t\t}\n\t}\n\n\t// Propagate information about blocking calls to the caller functions.\n\t// For each function we check all other functions it may call and if any of\n\t// them are blocking, we mark the caller blocking as well. The process is\n\t// repeated until no new blocking functions is detected.\n\tfor {\n\t\tdone := true\n\t\tfor _, caller := range info.allInfos {\n\t\t\t// Check calls to named functions and function-typed variables.\n\t\t\tfor callee, callSites := range caller.localNamedCallees {\n\t\t\t\tif info.IsBlocking(callee) {\n\t\t\t\t\tfor _, callSite := range callSites {\n\t\t\t\t\t\tcaller.markBlocking(callSite)\n\t\t\t\t\t}\n\t\t\t\t\tdelete(caller.localNamedCallees, callee)\n\t\t\t\t\tdone = false\n\t\t\t\t}\n\t\t\t}\n\n\t\t\t// Check direct calls to function literals.\n\t\t\tfor callee, callSites := range caller.literalFuncCallees {\n\t\t\t\tif len(info.FuncLitInfos[callee].Blocking) > 0 {\n\t\t\t\t\tfor _, callSite := range callSites {\n\t\t\t\t\t\tcaller.markBlocking(callSite)\n\t\t\t\t\t}\n\t\t\t\t\tdelete(caller.literalFuncCallees, callee)\n\t\t\t\t\tdone = false\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t\tif done {\n\t\t\tbreak\n\t\t}\n\t}\n\n\t// After all function blocking information was propagated, mark flow control\n\t// statements as blocking whenever they may lead to a blocking function call.\n\tfor _, funcInfo := range info.allInfos {\n\t\tfor _, continueStmt := range funcInfo.continueStmts {\n\t\t\tif funcInfo.Blocking[continueStmt.forStmt.Post] {\n\t\t\t\t// If a for-loop post-expression is blocking, the continue statement\n\t\t\t\t// that leads to it must be treated as blocking.\n\t\t\t\tfuncInfo.markBlocking(continueStmt.analyzeStack)\n\t\t\t}\n\t\t}\n\t}\n\n\treturn info\n}\n\ntype FuncInfo struct {\n\tHasDefer bool\n\t// Nodes are \"flattened\" into a switch-case statement when we need to be able\n\t// to jump into an arbitrary position in the code with a GOTO statement, or\n\t// resume a goroutine after a blocking call unblocks.\n\tFlattened map[ast.Node]bool\n\t// Blocking indicates that either the AST node itself or its descendant may\n\t// block goroutine execution (for example, a channel operation).\n\tBlocking map[ast.Node]bool\n\t// GotoLavel indicates a label referenced by a goto statement, rather than a\n\t// named loop.\n\tGotoLabel map[*types.Label]bool\n\t// List of continue statements in the function.\n\tcontinueStmts []continueStmt\n\t// List of return statements in the function.\n\treturnStmts []astPath\n\t// List of other named functions from the current package this function calls.\n\t// If any of them are blocking, this function will become blocking too.\n\tlocalNamedCallees map[*types.Func][]astPath\n\t// List of function literals directly called from this function (for example:\n\t// `func() { /* do stuff */ }()`). This is distinct from function literals\n\t// assigned to named variables (for example: `doStuff := func() {};\n\t// doStuff()`), which are handled by localNamedCallees. If any of them are\n\t// identified as blocking, this function will become blocking too.\n\tliteralFuncCallees map[*ast.FuncLit][]astPath\n\n\tpkgInfo      *Info // Function's parent package.\n\tvisitorStack astPath\n}\n\nfunc (fi *FuncInfo) Visit(node ast.Node) ast.Visitor {\n\tif node == nil {\n\t\tif len(fi.visitorStack) != 0 {\n\t\t\tfi.visitorStack = fi.visitorStack[:len(fi.visitorStack)-1]\n\t\t}\n\t\treturn nil\n\t}\n\tfi.visitorStack = append(fi.visitorStack, node)\n\n\tswitch n := node.(type) {\n\tcase *ast.FuncDecl, *ast.FuncLit:\n\t\t// Analyze the function in its own context.\n\t\treturn fi.pkgInfo.newFuncInfo(n)\n\tcase *ast.BranchStmt:\n\t\tswitch n.Tok {\n\t\tcase token.GOTO:\n\t\t\t// Emulating GOTO in JavaScript requires the code to be flattened into a\n\t\t\t// switch-statement.\n\t\t\tfi.markFlattened(fi.visitorStack)\n\t\t\tfi.GotoLabel[fi.pkgInfo.Uses[n.Label].(*types.Label)] = true\n\t\tcase token.CONTINUE:\n\t\t\tloopStmt := astutil.FindLoopStmt(fi.visitorStack, n, fi.pkgInfo.Info)\n\t\t\tif forStmt, ok := (loopStmt).(*ast.ForStmt); ok {\n\t\t\t\t// In `for x; y; z { ... }` loops `z` may be potentially blocking\n\t\t\t\t// and therefore continue expression that triggers it would have to\n\t\t\t\t// be treated as blocking.\n\t\t\t\tfi.continueStmts = append(fi.continueStmts, newContinueStmt(forStmt, fi.visitorStack))\n\t\t\t}\n\t\t}\n\t\treturn fi\n\tcase *ast.CallExpr:\n\t\treturn fi.visitCallExpr(n)\n\tcase *ast.SendStmt:\n\t\t// Sending into a channel is blocking.\n\t\tfi.markBlocking(fi.visitorStack)\n\t\treturn fi\n\tcase *ast.UnaryExpr:\n\t\tswitch n.Op {\n\t\tcase token.AND:\n\t\t\tif id, ok := astutil.RemoveParens(n.X).(*ast.Ident); ok {\n\t\t\t\tfi.pkgInfo.HasPointer[fi.pkgInfo.Uses[id].(*types.Var)] = true\n\t\t\t}\n\t\tcase token.ARROW:\n\t\t\t// Receiving from a channel is blocking.\n\t\t\tfi.markBlocking(fi.visitorStack)\n\t\t}\n\t\treturn fi\n\tcase *ast.RangeStmt:\n\t\tif _, ok := fi.pkgInfo.TypeOf(n.X).Underlying().(*types.Chan); ok {\n\t\t\t// for-range loop over a channel is blocking.\n\t\t\tfi.markBlocking(fi.visitorStack)\n\t\t}\n\t\treturn fi\n\tcase *ast.SelectStmt:\n\t\tfor _, s := range n.Body.List {\n\t\t\tif s.(*ast.CommClause).Comm == nil { // default clause\n\t\t\t\treturn fi\n\t\t\t}\n\t\t}\n\t\t// Select statements without a default case are blocking.\n\t\tfi.markBlocking(fi.visitorStack)\n\t\treturn fi\n\tcase *ast.CommClause:\n\t\t// FIXME(nevkontakte): Does this need to be manually spelled out? Presumably\n\t\t// ast.Walk would visit all those nodes anyway, and we are not creating any\n\t\t// new contexts here.\n\t\t// https://github.com/gopherjs/gopherjs/issues/230 seems to be relevant?\n\t\tswitch comm := n.Comm.(type) {\n\t\tcase *ast.SendStmt:\n\t\t\tast.Walk(fi, comm.Chan)\n\t\t\tast.Walk(fi, comm.Value)\n\t\tcase *ast.ExprStmt:\n\t\t\tast.Walk(fi, comm.X.(*ast.UnaryExpr).X)\n\t\tcase *ast.AssignStmt:\n\t\t\tast.Walk(fi, comm.Rhs[0].(*ast.UnaryExpr).X)\n\t\t}\n\t\tfor _, s := range n.Body {\n\t\t\tast.Walk(fi, s)\n\t\t}\n\t\treturn nil // The subtree was manually checked, no need to visit it again.\n\tcase *ast.GoStmt:\n\t\t// Unlike a regular call, the function in a go statement doesn't block the\n\t\t// caller goroutine, but the expression that determines the function and its\n\t\t// arguments still need to be checked.\n\t\tast.Walk(fi, n.Call.Fun)\n\t\tfor _, arg := range n.Call.Args {\n\t\t\tast.Walk(fi, arg)\n\t\t}\n\t\treturn nil // The subtree was manually checked, no need to visit it again.\n\tcase *ast.DeferStmt:\n\t\tfi.HasDefer = true\n\t\tif funcLit, ok := n.Call.Fun.(*ast.FuncLit); ok {\n\t\t\tast.Walk(fi, funcLit.Body)\n\t\t}\n\t\treturn fi\n\tcase *ast.ReturnStmt:\n\t\t// Capture all return statements in the function. They could become blocking\n\t\t// if the function has a blocking deferred call.\n\t\tfi.returnStmts = append(fi.returnStmts, fi.visitorStack.copy())\n\t\treturn fi\n\tdefault:\n\t\treturn fi\n\t}\n\t// Deliberately no return here to make sure that each of the cases above is\n\t// self-sufficient and explicitly decides in which context the its AST subtree\n\t// needs to be analyzed.\n}\n\nfunc (fi *FuncInfo) visitCallExpr(n *ast.CallExpr) ast.Visitor {\n\tswitch f := astutil.RemoveParens(n.Fun).(type) {\n\tcase *ast.Ident:\n\t\tfi.callToNamedFunc(fi.pkgInfo.Uses[f])\n\tcase *ast.SelectorExpr:\n\t\tif sel := fi.pkgInfo.Selections[f]; sel != nil && typesutil.IsJsObject(sel.Recv()) {\n\t\t\t// js.Object methods are known to be non-blocking, but we still must\n\t\t\t// check its arguments.\n\t\t} else {\n\t\t\tfi.callToNamedFunc(fi.pkgInfo.Uses[f.Sel])\n\t\t}\n\tcase *ast.FuncLit:\n\t\t// Collect info about the function literal itself.\n\t\tast.Walk(fi, n.Fun)\n\n\t\t// Check all argument expressions.\n\t\tfor _, arg := range n.Args {\n\t\t\tast.Walk(fi, arg)\n\t\t}\n\t\t// Register literal function call site in case it is identified as blocking.\n\t\tfi.literalFuncCallees[f] = append(fi.literalFuncCallees[f], fi.visitorStack.copy())\n\t\treturn nil // No need to walk under this CallExpr, we already did it manually.\n\tdefault:\n\t\tif astutil.IsTypeExpr(f, fi.pkgInfo.Info) {\n\t\t\t// This is a type conversion, not a call. Type assertion itself is not\n\t\t\t// blocking, but we will visit the input expression.\n\t\t} else {\n\t\t\t// The function is returned by a non-trivial expression. We have to be\n\t\t\t// conservative and assume that function might be blocking.\n\t\t\tfi.markBlocking(fi.visitorStack)\n\t\t}\n\t}\n\n\treturn fi\n}\n\nfunc (fi *FuncInfo) callToNamedFunc(callee types.Object) {\n\tswitch o := callee.(type) {\n\tcase *types.Func:\n\t\to = typeparams.OriginMethod(o) // TODO(nevkontakte): Can be replaced with o.Origin() in Go 1.19.\n\t\tif recv := o.Type().(*types.Signature).Recv(); recv != nil {\n\t\t\tif _, ok := recv.Type().Underlying().(*types.Interface); ok {\n\t\t\t\t// Conservatively assume that an interface implementation may be blocking.\n\t\t\t\tfi.markBlocking(fi.visitorStack)\n\t\t\t\treturn\n\t\t\t}\n\t\t}\n\t\tif o.Pkg() != fi.pkgInfo.Pkg {\n\t\t\tif fi.pkgInfo.isImportedBlocking(o) {\n\t\t\t\tfi.markBlocking(fi.visitorStack)\n\t\t\t}\n\t\t\treturn\n\t\t}\n\t\t// We probably don't know yet whether the callee function is blocking.\n\t\t// Record the calls site for the later stage.\n\t\tfi.localNamedCallees[o] = append(fi.localNamedCallees[o], fi.visitorStack.copy())\n\tcase *types.Var:\n\t\t// Conservatively assume that a function in a variable might be blocking.\n\t\tfi.markBlocking(fi.visitorStack)\n\t}\n}\n\nfunc (fi *FuncInfo) markBlocking(stack astPath) {\n\tfor _, n := range stack {\n\t\tfi.Blocking[n] = true\n\t\tfi.Flattened[n] = true\n\t}\n}\n\nfunc (fi *FuncInfo) markFlattened(stack astPath) {\n\tfor _, n := range stack {\n\t\tfi.Flattened[n] = true\n\t}\n}\n",
+        "rank": 0,
+        "truncated": false
+      },
+      {
+        "id": "fc434af6175d75339155ca7b",
+        "revision": "71369512ae8b0293548f59357f1b5dfbed516453",
+        "path": "compiler/analysis/info.go",
+        "start_byte": 0,
+        "text": "package analysis\n\nimport (\n\t\"fmt\"\n\t\"go/ast\"\n\t\"go/token\"\n\t\"go/types\"\n\t\"strings\"\n\n\t\"github.com/gopherjs/gopherjs/compiler/astutil\"\n\t\"github.com/gopherjs/gopherjs/compiler/typesutil\"\n)\n\ntype continueStmt struct {\n\tforStmt      *ast.ForStmt\n\tanalyzeStack astPath\n}\n\nfunc newContinueStmt(forStmt *ast.ForStmt, stack astPath) continueStmt {\n\tcs := continueStmt{\n\t\tforStmt:      forStmt,\n\t\tanalyzeStack: stack.copy(),\n\t}\n\treturn cs\n}\n\n// astPath is a list of AST nodes where each previous node is a parent of the\n// next node.\ntype astPath []ast.Node\n\nfunc (src astPath) copy() astPath {\n\tdst := make(astPath, len(src))\n\tcopy(dst, src)\n\treturn dst\n}\n\nfunc (ap astPath) String() string {\n\ts := &strings.Builder{}\n\ts.WriteString(\"[\")\n\tfor i, n := range ap {\n\t\tif i > 0 {\n\t\t\ts.WriteString(\", \")\n\t\t}\n\t\tfmt.Fprintf(s, \"%T(%p)\", n, n)\n\t}\n\ts.WriteString(\"]\")\n\treturn s.String()\n}\n\ntype Info struct {\n\t*types.Info\n\tPkg           *types.Package\n\tHasPointer    map[*types.Var]bool\n\tFuncDeclInfos map[*types.Func]*FuncInfo\n\tFuncLitInfos  map[*ast.FuncLit]*FuncInfo\n\tInitFuncInfo  *FuncInfo // Context for package variable initialization.\n\n\tisImportedBlocking func(*types.Func) bool // For functions from other packages.\n\tallInfos           []*FuncInfo\n}\n\nfunc (info *Info) newFuncInfo(n ast.Node) *FuncInfo {\n\tfuncInfo := &FuncInfo{\n\t\tpkgInfo:            info,\n\t\tFlattened:          make(map[ast.Node]bool),\n\t\tBlocking:           make(map[ast.Node]bool),\n\t\tGotoLabel:          make(map[*types.Label]bool),\n\t\tlocalNamedCallees:  make(map[*types.Func][]astPath),\n\t\tliteralFuncCallees: make(map[*ast.FuncLit][]astPath),\n\t}\n\n\t// Register the function in the appropriate map.\n\tswitch n := n.(type) {\n\tcase *ast.FuncDecl:\n\t\tif n.Body == nil {\n\t\t\t// Function body comes from elsewhere (for example, from a go:linkname\n\t\t\t// directive), conservatively assume that it may be blocking.\n\t\t\t// TODO(nevkontakte): It is possible to improve accuracy of this detection.\n\t\t\t// Since GopherJS supports inly \"import-style\" go:linkname, at this stage\n\t\t\t// the compiler already determined whether the implementation function is\n\t\t\t// blocking, and we could check that.\n\t\t\tfuncInfo.Blocking[n] = true\n\t\t}\n\t\tinfo.FuncDeclInfos[info.Defs[n.Name].(*types.Func)] = funcInfo\n\tcase *ast.FuncLit:\n\t\tinfo.FuncLitInfos[n] = funcInfo\n\t}\n\n\t// And add it to the list of all functions.\n\tinfo.allInfos = append(info.allInfos, funcInfo)\n\n\treturn funcInfo\n}\n\nfunc (info *Info) IsBlocking(fun *types.Func) bool {\n\tif funInfo := info.FuncDeclInfos[fun]; funInfo != nil {\n\t\treturn len(funInfo.Blocking) > 0\n\t}\n\tpanic(fmt.Errorf(`info did not have function declaration for %s`, fun.FullName()))\n}\n\nfunc AnalyzePkg(files []*ast.File, fileSet *token.FileSet, typesInfo *types.Info, typesPkg *types.Package, isBlocking func(*types.Func) bool) *Info {\n\tinfo := &Info{\n\t\tInfo:               typesInfo,\n\t\tPkg:                typesPkg,\n\t\tHasPointer:         make(map[*types.Var]bool),\n\t\tisImportedBlocking: isBlocking,\n\t\tFuncDeclInfos:      make(map[*types.Func]*FuncInfo),\n\t\tFuncLitInfos:       make(map[*ast.FuncLit]*FuncInfo),\n\t}\n\tinfo.InitFuncInfo = info.newFuncInfo(nil)\n\n\t// Traverse the full AST of the package and collect information about existing\n\t// functions.\n\tfor _, file := range files {\n\t\tast.Walk(info.InitFuncInfo, file)\n\t}\n\n\tfor _, funcInfo := range info.allInfos {\n\t\tif !funcInfo.HasDefer {\n\t\t\tcontinue\n\t\t}\n\t\t// Conservatively assume that if a function has a deferred call, it might be\n\t\t// blocking, and therefore all return statements need to be treated as\n\t\t// blocking.\n\t\t// TODO(nevkontakte): This could be improved by detecting whether a deferred\n\t\t// call is actually blocking. Doing so might reduce generated code size a\n\t\t// bit.\n\t\tfor _, returnStmt := range funcInfo.returnStmts {\n\t\t\tfuncInfo.markBlocking(returnStmt)\n\t\t}\n\t}\n\n\t// Propagate information about blocking calls to the caller functions.\n\t// For each function we check all other functions it may call and if any of\n\t// them are blocking, we mark the caller blocking as well. The process is\n\t// repeated until no new blocking functions is detected.\n\tfor {\n\t\tdone := true\n\t\tfor _, caller := range info.allInfos {\n\t\t\t// Check calls to named functions and function-typed variables.\n\t\t\tfor callee, callSites := range caller.localNamedCallees {\n\t\t\t\tif info.IsBlocking(callee) {\n\t\t\t\t\tfor _, callSite := range callSites {\n\t\t\t\t\t\tcaller.markBlocking(callSite)\n\t\t\t\t\t}\n\t\t\t\t\tdelete(caller.localNamedCallees, callee)\n\t\t\t\t\tdone = false\n\t\t\t\t}\n\t\t\t}\n\n\t\t\t// Check direct calls to function literals.\n\t\t\tfor callee, callSites := range caller.literalFuncCallees {\n\t\t\t\tif len(info.FuncLitInfos[callee].Blocking) > 0 {\n\t\t\t\t\tfor _, callSite := range callSites {\n\t\t\t\t\t\tcaller.markBlocking(callSite)\n\t\t\t\t\t}\n\t\t\t\t\tdelete(caller.literalFuncCallees, callee)\n\t\t\t\t\tdone = false\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t\tif done {\n\t\t\tbreak\n\t\t}\n\t}\n\n\t// After all function blocking information was propagated, mark flow control\n\t// statements as blocking whenever they may lead to a blocking function call.\n\tfor _, funcInfo := range info.allInfos {\n\t\tfor _, continueStmt := range funcInfo.continueStmts {\n\t\t\tif funcInfo.Blocking[continueStmt.forStmt.Post] {\n\t\t\t\t// If a for-loop post-expression is blocking, the continue statement\n\t\t\t\t// that leads to it must be treated as blocking.\n\t\t\t\tfuncInfo.markBlocking(continueStmt.analyzeStack)\n\t\t\t}\n\t\t}\n\t}\n\n\treturn info\n}\n\ntype FuncInfo struct {\n\tHasDefer bool\n\t// Nodes are \"flattened\" into a switch-case statement when we need to be able\n\t// to jump into an arbitrary position in the code with a GOTO statement, or\n\t// resume a goroutine after a blocking call unblocks.\n\tFlattened map[ast.Node]bool\n\t// Blocking indicates that either the AST node itself or its descendant may\n\t// block goroutine execution (for example, a channel operation).\n\tBlocking map[ast.Node]bool\n\t// GotoLavel indicates a label referenced by a goto statement, rather than a\n\t// named loop.\n\tGotoLabel map[*types.Label]bool\n\t// List of continue statements in the function.\n\tcontinueStmts []continueStmt\n\t// List of return statements in the function.\n\treturnStmts []astPath\n\t// List of other named functions from the current package this function calls.\n\t// If any of them are blocking, this function will become blocking too.\n\tlocalNamedCallees map[*types.Func][]astPath\n\t// List of function literals directly called from this function (for example:\n\t// `func() { /* do stuff */ }()`). This is distinct from function literals\n\t// assigned to named variables (for example: `doStuff := func() {};\n\t// doStuff()`), which are handled by localNamedCallees. If any of them are\n\t// identified as blocking, this function will become blocking too.\n\tliteralFuncCallees map[*ast.FuncLit][]astPath\n\n\tpkgInfo      *Info // Function's parent package.\n\tvisitorStack astPath\n}\n\nfunc (fi *FuncInfo) Visit(node ast.Node) ast.Visitor {\n\tif node == nil {\n\t\tif len(fi.visitorStack) != 0 {\n\t\t\tfi.visitorStack = fi.visitorStack[:len(fi.visitorStack)-1]\n\t\t}\n\t\treturn nil\n\t}\n\tfi.visitorStack = append(fi.visitorStack, node)\n\n\tswitch n := node.(type) {\n\tcase *ast.FuncDecl, *ast.FuncLit:\n\t\t// Analyze the function in its own context.\n\t\treturn fi.pkgInfo.newFuncInfo(n)\n\tcase *ast.BranchStmt:\n\t\tswitch n.Tok {\n\t\tcase token.GOTO:\n\t\t\t// Emulating GOTO in JavaScript requires the code to be flattened into a\n\t\t\t// switch-statement.\n\t\t\tfi.markFlattened(fi.visitorStack)\n\t\t\tfi.GotoLabel[fi.pkgInfo.Uses[n.Label].(*types.Label)] = true\n\t\tcase token.CONTINUE:\n\t\t\tloopStmt := astutil.FindLoopStmt(fi.visitorStack, n, fi.pkgInfo.Info)\n\t\t\tif forStmt, ok := (loopStmt).(*ast.ForStmt); ok {\n\t\t\t\t// In `for x; y; z { ... }` loops `z` may be potentially blocking\n\t\t\t\t// and therefore continue expression that triggers it would have to\n\t\t\t\t// be treated as blocking.\n\t\t\t\tfi.continueStmts = append(fi.continueStmts, newContinueStmt(forStmt, fi.visitorStack))\n\t\t\t}\n\t\t}\n\t\treturn fi\n\tcase *ast.CallExpr:\n\t\treturn fi.visitCallExpr(n)\n\tcase *ast.SendStmt:\n\t\t// Sending into a channel is blocking.\n\t\tfi.markBlocking(fi.visitorStack)\n\t\treturn fi\n\tcase *ast.UnaryExpr:\n\t\tswitch n.Op {\n\t\tcase token.AND:\n\t\t\tif id, ok := astutil.RemoveParens(n.X).(*ast.Ident); ok {\n\t\t\t\tfi.pkgInfo.HasPointer[fi.pkgInfo.Uses[id].(*types.Var)] = true\n\t\t\t}\n\t\tcase token.ARROW:\n\t\t\t// Receiving from a channel is blocking.\n\t\t\tfi.markBlocking(fi.visitorStack)\n\t\t}\n\t\treturn fi\n\tcase *ast.RangeStmt:\n\t\tif _, ok := fi.pkgInfo.TypeOf(n.X).Underlying().(*types.Chan); ok {\n\t\t\t// for-range loop over a channel is blocking.\n\t\t\tfi.markBlocking(fi.visitorStack)\n\t\t}\n\t\treturn fi\n\tcase *ast.SelectStmt:\n\t\tfor _, s := range n.Body.List {\n\t\t\tif s.(*ast.CommClause).Comm == nil { // default clause\n\t\t\t\treturn fi\n\t\t\t}\n\t\t}\n\t\t// Select statements without a default case are blocking.\n\t\tfi.markBlocking(fi.visitorStack)\n\t\treturn fi\n\tcase *ast.CommClause:\n\t\t// FIXME(nevkontakte): Does this need to be manually spelled out? Presumably\n\t\t// ast.Walk would visit all those nodes anyway, and we are not creating any\n\t\t// new contexts here.\n\t\t// https://github.com/gopherjs/gopherjs/issues/230 seems to be relevant?\n\t\tswitch comm := n.Comm.(type) {\n\t\tcase *ast.SendStmt:\n\t\t\tast.Walk(fi, comm.Chan)\n\t\t\tast.Walk(fi, comm.Value)\n\t\tcase *ast.ExprStmt:\n\t\t\tast.Walk(fi, comm.X.(*ast.UnaryExpr).X)\n\t\tcase *ast.AssignStmt:\n\t\t\tast.Walk(fi, comm.Rhs[0].(*ast.UnaryExpr).X)\n\t\t}\n\t\tfor _, s := range n.Body {\n\t\t\tast.Walk(fi, s)\n\t\t}\n\t\treturn nil // The subtree was manually checked, no need to visit it again.\n\tcase *ast.GoStmt:\n\t\t// Unlike a regular call, the function in a go statement doesn't block the\n\t\t// caller goroutine, but the expression that determines the function and its\n\t\t// arguments still need to be checked.\n\t\tast.Walk(fi, n.Call.Fun)\n\t\tfor _, arg := range n.Call.Args {\n\t\t\tast.Walk(fi, arg)\n\t\t}\n\t\treturn nil // The subtree was manually checked, no need to visit it again.\n\tcase *ast.DeferStmt:\n\t\tfi.HasDefer = true\n\t\tif funcLit, ok := n.Call.Fun.(*ast.FuncLit); ok {\n\t\t\tast.Walk(fi, funcLit.Body)\n\t\t}\n\t\treturn fi\n\tcase *ast.ReturnStmt:\n\t\t// Capture all return statements in the function. They could become blocking\n\t\t// if the function has a blocking deferred call.\n\t\tfi.returnStmts = append(fi.returnStmts, fi.visitorStack.copy())\n\t\treturn fi\n\tdefault:\n\t\treturn fi\n\t}\n\t// Deliberately no return here to make sure that each of the cases above is\n\t// self-sufficient and explicitly decides in which context the its AST subtree\n\t// needs to be analyzed.\n}\n\nfunc (fi *FuncInfo) visitCallExpr(n *ast.CallExpr) ast.Visitor {\n\tswitch f := astutil.RemoveParens(n.Fun).(type) {\n\tcase *ast.Ident:\n\t\tfi.callToNamedFunc(fi.pkgInfo.Uses[f])\n\tcase *ast.SelectorExpr:\n\t\tif sel := fi.pkgInfo.Selections[f]; sel != nil && typesutil.IsJsObject(sel.Recv()) {\n\t\t\t// js.Object methods are known to be non-blocking, but we still must\n\t\t\t// check its arguments.\n\t\t} else {\n\t\t\tfi.callToNamedFunc(fi.pkgInfo.Uses[f.Sel])\n\t\t}\n\tcase *ast.FuncLit:\n\t\t// Collect info about the function literal itself.\n\t\tast.Walk(fi, n.Fun)\n\n\t\t// Check all argument expressions.\n\t\tfor _, arg := range n.Args {\n\t\t\tast.Walk(fi, arg)\n\t\t}\n\t\t// Register literal function call site in case it is identified as blocking.\n\t\tfi.literalFuncCallees[f] = append(fi.literalFuncCallees[f], fi.visitorStack.copy())\n\t\treturn nil // No need to walk under this CallExpr, we already did it manually.\n\tdefault:\n\t\tif astutil.IsTypeExpr(f, fi.pkgInfo.Info) {\n\t\t\t// This is a type assertion, not a call. Type assertion itself is not\n\t\t\t// blocking, but we will visit the expression itself.\n\t\t} else {\n\t\t\t// The function is returned by a non-trivial expression. We have to be\n\t\t\t// conservative and assume that function might be blocking.\n\t\t\tfi.markBlocking(fi.visitorStack)\n\t\t}\n\t}\n\n\treturn fi\n}\n\nfunc (fi *FuncInfo) callToNamedFunc(callee types.Object) {\n\tswitch o := callee.(type) {\n\tcase *types.Func:\n\t\tif recv := o.Type().(*types.Signature).Recv(); recv != nil {\n\t\t\tif _, ok := recv.Type().Underlying().(*types.Interface); ok {\n\t\t\t\t// Conservatively assume that an interface implementation may be blocking.\n\t\t\t\tfi.markBlocking(fi.visitorStack)\n\t\t\t\treturn\n\t\t\t}\n\t\t}\n\t\tif o.Pkg() != fi.pkgInfo.Pkg {\n\t\t\tif fi.pkgInfo.isImportedBlocking(o) {\n\t\t\t\tfi.markBlocking(fi.visitorStack)\n\t\t\t}\n\t\t\treturn\n\t\t}\n\t\t// We probably don't know yet whether the callee function is blocking.\n\t\t// Record the calls site for the later stage.\n\t\tfi.localNamedCallees[o] = append(fi.localNamedCallees[o], fi.visitorStack.copy())\n\tcase *types.Var:\n\t\t// Conservatively assume that a function in a variable might be blocking.\n\t\tfi.markBlocking(fi.visitorStack)\n\t}\n}\n\nfunc (fi *FuncInfo) markBlocking(stack astPath) {\n\tfor _, n := range stack {\n\t\tfi.Blocking[n] = true\n\t\tfi.Flattened[n] = true\n\t}\n}\n\nfunc (fi *FuncInfo) markFlattened(stack astPath) {\n\tfor _, n := range stack {\n\t\tfi.Flattened[n] = true\n\t}\n}\n",
+        "rank": 0,
+        "truncated": false
+      }
+    ],
+    "selected": [
+      {
+        "id": "c07272c455d6bcaac924da55",
+        "revision": "0a51510745ad4882ebd4677ff5c9a18e9ea57660",
+        "path": "compiler/analysis/info.go",
+        "start_byte": 2436,
+        "text": "func (info *Info) IsBlocking(fun *types.Func) bool {\n\tif info.FuncDeclInfos[fun] == nil {\n\t\tpanic(\"nil info\")\n\t}\n\treturn len(info.FuncDeclInfos[fun].Blocking) > 0\n}",
+        "rank": 0,
+        "truncated": false
+      },
+      {
+        "id": "f2f06dae6cf86d95c97ef4c0",
+        "revision": "71369512ae8b0293548f59357f1b5dfbed516453",
+        "path": "compiler/analysis/info.go",
+        "start_byte": 2405,
+        "text": "func (info *Info) IsBlocking(fun *types.Func) bool {\n\tif funInfo := info.FuncDeclInfos[fun]; funInfo != nil {\n\t\treturn len(funInfo.Blocking) > 0\n\t}\n\tpanic(fmt.Errorf(`info did not have function declaration for %s`, fun.FullName()))\n}",
+        "rank": 0,
+        "truncated": false
+      },
+      {
+        "id": "ecd7df3d258a1f749b61a9c9",
+        "revision": "0a51510745ad4882ebd4677ff5c9a18e9ea57660",
+        "path": "compiler/analysis/info.go",
+        "start_byte": 898,
+        "text": "type Info struct {\n\t*types.Info\n\tPkg           *types.Package\n\tHasPointer    map[*types.Var]bool\n\tFuncDeclInfos map[*types.Func]*FuncInfo\n\tFuncLitInfos  map[*ast.FuncLit]*FuncInfo\n\tInitFuncInfo  *FuncInfo // Context for package variable initialization.\n\n\tisImportedBlocking func(*types.Func) bool // For functions from other packages.\n\tallInfos           []*FuncInfo\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "97efbf9b4d29b2439c7476de",
+        "revision": "0a51510745ad4882ebd4677ff5c9a18e9ea57660",
+        "path": "compiler/natives/src/runtime/runtime.go",
+        "start_byte": 12094,
+        "text": "type Func struct {\n\tname string\n\tfile string\n\tline int\n\n\topaque struct{} // unexported field to disallow conversions\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "bdefee099cedebf0051e0dcf",
+        "revision": "0a51510745ad4882ebd4677ff5c9a18e9ea57660",
+        "path": "compiler/natives/src/syscall/js/js.go",
+        "start_byte": 765,
+        "text": "type Func struct {\n\tValue\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "1c9e35c291b387a3d64d08fa",
+        "revision": "0a51510745ad4882ebd4677ff5c9a18e9ea57660",
+        "path": "compiler/prelude/prelude.go",
+        "start_byte": 292,
+        "text": "var types string",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "0d0c15f0b2ccb0bf2887f122",
+        "revision": "71369512ae8b0293548f59357f1b5dfbed516453",
+        "path": "compiler/analysis/info.go",
+        "start_byte": 867,
+        "text": "type Info struct {\n\t*types.Info\n\tPkg           *types.Package\n\tHasPointer    map[*types.Var]bool\n\tFuncDeclInfos map[*types.Func]*FuncInfo\n\tFuncLitInfos  map[*ast.FuncLit]*FuncInfo\n\tInitFuncInfo  *FuncInfo // Context for package variable initialization.\n\n\tisImportedBlocking func(*types.Func) bool // For functions from other packages.\n\tallInfos           []*FuncInfo\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "1fae48d294792f5a2f7d98f3",
+        "revision": "71369512ae8b0293548f59357f1b5dfbed516453",
+        "path": "compiler/natives/src/runtime/runtime.go",
+        "start_byte": 12094,
+        "text": "type Func struct {\n\tname string\n\tfile string\n\tline int\n\n\topaque struct{} // unexported field to disallow conversions\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "f5b624bad555a8a282ed624f",
+        "revision": "71369512ae8b0293548f59357f1b5dfbed516453",
+        "path": "compiler/natives/src/syscall/js/js.go",
+        "start_byte": 765,
+        "text": "type Func struct {\n\tValue\n}",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "a9b9a255062f11400bdb5c9b",
+        "revision": "71369512ae8b0293548f59357f1b5dfbed516453",
+        "path": "compiler/prelude/prelude.go",
+        "start_byte": 292,
+        "text": "var types string",
+        "rank": 1,
+        "truncated": false
+      },
+      {
+        "id": "e800a84299be5db8b107165a",
+        "revision": "0a51510745ad4882ebd4677ff5c9a18e9ea57660",
+        "path": "build/build.go",
+        "start_byte": 4510,
+        "text": "func parseAndAugment(xctx XContext, pkg *PackageData, isTest bool, fileSet *token.FileSet) ([]*ast.File, []JSFile, error) {\n\tvar files []*ast.File\n\n\ttype overrideInfo struct {\n\t\tkeepOriginal  bool\n\t\tpruneOriginal bool\n\t}\n\treplacedDeclNames := make(map[string]overrideInfo)\n\n\tisXTest := strings.HasSuffix(pkg.ImportPath, \"_test\")\n\timportPath := pkg.ImportPath\n\tif isXTest {\n\t\timportPath = importPath[:len(importPath)-5]\n\t}\n\n\tjsFiles := []JSFile{}\n\n\tnativesContext := overlayCtx(xctx.Env())\n\n\tif nativesPkg, err := nativesContext.Import(importPath, \"\", 0); err == nil {\n\t\tjsFiles = nativesPkg.JSFiles\n\t\tnames := nativesPkg.GoFiles\n\t\tif isTest {\n\t\t\tnames = append(names, nativesPkg.TestGoFiles...)\n\t\t}\n\t\tif isXTest {\n\t\t\tnames = nativesPkg.XTestGoFiles\n\t\t}\n\t\tfor _, name := range names {\n\t\t\tfullPath := path.Join(nativesPkg.Dir, name)\n\t\t\tr, err := nativesContext.bctx.OpenFile(fullPath)\n\t\t\tif err != nil {\n\t\t\t\tpanic(err)\n\t\t\t}\n\t\t\t// Files should be uniquely named and in the original package directory in order to be\n\t\t\t// ordered correctly\n\t\t\tnewPath := path.Join(pkg.Dir, \"gopherjs__\"+name)\n\t\t\tfile, err := parser.ParseFile(fileSet, newPath, r, parser.ParseComments)\n\t\t\tif err != nil {\n\t\t\t\tpanic(err)\n\t\t\t}\n\t\t\tr.Close()\n\t\t\tfor _, decl := range file.Decls {\n\t\t\t\tswitch d := decl.(type) {\n\t\t\t\tcase *ast.FuncDecl:\n\t\t\t\t\tk := astutil.FuncKey(d)\n\t\t\t\t\treplacedDeclNames[k] = overrideInfo{\n\t\t\t\t\t\tkeepOriginal:  astutil.KeepOriginal(d),\n\t\t\t\t\t\tpruneOriginal: astutil.PruneOriginal(d),\n\t\t\t\t\t}\n\t\t\t\tcase *ast.GenDecl:\n\t\t\t\t\tswitch d.Tok {\n\t\t\t\t\tcase token.TYPE:\n\t\t\t\t\t\tfor _, spec := range d.Specs {\n\t\t\t\t\t\t\treplacedDeclNames[spec.(*ast.TypeSpec).Name.Name] = overrideInfo{}\n\t\t\t\t\t\t}\n\t\t\t\t\tcase token.VAR, token.CONST:\n\t\t\t\t\t\tfor _, spec := range d.Specs {\n\t\t\t\t\t\t\tfor _, name := range spec.(*ast.ValueSpec).Names {\n\t\t\t\t\t\t\t\treplacedDeclNames[name.Name] = overrideInfo{}\n\t\t\t\t\t\t\t}\n\t\t\t\t\t\t}\n\t\t\t\t\t}\n\t\t\t\t}\n\t\t\t}\n\t\t\tfiles = append(files, file)\n\t\t}\n\t}\n\tdelete(replacedDeclNames, \"init\")\n\n\tvar errList compiler.ErrorList\n\tfor _, name := range pkg.GoFiles {\n\t\tif !filepath.IsAbs(name) { // name might be absolute if specified directly. E.g., `gopherjs build /abs/file.go`.\n\t\t\tname = filepath.Join(pkg.Dir, name)\n\t\t}\n\t\tr, err := buildutil.OpenFile(pkg.bctx, name)\n\t\tif err != nil {\n\t\t\treturn nil, nil, err\n\t\t}\n\t\tfile, err := parser.ParseFile(fileSet, name, r, parser.ParseComments)\n\t\tr.Close()\n\t\tif err != nil {\n\t\t\tif list, isList := err.(scanner.ErrorList); isList {\n\t\t\t\tif len(list) > 10 {\n\t\t\t\t\tlist = append(list[:10], &scanner.Error{Pos: list[9].Pos, Msg: \"too many errors\"})\n\t\t\t\t}\n\t\t\t\tfor _, entry := range list {\n\t\t\t\t\terrList = append(errList, entry)\n\t\t\t\t}\n\t\t\t\tcontinue\n\t\t\t}\n\t\t\terrList = append(errList, err)\n\t\t\tcontinue\n\t\t}\n\n\t\tswitch pkg.ImportPath {\n\t\tcase \"crypto/rand\", \"encoding/gob\", \"encoding/json\", \"expvar\", \"go/token\", \"log\", \"math/big\", \"math/rand\", \"regexp\", \"time\":\n\t\t\tfor _, spec := range file.Imports {\n\t\t\t\tpath, _ := strconv.Unquote(spec.Path.Value)\n\t\t\t\tif path == \"sync\" {\n\t\t\t\t\tif spec.Name == nil {\n\t\t\t\t\t\tspec.Name = ast.NewIdent(\"sync\")\n\t\t\t\t\t}\n\t\t\t\t\tspec.Path.Value = `\"github.com/gopherjs/gopherjs/nosync\"`\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\n\t\tfor _, decl := range file.Decls {\n\t\t\tswitch d := decl.(type) {\n\t\t\tcase *ast.FuncDecl:\n\t\t\t\tk := astutil.FuncKey(d)\n\t\t\t\tif info, ok := replacedDeclNames[k]; ok {\n\t\t\t\t\tif info.pruneOriginal {\n\t\t\t\t\t\t// Prune function bodies, since it may contain code invalid for\n\t\t\t\t\t\t// GopherJS and pin unwanted imports.\n\t\t\t\t\t\td.Body = nil\n\t\t\t\t\t}\n\t\t\t\t\tif info.keepOriginal {\n\t\t\t\t\t\t// Allow overridden function calls\n\t\t\t\t\t\t// The standard library implementation of foo() becomes _gopherjs_original_foo()\n\t\t\t\t\t\td.Name.Name = \"_gopherjs_original_\" + d.Name.Name\n\t\t\t\t\t} else {\n\t\t\t\t\t\td.Name = ast.NewIdent(\"_\")\n\t\t\t\t\t}\n\t\t\t\t}\n\t\t\tcase *ast.GenDecl:\n\t\t\t\tswitch d.Tok {\n\t\t\t\tcase token.TYPE:\n\t\t\t\t\tfor _, spec := range d.Specs {\n\t\t\t\t\t\ts := spec.(*ast.TypeSpec)\n\t\t\t\t\t\tif _, ok := replacedDeclNames[s.Name.Name]; ok {\n\t\t\t\t\t\t\ts.Name = ast.NewIdent(\"_\")\n\t\t\t\t\t\t\ts.Type = &ast.StructType{Struct: s.Pos(), Fields: &ast.FieldList{}}\n\t\t\t\t\t\t\ts.TypeParams = nil\n\t\t\t\t\t\t}\n\t\t\t\t\t}\n\t\t\t\tcase token.VAR, token.CONST:\n\t\t\t\t\tfor _, spec := range d.Specs {\n\t\t\t\t\t\ts := spec.(*ast.ValueSpec)\n\t\t\t\t\t\tfor i, name := range s.Names {\n\t\t\t\t\t\t\tif _, ok := replacedDeclNames[name.Name]; ok {\n\t\t\t\t\t\t\t\ts.Names[i] = ast.NewIdent(\"_\")\n\t\t\t\t\t\t\t}\n\t\t\t\t\t\t}\n\t\t\t\t\t}\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\n\t\tfiles = append(files, file)\n\t}\n\n\tif errList != nil {\n\t\treturn nil, nil, errList\n\t}\n\treturn files, jsFiles, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "7034cf1a0f5b69ba03b474fe",
+        "revision": "0a51510745ad4882ebd4677ff5c9a18e9ea57660",
+        "path": "build/build.go",
+        "start_byte": 4659,
+        "text": "type overrideInfo struct {\n\t\tkeepOriginal  bool\n\t\tpruneOriginal bool\n\t}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "815b16d01628446418a1e29f",
+        "revision": "0a51510745ad4882ebd4677ff5c9a18e9ea57660",
+        "path": "build/build.go",
+        "start_byte": 8991,
+        "text": "type Options struct {\n\tVerbose        bool\n\tQuiet          bool\n\tWatch          bool\n\tCreateMapFile  bool\n\tMapToLocalDisk bool\n\tMinify         bool\n\tColor          bool\n\tBuildTags      []string\n\tTestedPackage  string\n\tNoCache        bool\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "725f6a0e99bfed3f7e4df430",
+        "revision": "0a51510745ad4882ebd4677ff5c9a18e9ea57660",
+        "path": "build/build.go",
+        "start_byte": 9938,
+        "text": "type PackageData struct {\n\t*build.Package\n\tJSFiles []JSFile\n\t// IsTest is true if the package is being built for running tests.\n\tIsTest     bool\n\tSrcModTime time.Time\n\tUpToDate   bool\n\t// If true, the package does not have a corresponding physical directory on disk.\n\tIsVirtual bool\n\n\tbctx *build.Context // The original build context this package came from.\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "d2ac6cf92fa63f16a8ce72d6",
+        "revision": "0a51510745ad4882ebd4677ff5c9a18e9ea57660",
+        "path": "build/build.go",
+        "start_byte": 13600,
+        "text": "type Session struct {\n\toptions    *Options\n\txctx       XContext\n\tbuildCache cache.BuildCache\n\n\t// Binary archives produced during the current session and assumed to be\n\t// up to date with input sources and dependencies. In the -w (\"watch\") mode\n\t// must be cleared upon entering watching.\n\tUpToDateArchives map[string]*compiler.Archive\n\tTypes            map[string]*types.Package\n\tWatcher          *fsnotify.Watcher\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "a917738810b2b78e5559a2be",
+        "revision": "0a51510745ad4882ebd4677ff5c9a18e9ea57660",
+        "path": "build/build.go",
+        "start_byte": 14071,
+        "text": "func NewSession(options *Options) (*Session, error) {\n\toptions.Verbose = options.Verbose || options.Watch\n\n\ts := &Session{\n\t\toptions:          options,\n\t\tUpToDateArchives: make(map[string]*compiler.Archive),\n\t}\n\ts.xctx = NewBuildContext(s.InstallSuffix(), s.options.BuildTags)\n\tenv := s.xctx.Env()\n\n\t// Go distribution version check.\n\tif err := compiler.CheckGoVersion(env.GOROOT); err != nil {\n\t\treturn nil, err\n\t}\n\n\ts.buildCache = cache.BuildCache{\n\t\tGOOS:          env.GOOS,\n\t\tGOARCH:        env.GOARCH,\n\t\tGOROOT:        env.GOROOT,\n\t\tGOPATH:        env.GOPATH,\n\t\tBuildTags:     append([]string{}, env.BuildTags...),\n\t\tMinify:        options.Minify,\n\t\tTestedPackage: options.TestedPackage,\n\t}\n\ts.Types = make(map[string]*types.Package)\n\tif options.Watch {\n\t\tif out, err := exec.Command(\"ulimit\", \"-n\").Output(); err == nil {\n\t\t\tif n, err := strconv.Atoi(strings.TrimSpace(string(out))); err == nil && n < 1024 {\n\t\t\t\tfmt.Printf(\"Warning: The maximum number of open file descriptors is very low (%d). Change it with 'ulimit -n 8192'.\\n\", n)\n\t\t\t}\n\t\t}\n\n\t\tvar err error\n\t\ts.Watcher, err = fsnotify.NewWatcher()\n\t\tif err != nil {\n\t\t\treturn nil, err\n\t\t}\n\t}\n\treturn s, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "cb418b18e530e2eb7122597b",
+        "revision": "0a51510745ad4882ebd4677ff5c9a18e9ea57660",
+        "path": "build/build.go",
+        "start_byte": 15900,
+        "text": "func (s *Session) BuildFiles(filenames []string, pkgObj string, cwd string) error {\n\tif len(filenames) == 0 {\n\t\treturn fmt.Errorf(\"no input sources are provided\")\n\t}\n\n\tnormalizedDir := func(filename string) string {\n\t\td := filepath.Dir(filename)\n\t\tif !filepath.IsAbs(d) {\n\t\t\td = filepath.Join(cwd, d)\n\t\t}\n\t\treturn filepath.Clean(d)\n\t}\n\n\t// Ensure all source files are in the same directory.\n\tdirSet := map[string]bool{}\n\tfor _, file := range filenames {\n\t\tdirSet[normalizedDir(file)] = true\n\t}\n\tdirList := []string{}\n\tfor dir := range dirSet {\n\t\tdirList = append(dirList, dir)\n\t}\n\tsort.Strings(dirList)\n\tif len(dirList) != 1 {\n\t\treturn fmt.Errorf(\"named files must all be in one directory; have: %v\", strings.Join(dirList, \", \"))\n\t}\n\n\troot := dirList[0]\n\tctx := build.Default\n\tctx.UseAllFiles = true\n\tctx.ReadDir = func(dir string) ([]fs.FileInfo, error) {\n\t\tn := len(filenames)\n\t\tinfos := make([]fs.FileInfo, n)\n\t\tfor i := 0; i < n; i++ {\n\t\t\tinfo, err := os.Stat(filenames[i])\n\t\t\tif err != nil {\n\t\t\t\treturn nil, err\n\t\t\t}\n\t\t\tinfos[i] = info\n\t\t}\n\t\treturn infos, nil\n\t}\n\tp, err := ctx.Import(\".\", root, 0)\n\tif err != nil {\n\t\treturn err\n\t}\n\tp.Name = \"main\"\n\tp.ImportPath = \"main\"\n\n\tpkg := &PackageData{\n\t\tPackage: p,\n\t\t// This ephemeral package doesn't have a unique import path to be used as a\n\t\t// build cache key, so we never cache it.\n\t\tSrcModTime: time.Now().Add(time.Hour),\n\t\tbctx:       &goCtx(s.xctx.Env()).bctx,\n\t}\n\n\tfor _, file := range filenames {\n\t\tif !strings.HasSuffix(file, \".inc.js\") {\n\t\t\tcontinue\n\t\t}\n\n\t\tcontent, err := os.ReadFile(file)\n\t\tif err != nil {\n\t\t\treturn fmt.Errorf(\"failed to read %s: %w\", file, err)\n\t\t}\n\t\tinfo, err := os.Stat(file)\n\t\tif err != nil {\n\t\t\treturn fmt.Errorf(\"failed to stat %s: %w\", file, err)\n\t\t}\n\t\tpkg.JSFiles = append(pkg.JSFiles, JSFile{\n\t\t\tPath:    filepath.Join(pkg.Dir, filepath.Base(file)),\n\t\t\tModTime: info.ModTime(),\n\t\t\tContent: content,\n\t\t})\n\t}\n\n\tarchive, err := s.BuildPackage(pkg)\n\tif err != nil {\n\t\treturn err\n\t}\n\tif s.Types[\"main\"].Name() != \"main\" {\n\t\treturn fmt.Errorf(\"cannot build/run non-main package\")\n\t}\n\treturn s.WriteCommandPackage(archive, pkgObj)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "3ce90e5f94bbc15e0e49768a",
+        "revision": "0a51510745ad4882ebd4677ff5c9a18e9ea57660",
+        "path": "build/build.go",
+        "start_byte": 18994,
+        "text": "func (s *Session) BuildPackage(pkg *PackageData) (*compiler.Archive, error) {\n\tif archive, ok := s.UpToDateArchives[pkg.ImportPath]; ok {\n\t\treturn archive, nil\n\t}\n\n\tvar fileInfo os.FileInfo\n\tgopherjsBinary, err := os.Executable()\n\tif err == nil {\n\t\tfileInfo, err = os.Stat(gopherjsBinary)\n\t\tif err == nil && fileInfo.ModTime().After(pkg.SrcModTime) {\n\t\t\tpkg.SrcModTime = fileInfo.ModTime()\n\t\t}\n\t}\n\tif err != nil {\n\t\tos.Stderr.WriteString(\"Could not get GopherJS binary's modification timestamp. Please report issue.\\n\")\n\t\tpkg.SrcModTime = time.Now()\n\t}\n\n\tfor _, importedPkgPath := range pkg.Imports {\n\t\tif importedPkgPath == \"unsafe\" {\n\t\t\tcontinue\n\t\t}\n\t\timportedPkg, _, err := s.buildImportPathWithSrcDir(importedPkgPath, pkg.Dir)\n\t\tif err != nil {\n\t\t\treturn nil, err\n\t\t}\n\n\t\timpModTime := importedPkg.SrcModTime\n\t\tif impModTime.After(pkg.SrcModTime) {\n\t\t\tpkg.SrcModTime = impModTime\n\t\t}\n\t}\n\n\tif pkg.FileModTime().After(pkg.SrcModTime) {\n\t\tpkg.SrcModTime = pkg.FileModTime()\n\t}\n\n\tif !s.options.NoCache {\n\t\tarchive := s.buildCache.LoadArchive(pkg.ImportPath)\n\t\tif archive != nil && !pkg.SrcModTime.After(archive.BuildTime) {\n\t\t\tif err := archive.RegisterTypes(s.Types); err != nil {\n\t\t\t\tpanic(fmt.Errorf(\"Failed to load type information from %v: %w\", archive, err))\n\t\t\t}\n\t\t\ts.UpToDateArchives[pkg.ImportPath] = archive\n\t\t\t// Existing archive is up to date, no need to build it from scratch.\n\t\t\treturn archive, nil\n\t\t}\n\t}\n\n\t// Existing archive is out of date or doesn't exist, let's build the package.\n\tfileSet := token.NewFileSet()\n\tfiles, overlayJsFiles, err := parseAndAugment(s.xctx, pkg, pkg.IsTest, fileSet)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\tembed, err := embedFiles(pkg, fileSet, files)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\tif embed != nil {\n\t\tfiles = append(files, embed)\n\t}\n\n\timportContext := &compiler.ImportContext{\n\t\tPackages: s.Types,\n\t\tImport:   s.ImportResolverFor(pkg),\n\t}\n\tarchive, err := compiler.Compile(pkg.ImportPath, files, fileSet, importContext, s.options.Minify)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\n\tfor _, jsFile := range append(pkg.JSFiles, overlayJsFiles...) {\n\t\tarchive.IncJSCode = append(archive.IncJSCode, []byte(\"\\t(function() {\\n\")...)\n\t\tarchive.IncJSCode = append(archive.IncJSCode, jsFile.Content...)\n\t\tarchive.IncJSCode = append(archive.IncJSCode, []byte(\"\\n\\t}).call($global);\\n\")...)\n\t}\n\n\tif s.options.Verbose {\n\t\tfmt.Println(pkg.ImportPath)\n\t}\n\n\ts.buildCache.StoreArchive(archive)\n\ts.UpToDateArchives[pkg.ImportPath] = archive\n\n\treturn archive, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "0b3cacd539a9cacc4d25fa98",
+        "revision": "0a51510745ad4882ebd4677ff5c9a18e9ea57660",
+        "path": "build/build.go",
+        "start_byte": 23492,
+        "text": "func NewMappingCallback(m *sourcemap.Map, goroot, gopath string, localMap bool) func(generatedLine, generatedColumn int, originalPos token.Position) {\n\treturn func(generatedLine, generatedColumn int, originalPos token.Position) {\n\t\tif !originalPos.IsValid() {\n\t\t\tm.AddMapping(&sourcemap.Mapping{GeneratedLine: generatedLine, GeneratedColumn: generatedColumn})\n\t\t\treturn\n\t\t}\n\n\t\tfile := originalPos.Filename\n\n\t\tswitch hasGopathPrefix, prefixLen := hasGopathPrefix(file, gopath); {\n\t\tcase localMap:\n\t\t\t// no-op:  keep file as-is\n\t\tcase hasGopathPrefix:\n\t\t\tfile = filepath.ToSlash(file[prefixLen+4:])\n\t\tcase strings.HasPrefix(file, goroot):\n\t\t\tfile = filepath.ToSlash(file[len(goroot)+4:])\n\t\tdefault:\n\t\t\tfile = filepath.Base(file)\n\t\t}\n\n\t\tm.AddMapping(&sourcemap.Mapping{GeneratedLine: generatedLine, GeneratedColumn: generatedColumn, OriginalFile: file, OriginalLine: originalPos.Line, OriginalColumn: originalPos.Column})\n\t}\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "28b849d41494ff7f145b6611",
+        "revision": "0a51510745ad4882ebd4677ff5c9a18e9ea57660",
+        "path": "build/build.go",
+        "start_byte": 24565,
+        "text": "func hasGopathPrefix(file, gopath string) (hasGopathPrefix bool, prefixLen int) {\n\tgopathWorkspaces := filepath.SplitList(gopath)\n\tfor _, gopathWorkspace := range gopathWorkspaces {\n\t\tgopathWorkspace = filepath.Clean(gopathWorkspace)\n\t\tif strings.HasPrefix(file, gopathWorkspace) {\n\t\t\treturn true, len(gopathWorkspace)\n\t\t}\n\t}\n\treturn false, 0\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "3828423710311442fbcdd220",
+        "revision": "0a51510745ad4882ebd4677ff5c9a18e9ea57660",
+        "path": "build/build.go",
+        "start_byte": 25022,
+        "text": "func (s *Session) WaitForChange() {\n\t// Will need to re-validate up-to-dateness of all archives, so flush them from\n\t// memory.\n\ts.UpToDateArchives = map[string]*compiler.Archive{}\n\ts.Types = map[string]*types.Package{}\n\n\ts.options.PrintSuccess(\"watching for changes...\\n\")\n\tfor {\n\t\tselect {\n\t\tcase ev := <-s.Watcher.Events:\n\t\t\tif ev.Op&(fsnotify.Create|fsnotify.Write|fsnotify.Remove|fsnotify.Rename) == 0 || filepath.Base(ev.Name)[0] == '.' {\n\t\t\t\tcontinue\n\t\t\t}\n\t\t\tif !strings.HasSuffix(ev.Name, \".go\") && !strings.HasSuffix(ev.Name, \".inc.js\") {\n\t\t\t\tcontinue\n\t\t\t}\n\t\t\ts.options.PrintSuccess(\"change detected: %s\\n\", ev.Name)\n\t\tcase err := <-s.Watcher.Errors:\n\t\t\ts.options.PrintError(\"watcher error: %s\\n\", err.Error())\n\t\t}\n\t\tbreak\n\t}\n\n\tgo func() {\n\t\tfor range s.Watcher.Events {\n\t\t\t// consume, else Close() may deadlock\n\t\t}\n\t}()\n\ts.Watcher.Close()\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "2a1144bd18940edef765b352",
+        "revision": "0a51510745ad4882ebd4677ff5c9a18e9ea57660",
+        "path": "build/cache/cache.go",
+        "start_byte": 1143,
+        "text": "func cachedPath(keys ...string) string {\n\tkey := path.Join(keys...)\n\tif key == \"\" {\n\t\tpanic(\"CachedPath() must not be used with an empty string\")\n\t}\n\tsum := fmt.Sprintf(\"%x\", sha256.Sum256([]byte(key)))\n\treturn filepath.Join(cacheRoot, sum[0:2], sum)\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "ec6ca58a20b768bbaac26358",
+        "revision": "0a51510745ad4882ebd4677ff5c9a18e9ea57660",
+        "path": "build/cache/cache.go",
+        "start_byte": 2796,
+        "text": "type BuildCache struct {\n\tGOOS      string\n\tGOARCH    string\n\tGOROOT    string\n\tGOPATH    string\n\tBuildTags []string\n\tMinify    bool\n\t// When building for tests, import path of the package being tested. The\n\t// package under test is built with *_test.go sources included, and since it\n\t// may be imported by other packages in the binary we can't reuse the \"normal\"\n\t// cache.\n\tTestedPackage string\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "0c9abb1c09d3ee30f5dcd7c7",
+        "revision": "0a51510745ad4882ebd4677ff5c9a18e9ea57660",
+        "path": "build/context.go",
+        "start_byte": 2129,
+        "text": "type simpleCtx struct {\n\tbctx         build.Context\n\tisVirtual    bool // Imported packages don't have a physical directory on disk.\n\tnoPostTweaks bool // Don't apply post-load tweaks to packages. For tests only.\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "ffee0fb88be2d9429ffa85b5",
+        "revision": "0a51510745ad4882ebd4677ff5c9a18e9ea57660",
+        "path": "build/context.go",
+        "start_byte": 5024,
+        "text": "func (sc simpleCtx) gotool(subcommand string, args ...string) (string, error) {\n\tif sc.isVirtual {\n\t\tpanic(fmt.Errorf(\"can't use go tool with a virtual build context\"))\n\t}\n\targs = append([]string{subcommand}, args...)\n\tcmd := exec.Command(filepath.Join(sc.bctx.GOROOT, \"bin\", \"go\"), args...)\n\n\tif sc.bctx.Dir != \"\" {\n\t\tcmd.Dir = sc.bctx.Dir\n\t}\n\n\tvar stdout, stderr strings.Builder\n\tcmd.Stdout = &stdout\n\tcmd.Stderr = &stderr\n\n\tcgo := \"0\"\n\tif sc.bctx.CgoEnabled {\n\t\tcgo = \"1\"\n\t}\n\tcmd.Env = append(os.Environ(),\n\t\t\"GOOS=\"+sc.bctx.GOOS,\n\t\t\"GOARCH=\"+sc.bctx.GOARCH,\n\t\t\"GOROOT=\"+sc.bctx.GOROOT,\n\t\t\"GOPATH=\"+sc.bctx.GOPATH,\n\t\t\"CGO_ENABLED=\"+cgo,\n\t)\n\n\tif err := cmd.Run(); err != nil {\n\t\treturn \"\", fmt.Errorf(\"go tool error: %v: %w\\n%s\", cmd, err, stderr.String())\n\t}\n\treturn stdout.String(), nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "e0601ce29fa4f6d8be5138b2",
+        "revision": "0a51510745ad4882ebd4677ff5c9a18e9ea57660",
+        "path": "build/context.go",
+        "start_byte": 8490,
+        "text": "func (sc simpleCtx) isStd(importPath, srcDir string) bool {\n\tpkg, err := sc.bctx.Import(importPath, srcDir, build.FindOnly)\n\tif err != nil {\n\t\treturn false\n\t}\n\treturn pkg.Goroot\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "1a8d9f11d40d99f9ff7baf37",
+        "revision": "0a51510745ad4882ebd4677ff5c9a18e9ea57660",
+        "path": "build/context.go",
+        "start_byte": 12146,
+        "text": "func (cc chainedCtx) Match(patterns []string) ([]string, error) {\n\tm1, err := cc.primary.Match(patterns)\n\tif err != nil {\n\t\treturn nil, fmt.Errorf(\"failed to list packages in the primary context: %s\", err)\n\t}\n\tm2, err := cc.secondary.Match(patterns)\n\tif err != nil {\n\t\treturn nil, fmt.Errorf(\"failed to list packages in the secondary context: %s\", err)\n\t}\n\n\tseen := map[string]bool{}\n\tmatches := []string{}\n\tfor _, m := range append(m1, m2...) {\n\t\tif seen[m] {\n\t\t\tcontinue\n\t\t}\n\t\tseen[m] = true\n\t\tmatches = append(matches, m)\n\t}\n\tsort.Strings(matches)\n\treturn matches, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "34a202ae0e48ce821001314b",
+        "revision": "0a51510745ad4882ebd4677ff5c9a18e9ea57660",
+        "path": "build/context.go",
+        "start_byte": 12905,
+        "text": "func IsPkgNotFound(err error) bool {\n\treturn err != nil &&\n\t\t(strings.Contains(err.Error(), \"cannot find package\") || // Modules off.\n\t\t\tstrings.Contains(err.Error(), \"is not in GOROOT\")) // Modules on.\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "bbf67d2a1ffe413bd6ab523d",
+        "revision": "0a51510745ad4882ebd4677ff5c9a18e9ea57660",
+        "path": "build/context.go",
+        "start_byte": 13219,
+        "text": "func updateImports(sources []string, importPos map[string][]token.Position) (newImports []string, newImportPos map[string][]token.Position) {\n\tif importPos == nil {\n\t\t// Short-circuit for tests when no imports are loaded.\n\t\treturn nil, nil\n\t}\n\tsourceSet := map[string]bool{}\n\tfor _, source := range sources {\n\t\tsourceSet[source] = true\n\t}\n\n\tnewImportPos = map[string][]token.Position{}\n\tfor importPath, positions := range importPos {\n\t\tfor _, pos := range positions {\n\t\t\tif sourceSet[filepath.Base(pos.Filename)] {\n\t\t\t\tnewImportPos[importPath] = append(newImportPos[importPath], pos)\n\t\t\t}\n\t\t}\n\t}\n\n\tfor importPath := range newImportPos {\n\t\tnewImports = append(newImports, importPath)\n\t}\n\tsort.Strings(newImports)\n\treturn newImports, newImportPos\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "00ab3068ab3740aad990f114",
+        "revision": "0a51510745ad4882ebd4677ff5c9a18e9ea57660",
+        "path": "build/embed.go",
+        "start_byte": 564,
+        "text": "func embedFiles(pkg *PackageData, fset *token.FileSet, files []*ast.File) (*ast.File, error) {\n\tif len(pkg.EmbedPatternPos) == 0 {\n\t\treturn nil, nil\n\t}\n\n\tems, err := goembed.CheckEmbed(pkg.EmbedPatternPos, fset, files)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\n\tr := goembed.NewResolve()\n\tfor _, em := range ems {\n\t\tfs, err := r.Load(pkg.Dir, fset, em)\n\t\tif err != nil {\n\t\t\treturn nil, err\n\t\t}\n\t\tswitch em.Kind {\n\t\tcase goembed.EmbedMaybeAlias:\n\t\t\t// value = Type(data)\n\t\t\t// valid alias string or []byte type used by types.check\n\t\t\tem.Spec.Values = []ast.Expr{\n\t\t\t\t&ast.CallExpr{\n\t\t\t\t\tFun: em.Spec.Type,\n\t\t\t\t\tArgs: []ast.Expr{\n\t\t\t\t\t\t&ast.Ident{\n\t\t\t\t\t\t\tName:    buildIdent(fs[0].Name),\n\t\t\t\t\t\t\tNamePos: em.Spec.Names[0].NamePos,\n\t\t\t\t\t\t},\n\t\t\t\t\t},\n\t\t\t\t},\n\t\t\t}\n\t\tcase goembed.EmbedBytes:\n\t\t\t// value = []byte(data)\n\t\t\tem.Spec.Values = []ast.Expr{\n\t\t\t\t&ast.CallExpr{\n\t\t\t\t\tFun:  em.Spec.Type,\n\t\t\t\t\tArgs: []ast.Expr{ast.NewIdent(buildIdent(fs[0].Name))},\n\t\t\t\t},\n\t\t\t}\n\t\tcase goembed.EmbedString:\n\t\t\t// value = data\n\t\t\tem.Spec.Values = []ast.Expr{ast.NewIdent(buildIdent(fs[0].Name))}\n\t\tcase goembed.EmbedFiles:\n\t\t\t// value = __gopherjs_embed_buildFS__([]struct{name string; data string; hash [16]byte}{...})\n\t\t\tfs = goembed.BuildFS(fs)\n\t\t\telts := make([]ast.Expr, len(fs))\n\t\t\tfor i, f := range fs {\n\t\t\t\tif len(f.Data) == 0 {\n\t\t\t\t\telts[i] = &ast.CompositeLit{\n\t\t\t\t\t\tElts: []ast.Expr{\n\t\t\t\t\t\t\t&ast.BasicLit{Kind: token.STRING, Value: strconv.Quote(f.Name)},\n\t\t\t\t\t\t\t&ast.BasicLit{Kind: token.STRING, Value: `\"\"`},\n\t\t\t\t\t\t\t&ast.CompositeLit{\n\t\t\t\t\t\t\t\tType: &ast.ArrayType{\n\t\t\t\t\t\t\t\t\tLen: &ast.BasicLit{Kind: token.INT, Value: \"16\"},\n\t\t\t\t\t\t\t\t\tElt: ast.NewIdent(\"byte\"),\n\t\t\t\t\t\t\t\t},\n\t\t\t\t\t\t\t},\n\t\t\t\t\t\t},\n\t\t\t\t\t}\n\t\t\t\t} else {\n\t\t\t\t\tvar hash [16]ast.Expr\n\t\t\t\t\tfor j, v := range f.Hash {\n\t\t\t\t\t\thash[j] = &ast.BasicLit{Kind: token.INT, Value: strconv.Itoa(int(v))}\n\t\t\t\t\t}\n\t\t\t\t\telts[i] = &ast.CompositeLit{\n\t\t\t\t\t\tElts: []ast.Expr{\n\t\t\t\t\t\t\t&ast.BasicLit{Kind: token.STRING, Value: strconv.Quote(f.Name)},\n\t\t\t\t\t\t\tast.NewIdent(buildIdent(f.Name)),\n\t\t\t\t\t\t\t&ast.CompositeLit{\n\t\t\t\t\t\t\t\tType: &ast.ArrayType{\n\t\t\t\t\t\t\t\t\tLen: &ast.BasicLit{Kind: token.INT, Value: \"16\"},\n\t\t\t\t\t\t\t\t\tElt: ast.NewIdent(\"byte\"),\n\t\t\t\t\t\t\t\t},\n\t\t\t\t\t\t\t\tElts: hash[:],\n\t\t\t\t\t\t\t},\n\t\t\t\t\t\t},\n\t\t\t\t\t}\n\t\t\t\t}\n\t\t\t}\n\t\t\tcall := &ast.CallExpr{\n\t\t\t\tFun: ast.NewIdent(\"__gopherjs_embed_buildFS__\"),\n\t\t\t\tArgs: []ast.Expr{\n\t\t\t\t\t&ast.CompositeLit{\n\t\t\t\t\t\tType: &ast.ArrayType{\n\t\t\t\t\t\t\tElt: &ast.StructType{\n\t\t\t\t\t\t\t\tFields: &ast.FieldList{\n\t\t\t\t\t\t\t\t\tList: []*ast.Field{\n\t\t\t\t\t\t\t\t\t\t{\n\t\t\t\t\t\t\t\t\t\t\tNames: []*ast.Ident{ast.NewIdent(\"name\")},\n\t\t\t\t\t\t\t\t\t\t\tType:  ast.NewIdent(\"string\"),\n\t\t\t\t\t\t\t\t\t\t},\n\t\t\t\t\t\t\t\t\t\t{\n\t\t\t\t\t\t\t\t\t\t\tNames: []*ast.Ident{ast.NewIdent(\"data\")},\n\t\t\t\t\t\t\t\t\t\t\tType:  ast.NewIdent(\"string\"),\n\t\t\t\t\t\t\t\t\t\t},\n\t\t\t\t\t\t\t\t\t\t{\n\t\t\t\t\t\t\t\t\t\t\tNames: []*ast.Ident{ast.NewIdent(\"hash\")},\n\t\t\t\t\t\t\t\t\t\t\tType: &ast.ArrayType{\n\t\t\t\t\t\t\t\t\t\t\t\tLen: &ast.BasicLit{Kind: token.INT, Value: \"16\"},\n\t\t\t\t\t\t\t\t\t\t\t\tElt: ast.NewIdent(\"byte\"),\n\t\t\t\t\t\t\t\t\t\t\t},\n\t\t\t\t\t\t\t\t\t\t},\n\t\t\t\t\t\t\t\t\t},\n\t\t\t\t\t\t\t\t},\n\t\t\t\t\t\t\t},\n\t\t\t\t\t\t},\n\t\t\t\t\t\tElts: elts,\n\t\t\t\t\t},\n\t\t\t\t},\n\t\t\t}\n\t\t\tem.Spec.Values = []ast.Expr{call}\n\t\t}\n\t}\n\n\tvar buf bytes.Buffer\n\tfmt.Fprintf(&buf, embed_head, pkg.Name)\n\tbuf.WriteString(\"\\nconst (\\n\")\n\tfor _, f := range r.Files() {\n\t\tif len(f.Data) == 0 {\n\t\t\tfmt.Fprintf(&buf, \"\\t%v = \\\"\\\"\\n\", buildIdent(f.Name))\n\t\t} else {\n\t\t\tfmt.Fprintf(&buf, \"\\t%v = \\\"%v\\\"\\n\", buildIdent(f.Name), goembed.BytesToHex(f.Data))\n\t\t}\n\t}\n\tbuf.WriteString(\")\\n\\n\")\n\tf, err := parser.ParseFile(fset, \"js_embed.go\", buf.String(), parser.ParseComments)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\treturn f, nil\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "ca39c99b4c2c949e9ff30316",
+        "revision": "0a51510745ad4882ebd4677ff5c9a18e9ea57660",
+        "path": "build/embed.go",
+        "start_byte": 4117,
+        "text": "func joinEmbedPatternPos(m1, m2 map[string][]token.Position) map[string][]token.Position {\n\tif len(m1) == 0 && len(m2) == 0 {\n\t\treturn nil\n\t}\n\tm := make(map[string][]token.Position)\n\tfor k, v := range m1 {\n\t\tm[k] = v\n\t}\n\tfor k, v := range m2 {\n\t\tm[k] = append(m[k], v...)\n\t}\n\treturn m\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "170a58def8161e96ce004ae0",
+        "revision": "0a51510745ad4882ebd4677ff5c9a18e9ea57660",
+        "path": "build/fsutil.go",
+        "start_byte": 51,
+        "text": "func mustAbs(p string) string {\n\ta, err := filepath.Abs(p)\n\tif err != nil {\n\t\tpanic(fmt.Errorf(\"failed to get absolute path to %s\", p))\n\t}\n\treturn a\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "c34cde304f2e3463ae4c1abe",
+        "revision": "0a51510745ad4882ebd4677ff5c9a18e9ea57660",
+        "path": "build/vfs.go",
+        "start_byte": 242,
+        "text": "func (fs vfs) IsDir(name string) bool {\n\tname = filepath.ToSlash(name)\n\tdir, err := fs.Open(name)\n\tif err != nil {\n\t\treturn false\n\t}\n\tdefer dir.Close()\n\tinfo, err := dir.Stat()\n\tif err != nil {\n\t\treturn false\n\t}\n\treturn info.IsDir()\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "26fb85368e2dfcd854aabd8c",
+        "revision": "0a51510745ad4882ebd4677ff5c9a18e9ea57660",
+        "path": "build/vfs.go",
+        "start_byte": 1254,
+        "text": "func hasSubdir(root, dir string) (rel string, ok bool) {\n\t// Implementation based on golang.org/x/tools/go/buildutil.\n\tconst sep = \"/\" // UNIX style\n\troot = path.Clean(root)\n\tif !strings.HasSuffix(root, sep) {\n\t\troot += sep\n\t}\n\n\tdir = path.Clean(dir)\n\tif !strings.HasPrefix(dir, root) {\n\t\treturn \"\", false\n\t}\n\n\treturn dir[len(root):], true\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "90e808c0d060085f1ed8f1da",
+        "revision": "0a51510745ad4882ebd4677ff5c9a18e9ea57660",
+        "path": "compiler/analysis/bool.go",
+        "start_byte": 79,
+        "text": "func BoolValue(expr ast.Expr, info *types.Info) (bool, bool) {\n\tv := info.Types[expr].Value\n\tif v != nil && v.Kind() == constant.Bool {\n\t\treturn constant.BoolVal(v), true\n\t}\n\tswitch e := expr.(type) {\n\tcase *ast.BinaryExpr:\n\t\tswitch e.Op {\n\t\tcase token.LAND:\n\t\t\tif b, ok := BoolValue(e.X, info); ok {\n\t\t\t\tif !b {\n\t\t\t\t\treturn false, true\n\t\t\t\t}\n\t\t\t\treturn BoolValue(e.Y, info)\n\t\t\t}\n\t\tcase token.LOR:\n\t\t\tif b, ok := BoolValue(e.X, info); ok {\n\t\t\t\tif b {\n\t\t\t\t\treturn true, true\n\t\t\t\t}\n\t\t\t\treturn BoolValue(e.Y, info)\n\t\t\t}\n\t\t}\n\tcase *ast.UnaryExpr:\n\t\tif e.Op == token.NOT {\n\t\t\tif b, ok := BoolValue(e.X, info); ok {\n\t\t\t\treturn !b, true\n\t\t\t}\n\t\t}\n\tcase *ast.ParenExpr:\n\t\treturn BoolValue(e.X, info)\n\t}\n\treturn false, false\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "61a4d037ca50479529940096",
+        "revision": "0a51510745ad4882ebd4677ff5c9a18e9ea57660",
+        "path": "compiler/analysis/break.go",
+        "start_byte": 52,
+        "text": "func HasBreak(n ast.Node) bool {\n\tv := hasBreakVisitor{}\n\tast.Walk(&v, n)\n\treturn v.hasBreak\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "05cfc336e177b881b3962a6e",
+        "revision": "0a51510745ad4882ebd4677ff5c9a18e9ea57660",
+        "path": "compiler/analysis/break.go",
+        "start_byte": 148,
+        "text": "type hasBreakVisitor struct {\n\thasBreak bool\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "433a40a0c340d2ddd5de2b92",
+        "revision": "0a51510745ad4882ebd4677ff5c9a18e9ea57660",
+        "path": "compiler/analysis/escape.go",
+        "start_byte": 64,
+        "text": "func EscapingObjects(n ast.Node, info *types.Info) []*types.Var {\n\tv := escapeAnalysis{\n\t\tinfo:         info,\n\t\tescaping:     make(map[*types.Var]bool),\n\t\ttopScope:     info.Scopes[n],\n\t\tbottomScopes: make(map[*types.Scope]bool),\n\t}\n\tast.Walk(&v, n)\n\treturn v.ordered\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "0b1e463e882ba252bc545e29",
+        "revision": "0a51510745ad4882ebd4677ff5c9a18e9ea57660",
+        "path": "compiler/analysis/escape.go",
+        "start_byte": 335,
+        "text": "type escapeAnalysis struct {\n\tinfo         *types.Info\n\tescaping     map[*types.Var]bool\n\tordered      []*types.Var\n\ttopScope     *types.Scope\n\tbottomScopes map[*types.Scope]bool\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "f3d51a163c22db858ca88315",
+        "revision": "0a51510745ad4882ebd4677ff5c9a18e9ea57660",
+        "path": "compiler/analysis/escape.go",
+        "start_byte": 517,
+        "text": "func (v *escapeAnalysis) Visit(node ast.Node) (w ast.Visitor) {\n\t// huge overapproximation\n\tswitch n := node.(type) {\n\tcase *ast.UnaryExpr:\n\t\tif n.Op == token.AND {\n\t\t\tif _, ok := n.X.(*ast.Ident); ok {\n\t\t\t\treturn &escapingObjectCollector{v}\n\t\t\t}\n\t\t}\n\tcase *ast.FuncLit:\n\t\tv.bottomScopes[v.info.Scopes[n.Type]] = true\n\t\treturn &escapingObjectCollector{v}\n\tcase *ast.ForStmt:\n\t\tv.bottomScopes[v.info.Scopes[n.Body]] = true\n\tcase *ast.RangeStmt:\n\t\tv.bottomScopes[v.info.Scopes[n.Body]] = true\n\t}\n\treturn v\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "9f4cc64b9d6b9a4fd967d147",
+        "revision": "0a51510745ad4882ebd4677ff5c9a18e9ea57660",
+        "path": "compiler/analysis/escape.go",
+        "start_byte": 1091,
+        "text": "func (v *escapingObjectCollector) Visit(node ast.Node) (w ast.Visitor) {\n\tif id, ok := node.(*ast.Ident); ok {\n\t\tif obj, ok := v.analysis.info.Uses[id].(*types.Var); ok {\n\t\t\tfor s := obj.Parent(); s != nil; s = s.Parent() {\n\t\t\t\tif s == v.analysis.topScope {\n\t\t\t\t\tif !v.analysis.escaping[obj] {\n\t\t\t\t\t\tv.analysis.escaping[obj] = true\n\t\t\t\t\t\tv.analysis.ordered = append(v.analysis.ordered, obj)\n\t\t\t\t\t}\n\t\t\t\t\tbreak\n\t\t\t\t}\n\t\t\t\tif v.analysis.bottomScopes[s] {\n\t\t\t\t\tbreak\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t}\n\treturn v\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "c82a9a7009b67a5083809596",
+        "revision": "0a51510745ad4882ebd4677ff5c9a18e9ea57660",
+        "path": "compiler/analysis/info.go",
+        "start_byte": 576,
+        "text": "func (src astPath) copy() astPath {\n\tdst := make(astPath, len(src))\n\tcopy(dst, src)\n\treturn dst\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "40638a2e1289c29fc3fdd150",
+        "revision": "0a51510745ad4882ebd4677ff5c9a18e9ea57660",
+        "path": "compiler/analysis/info.go",
+        "start_byte": 1268,
+        "text": "func (info *Info) newFuncInfo(n ast.Node) *FuncInfo {\n\tfuncInfo := &FuncInfo{\n\t\tpkgInfo:            info,\n\t\tFlattened:          make(map[ast.Node]bool),\n\t\tBlocking:           make(map[ast.Node]bool),\n\t\tGotoLabel:          make(map[*types.Label]bool),\n\t\tlocalNamedCallees:  make(map[*types.Func][]astPath),\n\t\tliteralFuncCallees: make(map[*ast.FuncLit][]astPath),\n\t}\n\n\t// Register the function in the appropriate map.\n\tswitch n := n.(type) {\n\tcase *ast.FuncDecl:\n\t\tif n.Body == nil {\n\t\t\t// Function body comes from elsewhere (for example, from a go:linkname\n\t\t\t// directive), conservatively assume that it may be blocking.\n\t\t\t// TODO(nevkontakte): It is possible to improve accuracy of this detection.\n\t\t\t// Since GopherJS supports inly \"import-style\" go:linkname, at this stage\n\t\t\t// the compiler already determined whether the implementation function is\n\t\t\t// blocking, and we could check that.\n\t\t\tfuncInfo.Blocking[n] = true\n\t\t}\n\t\tinfo.FuncDeclInfos[info.Defs[n.Name].(*types.Func)] = funcInfo\n\tcase *ast.FuncLit:\n\t\tinfo.FuncLitInfos[n] = funcInfo\n\t}\n\n\t// And add it to the list of all functions.\n\tinfo.allInfos = append(info.allInfos, funcInfo)\n\n\treturn funcInfo\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "870779e89757eebe236303ab",
+        "revision": "0a51510745ad4882ebd4677ff5c9a18e9ea57660",
+        "path": "compiler/analysis/info.go",
+        "start_byte": 2602,
+        "text": "func AnalyzePkg(files []*ast.File, fileSet *token.FileSet, typesInfo *types.Info, typesPkg *types.Package, isBlocking func(*types.Func) bool) *Info {\n\tinfo := &Info{\n\t\tInfo:               typesInfo,\n\t\tPkg:                typesPkg,\n\t\tHasPointer:         make(map[*types.Var]bool),\n\t\tisImportedBlocking: isBlocking,\n\t\tFuncDeclInfos:      make(map[*types.Func]*FuncInfo),\n\t\tFuncLitInfos:       make(map[*ast.FuncLit]*FuncInfo),\n\t}\n\tinfo.InitFuncInfo = info.newFuncInfo(nil)\n\n\t// Traverse the full AST of the package and collect information about existing\n\t// functions.\n\tfor _, file := range files {\n\t\tast.Walk(info.InitFuncInfo, file)\n\t}\n\n\tfor _, funcInfo := range info.allInfos {\n\t\tif !funcInfo.HasDefer {\n\t\t\tcontinue\n\t\t}\n\t\t// Conservatively assume that if a function has a deferred call, it might be\n\t\t// blocking, and therefore all return statements need to be treated as\n\t\t// blocking.\n\t\t// TODO(nevkontakte): This could be improved by detecting whether a deferred\n\t\t// call is actually blocking. Doing so might reduce generated code size a\n\t\t// bit.\n\t\tfor _, returnStmt := range funcInfo.returnStmts {\n\t\t\tfuncInfo.markBlocking(returnStmt)\n\t\t}\n\t}\n\n\t// Propagate information about blocking calls to the caller functions.\n\t// For each function we check all other functions it may call and if any of\n\t// them are blocking, we mark the caller blocking as well. The process is\n\t// repeated until no new blocking functions is detected.\n\tfor {\n\t\tdone := true\n\t\tfor _, caller := range info.allInfos {\n\t\t\t// Check calls to named functions and function-typed variables.\n\t\t\tfor callee, callSites := range caller.localNamedCallees {\n\t\t\t\tif info.IsBlocking(callee) {\n\t\t\t\t\tfor _, callSite := range callSites {\n\t\t\t\t\t\tcaller.markBlocking(callSite)\n\t\t\t\t\t}\n\t\t\t\t\tdelete(caller.localNamedCallees, callee)\n\t\t\t\t\tdone = false\n\t\t\t\t}\n\t\t\t}\n\n\t\t\t// Check direct calls to function literals.\n\t\t\tfor callee, callSites := range caller.literalFuncCallees {\n\t\t\t\tif len(info.FuncLitInfos[callee].Blocking) > 0 {\n\t\t\t\t\tfor _, callSite := range callSites {\n\t\t\t\t\t\tcaller.markBlocking(callSite)\n\t\t\t\t\t}\n\t\t\t\t\tdelete(caller.literalFuncCallees, callee)\n\t\t\t\t\tdone = false\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t\tif done {\n\t\t\tbreak\n\t\t}\n\t}\n\n\t// After all function blocking information was propagated, mark flow control\n\t// statements as blocking whenever they may lead to a blocking function call.\n\tfor _, funcInfo := range info.allInfos {\n\t\tfor _, continueStmt := range funcInfo.continueStmts {\n\t\t\tif funcInfo.Blocking[continueStmt.forStmt.Post] {\n\t\t\t\t// If a for-loop post-expression is blocking, the continue statement\n\t\t\t\t// that leads to it must be treated as blocking.\n\t\t\t\tfuncInfo.markBlocking(continueStmt.analyzeStack)\n\t\t\t}\n\t\t}\n\t}\n\n\treturn info\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "a20c8994269b3d9c4410bb92",
+        "revision": "0a51510745ad4882ebd4677ff5c9a18e9ea57660",
+        "path": "compiler/analysis/info.go",
+        "start_byte": 5291,
+        "text": "type FuncInfo struct {\n\tHasDefer bool\n\t// Nodes are \"flattened\" into a switch-case statement when we need to be able\n\t// to jump into an arbitrary position in the code with a GOTO statement, or\n\t// resume a goroutine after a blocking call unblocks.\n\tFlattened map[ast.Node]bool\n\t// Blocking indicates that either the AST node itself or its descendant may\n\t// block goroutine execution (for example, a channel operation).\n\tBlocking map[ast.Node]bool\n\t// GotoLavel indicates a label referenced by a goto statement, rather than a\n\t// named loop.\n\tGotoLabel map[*types.Label]bool\n\t// List of continue statements in the function.\n\tcontinueStmts []continueStmt\n\t// List of return statements in the function.\n\treturnStmts []astPath\n\t// List of other named functions from the current package this function calls.\n\t// If any of them are blocking, this function will become blocking too.\n\tlocalNamedCallees map[*types.Func][]astPath\n\t// List of function literals directly called from this function (for example:\n\t// `func() { /* do stuff */ }()`). This is distinct from function literals\n\t// assigned to named variables (for example: `doStuff := func() {};\n\t// doStuff()`), which are handled by localNamedCallees. If any of them are\n\t// identified as blocking, this function will become blocking too.\n\tliteralFuncCallees map[*ast.FuncLit][]astPath\n\n\tpkgInfo      *Info // Function's parent package.\n\tvisitorStack astPath\n}",
+        "rank": 2,
+        "truncated": false
+      },
+      {
+        "id": "991f37436a1f9ed750d84197",
+        "revision": "0a51510745ad4882ebd4677ff5c9a18e9ea57660",
+        "path": "compiler/analysis/info.go",
+        "start_byte": 6705,
+        "text": "func (fi *FuncInfo) Visit(node ast.Node) ast.Visitor {\n\tif node == nil {\n\t\tif len(fi.visitorStack) != 0 {\n\t\t\tfi.visitorStack = fi.visitorStack[:len(fi.visitorStack)-1]\n\t\t}\n\t\treturn nil\n\t}\n\tfi.visitorStack = append(fi.visitorStack, node)\n\n\tswitch n := node.(type) {\n\tcase *ast.FuncDecl, *ast.FuncLit:\n\t\t// Analyze the function in its own context.\n\t\treturn fi.pkgInfo.newFuncInfo(n)\n\tcase *ast.BranchStmt:\n\t\tswitch n.Tok {\n\t\tcase token.GOTO:\n\t\t\t// Emulating GOTO in JavaScript requires the code to be flattened into a\n\t\t\t// switch-statement.\n\t\t\tfi.markFlattened(fi.visitorStack)\n\t\t\tfi.GotoLabel[fi.pkgInfo.Uses[n.Label].(*types.Label)] = true\n\t\tcase token.CONTINUE:\n\t\t\tloopStmt := astutil.FindLoopStmt(fi.visitorStack, n, fi.pkgInfo.Info)\n\t\t\tif forStmt, ok := (loopStmt).(*ast.ForStmt); ok {\n\t\t\t\t// In `for x; y; z { ... }` loops `z` may be potentially blocking\n\t\t\t\t// and therefore continue expression that triggers it would have to\n\t\t\t\t// be treated as blocking.\n\t\t\t\tfi.continueStmts = append(fi.continueStmts, newContinueStmt(forStmt, fi.visitorStack))\n\t\t\t}\n\t\t}\n\t\treturn fi\n\tcase *ast.CallExpr:\n\t\treturn fi.visitCallExpr(n)\n\tcase *ast.SendStmt:\n\t\t// Sending into a channel is blocking.\n\t\tfi.markBlocking(fi.visitorStack)\n\t\treturn fi\n\tcase *ast.UnaryExpr:\n\t\tswitch n.Op {\n\t\tcase token.AND:\n\t\t\tif id, ok := astutil.RemoveParens(n.X).(*ast.Ident); ok {\n\t\t\t\tfi.pkgInfo.HasPointer[fi.pkgInfo.Uses[id].(*types.Var)] = true\n\t\t\t}\n\t\tcase token.ARROW:\n\t\t\t// Receiving from a channel is blocking.\n\t\t\tfi.markBlocking(fi.visitorStack)\n\t\t}\n\t\treturn fi\n\tcase *ast.RangeStmt:\n\t\tif _, ok := fi.pkgInfo.TypeOf(n.X).Underlying().(*types.Chan); ok {\n\t\t\t// for-range loop over a channel is blocking.\n\t\t\tfi.markBlocking(fi.visitorStack)\n\t\t}\n\t\treturn fi\n\tcase *ast.SelectStmt:\n\t\tfor _, s := range n.Body.List {\n\t\t\tif s.(*ast.CommClause).Comm == nil { // default clause\n\t\t\t\treturn fi\n\t\t\t}\n\t\t}\n\t\t// Select statements without a default case are blocking.\n\t\tfi.markBlocking(fi.visitorStack)\n\t\treturn fi\n\tcase *ast.CommClause:\n\t\t// FIXME(nevkontakte): Does this need to be manually spelled out? Presumably\n\t\t// ast.Walk would visit all those nodes anyway, and we are not creating any\n\t\t// new contexts here.\n\t\t// https://github.com/gopherjs/gopherjs/issues/230 seems to be relevant?\n\t\tswitch comm := n.Comm.(type) {\n\t\tcase *ast.SendStmt:",
+        "rank": 2,
+        "truncated": true
+      }
+    ]
+  },
+  "retrieval": {
+    "unresolved": [
+      {
+        "side": "ours",
+        "identifier": "info",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "IsBlocking",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "fun",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Func",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "compiler/natives/src/runtime/runtime.go",
+            "start": 12094
+          },
+          {
+            "path": "compiler/natives/src/syscall/js/js.go",
+            "start": 765
+          }
+        ]
+      },
+      {
+        "side": "ours",
+        "identifier": "bool",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "FuncDeclInfos",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "panic",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "len",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "ours",
+        "identifier": "Blocking",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "info",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "IsBlocking",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "fun",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Func",
+        "reason": "ambiguous",
+        "candidates": [
+          {
+            "path": "compiler/natives/src/runtime/runtime.go",
+            "start": 12094
+          },
+          {
+            "path": "compiler/natives/src/syscall/js/js.go",
+            "start": 765
+          }
+        ]
+      },
+      {
+        "side": "theirs",
+        "identifier": "bool",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "funInfo",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "FuncDeclInfos",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "len",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Blocking",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "panic",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "fmt",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "Errorf",
+        "reason": "no-unique-declaration-established"
+      },
+      {
+        "side": "theirs",
+        "identifier": "FullName",
+        "reason": "no-unique-declaration-established"
+      }
+    ],
+    "method": "syntax-ranges-and-identifier-candidates/3",
+    "budget_bytes": 32768,
+    "libraries": {
+      "C": "cbbd4827ee02cd5c018ab41f10d8404ff8741159054b352d9a6d763c506ba3c7",
+      "Go": "1612f8fd958ba1ec981bf4b91e2ff399f1e54d26a9da68e5b60b0d7cd00616fc"
+    }
+  }
+}

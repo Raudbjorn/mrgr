@@ -1,5 +1,13 @@
 *Part of the [canonical planning document](../canonical-final-planning-document.md).*
 
+## Current scope — 2026-09-06
+
+**Ready for fresh reconstruction proof.** Phase 4 is complete and its [outputs, residue and pinned inputs are preserved](../../../../evidence/m2a/2026-09-06/README.md). The existing public synthetic tests and private imported-join-tree audit pass locally. The historical “done” claims below apply to that audit, not fresh derivation of the join tree from all five original refs.
+
+Next, reconstruct from those five pinned refs with a reproducible recipe; derive candidates before consulting final refs; verify the four monoliths and exact byte accounting; exercise post-edit absence and zero candidates; preserve the public topology test. Keep the historical join as a comparison artifact. Unexpected candidates or tree differences must be explained rather than filtered using final outcomes. Private inputs remain local; a skipped private test cannot close this gate elsewhere.
+
+## Historical audit and original specification
+
 ### WP6 — Resurrection proof (move here, before oracle)
 - **Done (2026-09-02).** `packages/core/tests/resurrection.test.ts` implements both gates on top of a shared helper (`packages/core/tests/resurrection-audit.ts`, `findDeletedMonolithCandidates` + `buildSyntheticTopology`) and the fixture at `packages/core/tests/fixtures/resurrection-topology/topology.json`. 5/5 tests pass; full workspace green (304/304 core, 15/15 mechanisms).
   - **Private gate — verified against the real reconstructed inputs, run on this machine only.** The audit compares the already-reconstructed join tree `2e393f450d33c7d186b87c9d748a83760f49d6fc` (imported locally under `refs/mrgr-imports/resurrection/*`, see `phase-5-resurrection-proof/current-state.md`) against the six real `r4-*-final` refs. Result: **exactly 4 candidates, 949,331 bytes total** — an exact match, not an approximation. A naive alternative (union of the five raw pinned commits' own trees, rather than the already-reconstructed join tree) was tried first and rejected: it produced 164 false-positive candidates, because two independent forks simply differ in many files unrelated to any deletion event. The audit's job is comparing a reconstruction against final refs, not reinventing how the reconstruction was built — see the comment in `resurrection.test.ts` for why.
