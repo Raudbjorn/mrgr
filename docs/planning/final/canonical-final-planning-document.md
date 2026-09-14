@@ -11,7 +11,7 @@ not renumbered) because other files in this repo cite them by number (e.g.
 `evidence/h0/REVIEW-2026-08-29.md` cites "§3.4"). Use the table below to
 resolve any `§N` you find quoted elsewhere back to a file.
 
-*Last split:* 2026-08-30. *Last content update:* 2026-09-06 (Phase 3 v2 complete; v3 behavioral development running with a staged selector repair; Phase 4 integration complete; Phase 5 ready).
+*Last split:* 2026-08-30. *Last content update:* 2026-09-13 (Phase 5 fresh reconstruction complete locally; two exact replays and explicit post-edit proof).
 
 ---
 
@@ -44,7 +44,7 @@ file wins; notes files carry no state of their own.
   *every* session regardless of which milestone you're working — it carries
   workspace/version pinning, authority/supersession rules, and the
   answer-first verdict table.
-- **Phase 3 is complete: the valid 2026-09-06 concrete-output result is preserved.** Read its [current state](phase-3-h0-evidence-utility/current-state.md) and [execution contract / Phase 4 handoff](phase-3-h0-evidence-utility/execution-and-handoff-2026-09-06.md). The user selected Phase 3 → Phase 4 → Phase 5. A valid preserved Phase 3 result permits deterministic Phase 4 work regardless of H0 positivity. Phase 4's port and residue freeze are complete; see its [current state](phase-4-m2a-mechanisms/current-state.md). Phase 5 fresh reconstruction is next. Each phase's current-state file wins over historical summaries elsewhere.
+- **Phase 3 is complete: the valid 2026-09-06 concrete-output result is preserved.** Read its [current state](phase-3-h0-evidence-utility/current-state.md) and [execution contract / Phase 4 handoff](phase-3-h0-evidence-utility/execution-and-handoff-2026-09-06.md). The user selected Phase 3 → Phase 4 → Phase 5. A valid preserved Phase 3 result permits deterministic Phase 4 work regardless of H0 positivity. Phase 4's port and residue freeze are complete; see its [current state](phase-4-m2a-mechanisms/current-state.md). [Phase 5 fresh reconstruction](phase-5-resurrection-proof/current-state.md) is complete locally as of September 13: two exact replays, four candidates totaling 949,331 bytes, and explicit post-edit absence with all other entries unchanged. Each phase's current-state file wins over historical summaries elsewhere.
 
 ---
 
@@ -91,8 +91,9 @@ file wins; notes files carry no state of their own.
 ### `phase-5-resurrection-proof/` — the project's stated reason to exist
 | File | Covers (orig. §) |
 | --- | --- |
-| `current-state.md` | §3.7 Resurrection proof |
-| `work-package.md` | §6 WP6 — Resurrection proof |
+| [current-state.md](phase-5-resurrection-proof/current-state.md) | §3.7 Resurrection proof — fresh reconstruction complete locally, 2026-09-13 |
+| [work-package.md](phase-5-resurrection-proof/work-package.md) | §6 WP6 — completed fresh reconstruction; historical audits preserved |
+| [Fresh proof](../../../evidence/resurrection/2026-09-13/README.md) / [result](../../../evidence/resurrection/2026-09-13/result.json) / [manifest](../../../evidence/resurrection/2026-09-13/manifest.json) | Two isolated exact replays, input-history candidate detection, byte accounting and post-edit zero candidates |
 
 ### `phase-6-future-work/` — gated, not started
 | File | Covers (orig. §) |

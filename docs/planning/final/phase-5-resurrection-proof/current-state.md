@@ -1,10 +1,14 @@
 *Part of the [canonical planning document](../canonical-final-planning-document.md).*
 
-## Current scope — 2026-09-06
+## Fresh reconstruction complete — 2026-09-13
 
-**Ready for fresh reconstruction proof.** Phase 4 is complete and its [outputs, residue and pinned inputs are preserved](../../../../evidence/m2a/2026-09-06/README.md). The existing public synthetic tests and private imported-join-tree audit pass locally. The historical “done” claims below apply to that audit, not fresh derivation of the join tree from all five original refs.
+**Phase 5 is complete on the recorded local inputs.** The [fresh proof and reproduction record](../../../../evidence/resurrection/2026-09-13/README.md) rebuilds both fork legs and their join twice in isolated repositories from the five pinned histories. Both runs reproduce historical join `2e393f450d33c7d186b87c9d748a83760f49d6fc` exactly. Phase 3 closure and Phase 4 frozen artifacts, including all 45 public result trees, were re-verified first.
 
-Next, reconstruct from those five pinned refs with a reproducible recipe; derive candidates before consulting final refs; verify the four monoliths and exact byte accounting; exercise post-edit absence and zero candidates; preserve the public topology test. Keep the historical join as a comparison artifact. Unexpected candidates or tree differences must be explained rather than filtered using final outcomes. Private inputs remain local; a skipped private test cannot close this gate elsewhere.
+Candidate detection now uses upstream deletion history and fresh-tree presence, before consulting final refs. It finds exactly the four monoliths totaling **949,331 bytes**. The six pinned final commits all lack them. Removing only those candidates produces tree `9de6928de1019bf09df55102399c9c0c82d63414`, with zero candidates and every other tree entry unchanged. The edited tree retains unrelated conflicts; this is not a general semantic-safety claim.
+
+The recipe explicitly pins `diff3` and historical wrapper commit metadata. Two diagnostic attempts exposed conflict-style and wrapper-label differences; their records are preserved, and the final pair has zero unexplained differences. The new public reconstruction test runs alongside the original imported-tree audits. Private proof is an explicit command that fails on missing inputs, not a skipped test. Local validation passed: 307 core, 31 mechanism and 14 H0 tests, workspace typecheck/build. Remote CI is not claimed.
+
+The requested Phase 3 → Phase 4 → Phase 5 sequence is complete. The local-model study remains closed incomplete and will not resume. Future work retains its separate requirements; this proof does not authorize new model experiments or training.
 
 ## Historical audit and original specification
 
