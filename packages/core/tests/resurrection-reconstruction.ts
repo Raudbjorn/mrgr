@@ -1,26 +1,36 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { accessSync, constants, mkdirSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { devNull } from "node:os";
+import { delimiter, join, resolve } from "node:path";
 
 export type ReconstructionInputs = Record<"origin" | "base4" | "fork4" | "base6" | "fork6", string>;
 export interface Entry { path: string; mode: string; type: string; oid: string; size: number }
 export interface ResurrectionCandidate extends Entry { legs: string[] }
 
+export function resolveGit(path = process.env.PATH ?? ""): string {
+ for (const directory of path.split(delimiter).filter(Boolean)) {
+  const file = resolve(directory, process.platform === "win32" ? "git.exe" : "git");
+  try { accessSync(file, constants.X_OK); if (statSync(file).isFile()) return realpathSync(file); } catch { /* Try the next PATH entry. */ }
+ }
+ throw new Error("Git executable not found on PATH");
+}
+
 /** Git receives no inherited configuration, object alternates, credentials or hooks. */
 export class ReconstructionGit {
  readonly receipts: { args: string[]; status: number | null; stdout: string; stderr: string; error: string | null }[] = [];
  readonly env = {
-  PATH: "/usr/bin:/bin", HOME: "/nonexistent", LC_ALL: "C", TZ: "UTC",
-  GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_ATTR_NOSYSTEM: "1",
+  PATH: process.env.PATH ?? "", ...(process.platform === "win32" ? {SystemRoot: process.env.SystemRoot, TEMP: process.env.TEMP, TMP: process.env.TMP} : {}), LC_ALL: "C", TZ: "UTC",
+  GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: devNull, GIT_ATTR_NOSYSTEM: "1",
   GIT_AUTHOR_NAME: "mrgr reconstruction", GIT_AUTHOR_EMAIL: "reconstruction@example.invalid",
   GIT_COMMITTER_NAME: "mrgr reconstruction", GIT_COMMITTER_EMAIL: "reconstruction@example.invalid",
   GIT_AUTHOR_DATE: "2026-09-06T00:00:00Z", GIT_COMMITTER_DATE: "2026-09-06T00:00:00Z",
  };
+ readonly executable = resolveGit(this.env.PATH);
  constructor(readonly cwd: string, readonly receiptFile?: string) {}
  run(args: string[], input?: string | Buffer, accepted = [0]): string {
-  const effective = ["-c", "merge.conflictStyle=diff3", "-c", "core.hooksPath=/dev/null", "-c", "core.attributesFile=/dev/null", "-c", "core.autocrlf=false", "-c", "commit.gpgSign=false", ...args];
-  const r = spawnSync("/usr/bin/git", effective, {cwd:this.cwd,env:this.env,input,encoding:"utf8",timeout:120000,maxBuffer:64*1024*1024});
+  const effective = ["-c", "merge.conflictStyle=diff3", "-c", `core.hooksPath=${devNull}`, "-c", `core.attributesFile=${devNull}`, "-c", "core.autocrlf=false", "-c", "commit.gpgSign=false", ...args];
+  const r = spawnSync(this.executable, effective, {cwd:this.cwd,env:this.env,input,encoding:"utf8",timeout:120000,maxBuffer:64*1024*1024});
   this.receipts.push({args:effective,status:r.status,stdout:r.stdout??"",stderr:r.stderr??"",error:r.error?.message??null});
   if(this.receiptFile)writeFileSync(this.receiptFile, JSON.stringify(this.receipts,null,2)+"\n");
   assert(!r.error && r.signal===null && r.status!==null && accepted.includes(r.status), `git ${args[0]} failed: ${r.error?.message??r.stderr}`);

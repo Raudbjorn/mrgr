@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { chmodSync, readFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { test } from "vitest";
-import { ReconstructionGit, isolatedRepository, reconstruct, detectResurrections, removeCandidates } from "./resurrection-reconstruction.js";
+import { isAbsolute, join } from "node:path";
+import { test, vi } from "vitest";
+import { resolveGit, ReconstructionGit, isolatedRepository, reconstruct, detectResurrections, removeCandidates } from "./resurrection-reconstruction.js";
 
 test("fresh three-merge proof needs no final refs, preserves unrelated entries and repeats exactly",()=>{
  const root=mkdtempSync(join(tmpdir(),"resurrection-public-"));
@@ -39,3 +40,29 @@ test("fresh three-merge proof needs no final refs, preserves unrelated entries a
   assert.deepEqual(results[0],results[1]);
  }finally{rmSync(root,{recursive:true,force:true});}
 },30000);
+
+
+test.skipIf(process.platform === "win32")("Git comes from PATH without inheriting Git configuration",()=>{
+ const dir=mkdtempSync(join(tmpdir(),"alternate-git-"));
+ try {
+  const executable=join(dir,"git");
+  writeFileSync(executable,`#!${process.execPath}
+process.stdout.write(process.env.GIT_DIR ? "leaked" : "alternate git");
+`);chmodSync(executable,0o755);
+  vi.stubEnv("PATH",dir);vi.stubEnv("GIT_DIR","/unwanted/repository");
+  const git=new ReconstructionGit(dir);assert.equal(git.executable,resolveGit(dir));assert.equal(git.run(["--version"]),"alternate git");
+  vi.stubEnv("PATH","");assert.throws(()=>new ReconstructionGit(dir),/not found on PATH/);
+ } finally {vi.unstubAllEnvs();rmSync(dir,{recursive:true,force:true});}
+});
+
+test("published evidence has portable metadata and matching public hashes",()=>{
+ const root=new URL("../../../",import.meta.url),directory=new URL("evidence/resurrection/2026-09-13/",root);
+ const manifest=JSON.parse(readFileSync(new URL("manifest.json",directory),"utf8"));
+ assert(!isAbsolute(manifest.private_output));
+ assert.equal(JSON.parse(readFileSync(new URL("protocol.json",directory),"utf8")).source,"SOURCE_REPOSITORY");
+ for(const [file,hash] of Object.entries(manifest.public_files)){
+  const bytes=readFileSync(new URL(file,root));
+  assert.equal(createHash("sha256").update(bytes).digest("hex"),hash,file);
+  assert(!/\/(?:home|Users)\/|[A-Z]:\\(?:Users|Documents)\\/.test(bytes.toString()),file);
+ }
+});
