@@ -113,5 +113,6 @@ test('lineage metadata survives remote idle closure during synchronous oracle wo
 
 test('development rejects invalid repository identity before oracle work',async()=>{
  const d=mkdtempSync(join(tmpdir(),'h0-prefetch-check-'));
- try{const manifest=join(d,'input.json'),out=join(d,'prepared');writeFileSync(manifest,JSON.stringify([{repo:'invalid repository'}]));await assert.rejects(prepare(manifest,out,'development'),/invalid repository identity/);const receipt=JSON.parse(readFileSync(join(out,'lineage-prefetch.json')));assert.equal(receipt.complete,false);assert.deepEqual(receipt.records,[]);assert(!existsSync(join(out,'acquisition-progress.json')));}finally{rmSync(d,{recursive:true,force:true});}
+ try{const manifest=join(d,'input.json'),out=join(d,'prepared');writeFileSync(manifest,JSON.stringify([{repo:'invalid repository'}]));await assert.rejects(prepare(manifest,out,'development'),/invalid repository identity/);assert(!existsSync(out)); // Invalid input is rejected before tool discovery, prefetch, or output creation.
+}finally{rmSync(d,{recursive:true,force:true});}
 });

@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, statSync, linkSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -17,6 +17,20 @@ const merged = ours.replace("{ 2 }", "{ 20 }");
 const conflict = (n: number) => `fn one() -> i32 { ${n} }\n\n// stable one\n// stable two\n\nfn two() -> i32 { ${n} }\n`;
 
 afterEach(() => { for (const p of roots.splice(0)) rmSync(p, { recursive: true, force: true }); });
+
+// Prepare both artifacts before publication; never replace an existing frozen file.
+function freezeEvidence(directory: string, name: string, metadata: unknown, createBundle: (path: string) => void) {
+ const staging=mkdtempSync(join(directory,".capture-"));let bundlePublished=false;
+ try {
+  const bundle=join(staging,"result.bundle"),json=join(staging,"result.json");
+  createBundle(bundle);writeFileSync(json,JSON.stringify(metadata,null,2)+"\n");
+  linkSync(bundle,join(directory,`${name}.bundle`));bundlePublished=true;
+  linkSync(json,join(directory,`${name}.json`));
+ } catch(cause) {
+  if(bundlePublished)rmSync(join(directory,`${name}.bundle`));
+  throw cause;
+ } finally {rmSync(staging,{recursive:true,force:true});}
+}
 
 function fixture(mechanism: string, kind: "clean" | "binary-first" | "binary-last") {
 	const root = mkdtempSync(join(tmpdir(), "mrgr-driver-proof-")); roots.push(root);
@@ -94,10 +108,10 @@ for (const mechanism of ["git_text", "gnu_diff3", "mergiraf"]) {
 			if (evidence) {
 				mkdirSync(evidence, { recursive: true }); const name = `${mechanism}-${kind}`;
 				if (existsSync(join(evidence, `${name}.json`)) || existsSync(join(evidence, `${name}.bundle`))) throw Error(`Refusing to overwrite frozen evidence: ${name}`);
-			f.git("bundle", "create", resolve(evidence, `${name}.bundle`), "--all");
-				writeFileSync(join(evidence, `${name}.json`), JSON.stringify({ mechanism, kind, refs: { base: f.b, ours: f.o, theirs: f.t }, textPath: f.text,
+				const metadata = { mechanism, kind, refs: { base: f.b, ours: f.o, theirs: f.t }, textPath: f.text,
 					baseline: { outerGitStatus: baseline.status, stdout: baseline.stdout, stderr: baseline.stderr }, runs,
-					workingMerge: { outerGitStatus: work.status, stdout: work.stdout, stderr: work.stderr, index: f.git("ls-files", "--stage"), invocations: f.records() } }, null, 2) + "\n", { flag: "wx" });
+					workingMerge: { outerGitStatus: work.status, stdout: work.stdout, stderr: work.stderr, index: f.git("ls-files", "--stage"), invocations: f.records() } };
+				freezeEvidence(evidence, name, metadata, path => { f.git("bundle", "create", path, "--all"); });
 			}
 		}, 30_000);
 	}
@@ -107,7 +121,7 @@ test("driver rejects invalid contracts, unavailable engines and unwritable logs 
 	const f = fixture("mergiraf", "clean"), dir = join(f.root, "inputs"); mkdirSync(dir);
 	const files = ["base", "ours", "theirs"].map((n, i) => { const p = join(dir, n); writeFileSync(p, [base, ours, theirs][i]); return p; });
 	const invoke = (args: string[], env = f.env) => spawnSync(process.execPath, [driver, ...args], { env, encoding: "utf8" });
-	for (const args of [[], ["bogus", ...files, "7", "file.rs"], ["mergiraf", ...files, "9", "file.rs"]]) expect(invoke(args).status).toBe(130);
+	for (const args of [[], ["bogus", ...files, "7", "file.rs"], ["mergiraf", ...files, "0", "file.rs"]]) expect(invoke(args).status).toBe(130);
 	const missing = invoke(["mergiraf", ...files, "7", "file.rs"], { ...f.env, MERGIRAF_BIN: join(f.root, "missing") });
 	expect(missing.status).toBe(130); expect(readFileSync(files[1], "utf8")).toBe(ours);
 	const record = f.records().find(r => r.state === "completed"); expect(record.rawStatus).toBeNull(); expect(record.driverStatus).toBe(130); expect(record.error).toContain("ENOENT");
@@ -124,4 +138,38 @@ test("outer Git reports a fatal engine failure separately from unresolved residu
 	for (const record of records) { expect(record.rawStatus).toBeNull(); expect(record.driverStatus).toBe(130); }
 	expect(readFileSync(join(f.repo, f.text), "utf8")).toBe(ours);
 	if (evidence) writeFileSync(join(evidence, "fatal-engine.json"), JSON.stringify({ outerGitStatus: r.status, stdout: r.stdout, stderr: r.stderr, usableTree: null, invocations: records }, null, 2) + "\n", { flag: "wx" });
+});
+
+test("driver preserves permissions under restrictive umask and accepts custom marker sizes", () => {
+  const f = fixture("git_text", "clean");
+  const files = ["base", "ours", "theirs"].map((name, i) => {
+    const p=join(f.root,name);writeFileSync(p,["a\n","ours\n","theirs\n"][i]);return p;
+  });
+  for (const mechanism of ["git_text", "gnu_diff3", "mergiraf"]) {
+    writeFileSync(files[1],"ours\n");chmodSync(files[1],0o775);
+    const r=spawnSync(process.execPath,["--input-type=module","-e",
+      "process.umask(0o077); await import(process.argv[1]);",driver,mechanism,...files,"9","file.rs"],{env:f.env,encoding:"utf8"});
+    expect(r.status,r.stderr).toBe(1);
+    expect(statSync(files[1]).mode&0o777).toBe(0o775);
+    expect(readFileSync(files[1],"utf8")).toContain(mechanism==="gnu_diff3"?"<<<<<<< OURS":"<<<<<<<<< OURS");
+  }
+});
+test("missing built entrypoint is infrastructure failure", () => {
+  const root=mkdtempSync(join(tmpdir(),"mrgr-entrypoint-"));roots.push(root);
+  const entry=join(root,"driver.mjs");writeFileSync(entry,readFileSync(driver));
+  const r=spawnSync(process.execPath,[entry],{encoding:"utf8"});
+  expect(r.status).toBe(130);expect(r.stderr).toContain("infrastructure failure");
+});
+
+test("failed capture leaves no orphan bundle and preserves existing evidence",()=>{
+ const root=mkdtempSync(join(tmpdir(),"mrgr-capture-"));roots.push(root);
+ expect(()=>freezeEvidence(root,"cell",{},path=>{writeFileSync(path,"partial");throw Error("bundle failed");})).toThrow("bundle failed");
+ expect(readdirSync(root)).toEqual([]);
+ // Simulate a concurrent publisher winning the JSON name after the caller's guard.
+ writeFileSync(join(root,"cell.json"),"existing");
+ expect(()=>freezeEvidence(root,"cell",{},path=>writeFileSync(path,"bundle"))).toThrow();
+ expect(readdirSync(root)).toEqual(["cell.json"]);expect(readFileSync(join(root,"cell.json"),"utf8")).toBe("existing");
+ rmSync(join(root,"cell.json"));
+ freezeEvidence(root,"cell",{complete:true},path=>writeFileSync(path,"bundle"));
+ expect(readdirSync(root).sort()).toEqual(["cell.bundle","cell.json"]);
 });

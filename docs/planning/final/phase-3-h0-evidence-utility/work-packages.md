@@ -16,16 +16,15 @@ The current development cohort contains 60 validated cases across 34 lineages. T
 
 ## Preserved v2 WP3/WP4 amendment — 2026-09-06
 
-*Terminology note, added 2026-09-07: `MEASURABLE=NO`/`MEASURABLE=YES` below name
-the historical binary gate, since retired — see
+*Terminology note, added 2026-09-07: `MEASURABLE=NO`/`MEASURABLE=YES` below name the historical binary gate, since retired — see
 [gate retirement](gate-retirement-2026-09-07.md). Preserved verbatim as the
 record of what was declared on 2026-09-06; not current terminology. The
 current terminal-state vocabulary is in the arm-contrast review notice above
 and in [`phase-3-closure-certificate.md`](phase-3-closure-certificate.md).*
 
-**WP3 and WP4 complete — valid confirmation, MEASURABLE=NO; Phase 4 ready.** The [execution contract](execution-and-handoff-2026-09-06.md) replaces the historical specification below: concrete outputs and actual Git union; five deterministic baselines; all scheduled cases retained in denominators; 24 development and 92 untouched confirmation merge cases; selected-context primary compared with hunk-only and every baseline using an exact paired test and a 5pp magnitude threshold. The new test checks both reachable decision branches and artifact integrity, and runs in repository CI.
+*Historical binary gate annotation: historical binary gate, since retired.* **WP3 and WP4 complete — valid confirmation, MEASURABLE=NO; Phase 4 ready.** The [execution contract](execution-and-handoff-2026-09-06.md) replaces the historical specification below: concrete outputs and actual Git union; five deterministic baselines; all scheduled cases retained in denominators; 24 development and 92 untouched confirmation merge cases; selected-context primary compared with hunk-only and every baseline using an exact paired test and a 5pp magnitude threshold. The new test checks both reachable decision branches and artifact integrity, and runs in repository CI.
 
-Completion and positivity are separate: a valid completed run closes this work package, while only the frozen positive conjunction earns MEASURABLE=YES. Neither an inconclusive result nor a stronger model triggers another confirmation run. The [current state](current-state.md) and machine-generated evidence are authoritative for the new result.
+*Historical binary gate annotation: historical binary gate, since retired.* Completion and positivity are separate: a valid completed run closes this work package, while only the frozen positive conjunction earns MEASURABLE=YES. Neither an inconclusive result nor a stronger model triggers another confirmation run. The [current state](current-state.md) and machine-generated evidence are authoritative for the new result.
 
 ## Historical WP3/WP4 specification and execution
 
