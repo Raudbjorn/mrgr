@@ -73,7 +73,7 @@ function oldEvents(){
   const result=new Set();for(const d of ['v2-2026-09-06','v2-2026-09-06b']){const p=join(ROOT,'evidence/h0',d,'inputs.jsonl');if(existsSync(p))for(const line of readFileSync(p,'utf8').trim().split('\n')){const c=JSON.parse(line);result.add(`${c.repo}:${c.merge_sha}`);}}
   const keys=new Set();for(const p of readdirSync(join(ROOT,'evidence/h0/runs'),{recursive:true}).filter(p=>p.endsWith('.jsonl')))for(const line of readFileSync(join(ROOT,'evidence/h0/runs',p),'utf8').trim().split('\n').filter(Boolean))keys.add(JSON.parse(line).triple_id);
   for(const [p,repo] of [['triples-cli-diff3.jsonl','cli/cli'],['triples-redis-diff3.jsonl','redis/redis'],['triples-jq-diff3.jsonl','jqlang/jq']]){const f=join(ROOT,'evidence/h0',p);if(existsSync(f))for(const line of readFileSync(f,'utf8').trim().split('\n')){const c=JSON.parse(line);if(keys.has(c.triple_key))result.add(`${repo}:${c.merge_sha}`);}}
-  for(const parent of [join(ROOT,'evidence/h0'),join(ROOT,'.do-not-commit')])for(const name of readdirSync(parent).filter(n=>n.startsWith('v3-')||n.startsWith('h0-v3-'))){const d=join(parent,name),p=join(d,'cases.json');if(existsSync(p)&&Object.keys(MODELS).some(m=>existsSync(join(d,m))&&readdirSync(join(d,m)).some(n=>n.endsWith('.json'))))for(const c of JSONread(p))result.add(`${c.repo}:${c.event}`);}
+  for(const parent of [join(ROOT,'evidence/h0'),join(ROOT,'.do-not-commit')])for(const name of (existsSync(parent)?readdirSync(parent):[]).filter(n=>n.startsWith('v3-')||n.startsWith('h0-v3-'))){const d=join(parent,name),p=join(d,'cases.json');if(existsSync(p)&&Object.keys(MODELS).some(m=>existsSync(join(d,m))&&readdirSync(join(d,m)).some(n=>n.endsWith('.json'))))for(const c of JSONread(p))result.add(`${c.repo}:${c.event}`);}
   return result;
 }
 // Synchronous oracle work can outlive a pooled socket; lineage GETs use fresh connections.
@@ -86,8 +86,11 @@ export function fetchLineageMetadata(url){
   return fetch(url,{headers,signal:AbortSignal.timeout(30000)});
 }
 
+function validateRepositoryIdentity(origin){
+  assert(typeof origin==='string'&&/^[a-z0-9_.-]+\/[a-z0-9_.-]+$/.test(origin),'invalid repository identity');
+}
 async function repositoryMetadata(origin){
-  assert(/^[a-z0-9_.-]+\/[a-z0-9_.-]+$/.test(origin),'invalid repository identity');
+  validateRepositoryIdentity(origin);
   const url=`https://api.github.com/repos/${origin}`,r=await fetchLineageMetadata(url);
   assert(r.ok,`repository lineage metadata unavailable (HTTP ${r.status})`);
   const body=await r.json();assert.equal(body.full_name?.toLowerCase(),origin);
@@ -96,9 +99,10 @@ async function repositoryMetadata(origin){
 
 export async function prepare(manifest,directory,mode='feasibility',designFile){
   const initialSourceHashes=sourceHashes();
-  const environment_sha256=environmentHash();
   assert(['feasibility','development','confirmation'].includes(mode));assert(!existsSync(directory),'refuse existing experiment directory');
   const candidates=JSONread(manifest);assert(Array.isArray(candidates)&&candidates.length);
+  for(const c of candidates)validateRepositoryIdentity(c.repo);
+  const environment_sha256=environmentHash();
   const libraries={C:join(ROOT,'.do-not-commit/h0-v3-tools/c.so'),Go:join(ROOT,'.do-not-commit/h0-v3-tools/go.so')};
   mkdirSync(directory,{recursive:true});const accepted=[],exclusions=[],exposed=oldEvents(),repositories=new Map();
   if(mode!=='feasibility'){

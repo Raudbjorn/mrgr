@@ -4,6 +4,15 @@
 // the AND of every named check -- one failure flips the whole verdict.
 import {readFileSync} from 'node:fs';
 import {resolve} from 'node:path';
+import {pathToFileURL} from 'node:url';
+
+export const studyIsClosed = (a,stage) => a.valid===true && a.finding?.stage===stage;
+export const registerIsOffCriticalPath = rows => rows.every(r=>r.on_critical_path===false);
+export function measurableOk(text) {
+  return text.split('\n').every(line=>!line.includes('MEASURABLE=') || line.includes('historical binary gate, since retired'));
+}
+
+export function checkClosure() {
 const ROOT=resolve(import.meta.dirname,'../..');
 const path=p=>resolve(ROOT,p);
 const readJSON=p=>JSON.parse(readFileSync(path(p),'utf8'));
@@ -13,7 +22,7 @@ const checks={};
 function studyClosedNegative(name,file,expectedStage){
   try{
     const a=readJSON(file);
-    const ok=a.valid===true&&a.finding?.stage===expectedStage;
+    const ok=studyIsClosed(a,expectedStage);
     checks[name]={pass:ok,valid:a.valid,stage:a.finding?.stage,expected:expectedStage,file};
   }catch(e){checks[name]={pass:false,error:e.message,file};}
 }
@@ -28,7 +37,7 @@ function registerEmptyOfCriticalPath(){
   try{
     const reg=readJSON('docs/planning/final/phase-3-h0-evidence-utility/decision-register.json');
     const offending=reg.rows.filter(r=>r.on_critical_path!==false);
-    checks.decision_register_off_critical_path={pass:offending.length===0,rows:reg.rows.length,offending};
+    checks.decision_register_off_critical_path={pass:registerIsOffCriticalPath(reg.rows),rows:reg.rows.length,offending};
   }catch(e){checks.decision_register_off_critical_path={pass:false,error:e.message};}
 }
 registerEmptyOfCriticalPath();
@@ -38,13 +47,12 @@ registerEmptyOfCriticalPath();
 // a "Preserved" section to remove it would falsify the historical record
 // instead of retiring live terminology.
 const MEASURABLE=/MEASURABLE=/;
-const HISTORICAL_MARKER='historical binary gate, since retired';
 function noLiveMeasurable(name,file){
   try{
     const text=readText(file);
     const hasMeasurable=MEASURABLE.test(text);
-    const annotated=text.includes(HISTORICAL_MARKER);
-    checks[name]={pass:!hasMeasurable||annotated,hasMeasurable,annotated,file};
+    const annotated=hasMeasurable&&measurableOk(text);
+    checks[name]={pass:measurableOk(text),hasMeasurable,annotated,file};
   }catch(e){checks[name]={pass:false,error:e.message,file};}
 }
 noLiveMeasurable('v3_source_no_measurable_field','evidence/h0/v3.mjs');
@@ -55,5 +63,10 @@ noLiveMeasurable('answer_first_verdict_no_live_measurable','docs/planning/final/
 
 const closed=Object.values(checks).every(c=>c.pass===true);
 const result={closed,checked_at:new Date().toISOString(),checks};
-console.log(JSON.stringify(result,null,2));
-if(!closed)process.exitCode=1;
+return result;
+}
+if(process.argv[1] && import.meta.url===pathToFileURL(resolve(process.argv[1])).href){
+  const result=checkClosure();
+  console.log(JSON.stringify(result,null,2));
+  if(!result.closed)process.exitCode=1;
+}
