@@ -10,6 +10,10 @@
 
 **The only path to a stronger claim than either null:** a genuinely new confirmation-shaped study on a fresh cohort (not these 60 cases). Designed, not run — see [`confirmation-study-design-2026-09-07/`](confirmation-study-design-2026-09-07/README.md) — because it requires decisions (model primacy, effect floor, acquisition budget) that are the user's to make, not implicit in having designed the study.
 
+## Local GPT-OSS follow-up — closed incomplete, 2026-09-12
+
+The user terminated the local 12-thread GPT-OSS candidate comparison after an environment-inventory check stopped it for approximately 17 hours without effective notification. Preserved: 782/1,440 completed requests, with candidates passing 132/391 and hunk-only 98/391; 658 requests were not executed. These are incomplete exploratory observations, not a completed hypothesis test or gate-clearing result. The run will not resume. See the [partial closure and evidence ledger](../../../../evidence/h0/v3-local-gpt-oss-threads12-2026-09-09/PARTIAL-RESULT.md).
+
 ## What the evidence says
 
 The preserved v2 confirmation is valid and inconclusive for selected-evidence superiority: selected matched 5/92 historical replacements, hunk-only 7/92, and keep-ours 21/92. That endpoint measures historical agreement, not semantic correctness. See the [result](../../../../evidence/h0/v2-2026-09-06b/RESULT.md). Its completed handoff remains distinct from the completed behavioral extension.

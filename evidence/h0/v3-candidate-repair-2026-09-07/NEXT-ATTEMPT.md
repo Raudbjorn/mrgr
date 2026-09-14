@@ -1,3 +1,5 @@
+> **Execution update, 2026-09-08:** The user authorized this proposal on 2026-09-07. The separately frozen [final protocol](../v3-mercury-final-2026-09-07/PROTOCOL.md) has now completed all 12 fresh paired runs. The valid finding is [NO DEMONSTRATED MEAN BENEFIT (FINAL COHORT ATTEMPT)](../v3-mercury-final-2026-09-07/FINDING.md): mean +4.72pp, fixed-weight mean +4.85pp, with both required uncertainty intervals including zero. This cohort is closed. The proposal below is preserved as written; its “not run” status, cost estimate, and “not noise” assertion describe the pre-authorization proposal, not the completed evidence.
+
 # Proposed next attempt — not run
 
 This is a proposal, not a study. Nothing described here has been executed.
