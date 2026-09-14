@@ -98,10 +98,10 @@ async function repositoryMetadata(origin){
 }
 
 export async function prepare(manifest,directory,mode='feasibility',designFile){
-  const initialSourceHashes=sourceHashes();
   assert(['feasibility','development','confirmation'].includes(mode));assert(!existsSync(directory),'refuse existing experiment directory');
   const candidates=JSONread(manifest);assert(Array.isArray(candidates)&&candidates.length);
   for(const c of candidates)validateRepositoryIdentity(c.repo);
+  const initialSourceHashes=sourceHashes();
   const environment_sha256=environmentHash();
   const libraries={C:join(ROOT,'.do-not-commit/h0-v3-tools/c.so'),Go:join(ROOT,'.do-not-commit/h0-v3-tools/go.so')};
   mkdirSync(directory,{recursive:true});const accepted=[],exclusions=[],exposed=oldEvents(),repositories=new Map();
