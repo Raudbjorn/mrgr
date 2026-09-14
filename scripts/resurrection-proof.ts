@@ -5,11 +5,12 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { ReconstructionGit, isolatedRepository, reconstruct, detectResurrections, removeCandidates } from "../packages/core/tests/resurrection-reconstruction.js";
+import { resolveGit, ReconstructionGit, isolatedRepository, reconstruct, detectResurrections, removeCandidates } from "../packages/core/tests/resurrection-reconstruction.js";
 const root=resolve(fileURLToPath(new URL("..",import.meta.url))),source=resolve(process.argv[2]??root),out=resolve(process.argv[3]??"");
 assert(process.argv.length===4,"Usage: pnpm exec tsx scripts/resurrection-proof.ts SOURCE_REPO NEW_PRIVATE_OUTPUT_DIRECTORY");
 assert(!existsSync(out),"refusing to overwrite evidence");mkdirSync(out,{recursive:true});
 const save=(name:string,value:unknown)=>writeFileSync(join(out,name),JSON.stringify(value,null,2)+"\n");
+const gitExecutable=resolveGit();
 const sha=(p:string)=>createHash("sha256").update(readFileSync(p)).digest("hex");
 const inputs={origin:"b2d25948e9668982afcda5a9e4a515ff3fe08d97",base4:"4a7299091d226d34baa593ba83c0af0d661bdbef",fork4:"c687b532782dd6464e779f6f028361d0c427fb76",base6:"83c6e7d4d4642629257aa1b0ef8eacc77fcaf954",fork6:"9c25e84e4790283be52bba5df8a33e9ca15f1356"};
 const historical="2e393f450d33c7d186b87c9d748a83760f49d6fc";
@@ -23,7 +24,7 @@ try{
  const manifestPath=join(root,"evidence/m2a/2026-09-06/manifest.json"),m=JSON.parse(readFileSync(manifestPath,"utf8"));
  for(const [file,h] of Object.entries(m.source_hashes))assert.equal(sha(join(root,file)),h,file);
  for(const [file,h] of Object.entries(m.public_fixture_files))assert.equal(sha(join(root,"evidence/m2a/2026-09-06",file)),h,file);
- for(const [name,t] of Object.entries(m.tools) as [string,{path:string;sha256:string}][])assert.equal(sha(t.path),t.sha256,name);
+ for(const [name,t] of Object.entries(m.tools) as [string,{path:string;sha256:string}][])assert.equal(sha(name==="git"?gitExecutable:t.path),t.sha256,name);
  for(const name of ["protocol","summary"])assert.equal(sha(join(root,m.private_preflight.path,name+".json")),m.private_preflight[name+"_sha256"]);
  let verifiedTrees=0;
  for(const file of Object.keys(m.public_fixture_files).filter(f=>f.endsWith(".bundle"))){
@@ -32,7 +33,7 @@ try{
   fixture.runs.forEach((r:{tree:string},i:number)=>{assert.equal(g.run(["rev-parse",`refs/mrgr-evidence/run-${i}^{tree}`]).trim(),r.tree);g.run(["fsck","--connectivity-only","--no-dangling"]);verifiedTrees++;});
  }
  assert.equal(verifiedTrees,45);save("phase4-check.json",{valid:true,manifest_sha256:sha(manifestPath),verifiedTrees});
- save("protocol.json",{version:"resurrection-fresh-proof/1",at:new Date().toISOString(),inputs,wrapperMetadata,source,git:execFileSync("/usr/bin/git",["--version"],{encoding:"utf8"}).trim(),git_sha256:sha("/usr/bin/git"),node:process.version,source_hashes:Object.fromEntries(sources.map(f=>[f,sha(join(root,f))])),detection:".test.ts blob present in fork base, absent from origin, retained in fork, present in fresh join; union across both legs",comparison_only:{historical,expected},timeout_ms_per_git:120000,private_evidence:true});
+ save("protocol.json",{version:"resurrection-fresh-proof/1",at:new Date().toISOString(),inputs,wrapperMetadata,source:"SOURCE_REPOSITORY",git:new ReconstructionGit(root).run(["--version"]).trim(),git_sha256:sha(gitExecutable),node:process.version,source_hashes:Object.fromEntries(sources.map(f=>[f,sha(join(root,f))])),detection:".test.ts blob present in fork base, absent from origin, retained in fork, present in fresh join; union across both legs",comparison_only:{historical,expected},timeout_ms_per_git:120000,private_evidence:true});
  const results=[];
  for(let i=0;i<2;i++){
   stage=`fresh reconstruction ${i+1}/2`;console.log(stage);
