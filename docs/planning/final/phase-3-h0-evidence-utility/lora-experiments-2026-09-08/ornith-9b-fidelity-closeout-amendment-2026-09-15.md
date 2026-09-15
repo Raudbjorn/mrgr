@@ -37,3 +37,14 @@ receipts, with the existing single identical-input infrastructure retry policy.
 No additional diagnostic launch, new acquisition, retraining, cross-validation or
 held-out evaluation is authorized by this closeout. Archive results and close
 regardless of direction, including an incomplete diagnostic.
+
+### Prelaunch resource specification
+
+The initial CLI preflight refused to create a run or unit because available RAM
+was 17 GiB, below the inherited 24 GiB *training* guard. No diagnostic request or
+run existed. For this inference-only diagnostic, require at least **16 GiB
+MemAvailable** and set **MemoryMax=16 GiB, MemorySwapMax=0** for both bases. This
+bounds host allocations instead of granting the 48 GiB training ceiling while
+other applications are resident. GPU allocations remain independently bounded
+by the A770. An OOM or failed load is INCOMPLETE instrumentation, not a model
+failure; there is no automatic lower-precision fallback or new diagnostic launch.
