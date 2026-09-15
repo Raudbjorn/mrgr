@@ -41,3 +41,24 @@ The completed recovery ledger has 378 distinct historical work-label failures, w
 The completed v2 study permits deterministic Phase 4 work regardless of H0 positivity; see the [execution/handoff contract](execution-and-handoff-2026-09-06.md) and [Phase 4 current state](../phase-4-m2a-mechanisms/current-state.md). Behavioral positivity and any Phase 5 claims need their own evidence.
 
 Prior state text and reverse-chronological round summaries are preserved in the [state history](state-history-through-2026-09-07.md). Historical execution records and frozen results are unchanged. This file contains current decisions; historical logs must not override it.
+
+
+## 2026-09-15: off-critical-path Ornith selector pilot closeout
+
+Phase 3 remains closed; this pilot does not reopen its retired gate. Ornith-1.5-9B
+training/export feasibility completed with 57 training examples, three length
+exclusions and 45 optimizer steps. The bounded fresh acquisition ended INCOMPLETE:
+100 repositories, 791 replays, zero admitted cases and zero held-out model requests.
+The Q8 secondary ended INCOMPLETE (secondary execution) on an unsupported systemd
+runtime-property update, before GPU work. Remaining acquisition instrument and
+environment losses preclude treating zero admissions as population scarcity.
+
+The separately authorized 32-request in-sample fidelity diagnostic is reported in
+the [pilot closeout](../../../../evidence/h0/ornith-9b-closeout-2026-09-15/README.md).
+It is not a generalization or efficacy estimate. No further acquisition, retraining
+or cross-validation follows automatically; either requires a new protocol.
+
+The post-failure diagnostic completed all 32 requests without infrastructure
+missingness: adapter target matches Q4_K_M 4/8 versus Q8_0 5/8. The predeclared
+reading is **inconclusive** (the Q8 threshold was at least 6/8 and above Q4).
+The ordinary service is restored; no experiment remains running.

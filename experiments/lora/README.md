@@ -72,3 +72,18 @@ additional acquisition round in this protocol.
 Checks: `python3 -m unittest discover -s experiments/lora -p test_revision.py`,
 `node evidence/h0/go-screen-repair.test.mjs`, and the existing Go screener,
 behavioral runner and runtime checks. No new package dependency was installed.
+
+
+### Terminal closeout and separately authorized diagnostic
+
+The acquisition revision and original Q8 secondary are terminal. Do not use the
+old `revision.py start` recipe to extend this pilot. See the public closeout in
+`evidence/h0/ornith-9b-closeout-2026-09-15/README.md` and the dated fidelity-closeout
+amendment. `q8_secondary.py diagnostic-start RUN_DIRECTORY` is the new one-shot,
+in-sample diagnostic entry point; the old secondary start is rejected. Its unit
+uses a launch-time deadline and a 16 GiB host memory cap, with service restoration
+on terminal exit. It does not acquire data, retrain or perform held-out inference.
+
+`export_closeout.py` exports portable receipt derivatives with both original and
+export hashes. Executed source snapshots remain exact bytes; later source repairs
+are separate commits and must not be represented as the original instrument.
