@@ -11,7 +11,7 @@ not renumbered) because other files in this repo cite them by number (e.g.
 `evidence/h0/REVIEW-2026-08-29.md` cites "§3.4"). Use the table below to
 resolve any `§N` you find quoted elsewhere back to a file.
 
-*Last split:* 2026-08-30. *Last content update:* 2026-09-13 (Phase 3 closure and gate retirement indexed; Mercury follow-up complete; local GPT-OSS follow-up closed incomplete by the user; confirmation and LoRA designs indexed; Phase 4 complete and Phase 5 fresh reconstruction proved locally).
+*Last split:* 2026-08-30. *Last content update:* 2026-09-15 (Phase 3 closure and gate retirement indexed; Mercury follow-up complete; local GPT-OSS follow-up closed incomplete by the user; confirmation and LoRA designs indexed; Phase 4 complete and Phase 5 fresh reconstruction proved locally).
 
 ---
 
@@ -88,8 +88,10 @@ file wins; notes files carry no state of their own.
 | [confirmation-study-design-2026-09-07/README.md](phase-3-h0-evidence-utility/confirmation-study-design-2026-09-07/README.md) | Fresh-cohort confirmation design, not an executed or authorized study |
 | [confirmation-study-design-2026-09-07/acquisition-feasibility.md](phase-3-h0-evidence-utility/confirmation-study-design-2026-09-07/acquisition-feasibility.md) | Acquisition feasibility and constraints for that design |
 | [confirmation-study-design-2026-09-07/decisions-required.md](phase-3-h0-evidence-utility/confirmation-study-design-2026-09-07/decisions-required.md) | Explicit decisions required before executing confirmation |
-| [lora-experiments-2026-09-08/README.md](phase-3-h0-evidence-utility/lora-experiments-2026-09-08/README.md) | Adapter experiment designs; no training performed; its contemporaneous local-benchmark status is superseded by the September 12 closure |
+| [lora-experiments-2026-09-08/README.md](phase-3-h0-evidence-utility/lora-experiments-2026-09-08/README.md) | Historical adapter designs; superseded for the Ornith-9B pilot by its amendments and closeout below; no GPT-OSS training result |
 | [lora-experiments-2026-09-08/compatibility-receipt.json](phase-3-h0-evidence-utility/lora-experiments-2026-09-08/compatibility-receipt.json) | Read-only A770/software compatibility audit; GPT-OSS training on this machine remains unverified |
+| [Ornith-9B pilot closeout](../../../evidence/h0/ornith-9b-closeout-2026-09-15/README.md) | Training/export feasibility completed; primary INCOMPLETE (zero admissions, zero held-out requests); original Q8 secondary INCOMPLETE (launcher infrastructure); in-sample fidelity diagnostic completed inconclusive (Q4 adapter 4/8, Q8 adapter 5/8), not efficacy |
+| [Fidelity closeout amendment](phase-3-h0-evidence-utility/lora-experiments-2026-09-08/ornith-9b-fidelity-closeout-amendment-2026-09-15.md) | One post-failure diagnostic, fixed 32-request design, launch-time deadline and terminal closeout; no further acquisition/retraining |
 | `SIGNIFICANCE-…` (in `evidence/h0/`, not this tree) | Historical enum-only gate: test, verdict, and why its grader made success impossible |
 | `historical-2026-08-29-execution-record.md` | §23 — **superseded** 2026-08-29 broken-PRNG/single-repository run. Historical only; do not read as current H0 status. Current status is `current-state.md`. |
 
