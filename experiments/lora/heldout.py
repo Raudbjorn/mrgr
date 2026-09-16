@@ -76,9 +76,10 @@ def acquire(r,c):
         for row in frame['repositories']:
             if events>=frame['max_events']:break
             assert __import__('shutil').disk_usage(c['storage']).free>12*1024**3,'disk floor reached'
-            repo=row['repository'].lower();d=r/repo.replace('/','--');d.mkdir()
+            repo=row['repository'].lower();d=r/repo.replace('/','--')
             record={'repo':repo,'status':'started'};records.append(record);save(r/'acquisition.json',{'complete':False,'events':events,'rows':records})
             try:
+                d.mkdir()
                 meta=json.loads(command(['gh','api','repos/'+repo],d/'metadata',github=True));root=meta.get('source',meta)
                 lineage=root['full_name'].lower();record.update(lineage=lineage,repository_id=root['id'])
                 assert not meta['private'] and not meta.get('archived') and not meta.get('disabled')

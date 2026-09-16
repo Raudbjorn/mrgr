@@ -99,7 +99,7 @@ def worker(r,c):
         case=row['case'];prompt=messages(case,row['candidates'],c['seed']);ids=[x['id'] for x in json.loads(prompt[1]['content'])['candidates']]
         examples.append({'id':case['id'],'lineage':case['cluster_id'],'cell':case['cell'],'messages':prompt,'target':target(row['candidates'],ids),'candidate_labels':{x['id']:x['evaluation']['pass'] for x in row['candidates']},'receipt_sha256':row['receipt_sha256']})
     save(r/'fresh-cases.json',examples)
-    result=gpu(examples,r/'fresh-evaluation',3,'fresh compact-repository convenience frame; exploratory 9B selector')
+    result=gpu(examples,r/'fresh-evaluation',3,'fresh-heldout')
     save(r/'result.json',result)
 
 

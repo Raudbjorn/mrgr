@@ -9,7 +9,6 @@ class FidelityTest(unittest.TestCase):
         self.assertEqual(fidelity_reading(1,4),'inconclusive')
         self.assertEqual(fidelity_reading(1,0,False),'INCOMPLETE (fidelity instrument)')
 
-if __name__=='__main__':unittest.main()
 
 class LaunchTest(unittest.TestCase):
     def test_deadline_is_bounded_and_exhaustion_rejected(self):
@@ -39,3 +38,12 @@ class LaunchTest(unittest.TestCase):
             with patch.dict('os.environ',{'SERVICE_RESULT':'timeout'}),patch('q8_secondary.restore') as restore,patch('q8_secondary.subprocess.run'):
                 finish(r);restore.assert_called_once()
             self.assertEqual(read(r/'execution.json')['status'],'failed')
+
+    def test_amendment_drift_rejected(self):
+        from unittest.mock import patch
+        from q8_secondary import verify_amendments
+        verify_amendments()
+        with patch('q8_secondary.digest',return_value='changed'):
+            with self.assertRaisesRegex(AssertionError,'amendment drift'):verify_amendments()
+
+if __name__=='__main__':unittest.main()

@@ -39,6 +39,13 @@ class RevisionTest(unittest.TestCase):
         selected,counts=allocate(rows,{'seed':1})
         self.assertEqual(len(selected),24);self.assertTrue(all(n==6 for n in counts.values()))
         self.assertEqual(allocate(rows[:4],{'seed':1})[1][CELLS[1]],0)
+    def test_diagnostics_do_not_emit_inference_or_single_repeat_flip_rates(self):
+        examples=[{'id':'a','lineage':'a/b','cell':CELLS[0]}]
+        rows=[r|{'success':True,'outcome':'success'} for r in schedule(examples,1,1)]
+        result=summarize(rows,examples,1,1,'IN-SAMPLE; NOT EFFICACY')
+        self.assertNotIn('paired_delta',result)
+        self.assertEqual(result['per_case'][0]['flip_rates'],{'base':None,'adapter':None})
+        self.assertIn('paired_delta',summarize(rows,examples,1,1,'fresh-heldout'))
     def test_real_decoder_and_missingness(self):
         body={'choices':[{'finish_reason':'stop','message':{'content':'{"choice":"x"}'}}],'usage':{'prompt_tokens':4,'completion_tokens':3}}
         self.assertTrue(classify(body,{'x':True})['success'])

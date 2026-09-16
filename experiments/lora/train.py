@@ -53,8 +53,9 @@ def main():
     # Loading optimization only: A770 rejects the optional single 7 GiB warmup allocation.
     # Actual NF4 tensor allocations remain unchanged and must still fit on-device.
     save(r/(args.mode+'-allocator.json'),{'warmup':'disabled','reason':'single allocation rejected before weight loading; per-tensor allocation unchanged'})
-    with patch('transformers.modeling_utils.caching_allocator_warmup', return_value=None):
+    with patch('transformers.modeling_utils.caching_allocator_warmup', return_value=None) as warmup:
         model,loading=Qwen3_5ForCausalLM.from_pretrained(snapshot,config=config,dtype=torch.bfloat16,quantization_config=quantization,device_map={'':'xpu:0'},key_mapping={r'^model.language_model\.':'model.'},output_loading_info=True,attn_implementation='sdpa')
+    assert warmup.called,'allocator warmup hook no longer invoked; revalidate loading path'
     loading=json.loads(json.dumps(loading,default=lambda value:sorted(value) if isinstance(value,set) else str(value)))
     save(r/(args.mode+'-loading.json'),loading)
     assert not loading.get('missing_keys') and not loading.get('mismatched_keys') and not loading.get('error_msgs')

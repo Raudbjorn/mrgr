@@ -13,6 +13,7 @@ try{
  const legacy=commit();mkdirSync(join(repo,'sub'));writeFileSync(join(repo,'sub/go.mod'),'module example.invalid/sub\n');const nested=commit();
  writeFileSync(join(repo,'go.mod'),'module example.invalid/root\n');const module=commit();
  assert.equal(eraStratum(repo,legacy,'README').era,'GOPATH');assert.equal(eraStratum(repo,nested,'sub/a.go').nested_module_exceptions.length,1);
+ const nestedInfo=eraStratum(repo,nested,'sub/a.go');assert.equal(nestedInfo.era,'GOPATH');assert.equal(nestedInfo.target_era,'module');assert.equal(nestedInfo.module_directory,'sub');assert.equal(nestedInfo.version,'historical-root-and-target-build-era/3');
  assert.equal(eraStratum(repo,nested,'elsewhere/a.go').nested_module_exceptions.length,0);
  const info=eraStratum(repo,module,'sub/a.go');assert.equal(info.era,'module');assert.equal(info.root_go_mod.oid,git('rev-parse',`${module}:go.mod`));assert.equal(info.tree,git('rev-parse',`${module}^{tree}`));
  const triples=join(d,'triples.jsonl');writeFileSync(triples,[legacy,nested,module].map(merge_sha=>JSON.stringify({merge_sha,path:'README',ordinal:0,base:'',ours:'',theirs:'',resolution:'fixture'})).join('\n'));

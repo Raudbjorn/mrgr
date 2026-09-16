@@ -15,4 +15,4 @@ assert.deepEqual(repeatSchedule([...cases].reverse(),protocolHash,requests),s);
 assert.throws(()=>repeatSchedule([...cases.slice(1),cases[1]],protocolHash,requests),/duplicate/);
 const missing={...requests};delete missing[Object.keys(missing)[0]];assert.throws(()=>repeatSchedule(cases,protocolHash,missing));
 const result={at:new Date().toISOString(),pass:true,cases_sha256:hash(raw),source_sha256:hash(readFileSync(new URL('repeat-schedule.mjs',import.meta.url))),test_sha256:hash(readFileSync(new URL(import.meta.url))),scheduled_requests:s.scheduled_requests,independent_cases:s.independent_cases,independent_clusters:s.independent_clusters,identical_body_across_repeats:true,unique_request_ids:true,balanced_cell_order:true,synthetic_only:true,requests_sent:0};
-writeFileSync(new URL('repeat-schedule-test.json',import.meta.url),JSON.stringify(result,null,2)+'\n');console.log(JSON.stringify(result));
+if(process.argv[2])writeFileSync(process.argv[2],JSON.stringify(result,null,2)+'\n');console.log(JSON.stringify(result));

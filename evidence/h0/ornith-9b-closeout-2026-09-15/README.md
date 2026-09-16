@@ -145,3 +145,61 @@ all screening limitations; no safety guarantee for merged code; no reopening of
 the retired Phase 3 gate. The diagnostic uses inspected training examples and
 finite oracle labels. New local state consists of diagnostic receipts and
 portable evidence exports; no new package dependency was installed.
+
+## Review correction — 2026-09-16
+
+The terminal findings above are unchanged. The mutant screener could label an
+infrastructure failure as insufficient discrimination, and accepted timed-out or
+incomplete tests as mutant kills. The maintained implementation now distinguishes
+these outcomes and labels absent passing tests as ineligible. The one recorded
+`unit tests did not reject two compiling mutants` row was checked directly:
+`jpillora/chisel` event `591f95885f5aca3c5e0326bbe41f726c065462f8` has two
+`behavioral-pass` mutants, with no recorded infrastructure failure. Its exclusion
+therefore stands. This does not establish that all acquisition infrastructure was
+sound. “No infrastructure missingness” above refers only to the 32 diagnostic
+requests, not to acquisition or oracle screening.
+
+The portable in-sample summaries and summaries embedded in status/result receipts
+now omit `paired_delta` and its bootstrap interval. Single-repeat flip rates are
+`null` (not estimable), not zero. These are reporting corrections, not new
+analyses or reruns. Original private bytes and their original hashes are retained;
+the export manifest records the additional transformation and updated export hashes.
+The raw counts and diagnostic decision did not change.
+
+Both amendments were declared before their runs, as supported by the retained
+commits and hashes, but the launcher did not enforce the expected amendment
+hashes. The maintained launcher now checks both exact hashes at launch and worker
+entry. Its 16 GiB limit belongs to the separately pinned diagnostic amendment,
+not to the 24/48 GiB training profile.
+
+The executed screener's `/2` era field classified the target package, including
+nested modules. That differs from the older repository-root definition. No fresh
+case was admitted, so no held-out allocation was shifted in this run; this is
+still a population-definition mismatch for any future comparison. Maintained
+`/3` records preserve repository-root `era` and explicit `target_era`; the new
+screener/admission path uses the latter, legacy recovery retains the former.
+Both success and unavailable records name `/3`. Historical `/1` and `/2` receipts
+remain unchanged. A future protocol must choose its stratum explicitly.
+
+The dependency helper is now included in future frozen instrument source lists.
+This does not retroactively add it to historical snapshots. The current admission
+file did import `checkGroups` without calling it; it now calls the shared invariant
+before admission. Cross-manifest selection retains the existing lineage/parent/
+content deduplication; unification of its full invariant is a follow-up.
+
+CI now pins Go 1.26.0 for the public no-network fixtures (not as a replacement for
+the pilot's historical toolchain) and names the Python orchestration test modules.
+The H0 runner recursively discovers maintained nested test trees; frozen snapshots
+and two private historical-fixture integrations are excluded explicitly. Those two
+require original local scaffolds and matching historical preparation hashes. The
+newly enabled tests no longer overwrite historical calibration receipts. The
+inference simulation's historical estimator was extracted unchanged to remove an
+import dependency on uncommitted archived build output.
+
+Follow-ups before any new experiment: consolidate stale/declarative configuration
+keys into enforced protocol inputs; replace run-local training budget accounting
+with a cumulative ledger; preserve both primary and restoration exceptions in all
+service-lease paths; enforce disjointness across every admission manifest. These
+are not authorization to restart this terminal pilot. The allocator-hook assertion,
+per-repository mkdir isolation and NUL-delimited Git path listing were also fixed;
+full-model loading was not rerun as part of this review.

@@ -17,6 +17,19 @@ def portable(value):
     return value
 
 
+def diagnostic_statistics(value):
+    """Public correction only; retain original hashes and raw private receipts."""
+    if isinstance(value,list):return [diagnostic_statistics(x) for x in value]
+    if not isinstance(value,dict):return value
+    value={k:diagnostic_statistics(v) for k,v in value.items()}
+    if 'NOT EFFICACY' in value.get('scope','') and 'per_case' in value:
+        value.pop('paired_delta',None)
+        if value.get('planned')==2*len(value['per_case']):
+            for row in value['per_case']:row['flip_rates']={arm:None for arm in row['flip_rates']}
+        value['reporting_correction']='2026-09-16: omit in-sample inferential interval; single-repeat flip rates are undefined.'
+    return value
+
+
 def main():
     files=[]
     primary=RUNS/'9b-revision-2026-09-15';secondary=RUNS/'9b-q8-secondary-2026-09-15';diagnostic=RUNS/'9b-fidelity-closeout-2026-09-15';training=RUNS/'9b-training-2026-09-15'
@@ -29,10 +42,10 @@ def main():
     manifest=[]
     for source in sorted(set(files)):
         relative=source.relative_to(RUNS);dest=OUT/'receipts'/relative;dest.parent.mkdir(parents=True,exist_ok=True)
-        value=portable(read(source)) if source.suffix=='.json' else portable(source.read_text())
+        value=diagnostic_statistics(portable(read(source))) if source.suffix=='.json' else portable(source.read_text())
         if source.suffix=='.json':save(dest,value)
         else:dest.write_text(value)
-        manifest.append({'source':'$RUNS/'+str(relative),'export':str(dest.relative_to(OUT)),'original_sha256':digest(source),'export_sha256':digest(dest),'transformation':'Replace declared local path prefixes; JSON reserialized. Source bytes retained privately.'})
+        manifest.append({'source':'$RUNS/'+str(relative),'export':str(dest.relative_to(OUT)),'original_sha256':digest(source),'export_sha256':digest(dest),'transformation':'Replace declared local path prefixes; omit in-sample paired_delta and set undefined single-repeat flip rates to null; JSON reserialized. Source bytes retained privately.'})
     save(OUT/'receipt-manifest.json',{'version':'ornith-closeout-exports/1','path_tokens':['$REPOSITORY','$PILOT_STORAGE','$LLAMA_SOURCE','$HOME','$RUNS'],'files':manifest,'historical_instrument_commit':'3b503d56f','originals_modified':False})
     verify=[]
     for row in read(OUT/'executed-instrument.json')['rows']:
