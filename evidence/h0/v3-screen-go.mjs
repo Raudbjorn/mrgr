@@ -50,7 +50,7 @@ export function eraStratum(directory,event,path){
   const root=entries.find(e=>e.path==='go.mod')??null;
   const nested=entries.filter(e=>e.path.endsWith('/go.mod')&&path.startsWith(e.path.slice(0,-6)));
   const effective=[...(root?[root]:[]),...nested].sort((a,b)=>b.path.length-a.path.length)[0]??null;
-  return {version:'historical-target-build-era/2',effective_go_mod:effective,module_directory:effective?dirname(effective.path):null,recorded_at:new Date().toISOString(),availability:'available',event,tree,root_go_mod:root,era:effective?'module':'GOPATH',build_mode:effective?'target-module-vendor':'canonical-GOPATH',nested_module_exceptions:nested};
+  return {version:'historical-root-and-target-build-era/3',effective_go_mod:effective,module_directory:effective?dirname(effective.path):null,recorded_at:new Date().toISOString(),availability:'available',event,tree,root_go_mod:root,era:root?'module':'GOPATH',target_era:effective?'module':'GOPATH',build_mode:effective?'target-module-vendor':'canonical-GOPATH',nested_module_exceptions:nested};
 }
 export function sourceIneligibility(path,text=''){
   safePath(path);
@@ -65,6 +65,12 @@ export function referenceFailure(ev){
   if(ev.category==='environment-error')return 'incomplete-oracle-infrastructure';
   if(ev.category==='build-failure')return 'reference-build-failure';
   return 'reference-behavioral-failure';
+}
+// Only observed test failures count; timeouts and missing completion are not kills.
+export function mutantDisposition(ev){
+  if(ev.category==='environment-error'||ev.reason==='test-timeout'||ev.reason==='test-completion-contract')return 'incomplete';
+  if(ev.category==='build-failure'&&referenceFailure(ev)==='incomplete-missing-dependency')return 'incomplete';
+  return ev.category==='test-failure'?'rejected':'not-rejected';
 }
 export function chooseBase(bases,reported){
   assert(bases.length&&bases.every(b=>/^[a-f0-9]{40}$/.test(b)),'invalid Git merge bases');
@@ -110,14 +116,14 @@ export async function screen(configPath){
   const frame=[];
   for(const t of triples){let reason=null;
     assert(/^[a-f0-9]{40}$/.test(t.merge_sha),'invalid merge SHA');safePath(t.path);
-    let era;try{era=eraStratum(resolve(config.repository),t.merge_sha,t.path);}catch(e){era={version:'historical-root-build-era/1',recorded_at:new Date().toISOString(),availability:'unavailable',event:t.merge_sha,era:null,reason:e.message};reason='historical-era-unavailable';}
+    let era;try{era=eraStratum(resolve(config.repository),t.merge_sha,t.path);}catch(e){era={version:'historical-root-and-target-build-era/3',recorded_at:new Date().toISOString(),availability:'unavailable',event:t.merge_sha,era:null,target_era:null,reason:e.message};reason='historical-era-unavailable';}
     const entry={event:t.merge_sha,path:t.path,ordinal:t.ordinal,era,reason:'not-yet-screened'};
     frame.push(entry);save(join(out,'frame.json'),{rows:frame,selected:[],complete:false});
     if(!reason&&skip.has(t.merge_sha))reason='existing-admission-or-exposure';
     else if(sourceIneligibility(t.path))reason=sourceIneligibility(t.path);
     else if(typeof t.ours!=='string'||typeof t.theirs!=='string'||!t.resolution||Buffer.byteLength(t.resolution)>frozen.max_reference_bytes)reason='missing-parent-or-empty-reference-or-over-8192-byte-screen';
     else if(seen.has(t.merge_sha))reason='one-hunk-per-event-screen';
-    if(!reason){try{const file=git(resolve(config.repository),'show',`${t.merge_sha}:${safePath(t.path)}`),start=file.indexOf(Buffer.from(t.resolution));assert(!sourceIneligibility(t.path,file.toString()),'generated-or-vendored-target');const packageFiles=git(resolve(config.repository),'ls-tree','--name-only',`${t.merge_sha}:${dirname(t.path)==='.'?'':dirname(t.path)}`).toString().split('\n');assert(packageFiles.some(p=>p.endsWith('_test.go')),'ineligible-no-test-files');assert(start>=0&&file.indexOf(Buffer.from(t.resolution),start+1)<0,'ambiguous reference occurrence');assert(mutations(file.toString(),start,start+Buffer.byteLength(t.resolution),library).length>=2,'fewer than two available token mutations');}catch(e){reason=e.message;}}
+    if(!reason){try{const file=git(resolve(config.repository),'show',`${t.merge_sha}:${safePath(t.path)}`),start=file.indexOf(Buffer.from(t.resolution));assert(!sourceIneligibility(t.path,file.toString()),'generated-or-vendored-target');const packageFiles=git(resolve(config.repository),'ls-tree','--name-only','-z',`${t.merge_sha}:${dirname(t.path)==='.'?'':dirname(t.path)}`).toString().split('\0');assert(packageFiles.some(p=>p.endsWith('_test.go')),'ineligible-no-test-files');assert(start>=0&&file.indexOf(Buffer.from(t.resolution),start+1)<0,'ambiguous reference occurrence');assert(mutations(file.toString(),start,start+Buffer.byteLength(t.resolution),library).length>=2,'fewer than two available token mutations');}catch(e){reason=e.message;}}
     if(!reason)seen.add(t.merge_sha);
     entry.reason=reason;save(join(out,'frame.json'),{rows:frame,selected:[],complete:false});
   }
@@ -134,7 +140,7 @@ export async function screen(configPath){
       const moduleRoot=record.era.module_directory??'.',moduleCwd=join(scaffold,moduleRoot);
       assert(!existsSync(join(scaffold,'go.work')),'incomplete-workspace-requires-pinned-workspace-oracle');
       const moduleFiles=['go.mod','go.sum'].map(n=>join(moduleRoot,n)).map(p=>[p,existsSync(join(scaffold,p))?readFileSync(join(scaffold,p)):null]);
-      assert.equal(Boolean(moduleFiles[0][1]),record.era.era==='module','build era differs from pre-outcome ledger');
+      assert.equal(Boolean(moduleFiles[0][1]),record.era.target_era==='module','build era differs from pre-outcome ledger');
       if(moduleFiles[0][1]){
         const env={PATH:process.env.PATH,HOME:dir,GOTOOLCHAIN:'local',GOMODCACHE:join(cache,'module-cache'),GOCACHE:join(cache,'go-cache'),GOPROXY:'https://proxy.golang.org',GOSUMDB:'sum.golang.org'};
         for(const args of [['mod','download','all'],['mod','vendor']]){const r=spawnSync('go',args,{cwd:moduleCwd,env:{...env,GOWORK:'off',GOENV:'off'},encoding:'utf8',timeout:120000,maxBuffer:4*1024*1024});record.attempts.push({command:['go',...args],status:r.status,error:r.error?.message,stdout:r.stdout,stderr:r.stderr});assert(!r.error&&r.status===0,'dependency acquisition failed');}
@@ -164,9 +170,9 @@ export async function screen(configPath){
       const marker='<<<<<<< ours\n'+t.ours+'||||||| base\n'+t.base+'=======\n'+t.theirs+'>>>>>>> theirs\n',target=Buffer.concat([shipped.subarray(0,start),Buffer.from(marker),shipped.subarray(end)]);writeFileSync(join(scaffold,t.path),target);
       const c={repo:config.repo,event:t.merge_sha,group_id:`${config.repo}:${t.merge_sha}`,language:'Go',path:t.path,base:t.base,ours:t.ours,theirs:t.theirs,reference:t.resolution,git:{directory,base,ours:parents[0],theirs:parents[1]},evaluator:{scaffold,oracle,target:t.path,start_byte:start,end_byte:start+Buffer.byteLength(marker),preimage_sha256:hash(target),scaffold_sha256:treeHash(scaffold),oracle_sha256:treeHash(oracle),build:['/bin/sh','/oracle/build.sh'],test:['/bin/sh','/oracle/test.sh'],test_completion:[{pattern:'^PASS$',count:1}]},mutations:[]};
       record.git_validation=verifyGitCase(c);record.reference=evaluate(c,c.reference);assert(record.reference.pass,referenceFailure(record.reference));
-      const count=(record.reference.stages[1].stdout.match(/^--- PASS: Test/gm)??[]).length;assert(count>0,'no passing unit tests');c.evaluator.test_completion.push({pattern:'^--- PASS: Test',count});record.mutations=[];
-      for(const mutant of mutants){const result=evaluate(c,mutant.resolution);record.mutations.push({name:mutant.name,resolution_sha256:hash(mutant.resolution),...result});if(result.category==='test-failure')c.mutations.push(mutant);if(c.mutations.length===2)break;}
-      assert(c.mutations.length===2,'unit tests did not reject two compiling mutants');
+      const count=(record.reference.stages[1].stdout.match(/^--- PASS: Test/gm)??[]).length;assert(count>0,'ineligible-no-passing-unit-tests');c.evaluator.test_completion.push({pattern:'^--- PASS: Test',count});record.mutations=[];
+      for(const mutant of mutants){const result=evaluate(c,mutant.resolution);record.mutations.push({name:mutant.name,resolution_sha256:hash(mutant.resolution),...result});if(mutantDisposition(result)==='rejected')c.mutations.push(mutant);if(c.mutations.length===2)break;}
+      assert(c.mutations.length===2,record.mutations.some(m=>mutantDisposition(m)==='incomplete')?'incomplete-mutant-oracle':'ineligible-insufficient-discriminating-mutants');
       save(join(dir,'case.json'),[c]);accepted.push(c);record.status='screen-passed-not-yet-admitted';record.manifest=join(dir,'case.json');
     }catch(e){record.reason=e.message;record.status=e.message.startsWith('incomplete-')?'incomplete':e.message.startsWith('ineligible-')?'ineligible':'excluded';}
     save(join(dir,'receipt.json'),record);save(join(out,'screening.json'),rows);save(join(out,'candidates.json'),accepted);console.log(JSON.stringify({event:record.event,status:record.status,reason:record.reason,screen_passed:accepted.length}));

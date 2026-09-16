@@ -146,23 +146,23 @@ def evaluate(run,examples,profile,base,adapter,repeats=3,seed=20260908,scope='fr
             else:result={'outcome':'infrastructure-missing','success':None}
             save(path/'result.json',row|result)
         results=[read(run/'attempts'/x['id']/'result.json') for x in plan]
-        summary=summarize(results,examples,repeats,seed)|{'scope':scope}
+        summary=summarize(results,examples,repeats,seed,scope)|{'scope':scope}
         save(run/'evaluation-summary.json',summary);save(run/'status.json',{'stage':'complete','summary':summary,'at':time.time()})
         return summary
     finally:server.stop()
 
 
-def summarize(results,examples,repeats,seed):
+def summarize(results,examples,repeats,seed,scope="diagnostic"):
     counts={arm:dict(collections.Counter(x['outcome'] for x in results if x['condition']==arm)) for arm in ['base','adapter']}
     per=[]
     for example in examples:
         arms={arm:[x['success'] for x in results if x['case']==example['id'] and x['condition']==arm] for arm in ['base','adapter']}
         rates={arm:sum(v is True for v in values)/repeats for arm,values in arms.items()}
-        per.append({'case':example['id'],'lineage':example['lineage'],'cell':example['cell'],'rates_lower':rates,'flip_rates':{arm:(sum(a!=b for i,a in enumerate(values) for b in values[i+1:])/max(1,len(values)*(len(values)-1)/2)) for arm,values in arms.items()},'delta_lower_assumption':rates['adapter']-rates['base'],'complete':all(len(v)==repeats and None not in v for v in arms.values())})
+        per.append({'case':example['id'],'lineage':example['lineage'],'cell':example['cell'],'rates_lower':rates,'flip_rates':{arm:(sum(a!=b for i,a in enumerate(values) for b in values[i+1:])/(len(values)*(len(values)-1)/2) if len(values)>1 and None not in values else None) for arm,values in arms.items()},'delta_lower_assumption':rates['adapter']-rates['base'],'complete':all(len(v)==repeats and None not in v for v in arms.values())})
     complete=all(x['complete'] for x in per)
     output={'complete':complete,'finding':'EXPLORATORY COMPLETE' if complete else 'INCOMPLETE','counts':counts,'per_case':per,'planned':len(examples)*repeats*2,'recorded':len(results),'missing':sum(x['success'] is None for x in results)}
     output['success_bounds']={arm:{'lower':sum(x['condition']==arm and x['success'] is True for x in results)/(len(examples)*repeats),'upper':sum(x['condition']==arm and x['success'] is not False for x in results)/(len(examples)*repeats)} for arm in ['base','adapter']}
-    if complete:
+    if complete and scope=='fresh-heldout':
         groups=collections.defaultdict(list)
         for x in per:groups[x['lineage']].append(x['delta_lower_assumption'])
         rng=random.Random(seed);keys=list(groups)

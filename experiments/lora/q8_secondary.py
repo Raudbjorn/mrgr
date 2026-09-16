@@ -14,7 +14,13 @@ from evaluate import evaluate,api,schedule
 COMMIT='6f830274c56f0beb2fc6be4229769171e1570ae9'
 AMENDMENT='docs/planning/final/phase-3-h0-evidence-utility/lora-experiments-2026-09-08/ornith-9b-q8-secondary-amendment-2026-09-15.md'
 AMENDMENT_SHA='274393fa3df16175ecc74bf7244ce0167438cffb9fb5946c71f9f1226a833f5a'
-UNIT='mrgr-lora-9b-q8-secondary-20260915'
+CLOSEOUT='docs/planning/final/phase-3-h0-evidence-utility/lora-experiments-2026-09-08/ornith-9b-fidelity-closeout-amendment-2026-09-15.md'
+CLOSEOUT_SHA='465c10064342a51993ca17e803eb49ad2cb1c3a13ece49946b9bad1453f9d112'
+DIAGNOSTIC_MEMORY_BYTES=16*1024**3  # Separate, pinned inference-only amendment; not training guards.
+
+def verify_amendments():
+    for path,expected in [(AMENDMENT,AMENDMENT_SHA),(CLOSEOUT,CLOSEOUT_SHA)]:
+        assert digest(ROOT/path)==expected,'amendment drift: '+path
 
 
 def fidelity_reading(q4,q8,complete=True):
@@ -43,6 +49,7 @@ def idle_service():
 
 
 def diagnostic(r,c):
+    verify_amendments()
     protocol=read(r/'protocol.json');primary=Path(protocol['primary'])
     for path,sha in protocol['inputs'].items():assert digest(Path(path))==sha,'diagnostic input drift: '+path
     with (Path(c['storage'])/'training.lock').open('a') as lock:
@@ -85,6 +92,7 @@ def main():
     if mode=='finish':finish(r);return
     if mode=='diagnostic-worker':diagnostic(r,c);return
     assert mode=='diagnostic-start','The failed secondary remains terminal; only the amended diagnostic can run.'
+    verify_amendments()
     assert not r.exists(),'refuse rescheduling or overwriting a diagnostic'
     primary=Path(c['storage'])/'runs/9b-revision-2026-09-15';secondary=primary.parent/'9b-q8-secondary-2026-09-15';training=primary.parent/'9b-training-2026-09-15'
     assert read(primary/'execution.json')['status']=='complete'
@@ -93,18 +101,18 @@ def main():
     limit=diagnostic_limit(remaining)
     idle_service()
     available=int(next(x.split()[1] for x in Path('/proc/meminfo').read_text().splitlines() if x.startswith('MemAvailable:')))*1024
-    assert available>=16*1024**3,'insufficient available RAM; do not flush swap'
+    assert available>=DIAGNOSTIC_MEMORY_BYTES,'insufficient available RAM; do not flush swap'
     bases={'Q4_K_M':str(training/'base-Q4_K_M.gguf'),'Q8_0':str(secondary/'base-Q8_0.gguf')}
     expected=read(primary/'revision.json')['inputs'];assert digest(Path(bases['Q4_K_M']))==expected[bases['Q4_K_M']]
     assert digest(Path(bases['Q8_0']))==read(secondary/'conversion.json')['output_sha256']
     assert digest(primary/'final-adapter.gguf')==read(primary/'conversion.json')['output_sha256']
-    amendment=ROOT/'docs/planning/final/phase-3-h0-evidence-utility/lora-experiments-2026-09-08/ornith-9b-fidelity-closeout-amendment-2026-09-15.md'
-    inputs=[amendment,primary/'revision.json',primary/'in-sample-cases.json',primary/'final-adapter.gguf',*[Path(x) for x in bases.values()],Path(__file__),HERE/'evaluate.py',HERE/'runtime.py',HERE/'pilot.py',HERE/'config.json',Path('/usr/bin/llama-server')]
+    amendment=ROOT/CLOSEOUT
+    inputs=[ROOT/AMENDMENT,amendment,primary/'revision.json',primary/'in-sample-cases.json',primary/'final-adapter.gguf',*[Path(x) for x in bases.values()],Path(__file__),HERE/'evaluate.py',HERE/'runtime.py',HERE/'pilot.py',HERE/'config.json',Path('/usr/bin/llama-server')]
     r.mkdir(parents=True)
-    save(r/'protocol.json',{'version':'ornith-post-failure-fidelity/1','at':time.time(),'primary':str(primary),'bases':bases,'original_amendment_commit':COMMIT,'implementation_commit':subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True,timeout=10).strip(),'amendment_sha256':digest(amendment),'inputs':{str(p):digest(p) for p in inputs},'sampler':read(primary/'revision.json')['sampler']|{'temperature':0,'top_k':1},'host_available_bytes':available,'memory_max_bytes':16*1024**3,'deadline_seconds':limit,'remaining_budget_seconds':remaining,'scope':'One diagnostic only, 32 scored requests plus deployment probes; no acquisition/retrain/heldout/relaunch.'})
+    save(r/'protocol.json',{'version':'ornith-post-failure-fidelity/1','at':time.time(),'primary':str(primary),'bases':bases,'original_amendment_commit':COMMIT,'implementation_commit':subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True,timeout=10).strip(),'amendment_sha256':digest(amendment),'inputs':{str(p):digest(p) for p in inputs},'sampler':read(primary/'revision.json')['sampler']|{'temperature':0,'top_k':1},'host_available_bytes':available,'memory_max_bytes':DIAGNOSTIC_MEMORY_BYTES,'deadline_seconds':limit,'remaining_budget_seconds':remaining,'scope':'One diagnostic only, 32 scored requests plus deployment probes; no acquisition/retrain/heldout/relaunch.'})
     unit='mrgr-lora-9b-fidelity-closeout-20260915'
     save(r/'execution.json',{'unit':unit,'started':time.time(),'status':'started','limit_seconds':limit})
-    args=['systemd-run','--unit='+unit,'--property=User=svnbjrn','--property=WorkingDirectory='+str(ROOT),'--property=MemoryMax='+str(16*1024**3),'--property=MemorySwapMax=0','--property=OOMPolicy=stop','--property=KillMode=control-group','--property=RuntimeMaxSec='+str(limit),'--property=ExecStopPost=/usr/bin/python3 '+str(HERE/'q8_secondary.py')+' finish '+str(r),'--property=StandardOutput=append:'+str(r/'execution.log'),'--property=StandardError=append:'+str(r/'execution.log'),*['--setenv='+k+'='+v for k,v in stage_environment(c).items()],'/usr/bin/python3','-u',str(HERE/'q8_secondary.py'),'diagnostic-worker',str(r)]
+    args=['systemd-run','--unit='+unit,'--property=User=svnbjrn','--property=WorkingDirectory='+str(ROOT),'--property=MemoryMax='+str(DIAGNOSTIC_MEMORY_BYTES),'--property=MemorySwapMax=0','--property=OOMPolicy=stop','--property=KillMode=control-group','--property=RuntimeMaxSec='+str(limit),'--property=ExecStopPost=/usr/bin/python3 '+str(HERE/'q8_secondary.py')+' finish '+str(r),'--property=StandardOutput=append:'+str(r/'execution.log'),'--property=StandardError=append:'+str(r/'execution.log'),*['--setenv='+k+'='+v for k,v in stage_environment(c).items()],'/usr/bin/python3','-u',str(HERE/'q8_secondary.py'),'diagnostic-worker',str(r)]
     result=subprocess.run(['ssh','vinbonesjr',shlex.join(args)],capture_output=True,text=True,timeout=60);save(r/'launch.json',{'args':args,'exit_code':result.returncode,'stdout':result.stdout,'stderr':result.stderr});assert result.returncode==0,result.stderr
     print(result.stdout+result.stderr)
 

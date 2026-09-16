@@ -4,10 +4,19 @@ import {resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import assert from 'node:assert/strict';
 import {rng,sourceHashes} from './v3.mjs';
-import {clustered as historicalPairs} from './v3-round7-2026-09-06/batch-admission/instrument/evidence/h0/v3.mjs';
+
 import {hash} from './v3-data.mjs';
 import {wilsonLower} from './v3-design.mjs';
 import {clusterJackknife,wildClusterP} from './v3-inference.mjs';
+
+// Archived pairs estimator, extracted without its unavailable runtime imports.
+function historicalPairs(rows,comparators,iterations=10000,seed=20260906){
+  assert(rows.length);const repos=[...Map.groupBy(rows,r=>r.repo).values()],random=rng(seed);
+  const sums=repos.map(rs=>({n:rs.length,delta:comparators.map(k=>rs.reduce((s,r)=>s+Number(r.selected)-Number(r[k]),0))}));
+  const samples=comparators.map(()=>[]);
+  for(let b=0;b<iterations;b++){let n=0;const ds=comparators.map(()=>0);for(let j=0;j<repos.length;j++){const s=sums[Math.floor(random()*sums.length)];n+=s.n;s.delta.forEach((v,i)=>ds[i]+=v);}ds.forEach((v,i)=>samples[i].push(v/n));}
+  return Object.fromEntries(comparators.map((k,i)=>{const values=samples[i].sort((a,b)=>a-b),delta=rows.reduce((s,r)=>s+Number(r.selected)-Number(r[k]),0)/rows.length;return[k,{delta,lower:values[Math.floor(iterations*0.025)],upper:values[Math.min(iterations-1,Math.floor(iterations*0.975))],clusters:repos.length,iterations}];}));
+}
 
 export function audit({sizes,heterogeneity,effect=0,discordance=0.4,repetitions=1000,bootstrap=2000,seed=2026090701,method='pairs',positive_cluster_probability=0.5}){
   assert(['pairs','jackknife','wild'].includes(method));

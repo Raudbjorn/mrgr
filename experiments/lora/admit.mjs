@@ -40,7 +40,10 @@ for(const c of JSON.parse(readFileSync(manifest))){
    return {id:'cand-'+hash(candidate.text),text:candidate.text,evaluation:baseline.evaluation};
   });
   const screen=JSON.parse(readFileSync(join(c.evaluator.scaffold,'../receipt.json')));
-  c.cell=(c.reference===c.ours||c.reference===c.theirs?'side-verbatim':'blend')+'/'+screen.era.era;
+  assert.equal(screen.era.version,'historical-root-and-target-build-era/3','admission requires explicit root/target era schema');
+  assert(['module','GOPATH'].includes(screen.era.target_era));
+  c.cell=(c.reference===c.ours||c.reference===c.theirs?'side-verbatim':'blend')+'/'+screen.era.target_era;
+  checkGroups([...rows.filter(r=>r.status==='admitted').map(r=>r.case),c]);
   row.case=c;row.status='admitted';
  }catch(e){row.status='incomplete-or-ineligible';row.reason=e.message;}
  save('admission.json',rows);

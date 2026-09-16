@@ -17,7 +17,7 @@ export const BASELINES=['keep-ours','keep-theirs','longer-side','git-union','git
 const ROOT=resolve(import.meta.dirname,'../..');
 const JSONread=p=>JSON.parse(readFileSync(p,'utf8'));
 const save=(p,x)=>{writeFileSync(`${p}.tmp`,JSON.stringify(x,null,2)+'\n',{mode:0o600});renameSync(`${p}.tmp`,p);};
-const sourceFiles=['evidence/h0/v3.mjs','evidence/h0/v3-data.mjs','evidence/h0/v3-design.mjs','evidence/h0/v3-inference.mjs','evidence/h0/v2.mjs','packages/mechanisms/dist/adapter.js','packages/mechanisms/dist/result.js',...['localize','acquire','classify','git','result','types'].map(p=>`packages/core/dist/evaluation/${p}.js`)];
+const sourceFiles=['evidence/h0/go-locked-deps.py','evidence/h0/v3.mjs','evidence/h0/v3-data.mjs','evidence/h0/v3-design.mjs','evidence/h0/v3-inference.mjs','evidence/h0/v2.mjs','packages/mechanisms/dist/adapter.js','packages/mechanisms/dist/result.js',...['localize','acquire','classify','git','result','types'].map(p=>`packages/core/dist/evaluation/${p}.js`)];
 export const sourceHashes=()=>Object.fromEntries(sourceFiles.map(p=>[p,hash(readFileSync(join(ROOT,p)))]));
 function toolHashes(){return Object.fromEntries(['git','tree-sitter','bwrap','diff3','mergiraf','cc','cmake','make'].map(t=>{const p=execFileSync('/bin/sh',['-c',`command -v ${t}`],{encoding:'utf8'}).trim();return[t,{path:p,sha256:hash(readFileSync(p))}];}));}
 export function rng(seed=20260906){let x=seed>>>0;return()=>{x=(Math.imul(x,1664525)+1013904223)>>>0;return x/4294967296;};}

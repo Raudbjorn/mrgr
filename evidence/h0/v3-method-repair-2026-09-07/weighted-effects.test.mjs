@@ -36,4 +36,4 @@ for(const [name,deltas] of Object.entries(scenarios)){
  if(truth===0)assert(positive/draws<=0.05,`${name}: one-sided false positive exceeds tolerance`);
 }
 const result={at:new Date().toISOString(),synthetic_only:true,solver_requests:0,cases:60,clusters:new Set(frame.map(r=>r.repo)).size,counts:p.counts,weights:p.weights,checks:{planted_delta:0.25,duplicate_zero:true,missing_cell_blocks:true,single_lineage_blocks_uncertainty:true,permutation_invariant:true},calibration:results,source_hashes:Object.fromEntries(['weighted-effects.mjs','weighted-effects.test.mjs','../v3-inference.mjs'].map(f=>[f,hash(readFileSync(new URL(f,import.meta.url)))])),limits:'Scenario calibration, not proof of universal coverage or confirmation power; actual cluster/cell layout, simulated outcomes only. Recalibration is required for a different confirmation frame.'};
-writeFileSync(new URL('weighted-effects-calibration.json',import.meta.url),JSON.stringify(result,null,2)+'\n');console.log(JSON.stringify(result,null,2));
+if(process.argv[2])writeFileSync(process.argv[2],JSON.stringify(result,null,2)+'\n');console.log(JSON.stringify(result,null,2));
