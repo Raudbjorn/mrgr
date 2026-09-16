@@ -1,0 +1,10 @@
+import assert from 'node:assert/strict';
+import {rejected,requireEnvironment,REPLACEMENT} from './repair_control.mjs';
+const fail={category:'test-failure',stages:[{stage:'build',status:0},{stage:'test',status:1,stdout:'--- FAIL: TestQuerySliceRange (0.00s)\n expected five entries, got three\n'}]};
+assert(rejected(fail));
+for(const reason of ['test-timeout','test-completion-contract'])assert(!rejected({...fail,reason}));
+for(const extra of [{signal:'SIGTERM'},{error:'ETIMEDOUT'},{status:null},{status:0},{stdout:'panic: bad\n--- FAIL: TestQuerySliceRange'},{stdout:'FAIL\n'}])assert(!rejected({...fail,stages:[fail.stages[0],{...fail.stages[1],...extra}]}));
+assert(!rejected({...fail,stages:[{stage:'build',status:1},fail.stages[1]]}));
+requireEnvironment('same','same');assert.throws(()=>requireEnvironment('expected','changed'),/fingerprint drift/);
+assert.equal(REPLACEMENT,'\tstart, end, step := 0, MaxInt, 2\n');
+console.log('Control rejection, unchanged exact mutation, and environment drift guards passed');
