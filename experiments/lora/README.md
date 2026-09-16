@@ -87,3 +87,13 @@ on terminal exit. It does not acquire data, retrain or perform held-out inferenc
 `export_closeout.py` exports portable receipt derivatives with both original and
 export hashes. Executed source snapshots remain exact bytes; later source repairs
 are separate commits and must not be represented as the original instrument.
+
+
+### Cross-validation preflight (2026-09-16)
+
+`python3 experiments/lora/cross_validate.py audit NEW_DIRECTORY` validates the
+fixed 57-case admission receipts and produces provisional lineage folds. The
+authorized audit is terminal **INCOMPLETE**: one go-toml mutant timed out, so
+that case lacks two verified test-rejected mutations. No training or inference
+was launched. The module intentionally exposes no execution command. See
+`evidence/h0/ornith-9b-cross-validation-2026-09-16/README.md`.
