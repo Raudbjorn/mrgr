@@ -1,5 +1,7 @@
 # Ornith-9B cross-validation admission audit
 
+> **Superseded classification:** the [September 17 correction](../ornith-9b-cv-review-2026-09-17/README.md) finds 72 verified rejections and 26 deficient cases. The 113/1 counts below describe the flawed historical audit and must not be used as validated counts. Original JSON is retained unchanged.
+
 **INCOMPLETE (admission audit). Zero training runs; zero model requests.**
 The fixed 57-case protocol required two verified compiling test-rejected mutations
 per case. One case has only one such rejection; the second control timed out.

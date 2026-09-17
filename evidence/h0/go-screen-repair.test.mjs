@@ -19,6 +19,6 @@ try{
 }finally{rmSync(d,{recursive:true,force:true});}
 console.log('Real no-test package, generated/vendor exclusion, and reference classification passed');
 
-assert.equal(mutantDisposition({category:'test-failure'}),'rejected');
+assert.equal(mutantDisposition({category:'test-failure'}),'incomplete');
 for(const ev of [{category:'environment-error'}, {category:'test-failure',reason:'test-timeout'}, {category:'test-failure',reason:'test-completion-contract'}, {category:'build-failure',stages:[{stderr:'cannot find package "x"'}]}])assert.equal(mutantDisposition(ev),'incomplete');
 assert.equal(mutantDisposition({category:'build-failure',stages:[{stderr:'syntax error'}]}),'not-rejected');

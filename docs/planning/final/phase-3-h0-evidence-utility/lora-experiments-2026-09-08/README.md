@@ -118,3 +118,13 @@ This document is a proposed protocol with explicit readiness work, not a preregi
 ## Existing benchmark status observed during this audit
 
 At 10:12:35 UTC the existing runner stopped under its frozen stop-on-HTTP-error rule. It preserved eight response receipts and seven evaluations (five behavioral passes, two build failures). The eighth response is HTTP 500, with a server parser error containing the generated Harmony header `<|channel|>final <|constrain|>json`. This identifies a response-parsing failure; root cause and repair remain unverified. The service is active/running with zero restarts. No request was retried and no receipt, runner source, service configuration or dependency was changed by this design task. This tiny incomplete run cannot support cross-model quality comparisons. Its stopped state does not by itself authorize using the GPU for training while the benchmark is awaiting disposition.
+
+## September 17 admission correction
+
+[Protocol precedence and unresolved design decisions](ornith-9b-cv-review-clarification-2026-09-17.md).
+
+The [CV protocol](ornith-9b-cross-validation-2026-09-16.md) and subsequent
+[conditional control amendment](ornith-9b-control-repair-2026-09-16.md) are both
+terminal. [Offline receipt review](../../../../../evidence/h0/ornith-9b-cv-review-2026-09-17/README.md)
+finds 72 verified rejections, with 26/57 cases below the two-control gate.
+No training, controls or model calls were rerun; continuation needs a new protocol.

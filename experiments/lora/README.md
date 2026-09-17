@@ -89,11 +89,21 @@ export hashes. Executed source snapshots remain exact bytes; later source repair
 are separate commits and must not be represented as the original instrument.
 
 
-### Cross-validation preflight (2026-09-16)
+### Cross-validation review (2026-09-17)
 
-`python3 experiments/lora/cross_validate.py audit NEW_DIRECTORY` validates the
-fixed 57-case admission receipts and produces provisional lineage folds. The
-authorized audit is terminal **INCOMPLETE**: one go-toml mutant timed out, so
-that case lacks two verified test-rejected mutations. No training or inference
-was launched. The module intentionally exposes no execution command. See
-`evidence/h0/ornith-9b-cross-validation-2026-09-16/README.md`.
+`python3 experiments/lora/cross_validate.py audit NEW_DIRECTORY` performs only
+an offline audit. It reserves a fresh directory, never overwrites public evidence,
+and exits nonzero because the registered experiment is closed. The corrected
+saved-receipt classification finds 72 ordinary rejections and 26/57 cases below
+the two-control requirement. No oracle or model is called.
+
+`repair_control.mjs freeze/run` is retired and always fails without writing files.
+The sole authorized attempt already terminated on environment drift. Choosing a
+new directory cannot authorize a retry. There is no training coordinator or
+successful correction-receipt consumer in this closed protocol.
+
+`export_cv_review.py AUDIT_DIRECTORY NEW_PUBLIC_DIRECTORY` explicitly exports
+portable derivatives and refuses to overwrite an existing export. The original
+September 16 JSON and preregistration documents remain unchanged. See
+`evidence/h0/ornith-9b-cv-review-2026-09-17/README.md` and the September 17 protocol
+clarification for evidence, limitations and unresolved design decisions.

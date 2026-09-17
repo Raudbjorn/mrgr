@@ -1,3 +1,4 @@
+import {mutantDisposition,verifiedOracle} from '../../evidence/h0/mutant-disposition.mjs';
 // Adapter to the existing evaluator. Archived inputs are never modified.
 import assert from 'node:assert/strict';
 import {readFileSync,writeFileSync,mkdirSync,existsSync,renameSync} from 'node:fs';
@@ -16,10 +17,10 @@ if(command==='audit'){
  for(const c of cases){
   const record={id:c.id,repo:c.repo,lineage:c.cluster_id,event:c.event,path:c.path,cell:c.cell,source_sha256:hash(JSON.stringify(c))};
   try{
-   assert(c.oracle_validation.valid);assert.equal(c.oracle_validation.reference.length,3);
+   assert(verifiedOracle(c.oracle_validation),'unverified oracle controls');assert.equal(c.oracle_validation.reference.length,3);
    for(const ev of c.oracle_validation.reference){verifyEvaluation(c,c.reference,ev);assert(ev.pass);}
    assert(c.mutations.length>=2);
-   for(const [i,m] of c.mutations.entries()){const ev=c.oracle_validation.mutations[i];verifyEvaluation(c,m.resolution,ev);assert.equal(ev.category,'test-failure');}
+   for(const [i,m] of c.mutations.entries()){const ev=c.oracle_validation.mutations[i];verifyEvaluation(c,m.resolution,ev);assert.equal(mutantDisposition(ev),'rejected');}
    record.candidates=candidates(c,'candidates-structural').map(item=>{
     const baseline=Object.values(c.baselines).find(b=>b.resolution===item.text);
     verifyEvaluation(c,item.text,baseline.evaluation);
@@ -41,7 +42,7 @@ if(command==='audit'){
  save(file,receipt);
  try{
   receipt.git=verifyGitCase(c);
-  receipt.oracle=validateOracle(c);save(file,receipt);assert(receipt.oracle.valid,'oracle no longer discriminates');
+  receipt.oracle=validateOracle(c);receipt.oracle.valid=verifiedOracle(receipt.oracle);save(file,receipt);assert(receipt.oracle.valid,'oracle no longer discriminates');
   receipt.candidates=[];
   for(const candidate of candidates(c,'candidates-structural')){
    const ev=evaluate(c,candidate.text);verifyEvaluation(c,candidate.text,ev);

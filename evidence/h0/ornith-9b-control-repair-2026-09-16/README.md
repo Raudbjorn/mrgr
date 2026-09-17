@@ -1,5 +1,8 @@
 # Exact step-two control replacement: precondition stop
 
+> September 17: this attempt remains terminal. The unsafe unused executor is retired; arbitrary output directories cannot reopen it. See the [review correction](../ornith-9b-cv-review-2026-09-17/README.md).
+
+
 **INCOMPLETE (environment fingerprint drift).** The amendment and revalidation
 implementation were committed as `074d2adb0` before freezing or attempting the
 controls. The run stopped at the exact environment check: **zero control

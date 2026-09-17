@@ -8,17 +8,17 @@ def case(i):
 
 
 def mutant(reason=None,status=1,error=None):
-    return {'name':'wrong-value','category':'test-failure','reason':reason,'stages':[{'stage':'build','status':0},{'stage':'test','status':status,'error':error}]}
+    return {'name':'wrong-value','candidate_sha256':'a'*64,'category':'test-failure','reason':reason,'stages':[{'stage':'build','status':0},{'stage':'test','status':status,'error':error,'stdout':'--- FAIL: TestWrong (0.00s)'}]}
 
 
 class CrossValidationTest(unittest.TestCase):
     def test_timeout_does_not_complete_two_mutant_gate(self):
-        result=control_audit([mutant(),mutant('test-timeout',None,'ETIMEDOUT')])
+        result=control_audit([mutant(),mutant('test-timeout',124)])
         self.assertEqual(result['verified_rejections'],1)
         self.assertFalse(result['controls'][1]['verified_rejection'])
 
     def test_real_failures_count_but_completion_and_infrastructure_do_not(self):
-        self.assertEqual(control_audit([mutant(),mutant()])['verified_rejections'],2)
+        self.assertEqual(control_audit([mutant(),mutant()])['verified_rejections'],1)
         self.assertEqual(control_audit([mutant('test-completion-contract',0),mutant(None,None,'bwrap failed')])['verified_rejections'],0)
 
     def test_parent_and_content_groups_cannot_cross_folds(self):
@@ -40,18 +40,82 @@ class CrossValidationTest(unittest.TestCase):
         self.assertEqual(result['0'],result['1']);self.assertEqual(result['2'],result['3'])
 
     def test_too_few_groups_and_bad_provenance_stop(self):
-        with self.assertRaisesRegex(AssertionError,'fewer than five'):partition([case(1)])
+        with self.assertRaisesRegex(ValueError,'fewer than five'):partition([case(1)])
         cases=[case(i) for i in range(5)];cases[0]['cluster_id']='different/repo'
-        with self.assertRaisesRegex(AssertionError,'provenance'):partition(cases)
+        with self.assertRaisesRegex(ValueError,'provenance'):partition(cases)
 
     def test_unknown_config_and_changed_budget_rejected(self):
-        # configuration() only reads the prior frozen sampler; no server request.
-        from unittest.mock import patch
-        from runtime import read,HERE
-        old=read(HERE/'config.json')
-        with patch('cross_validate.read',side_effect=[old,{'sampler':{'top_k':40,'max_tokens':4096}}]):c=configuration()
+        c=configuration()
         validate_config(c)
-        with self.assertRaisesRegex(AssertionError,'configuration'):validate_config(c|{'unused':1})
-        with self.assertRaises(AssertionError):validate_config(c|{'wall_seconds':259200})
+        for changes in [{'unused':1},{'wall_seconds':259200},{'learning_rate':.001},{'dropout':0},{'target_modules':'.*'},{'max_training_tokens':128},{'model':'other'},{'revision':'other'},{'sampler':{'top_k':40,'max_tokens':4096}}]:
+            with self.subTest(changes=changes),self.assertRaisesRegex(ValueError,'configuration'):validate_config(c|changes)
+
+    def test_each_rejection_guard_independently(self):
+        import copy
+        good=mutant()
+        self.assertEqual(control_audit([good])['verified_rejections'],1)
+        variants=[good|{'reason':'test-timeout'},good|{'reason':'test-completion-contract'},good|{'category':'environment-error'},good|{'name':None},good|{'candidate_sha256':None}]
+        for key,value in [('status',2),('status',137),('signal','SIGTERM'),('error','ETIMEDOUT'),('stdout','panic: init failed')]:
+            m=copy.deepcopy(good);m['stages'][1][key]=value;variants.append(m)
+        for m in variants:
+            with self.subTest(m=m):self.assertEqual(control_audit([m])['verified_rejections'],0)
+
+    def test_audit_preserves_terminal_and_never_overwrites(self):
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        from cross_validate import audit
+        with tempfile.TemporaryDirectory() as d:
+            run=Path(d)/'audit'
+            with patch('cross_validate._audit',side_effect=FileNotFoundError('missing receipt')):
+                self.assertTrue(audit(run)['terminal'])
+            before=(run/'audit.json').read_bytes()
+            with self.assertRaises(FileExistsError):audit(run)
+            self.assertEqual(before,(run/'audit.json').read_bytes())
+
+    def test_complete_audit_fixture_and_bad_receipt(self):
+        import tempfile,json
+        from pathlib import Path
+        from unittest.mock import patch
+        import cross_validate as cv
+        from runtime import save,digest
+        from pilot import messages,target
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);training=root/'training';prepared=root/'prepared';source=root/'cases.json'
+            training.mkdir();(prepared/'oracle').mkdir(parents=True)
+            cases=[];examples=[]
+            for i in range(cv.COHORT_SIZE):
+                c=case(i)|{'repo':f'org/repo-{i}','event':str(i),'language':'go','path':'x.go','cell':'blend/module','era':{'version':'historical-root-build-era/1'},'boundary':dict.fromkeys(['prefix','suffix','automatic_prefix','automatic_suffix'],'')}
+                candidates=[{'id':'cand-'+digest('replacement'),'text':'replacement','evaluation':{'pass':True,'category':'behavioral-pass'}}]
+                cases.append(c)
+                prompt=messages(c,candidates,20260908)
+                examples.append({'id':c['id'],'lineage':c['cluster_id'],'event':c['event'],'cell':c['cell'],'messages':prompt,'target':target(candidates,[candidates[0]['id']]),'candidate_labels':{candidates[0]['id']:True}})
+            save(source,cases)
+            for e in examples:
+                receipt=prepared/'oracle'/(e['id']+'.json')
+                save(receipt,{'source_archive_sha256':digest(source),'status':'admitted','oracle':{'valid':True,'reference':[{'pass':True}]*3,'mutations':[mutant(),mutant()|{'name':'other','candidate_sha256':'b'*64}]},'candidates':candidates})
+                e['receipt_sha256']=digest(receipt)
+            save(prepared/'prepared.json',{'examples':examples})
+            save(training/'tokenized.json',{'prepared_sha256':digest(prepared/'prepared.json'),'examples':[{'id':e['id']} for e in examples],'excluded':[]})
+            save(training/'training-protocol.json',{'tokenized_sha256':digest(training/'tokenized.json')})
+            save(training/'checkpoint.json',{'revision':cv.configuration()['revision']})
+            revision=root/'runs/9b-revision-2026-09-15';revision.mkdir(parents=True)
+            save(revision/'revision.json',{'sampler':cv.configuration()['sampler']})
+            with patch.multiple(cv,SOURCE=source,TRAINING=training,PREPARED=prepared,STORAGE=root):
+                good=cv.audit(root/'good')
+                self.assertEqual(good['finding'],'AUDIT PASSED; execution not implemented')
+                self.assertFalse(good['execution_authorized'])
+                (prepared/'oracle/0.json').unlink()
+                bad=cv.audit(root/'bad')
+                self.assertEqual(len([r for r in bad['rows'] if r['issues']]),1)
+                self.assertTrue(bad['terminal'])
+
+    def test_optimized_cli_fails_closed(self):
+        import tempfile,subprocess,sys
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as d:
+            # Existing directory is rejected even with asserts disabled.
+            r=subprocess.run([sys.executable,'-O',str(Path(__file__).with_name('cross_validate.py')),'audit',d],capture_output=True)
+            self.assertNotEqual(r.returncode,0)
 
 if __name__=='__main__':unittest.main()
