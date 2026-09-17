@@ -11,7 +11,7 @@ not renumbered) because other files in this repo cite them by number (e.g.
 `evidence/h0/REVIEW-2026-08-29.md` cites "§3.4"). Use the table below to
 resolve any `§N` you find quoted elsewhere back to a file.
 
-*Last split:* 2026-08-30. *Last content update:* 2026-09-15 (Phase 3 closure and gate retirement indexed; Mercury follow-up complete; local GPT-OSS follow-up closed incomplete by the user; confirmation and LoRA designs indexed; Phase 4 complete and Phase 5 fresh reconstruction proved locally).
+*Last split:* 2026-08-30. *Last content update:* 2026-09-16 (Phase 3 closure and gate retirement indexed; Mercury follow-up complete; local GPT-OSS follow-up closed incomplete by the user; confirmation and LoRA designs indexed; Phase 4 complete and Phase 5 fresh reconstruction proved locally).
 
 ---
 
@@ -90,6 +90,9 @@ file wins; notes files carry no state of their own.
 | [confirmation-study-design-2026-09-07/decisions-required.md](phase-3-h0-evidence-utility/confirmation-study-design-2026-09-07/decisions-required.md) | Explicit decisions required before executing confirmation |
 | [lora-experiments-2026-09-08/README.md](phase-3-h0-evidence-utility/lora-experiments-2026-09-08/README.md) | Historical adapter designs; superseded for the Ornith-9B pilot by its amendments and closeout below; no GPT-OSS training result |
 | [lora-experiments-2026-09-08/compatibility-receipt.json](phase-3-h0-evidence-utility/lora-experiments-2026-09-08/compatibility-receipt.json) | Read-only A770/software compatibility audit; GPT-OSS training on this machine remains unverified |
+| [Ornith-9B control-repair precondition stop](../../../evidence/h0/ornith-9b-control-repair-2026-09-16/README.md) | Exact step-two replacement preregistered; INCOMPLETE before controls because whole-host package fingerprint changed; changes traced to SABnzbd/Sonarr/graft metadata; zero controls/training/model requests |
+| [Ornith-9B PR18 offline correction](../../../evidence/h0/ornith-9b-cv-review-2026-09-17/README.md) | 72/114 verified ordinary rejections; 26/57 cases deficient; original receipts preserved; repair executor retired; no new controls or model requests |
+| [Ornith-9B cross-validation audit](../../../evidence/h0/ornith-9b-cross-validation-2026-09-16/README.md) | New exploratory five-fold design stopped INCOMPLETE at admission audit: corrected offline review finds 26 of 57 cases lack two verified ordinary rejections; zero training and model requests; equal-lineage primary and 24-hour limit recorded |
 | [Ornith-9B pilot closeout](../../../evidence/h0/ornith-9b-closeout-2026-09-15/README.md) | Training/export feasibility completed; primary INCOMPLETE (zero admissions, zero held-out requests); original Q8 secondary INCOMPLETE (launcher infrastructure); in-sample fidelity diagnostic completed inconclusive (Q4 adapter 4/8, Q8 adapter 5/8), not efficacy |
 | [Fidelity closeout amendment](phase-3-h0-evidence-utility/lora-experiments-2026-09-08/ornith-9b-fidelity-closeout-amendment-2026-09-15.md) | One post-failure diagnostic, fixed 32-request design, launch-time deadline and terminal closeout; no further acquisition/retraining |
 | `SIGNIFICANCE-…` (in `evidence/h0/`, not this tree) | Historical enum-only gate: test, verdict, and why its grader made success impossible |

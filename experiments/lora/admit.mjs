@@ -1,3 +1,4 @@
+import {verifiedOracle} from '../../evidence/h0/mutant-disposition.mjs';
 // Reuse the scientific oracle and deterministic engines without reopening H0.
 import assert from 'node:assert/strict';
 import {readFileSync,writeFileSync,mkdirSync,mkdtempSync,rmSync,renameSync} from 'node:fs';
@@ -19,7 +20,7 @@ for(const c of JSON.parse(readFileSync(manifest))){
   c.id=hash(JSON.stringify([c.repo,c.event,c.path,c.base,c.ours,c.theirs]));
   c.cluster_id=(meta.source??meta).full_name.toLowerCase();
   c.evaluator.environment_sha256=environmentHash();c.git_validation=verifyGitCase(c);
-  c.oracle_validation=validateOracle(c);save('progress.json',rows);assert(c.oracle_validation.valid,'oracle control failure');
+  c.oracle_validation=validateOracle(c);c.oracle_validation.valid=verifiedOracle(c.oracle_validation);save('progress.json',rows);assert(c.oracle_validation.valid,'oracle control failure');
   const d=mkdtempSync(join(tmpdir(),'lora-boundary-'));
   try{
    for(const side of ['base','ours','theirs'])writeFileSync(join(d,side),side==='base'&&!git(c.git.directory,'ls-tree','-z',c.git.base,'--',c.path).length?Buffer.alloc(0):git(c.git.directory,'show',`${c.git[side]}:${c.path}`));

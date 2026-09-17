@@ -1,3 +1,4 @@
+import {mutantDisposition} from './mutant-disposition.mjs';
 // Acquisition only: original Git cases, existing unit tests, no model requests.
 import {readFileSync,writeFileSync,mkdirSync,existsSync,readdirSync,rmSync,cpSync,symlinkSync,chmodSync} from 'node:fs';
 import {execFileSync,spawnSync} from 'node:child_process';
@@ -67,11 +68,7 @@ export function referenceFailure(ev){
   return 'reference-behavioral-failure';
 }
 // Only observed test failures count; timeouts and missing completion are not kills.
-export function mutantDisposition(ev){
-  if(ev.category==='environment-error'||ev.reason==='test-timeout'||ev.reason==='test-completion-contract')return 'incomplete';
-  if(ev.category==='build-failure'&&referenceFailure(ev)==='incomplete-missing-dependency')return 'incomplete';
-  return ev.category==='test-failure'?'rejected':'not-rejected';
-}
+export {mutantDisposition} from './mutant-disposition.mjs';
 export function chooseBase(bases,reported){
   assert(bases.length&&bases.every(b=>/^[a-f0-9]{40}$/.test(b)),'invalid Git merge bases');
   if(reported){assert(bases.includes(reported),'reported base is not a Git merge base');return reported;}
@@ -109,7 +106,7 @@ export async function screen(configPath){
   const config=JSON.parse(readFileSync(configPath)),out=resolve(config.output),sources=readFileSync(config.triples),cache=join('/tmp','mrgr-h0-v3-screen-cache',hash(out));
   assert(!existsSync(out),'new screening directory required');mkdirSync(out,{recursive:true});
   const library=join(root,'.do-not-commit/h0-v3-tools/go.so');
-  const frozen={version:'go-screen/4',dependency_helper_sha256:hash(readFileSync(join(root,'evidence/h0/go-locked-deps.py'))),config,temporary_cache:cache,source_sha256:hash(sources),script_sha256:hash(readFileSync(import.meta.filename)),instrument_hashes:sourceHashes(),parser_sha256:hash(readFileSync(library)),legacy_gopath_sha256:config.legacy_gopath?treeHash(resolve(config.legacy_gopath)):null,created_at:new Date().toISOString(),selection:'one eligible production Go hunk per event, event/path/ordinal order, target package unit tests, before model outcomes',missing_base_text:'Normalize null to empty text; independent Git reproduction remains mandatory',max_reference_bytes:8192,mutation_limit:8,model_calls:0};save(join(out,'freeze.json'),frozen);
+  const frozen={version:'go-screen/4',dependency_helper_sha256:hash(readFileSync(join(root,'evidence/h0/go-locked-deps.py'))),config,temporary_cache:cache,source_sha256:hash(sources),script_sha256:hash(readFileSync(import.meta.filename)),instrument_hashes:{...sourceHashes(),'evidence/h0/mutant-disposition.mjs':hash(readFileSync(join(root,'evidence/h0/mutant-disposition.mjs')))},parser_sha256:hash(readFileSync(library)),legacy_gopath_sha256:config.legacy_gopath?treeHash(resolve(config.legacy_gopath)):null,created_at:new Date().toISOString(),selection:'one eligible production Go hunk per event, event/path/ordinal order, target package unit tests, before model outcomes',missing_base_text:'Normalize null to empty text; independent Git reproduction remains mandatory',max_reference_bytes:8192,mutation_limit:8,model_calls:0};save(join(out,'freeze.json'),frozen);
   assert(/^[a-z0-9_.-]+\/[a-z0-9_.-]+$/.test(config.repo));assert(Number.isSafeInteger(config.limit)&&config.limit>0);
   const skip=new Set(config.exclude_events??[]),seen=new Set(),rows=[],accepted=[];
   const triples=sources.toString().trim().split('\n').filter(Boolean).map(JSON.parse).map(t=>({...t,base:t.base??''})).sort((a,b)=>a.merge_sha.localeCompare(b.merge_sha)||a.path.localeCompare(b.path)||a.ordinal-b.ordinal);

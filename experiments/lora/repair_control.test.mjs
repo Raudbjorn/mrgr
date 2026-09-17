@@ -1,0 +1,18 @@
+import assert from 'node:assert/strict';
+import {spawnSync} from 'node:child_process';
+import {rejected,requireEnvironment,REPLACEMENT,freeze,run} from './repair_control.mjs';
+import {controlAudit} from '../../evidence/h0/mutant-disposition.mjs';
+const fail={name:'wrong',candidate_sha256:'a'.repeat(64),category:'test-failure',stages:[{stage:'build',status:0},{stage:'test',status:1,stdout:'--- FAIL: TestQuerySliceRange (0.00s)\n'}]};
+assert(rejected(fail));
+for(const reason of ['test-timeout','test-completion-contract'])assert(!rejected({...fail,reason}));
+for(const status of [0,2,124,137,143,null])assert(!rejected({...fail,stages:[fail.stages[0],{...fail.stages[1],status}]}));
+for(const extra of [{signal:'SIGTERM'},{error:'ETIMEDOUT'},{stdout:'panic: bad\n--- FAIL: TestX'},{stdout:'FAIL\n'}])assert(!rejected({...fail,stages:[fail.stages[0],{...fail.stages[1],...extra}]}));
+for(const stdout of ['# Caused panic: URL\n--- FAIL: TestX','log prefix --- FAIL: TestX'])assert(rejected({...fail,stages:[fail.stages[0],{...fail.stages[1],stdout}]}));
+assert(!rejected({...fail,stages:[{stage:'build',status:1},fail.stages[1]]}));
+assert.equal(controlAudit([fail,{...fail}]).verified_rejections,1);
+assert.equal(controlAudit([fail,{...fail,name:'other'}]).verified_rejections,1);
+assert.equal(controlAudit([fail,{...fail,name:'other',candidate_sha256:'b'.repeat(64)}]).verified_rejections,2);
+requireEnvironment('same','same');assert.throws(()=>requireEnvironment('expected','changed'),/fingerprint drift/);
+assert.equal(REPLACEMENT,'\tstart, end, step := 0, MaxInt, 2\n');
+for(const fn of [freeze,run])assert.throws(()=>fn('/tmp/arbitrary-attempt'),/terminal/);
+for(const mode of ['freeze','run'])assert.equal(spawnSync(process.execPath,['experiments/lora/repair_control.mjs',mode,'/tmp/arbitrary-attempt']).status,1);
